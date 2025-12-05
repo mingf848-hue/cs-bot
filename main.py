@@ -10,8 +10,8 @@ from telegram.ext import Application, MessageHandler, ContextTypes, filters
 TOKEN = '8276151101:AAFXQ03i6pyEqJCX2wOnbYoCATMTVIbowGQ'
 
 # ✅ 修正：根据日志，去掉了 -100 前缀
-CS_GROUP_ID = -4990486181     
-ALERT_GROUP_ID = -5093247908  
+CS_GROUP_ID = -1003400471795
+ALERT_GROUP_ID = -5093247908
 
 # !!! 测试模式：60 秒 (测试成功后改为 15 * 60) !!!
 TIMEOUT_SECONDS = 60 
