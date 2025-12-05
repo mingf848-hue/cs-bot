@@ -17,7 +17,7 @@ TOKEN = '8276151101:AAFXQ03i6pyEqJCX2wOnbYoCATMTVIbowGQ'
 CS_GROUP_ID = -1003400471795     
 ALERT_GROUP_ID = -5093247908  
 CS_GROUP_USERNAME = 'adsgsh' 
-TIMEOUT_SECONDS = 60    # 正式模式 15 分钟
+TIMEOUT_SECONDS = 12 * 60    # 正式模式 15 分钟
 
 # 触发关键词
 WAIT_SIGNATURES = [
@@ -70,7 +70,7 @@ app = Flask(__name__)
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Bot is running (Original Message Preview)"
+    return "Bot is running (Underscore Fix)"
 
 @app.route('/debug', methods=['GET'])
 def debug_jobs():
@@ -90,7 +90,6 @@ def debug_jobs():
                 try:
                     content = job.args[1]
                     if "👤 回复人:" in content:
-                        # 简单的文本提取，用于调试显示
                         agent_part = content.split("👤 回复人:")[1].split("\n")[0].strip()
                         args_info = f" (回复人: {agent_part})"
                 except:
@@ -122,7 +121,7 @@ def send_alert_job(chat_id, text):
         loop.run_until_complete(temp_bot.send_message(
             chat_id=chat_id,
             text=text,
-            parse_mode='Markdown', # 必须开启 Markdown 才能支持链接形式的 @
+            parse_mode='Markdown', 
             disable_web_page_preview=True
         ))
         print("✅ 预警消息已成功发送")
@@ -147,20 +146,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 获取当前发消息的回复人对象
         user = msg.from_user
         
-        # ✅ 获取原始消息内容 (客户发的内容)
+        # ✅ 获取原始消息内容
         raw_original_text = msg.reply_to_message.text if msg.reply_to_message.text else "[非文本消息]"
-        # 简单清洗：防止反引号破坏 Markdown 格式，并限制长度防止刷屏
+        # 简单清洗：防止反引号破坏 Markdown
         safe_original_text = raw_original_text.replace('`', "'")
         if len(safe_original_text) > 50:
             safe_original_text = safe_original_text[:50] + "..."
         
-        # 生成“艾特”格式
+        # ✅ 关键修改：生成“艾特”格式并转义下划线
         if user.username:
-            # Markdown 中下划线需要转义，但用户名通常不需要，直接用即可
-            agent_mention = f"@{user.username}"
+            # 1. 获取用户名
+            raw_username = user.username
+            # 2. 这里的 replace 很关键：把 _ 变成 \_
+            safe_username = raw_username.replace("_", "\\_")
+            agent_mention = f"@{safe_username}"
         else:
-            # 如果没有用户名，使用 [名字](tg://user?id=123) 进行强行艾特
-            agent_mention = f"[{user.first_name}](tg://user?id={user.id})"
+            # 如果没有用户名，使用文字链接
+            # 名字里的特殊符号也最好清洗一下，防止破坏格式
+            safe_first_name = user.first_name.replace("[", "").replace("]", "")
+            agent_mention = f"[{safe_first_name}](tg://user?id={user.id})"
         
         # 生成跳转链接
         if str(CS_GROUP_ID).startswith('-100'):
@@ -172,12 +176,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_timeout_display = f"{TIMEOUT_SECONDS // 60} 分钟"
         if TIMEOUT_SECONDS == 60: current_timeout_display = "60 秒"
 
-        # ✅ 修改文案，在最上面增加原始消息
         alert_text = (
-            f"🚨 **稍等超时预警 ({current_timeout_display})**\n"
             f"📩 原始消息: `{safe_original_text}`\n\n"
+            f"🚨 **稍等超时预警 ({current_timeout_display})**\n"
             f"👤 回复人: {agent_mention}\n"
-            f"🔑 稍等: `{matched_signature}`\n"
+            f"🔑 快捷: `{matched_signature}`\n"
             f"⚠️ 状态: 回复稍等后，超过 {current_timeout_display} 未进一步回复。\n\n"
             f"🔗 [点击跳转处理]({msg_link})"
         )
