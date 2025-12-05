@@ -8,7 +8,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.executors.pool import ThreadPoolExecutor
 from datetime import datetime, timedelta
-# ✅ 补全缺失的引用：HTTPXRequest
+# 补全引用
 from telegram.request import HTTPXRequest 
 
 # ================= 配置区域 =================
@@ -27,14 +27,10 @@ WAIT_SIGNATURES = [
 ]
 
 # ================= 数据库连接设置 =================
-# 获取 Render 环境变量中的数据库地址
 database_url = os.environ.get('DATABASE_URL', 'sqlite:///jobs.sqlite')
-
-# 兼容性处理：有些库返回 postgres://，但 SQLAlchemy 需要 postgresql://
 if database_url and database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql://", 1)
 
-# 配置 APScheduler 使用 Neon 数据库
 jobstores = {
     'default': SQLAlchemyJobStore(url=database_url)
 }
@@ -46,30 +42,29 @@ job_defaults = {
     'max_instances': 3
 }
 
-# 初始化调度器
 scheduler = BackgroundScheduler(jobstores=jobstores, executors=executors, job_defaults=job_defaults)
 scheduler.start()
 
-# ================= Flask Web Server (Webhook) =================
+# ================= Flask Web Server =================
 app = Flask(__name__)
 
-# 1. 首页 (健康检查)
 @app.route('/', methods=['GET'])
 def index():
     return "Bot is running with Neon Database!"
 
-# 2. Webhook 路由
+# ✅ 修正后的 Webhook 路由
 @app.route('/webhook', methods=['POST'])
 async def webhook_handler():
-    update = Update.de_json(await request.get_json(force=True), application.bot)
+    # 错误修复：移除了 request.get_json() 前面的 await
+    # Flask 的 get_json 是同步的，不需要 await
+    json_data = request.get_json(force=True)
+    
+    update = Update.de_json(json_data, application.bot)
     await application.process_update(update)
     return "ok"
 
-# ================= 预警任务函数 (独立静态函数) =================
+# ================= 预警任务函数 =================
 def send_alert_job(chat_id, text):
-    """
-    这个函数由 APScheduler 从数据库读取并触发。
-    """
     temp_bot = Bot(token=TOKEN)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -93,16 +88,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     original_msg_id = msg.reply_to_message.message_id
-    # 使用 original_msg_id 作为数据库任务 ID
     job_id = str(original_msg_id) 
 
     matched_signature = next((sig for sig in WAIT_SIGNATURES if sig in msg.text), None)
 
-    # --- 逻辑 A: 开启监控 (写入 Neon) ---
+    # --- 逻辑 A: 开启监控 ---
     if matched_signature:
         original_user = msg.reply_to_message.from_user.first_name if msg.reply_to_message.from_user else "用户"
         
-        # 链接逻辑
         if str(CS_GROUP_ID).startswith('-100'):
             positive_chat_id = str(CS_GROUP_ID)[4:] 
         else:
@@ -111,19 +104,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         current_timeout_display = f"{TIMEOUT_SECONDS // 60} 分钟"
         alert_text = (
-            f"🚨 **稍等超时预警 ({current_timeout_display})**\n\n"
+            f"🚨 **客服超时预警 ({current_timeout_display})**\n\n"
             f"👤 客户: {original_user}\n"
-            f"🔑 快捷: `{matched_signature}`\n"
-            f"⚠️ 状态: 回复稍等后，超过 {current_timeout_display} 未进一步回复。\n\n"
+            f"🔑 触发签名: `{matched_signature}`\n"
+            f"⚠️ 状态: 客服回复稍等后，超过 {current_timeout_display} 未进一步回复。\n\n"
             f"🔗 [点击跳转处理]({msg_link})"
         )
 
         print(f"📥 写入数据库: ID {job_id}")
 
-        # 计算触发时间
         run_time = datetime.now() + timedelta(seconds=TIMEOUT_SECONDS)
         
-        # 添加任务到数据库
         scheduler.add_job(
             send_alert_job,
             'date',
@@ -136,8 +127,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(0.1)
         return
 
-    # --- 逻辑 B: 取消监控 (从 Neon 删除) ---
-    # 只要是回复了该消息，尝试移除任务
+    # --- 逻辑 B: 取消监控 ---
     try:
         if scheduler.get_job(job_id):
             scheduler.remove_job(job_id)
@@ -147,18 +137,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await asyncio.sleep(0.1)
 
-# ================= 启动逻辑 (全局初始化) =================
-# ✅ 这里修复了 NameError 问题
-# 将 Application 的构建移到了 if __name__ == '__main__': 之外
-# 这样 Gunicorn 导入文件时就能看到 application 变量
-
+# ================= 启动逻辑 =================
 request_config = HTTPXRequest(read_timeout=20.0, connect_timeout=20.0, http_version="1.1")
 application = Application.builder().token(TOKEN).request(request_config).build()
-
-# 注册 Handler
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.REPLY, handle_message))
 
 if __name__ == '__main__':
-    # 本地测试用
     port = int(os.environ.get('PORT', 8080))
     print("Run with 'gunicorn main:app'")
