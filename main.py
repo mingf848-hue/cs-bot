@@ -79,21 +79,19 @@ def sync_cache_from_db():
                 count += 1
         print(f"✅ 同步完成！内存中现有 {count} 个活跃任务。")
     except Exception as e:
-        print(f"⚠️ 缓存同步出错 (可能是首次启动数据库为空): {e}")
+        print(f"⚠️ 缓存同步跳过: {e}")
 
-# ✅ 新增：发送启动通知函数
+# 发送启动通知
 def send_startup_notification():
     print("🚀 发送启动通知...")
     temp_bot = Bot(token=TOKEN)
-    # 因为这是在主线程启动时运行，我们需要创建一个临时的事件循环
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
         current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        
-        # 统计一下现在的任务数，放在通知里
         job_count = len(JOB_CACHE)
         
+        # ✅ 修改点：去掉了“(防撞车版)”备注
         alert_text = (
             f"♻️ **机器人已重启 (System Restart)**\n\n"
             f"📅 时间: `{current_time}`\n"
@@ -112,11 +110,12 @@ def send_startup_notification():
     finally:
         loop.close()
 
-# 启动调度器
+def heartbeat():
+    pass
+
+scheduler.add_job(heartbeat, 'interval', seconds=10, id='heartbeat_job', replace_existing=True)
 scheduler.start()
-# 同步缓存
 sync_cache_from_db()
-# ✅ 调用启动通知 (每次 Render 重启都会执行这里)
 send_startup_notification()
 
 # ================= Flask Web Server =================
@@ -124,7 +123,7 @@ app = Flask(__name__)
 
 @app.route('/', methods=['GET'])
 def index():
-    return f"Bot is running (Startup Alert Enabled). Jobs: {len(JOB_CACHE)}"
+    return f"Bot is running. Jobs: {len(JOB_CACHE)}"
 
 @app.route('/debug', methods=['GET'])
 def debug_jobs():
@@ -183,19 +182,15 @@ def send_alert_job(chat_id, text, agent_id, agent_name, job_id_for_cleanup=None)
     
     if job_id_for_cleanup and job_id_for_cleanup in JOB_CACHE:
         del JOB_CACHE[job_id_for_cleanup]
-        print(f"🧹 任务完成，已从缓存清理: {job_id_for_cleanup}")
 
-# ================= 辅助函数：重试读取 =================
 def get_job_with_retry(job_id, max_retries=3):
     for i in range(max_retries):
         try:
             return scheduler.get_job(job_id)
-        except Exception as e:
-            print(f"⚠️ 读取数据库失败 (尝试 {i+1}): {e}")
+        except Exception:
             time.sleep(0.5)
     return None
 
-# ================= 追问提醒函数 =================
 async def send_chase_alert(context, agent_id, agent_name, original_msg_id, chase_text):
     if str(CS_GROUP_ID).startswith('-100'):
         positive_chat_id = str(CS_GROUP_ID)[4:] 
@@ -209,7 +204,7 @@ async def send_chase_alert(context, agent_id, agent_name, original_msg_id, chase
 
     alert_text = (
         f"🔔 **客户追问提醒**\n\n"
-        f"👤 回复人: {agent_mention}\n"
+        f"👤 客服: {agent_mention}\n"
         f"💬 追问: `{safe_chase_text}`\n"
         f"⚠️ 状态: 客户正在催促，请尽快回复！\n\n"
         f"🔗 [点击跳转回复]({msg_link})"
@@ -231,14 +226,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     matched_signature = next((sig for sig in WAIT_SIGNATURES if sig in msg.text), None)
 
-    # --- 逻辑 A: 开启监控 ---
+    # --- 逻辑 A: 开启监控 (防撞车) ---
     if matched_signature:
+        # ✅ 防撞车逻辑：如果已经有人接了，直接忽略后续的“稍等”
+        if job_id in JOB_CACHE:
+            first_agent = JOB_CACHE[job_id]['agent_name']
+            print(f"🛡️ [防撞车] 忽略 {msg.from_user.first_name}，因为 {first_agent} 已抢单")
+            return
+        
         user = msg.from_user
         
+        # 原始消息处理
         raw_original_text = msg.reply_to_message.text if msg.reply_to_message.text else "[非文本消息]"
         safe_original_text = raw_original_text.replace('`', "'")
         if len(safe_original_text) > 50: safe_original_text = safe_original_text[:50] + "..."
         
+        # 艾特格式
         if user.username:
             agent_mention = f"@{user.username.replace('_', '\\_')}"
         else:
@@ -262,15 +265,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔗 [点击跳转处理]({msg_link})"
         )
 
-        print(f"📥 [新任务] ID: {job_id}")
+        print(f"📥 [新任务] ID: {job_id} | 回复人: {user.first_name}")
 
         run_time = datetime.now(timezone.utc) + timedelta(seconds=TIMEOUT_SECONDS)
         
+        # 更新内存
         JOB_CACHE[job_id] = {
             'agent_id': user.id,
             'agent_name': user.first_name
         }
 
+        # 写入数据库
         try:
             scheduler.add_job(
                 send_alert_job, 'date', run_date=run_time, id=job_id, replace_existing=True,
@@ -291,14 +296,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         original_sender_id = msg.reply_to_message.from_user.id
         current_sender_id = msg.from_user.id
         
+        # 情况 1: 客户追问
         if current_sender_id == original_sender_id:
             print(f"🔔 [内存命中] 客户追问 ID: {job_id}")
             await send_chase_alert(context, cache_data['agent_id'], cache_data['agent_name'], original_msg_id, msg.text)
             
+        # 情况 2: 客服回复
         else:
             print(f"🗑️ [内存命中] 客服回复，清理 ID: {job_id}")
             del JOB_CACHE[job_id]
             try:
+                get_job_with_retry(job_id)
                 scheduler.remove_job(job_id)
             except Exception:
                 pass 
