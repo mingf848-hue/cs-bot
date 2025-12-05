@@ -8,7 +8,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.executors.pool import ThreadPoolExecutor
 from datetime import datetime, timedelta
-# 补全引用
 from telegram.request import HTTPXRequest 
 
 # ================= 配置区域 =================
@@ -16,7 +15,7 @@ TOKEN = '8276151101:AAFXQ03i6pyEqJCX2wOnbYoCATMTVIbowGQ'
 CS_GROUP_ID = -1003400471795     
 ALERT_GROUP_ID = -5093247908  
 CS_GROUP_USERNAME = 'adsgsh' 
-TIMEOUT_SECONDS = 60    # 正式模式 15 分钟
+TIMEOUT_SECONDS = 60    # 测试模式 60秒 (测试完记得改回 15*60)
 
 # 触发关键词
 WAIT_SIGNATURES = [
@@ -37,9 +36,12 @@ jobstores = {
 executors = {
     'default': ThreadPoolExecutor(20)
 }
+
+# ✅ 关键修改：增加 misfire_grace_time
 job_defaults = {
     'coalesce': False,
-    'max_instances': 3
+    'max_instances': 3,
+    'misfire_grace_time': 3600 # 允许任务延迟 1 小时执行 (防止重启期间漏掉任务)
 }
 
 scheduler = BackgroundScheduler(jobstores=jobstores, executors=executors, job_defaults=job_defaults)
@@ -50,19 +52,16 @@ app = Flask(__name__)
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Bot is running with Neon Database!"
+    return "Bot is running with Database & Grace Time!"
 
-# ✅ 修正后的 Webhook 路由：增加手动初始化
 @app.route('/webhook', methods=['POST'])
 async def webhook_handler():
-    # 1. 检查 Application 是否已初始化，如果没有，手动初始化
-    if not application._initialized:
+    try:
         await application.initialize()
+    except Exception as e:
+        print(f"⚠️ Init warning: {e}")
 
-    # 2. 获取 JSON 数据 (同步)
     json_data = request.get_json(force=True)
-    
-    # 3. 处理更新
     update = Update.de_json(json_data, application.bot)
     await application.process_update(update)
     return "ok"
@@ -107,6 +106,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg_link = f"https://t.me/c/{positive_chat_id}/{original_msg_id}"
 
         current_timeout_display = f"{TIMEOUT_SECONDS // 60} 分钟"
+        if TIMEOUT_SECONDS == 60:
+             current_timeout_display = "60 秒"
+
         alert_text = (
             f"🚨 **客服超时预警 ({current_timeout_display})**\n\n"
             f"👤 客户: {original_user}\n"
