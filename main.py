@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import asyncio
+import time 
 from flask import Flask, request
 from telegram import Update, Bot
 from telegram.ext import Application, MessageHandler, ContextTypes, filters
@@ -11,6 +12,7 @@ from apscheduler.executors.pool import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone 
 from telegram.request import HTTPXRequest 
 from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
 
 # ================= 配置区域 =================
 TOKEN = '8276151101:AAFXQ03i6pyEqJCX2wOnbYoCATMTVIbowGQ'
@@ -33,7 +35,6 @@ logging.basicConfig(
     level=logging.INFO,
     stream=sys.stdout 
 )
-# 关闭详细 Debug，因为我们现在有了更高效的缓存机制，不需要看数据库日志了
 logging.getLogger('apscheduler').setLevel(logging.WARNING)
 
 # ================= 数据库连接设置 =================
@@ -60,41 +61,96 @@ scheduler = BackgroundScheduler(
     timezone=timezone.utc 
 )
 
-# ✅ 全局内存缓存：{ 'job_id': { 'agent_id': 123, 'agent_name': 'Tom' } }
-# 这就是机器人的“短期记忆”，查它比查数据库快一万倍
+# 内存缓存
 JOB_CACHE = {}
 
 def sync_cache_from_db():
-    """启动时，把数据库里的任务同步到内存缓存里"""
+    """启动时同步任务"""
     print("🔄 正在从数据库同步任务到内存缓存...")
-    jobs = scheduler.get_jobs()
-    count = 0
-    for job in jobs:
-        # job.args 结构: [chat_id, text, agent_id, agent_name]
-        if job.args and len(job.args) >= 4:
-            JOB_CACHE[job.id] = {
-                'agent_id': job.args[2],
-                'agent_name': job.args[3]
-            }
-            count += 1
-    print(f"✅ 同步完成！内存中现有 {count} 个活跃任务。")
+    try:
+        jobs = scheduler.get_jobs()
+        count = 0
+        for job in jobs:
+            if job.args and len(job.args) >= 4:
+                JOB_CACHE[job.id] = {
+                    'agent_id': job.args[2],
+                    'agent_name': job.args[3]
+                }
+                count += 1
+        print(f"✅ 同步完成！内存中现有 {count} 个活跃任务。")
+    except Exception as e:
+        print(f"⚠️ 缓存同步出错 (可能是首次启动数据库为空): {e}")
+
+# ✅ 新增：发送启动通知函数
+def send_startup_notification():
+    print("🚀 发送启动通知...")
+    temp_bot = Bot(token=TOKEN)
+    # 因为这是在主线程启动时运行，我们需要创建一个临时的事件循环
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        
+        # 统计一下现在的任务数，放在通知里
+        job_count = len(JOB_CACHE)
+        
+        alert_text = (
+            f"♻️ **机器人已重启 (System Restart)**\n\n"
+            f"📅 时间: `{current_time}`\n"
+            f"📊 活跃监控任务: {job_count} 个\n"
+            f"✅ 状态: 服务已恢复在线，监控继续。"
+        )
+        
+        loop.run_until_complete(temp_bot.send_message(
+            chat_id=ALERT_GROUP_ID,
+            text=alert_text,
+            parse_mode='Markdown'
+        ))
+        print("✅ 启动通知发送成功")
+    except Exception as e:
+        print(f"❌ 启动通知发送失败: {e}")
+    finally:
+        loop.close()
 
 # 启动调度器
 scheduler.start()
-# 启动后立刻同步一次缓存
+# 同步缓存
 sync_cache_from_db()
+# ✅ 调用启动通知 (每次 Render 重启都会执行这里)
+send_startup_notification()
 
 # ================= Flask Web Server =================
 app = Flask(__name__)
 
 @app.route('/', methods=['GET'])
 def index():
-    return f"Bot is running with RAM Cache! (Active Jobs: {len(JOB_CACHE)})"
+    return f"Bot is running (Startup Alert Enabled). Jobs: {len(JOB_CACHE)}"
 
 @app.route('/debug', methods=['GET'])
 def debug_jobs():
-    # 直接读缓存，不读数据库，飞快
-    return f"<h1>内存缓存监控</h1><p>当前活跃任务数: {len(JOB_CACHE)}</p><p>{JOB_CACHE}</p>"
+    try:
+        jobs = scheduler.get_jobs()
+        job_list = []
+        current_time = datetime.now(timezone.utc)
+        for job in jobs:
+            time_diff = "未知"
+            if job.next_run_time:
+                diff = job.next_run_time - current_time
+                time_diff = f"{diff.total_seconds():.1f} 秒后"
+            
+            args_info = ""
+            if job.args and len(job.args) > 1:
+                try:
+                    content = job.args[1]
+                    if "👤 回复人:" in content:
+                        agent_part = content.split("👤 回复人:")[1].split("\n")[0].strip()
+                        args_info = f" (回复人: {agent_part})"
+                except:
+                    pass
+            job_list.append(f"<li><strong>ID:</strong> {job.id}{args_info} <br> <strong>下次运行:</strong> {job.next_run_time} <br> <strong>倒计时:</strong> {time_diff}</li>")
+        return f"<h1>任务监控面板</h1><p>当前时间: {current_time}</p><p>任务数: {len(jobs)}</p><hr><ul>{''.join(job_list)}</ul>"
+    except Exception as e:
+        return f"<h1>数据库错误</h1><p>{str(e)}</p>"
 
 @app.route('/webhook', methods=['POST'])
 async def webhook_handler():
@@ -109,7 +165,6 @@ async def webhook_handler():
 
 # ================= 预警任务函数 =================
 def send_alert_job(chat_id, text, agent_id, agent_name, job_id_for_cleanup=None):
-    # 发送预警
     temp_bot = Bot(token=TOKEN)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -120,16 +175,25 @@ def send_alert_job(chat_id, text, agent_id, agent_name, job_id_for_cleanup=None)
             parse_mode='Markdown',
             disable_web_page_preview=True
         ))
-        print("✅ 预警发送成功")
+        print("✅ 预警消息已成功发送")
     except Exception as e:
         print(f"❌ 预警发送失败: {e}")
     finally:
         loop.close()
     
-    # 任务执行完了，清理内存缓存 (虽然 APScheduler 会删数据库，我们要手动删内存)
     if job_id_for_cleanup and job_id_for_cleanup in JOB_CACHE:
         del JOB_CACHE[job_id_for_cleanup]
         print(f"🧹 任务完成，已从缓存清理: {job_id_for_cleanup}")
+
+# ================= 辅助函数：重试读取 =================
+def get_job_with_retry(job_id, max_retries=3):
+    for i in range(max_retries):
+        try:
+            return scheduler.get_job(job_id)
+        except Exception as e:
+            print(f"⚠️ 读取数据库失败 (尝试 {i+1}): {e}")
+            time.sleep(0.5)
+    return None
 
 # ================= 追问提醒函数 =================
 async def send_chase_alert(context, agent_id, agent_name, original_msg_id, chase_text):
@@ -145,7 +209,7 @@ async def send_chase_alert(context, agent_id, agent_name, original_msg_id, chase
 
     alert_text = (
         f"🔔 **客户追问提醒**\n\n"
-        f"👤 客服: {agent_mention}\n"
+        f"👤 回复人: {agent_mention}\n"
         f"💬 追问: `{safe_chase_text}`\n"
         f"⚠️ 状态: 客户正在催促，请尽快回复！\n\n"
         f"🔗 [点击跳转回复]({msg_link})"
@@ -167,7 +231,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     matched_signature = next((sig for sig in WAIT_SIGNATURES if sig in msg.text), None)
 
-    # --- 逻辑 A: 开启监控 (写 DB + 写 Cache) ---
+    # --- 逻辑 A: 开启监控 ---
     if matched_signature:
         user = msg.from_user
         
@@ -202,50 +266,42 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         run_time = datetime.now(timezone.utc) + timedelta(seconds=TIMEOUT_SECONDS)
         
-        # 1. 存入内存缓存 (极速)
         JOB_CACHE[job_id] = {
             'agent_id': user.id,
             'agent_name': user.first_name
         }
 
-        # 2. 存入数据库 (持久化)
         try:
             scheduler.add_job(
                 send_alert_job, 'date', run_date=run_time, id=job_id, replace_existing=True,
-                # 多传一个 job_id 参数，方便回调里清理缓存
                 args=[ALERT_GROUP_ID, alert_text, user.id, user.first_name, job_id], 
                 misfire_grace_time=3600 
             )
+            print(f"💾 [已存入] 计划执行(UTC): {run_time}")
         except Exception as e:
             print(f"❌ DB写入失败: {e}")
         
         await asyncio.sleep(0.1)
         return
 
-    # --- 逻辑 B: 检测后续回复 (只读 Cache，不读 DB) ---
-    # ✅ 核心优化：直接查内存字典，不需要 await，不需要 IO，不需要 SSL，纳秒级响应
+    # --- 逻辑 B: 检测后续回复 ---
     if job_id in JOB_CACHE:
         cache_data = JOB_CACHE[job_id]
         
         original_sender_id = msg.reply_to_message.from_user.id
         current_sender_id = msg.from_user.id
         
-        # 情况 1: 客户追问 (无需查库，极速响应)
         if current_sender_id == original_sender_id:
             print(f"🔔 [内存命中] 客户追问 ID: {job_id}")
-            # 从缓存直接拿数据
             await send_chase_alert(context, cache_data['agent_id'], cache_data['agent_name'], original_msg_id, msg.text)
             
-        # 情况 2: 客服回复 (需要操作 DB 删除任务)
         else:
             print(f"🗑️ [内存命中] 客服回复，清理 ID: {job_id}")
-            # 1. 删缓存
             del JOB_CACHE[job_id]
-            # 2. 删数据库 (异步操作，即便失败也不影响本次响应)
             try:
                 scheduler.remove_job(job_id)
             except Exception:
-                pass # 任务可能刚好执行完，忽略错误
+                pass 
 
     await asyncio.sleep(0.1)
 
