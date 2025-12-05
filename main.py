@@ -17,7 +17,7 @@ TOKEN = '8276151101:AAFXQ03i6pyEqJCX2wOnbYoCATMTVIbowGQ'
 CS_GROUP_ID = -1003400471795     
 ALERT_GROUP_ID = -5093247908  
 CS_GROUP_USERNAME = 'adsgsh' 
-TIMEOUT_SECONDS = 15 * 60    # 正式模式 15 分钟
+TIMEOUT_SECONDS = 60    # 正式模式 15 分钟
 
 # 触发关键词
 WAIT_SIGNATURES = [
@@ -70,7 +70,7 @@ app = Flask(__name__)
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Bot is running (Auto-Mention Agent)"
+    return "Bot is running (Original Message Preview)"
 
 @app.route('/debug', methods=['GET'])
 def debug_jobs():
@@ -147,10 +147,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 获取当前发消息的回复人对象
         user = msg.from_user
         
-        # ✅ 关键修改：生成“艾特”格式
+        # ✅ 获取原始消息内容 (客户发的内容)
+        raw_original_text = msg.reply_to_message.text if msg.reply_to_message.text else "[非文本消息]"
+        # 简单清洗：防止反引号破坏 Markdown 格式，并限制长度防止刷屏
+        safe_original_text = raw_original_text.replace('`', "'")
+        if len(safe_original_text) > 50:
+            safe_original_text = safe_original_text[:50] + "..."
+        
+        # 生成“艾特”格式
         if user.username:
-            # 如果有用户名，使用 @username (最显眼)
-            # 注意：Markdown 中下划线需要转义，但用户名通常不需要，直接用即可
+            # Markdown 中下划线需要转义，但用户名通常不需要，直接用即可
             agent_mention = f"@{user.username}"
         else:
             # 如果没有用户名，使用 [名字](tg://user?id=123) 进行强行艾特
@@ -166,9 +172,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_timeout_display = f"{TIMEOUT_SECONDS // 60} 分钟"
         if TIMEOUT_SECONDS == 60: current_timeout_display = "60 秒"
 
-        # ✅ 修改文案，嵌入 agent_mention
+        # ✅ 修改文案，在最上面增加原始消息
         alert_text = (
-            f"🚨 **回复人超时预警 ({current_timeout_display})**\n\n"
+            f"🚨 **稍等超时预警 ({current_timeout_display})**\n"
+            f"📩 原始消息: `{safe_original_text}`\n\n"
             f"👤 回复人: {agent_mention}\n"
             f"🔑 稍等: `{matched_signature}`\n"
             f"⚠️ 状态: 回复稍等后，超过 {current_timeout_display} 未进一步回复。\n\n"
