@@ -8,7 +8,7 @@ from telegram.ext import Application, MessageHandler, ContextTypes, filters
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.executors.pool import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone # 引入 timezone
+from datetime import datetime, timedelta, timezone 
 from telegram.request import HTTPXRequest 
 
 # ================= 配置区域 =================
@@ -26,14 +26,13 @@ WAIT_SIGNATURES = [
     "稍等-Be", "稍等-XW", "请稍等~d", "请稍等～yu"
 ]
 
-# ================= 日志设置 (开启上帝视角) =================
-# 强制输出到控制台
+# ================= 日志设置 =================
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(levelname)s - %(message)s',
     level=logging.INFO,
     stream=sys.stdout 
 )
-# ✅ 关键：开启调度器的详细日志，看看到底发生了什么
+# 开启 APScheduler 日志
 logging.getLogger('apscheduler').setLevel(logging.DEBUG)
 
 # ================= 数据库连接设置 =================
@@ -41,23 +40,34 @@ database_url = os.environ.get('DATABASE_URL', 'sqlite:///jobs.sqlite')
 if database_url and database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql://", 1)
 
-print(f"🔌 正在连接数据库: {database_url.split('@')[-1]}") # 打印部分地址验证
-
 jobstores = {
     'default': SQLAlchemyJobStore(url=database_url)
 }
+# ✅ 扩容：允许同时处理 20 个任务，防止堵塞
 executors = {
-    'default': ThreadPoolExecutor(20)
+    'default': ThreadPoolExecutor(30)
 }
-# 允许任务晚点 1 小时执行
+# ✅ 宽容：允许迟到 1 小时，且同类任务允许并发 20 个
 job_defaults = {
     'coalesce': False,
-    'max_instances': 3,
+    'max_instances': 20,
     'misfire_grace_time': 3600 
 }
 
 # 初始化调度器
-scheduler = BackgroundScheduler(jobstores=jobstores, executors=executors, job_defaults=job_defaults)
+scheduler = BackgroundScheduler(
+    jobstores=jobstores, 
+    executors=executors, 
+    job_defaults=job_defaults,
+    timezone=timezone.utc 
+)
+
+# ✅ 新增：心跳任务 (每10秒跳一次，证明自己还活着)
+def heartbeat():
+    print(f"💓 [系统存活] 调度器正在运行... 当前时间: {datetime.now(timezone.utc)}")
+
+scheduler.add_job(heartbeat, 'interval', seconds=10, id='heartbeat_job', replace_existing=True)
+
 scheduler.start()
 
 # ================= Flask Web Server =================
@@ -65,14 +75,39 @@ app = Flask(__name__)
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Bot is running with UTC Timezone & Debug Logs!"
+    return "Bot is running with Heartbeat!"
+
+# 调试页面：查看数据库里有哪些任务
+@app.route('/debug', methods=['GET'])
+def debug_jobs():
+    jobs = scheduler.get_jobs()
+    job_list = []
+    current_time = datetime.now(timezone.utc)
+    
+    for job in jobs:
+        # 计算还有多久执行
+        time_diff = "未知"
+        if job.next_run_time:
+            diff = job.next_run_time - current_time
+            time_diff = f"{diff.total_seconds()} 秒后"
+            
+        job_list.append(f"<li><strong>ID:</strong> {job.id} <br> <strong>下次运行:</strong> {job.next_run_time} <br> <strong>倒计时:</strong> {time_diff}</li>")
+    
+    html = f"""
+    <h1>任务监控面板</h1>
+    <p>当前服务器时间 (UTC): {current_time}</p>
+    <p>任务总数: {len(jobs)}</p>
+    <hr>
+    <ul>{''.join(job_list)}</ul>
+    """
+    return html
 
 @app.route('/webhook', methods=['POST'])
 async def webhook_handler():
     try:
         await application.initialize()
-    except Exception as e:
-        print(f"⚠️ Init warning: {e}")
+    except Exception:
+        pass 
 
     json_data = request.get_json(force=True)
     update = Update.de_json(json_data, application.bot)
@@ -81,7 +116,7 @@ async def webhook_handler():
 
 # ================= 预警任务函数 =================
 def send_alert_job(chat_id, text):
-    print(f"⚡️ 正在执行预警任务... (Chat ID: {chat_id})") # 调试日志
+    print(f"⚡️ 正在执行预警任务... (Chat ID: {chat_id})") 
     temp_bot = Bot(token=TOKEN)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -92,7 +127,7 @@ def send_alert_job(chat_id, text):
             parse_mode='Markdown',
             disable_web_page_preview=True
         ))
-        print("✅ 预警消息已成功发送给 Telegram API")
+        print("✅ 预警消息已成功发送")
     except Exception as e:
         print(f"❌ 预警发送失败: {e}")
     finally:
@@ -101,6 +136,7 @@ def send_alert_job(chat_id, text):
 # ================= Bot 逻辑 =================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
+    # 必须是对消息的回复
     if not msg or not msg.text or not msg.reply_to_message or msg.chat_id != CS_GROUP_ID:
         return
 
@@ -130,20 +166,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔗 [点击跳转处理]({msg_link})"
         )
 
-        print(f"📥 准备写入数据库: ID {job_id}")
+        print(f"📥 [新任务] ID: {job_id} | 签名: {matched_signature}")
 
-        # ✅ 关键修复：使用 UTC 时间，避免时区错乱
         run_time = datetime.now(timezone.utc) + timedelta(seconds=TIMEOUT_SECONDS)
         
-        scheduler.add_job(
-            send_alert_job,
-            'date',
-            run_date=run_time,
-            id=job_id,
-            replace_existing=True,
-            args=[ALERT_GROUP_ID, alert_text]
-        )
-        print(f"💾 任务已存入数据库，计划执行时间 (UTC): {run_time}")
+        try:
+            scheduler.add_job(
+                send_alert_job,
+                'date',
+                run_date=run_time,
+                id=job_id,
+                replace_existing=True,
+                args=[ALERT_GROUP_ID, alert_text],
+                misfire_grace_time=3600 
+            )
+            print(f"💾 [已存入数据库] 计划执行(UTC): {run_time}")
+        except Exception as e:
+            print(f"❌ [存入失败] 数据库错误: {e}")
         
         await asyncio.sleep(0.1)
         return
@@ -152,7 +191,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if scheduler.get_job(job_id):
             scheduler.remove_job(job_id)
-            print(f"🗑️ 任务已从数据库移除: ID {job_id}")
+            print(f"🗑️ [已取消] ID: {job_id}")
     except Exception:
         pass 
 
