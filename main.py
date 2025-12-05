@@ -10,7 +10,6 @@ from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.executors.pool import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone 
 from telegram.request import HTTPXRequest 
-# ✅ 新增引用
 from sqlalchemy import create_engine
 
 # ================= 配置区域 =================
@@ -18,7 +17,7 @@ TOKEN = '8276151101:AAFXQ03i6pyEqJCX2wOnbYoCATMTVIbowGQ'
 CS_GROUP_ID = -1003400471795     
 ALERT_GROUP_ID = -5093247908  
 CS_GROUP_USERNAME = 'adsgsh' 
-TIMEOUT_SECONDS = 60    # 测试模式 60秒
+TIMEOUT_SECONDS = 15 * 60    # 正式模式 15 分钟
 
 # 触发关键词
 WAIT_SIGNATURES = [
@@ -36,14 +35,11 @@ logging.basicConfig(
 )
 logging.getLogger('apscheduler').setLevel(logging.DEBUG)
 
-# ================= 数据库连接设置 (增强版) =================
+# ================= 数据库连接设置 =================
 database_url = os.environ.get('DATABASE_URL', 'sqlite:///jobs.sqlite')
 if database_url and database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql://", 1)
 
-# ✅ 关键修复：创建一个健壮的 SQLAlchemy Engine
-# pool_recycle=1800: 每30分钟回收一次连接，防止 SSL 超时
-# pool_pre_ping=True: 每次执行 SQL 前检查连接是否存活，死了就重连
 engine = create_engine(
     database_url,
     pool_recycle=1800,
@@ -52,18 +48,9 @@ engine = create_engine(
     max_overflow=20
 )
 
-# 使用这个增强的 engine 初始化 JobStore
-jobstores = {
-    'default': SQLAlchemyJobStore(engine=engine)
-}
-executors = {
-    'default': ThreadPoolExecutor(30)
-}
-job_defaults = {
-    'coalesce': False,
-    'max_instances': 20,
-    'misfire_grace_time': 3600 
-}
+jobstores = {'default': SQLAlchemyJobStore(engine=engine)}
+executors = {'default': ThreadPoolExecutor(30)}
+job_defaults = {'coalesce': False, 'max_instances': 20, 'misfire_grace_time': 3600}
 
 scheduler = BackgroundScheduler(
     jobstores=jobstores, 
@@ -83,7 +70,7 @@ app = Flask(__name__)
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Bot is running with Robust DB Connection!"
+    return "Bot is running (Auto-Mention Agent)"
 
 @app.route('/debug', methods=['GET'])
 def debug_jobs():
@@ -95,8 +82,21 @@ def debug_jobs():
             time_diff = "未知"
             if job.next_run_time:
                 diff = job.next_run_time - current_time
-                time_diff = f"{diff.total_seconds()} 秒后"
-            job_list.append(f"<li><strong>ID:</strong> {job.id} <br> <strong>下次运行:</strong> {job.next_run_time} <br> <strong>倒计时:</strong> {time_diff}</li>")
+                time_diff = f"{diff.total_seconds():.1f} 秒后"
+            
+            # 尝试提取任务参数中的回复人信息
+            args_info = ""
+            if job.args and len(job.args) > 1:
+                try:
+                    content = job.args[1]
+                    if "👤 回复人:" in content:
+                        # 简单的文本提取，用于调试显示
+                        agent_part = content.split("👤 回复人:")[1].split("\n")[0].strip()
+                        args_info = f" (回复人: {agent_part})"
+                except:
+                    pass
+                    
+            job_list.append(f"<li><strong>ID:</strong> {job.id}{args_info} <br> <strong>下次运行:</strong> {job.next_run_time} <br> <strong>倒计时:</strong> {time_diff}</li>")
         return f"<h1>任务监控面板</h1><p>当前时间: {current_time}</p><p>任务数: {len(jobs)}</p><hr><ul>{''.join(job_list)}</ul>"
     except Exception as e:
         return f"<h1>数据库错误</h1><p>{str(e)}</p>"
@@ -119,7 +119,12 @@ def send_alert_job(chat_id, text):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(temp_bot.send_message(chat_id=chat_id, text=text, parse_mode='Markdown', disable_web_page_preview=True))
+        loop.run_until_complete(temp_bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode='Markdown', # 必须开启 Markdown 才能支持链接形式的 @
+            disable_web_page_preview=True
+        ))
         print("✅ 预警消息已成功发送")
     except Exception as e:
         print(f"❌ 预警发送失败: {e}")
@@ -139,8 +144,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- 逻辑 A: 开启监控 ---
     if matched_signature:
-        original_user = msg.reply_to_message.from_user.first_name if msg.reply_to_message.from_user else "用户"
+        # 获取当前发消息的回复人对象
+        user = msg.from_user
         
+        # ✅ 关键修改：生成“艾特”格式
+        if user.username:
+            # 如果有用户名，使用 @username (最显眼)
+            # 注意：Markdown 中下划线需要转义，但用户名通常不需要，直接用即可
+            agent_mention = f"@{user.username}"
+        else:
+            # 如果没有用户名，使用 [名字](tg://user?id=123) 进行强行艾特
+            agent_mention = f"[{user.first_name}](tg://user?id={user.id})"
+        
+        # 生成跳转链接
         if str(CS_GROUP_ID).startswith('-100'):
             positive_chat_id = str(CS_GROUP_ID)[4:] 
         else:
@@ -150,15 +166,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_timeout_display = f"{TIMEOUT_SECONDS // 60} 分钟"
         if TIMEOUT_SECONDS == 60: current_timeout_display = "60 秒"
 
+        # ✅ 修改文案，嵌入 agent_mention
         alert_text = (
-            f"🚨 **客服超时预警 ({current_timeout_display})**\n\n"
-            f"👤 客户: {original_user}\n"
-            f"🔑 触发签名: `{matched_signature}`\n"
-            f"⚠️ 状态: 客服回复稍等后，超过 {current_timeout_display} 未进一步回复。\n\n"
+            f"🚨 **回复人超时预警 ({current_timeout_display})**\n\n"
+            f"👤 回复人: {agent_mention}\n"
+            f"🔑 稍等: `{matched_signature}`\n"
+            f"⚠️ 状态: 回复稍等后，超过 {current_timeout_display} 未进一步回复。\n\n"
             f"🔗 [点击跳转处理]({msg_link})"
         )
 
-        print(f"📥 [新任务] ID: {job_id}")
+        print(f"📥 [新任务] ID: {job_id} | 回复人: {user.first_name}")
 
         run_time = datetime.now(timezone.utc) + timedelta(seconds=TIMEOUT_SECONDS)
         
@@ -167,7 +184,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 send_alert_job, 'date', run_date=run_time, id=job_id, replace_existing=True,
                 args=[ALERT_GROUP_ID, alert_text], misfire_grace_time=3600 
             )
-            print(f"💾 [成功] 任务已存入! 计划执行(UTC): {run_time}")
+            print(f"💾 [已存入] 计划执行(UTC): {run_time}")
         except Exception as e:
             print(f"❌ [失败] 数据库写入错误: {e}")
         
