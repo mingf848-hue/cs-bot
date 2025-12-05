@@ -2,20 +2,21 @@ import logging
 import os
 import asyncio
 from flask import Flask, request
-from telegram import Update
-from telegram.request import HTTPXRequest
+from telegram import Update, Bot
 from telegram.ext import Application, MessageHandler, ContextTypes, filters
-from telegram.constants import ChatType
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+from apscheduler.executors.pool import ThreadPoolExecutor
+from datetime import datetime, timedelta
 
-# ================= 你的配置 (保持不变) =================
+# ================= 配置区域 =================
 TOKEN = '8276151101:AAFXQ03i6pyEqJCX2wOnbYoCATMTVIbowGQ'
 CS_GROUP_ID = -1003400471795     
 ALERT_GROUP_ID = -5093247908  
+CS_GROUP_USERNAME = 'adsgsh' 
+TIMEOUT_SECONDS = 15 * 60    # 正式模式 15 分钟
 
-# ✅ 正式模式：15 分钟
-TIMEOUT_SECONDS = 60 
-
-# 触发关键词列表
+# 触发关键词
 WAIT_SIGNATURES = [
     "稍等-an", "请稍等elk", "稍等-jl", "请稍等-~cc", "请稍等～aja",
     "请稍等-HED", "请稍等-xxxx", "请稍等-MAD", "请稍等 - AB", "请稍等ART",
@@ -23,120 +24,136 @@ WAIT_SIGNATURES = [
     "稍等-Be", "稍等-XW", "请稍等~d", "请稍等～yu"
 ]
 
-# ================= 核心组件和初始化 =================
-# 1. 初始化 Flask App (用于接收 Webhook)
+# ================= 数据库连接设置 =================
+# 获取 Render 环境变量中的数据库地址
+database_url = os.environ.get('DATABASE_URL', 'sqlite:///jobs.sqlite')
+
+# 兼容性处理：有些库返回 postgres://，但 SQLAlchemy 需要 postgresql://
+if database_url and database_url.startswith("postgres://"):
+    database_url = database_url.replace("postgres://", "postgresql://", 1)
+
+# 配置 APScheduler 使用 Neon 数据库
+jobstores = {
+    'default': SQLAlchemyJobStore(url=database_url)
+}
+executors = {
+    'default': ThreadPoolExecutor(20)
+}
+job_defaults = {
+    'coalesce': False,
+    'max_instances': 3
+}
+
+# 初始化调度器
+scheduler = BackgroundScheduler(jobstores=jobstores, executors=executors, job_defaults=job_defaults)
+scheduler.start()
+
+# ================= Flask Web Server (Webhook) =================
 app = Flask(__name__)
-logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
-logging.getLogger("httpx").setLevel(logging.WARNING)
 
-# 2. 初始化 Application (将 Bot 逻辑与 Webhook 连接)
-REQUEST_CONFIG = HTTPXRequest(read_timeout=20.0, connect_timeout=20.0, http_version="1.1")
-application = Application.builder().token(TOKEN).request(REQUEST_CONFIG).build()
+# 1. 首页 (健康检查)
+@app.route('/', methods=['GET'])
+def index():
+    return "Bot is running with Neon Database!"
 
-# 3. Bot 业务逻辑 (与 Polling 模式一致，但无需修改)
-pending_jobs = {}
+# 2. Webhook 路由
+@app.route('/webhook', methods=['POST'])
+async def webhook_handler():
+    update = Update.de_json(await request.get_json(force=True), application.bot)
+    await application.process_update(update)
+    return "ok"
 
-async def get_cached_group_username(context: ContextTypes.DEFAULT_TYPE):
-    # (Link logic remains here, fetches username or uses numeric ID)
-    if context.bot_data.get('cs_group_username'): return context.bot_data['cs_group_username']
-
+# ================= 预警任务函数 (独立静态函数) =================
+def send_alert_job(chat_id, text):
+    """
+    这个函数由 APScheduler 从数据库读取并触发。
+    """
+    temp_bot = Bot(token=TOKEN)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        chat = await context.bot.get_chat(chat_id=CS_GROUP_ID)
-        if chat.username:
-            username = chat.username
-            context.bot_data['cs_group_username'] = username
-            return username
-        else:
-            context.bot_data['cs_group_username'] = 'numeric_id'
-            return 'numeric_id'
-    except Exception:
-        return 'numeric_id'
-
-async def alert_callback(context: ContextTypes.DEFAULT_TYPE):
-    job_data = context.job.data
-    original_msg_id = job_data['original_msg_id']
-    trigger_msg_link = job_data['trigger_msg_link']
-    original_user = job_data['original_user']
-    trigger_keyword = job_data['trigger_keyword']
-
-    if original_msg_id in pending_jobs: del pending_jobs[original_msg_id]
-
-    current_timeout_display = f"{TIMEOUT_SECONDS // 60} 分钟"
-
-    alert_text = (
-        f"🚨 **客服超时预警 ({current_timeout_display})**\n\n"
-        f"👤 客户: {original_user}\n"
-        f"🔑 触发签名: `{trigger_keyword}`\n"
-        f"⚠️ 状态: 客服回复稍等后，超过 {current_timeout_display} 未进一步回复。\n\n"
-        f"🔗 [点击跳转处理]({trigger_msg_link})"
-    )
-    
-    try:
-        await context.bot.send_message(
-            chat_id=ALERT_GROUP_ID, text=alert_text, parse_mode='Markdown', disable_web_page_preview=True
-        )
+        loop.run_until_complete(temp_bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode='Markdown',
+            disable_web_page_preview=True
+        ))
+        print("✅ 预警已触发 (来源: Neon数据库)")
     except Exception as e:
-        print(f"❌ 发送失败！Telegram Error: {e}")
+        print(f"❌ 预警发送失败: {e}")
+    finally:
+        loop.close()
 
+# ================= Bot 逻辑 =================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg or not msg.text or not msg.reply_to_message or msg.chat_id != CS_GROUP_ID:
         return
 
     original_msg_id = msg.reply_to_message.message_id
+    # 使用 original_msg_id 作为数据库任务 ID
+    job_id = str(original_msg_id) 
+
     matched_signature = next((sig for sig in WAIT_SIGNATURES if sig in msg.text), None)
 
+    # --- 逻辑 A: 开启监控 (写入 Neon) ---
     if matched_signature:
         original_user = msg.reply_to_message.from_user.first_name if msg.reply_to_message.from_user else "用户"
         
-        # 链接生成逻辑
-        link_type = await get_cached_group_username(context)
-        if link_type == 'numeric_id':
-            positive_chat_id = str(CS_GROUP_ID)[4:] if str(CS_GROUP_ID).startswith('-100') else str(abs(CS_GROUP_ID))
-            msg_link = f"https://t.me/c/{positive_chat_id}/{original_msg_id}"
+        # 链接逻辑
+        if str(CS_GROUP_ID).startswith('-100'):
+            positive_chat_id = str(CS_GROUP_ID)[4:] 
         else:
-            msg_link = f"https://t.me/{link_type}/{original_msg_id}"
+            positive_chat_id = str(abs(CS_GROUP_ID))
+        msg_link = f"https://t.me/c/{positive_chat_id}/{original_msg_id}"
 
-        if original_msg_id in pending_jobs: pending_jobs[original_msg_id].schedule_removal()
-
-        new_job = context.job_queue.run_once(
-            alert_callback, TIMEOUT_SECONDS, 
-            data={'original_msg_id': original_msg_id, 'trigger_msg_link': msg_link, 'original_user': original_user, 'trigger_keyword': matched_signature}
+        current_timeout_display = f"{TIMEOUT_SECONDS // 60} 分钟"
+        alert_text = (
+            f"🚨 **客服超时预警 ({current_timeout_display})**\n\n"
+            f"👤 客户: {original_user}\n"
+            f"🔑 触发签名: `{matched_signature}`\n"
+            f"⚠️ 状态: 客服回复稍等后，超过 {current_timeout_display} 未进一步回复。\n\n"
+            f"🔗 [点击跳转处理]({msg_link})"
         )
-        pending_jobs[original_msg_id] = new_job
-        await asyncio.sleep(0.1) 
+
+        print(f"📥 写入数据库: ID {job_id}")
+
+        # 计算触发时间
+        run_time = datetime.now() + timedelta(seconds=TIMEOUT_SECONDS)
+        
+        # 添加任务到数据库
+        scheduler.add_job(
+            send_alert_job,
+            'date',
+            run_date=run_time,
+            id=job_id,
+            replace_existing=True,
+            args=[ALERT_GROUP_ID, alert_text]
+        )
+        
+        await asyncio.sleep(0.1)
         return
 
-    if original_msg_id in pending_jobs:
-        job = pending_jobs[original_msg_id]
-        job.schedule_removal()
-        del pending_jobs[original_msg_id]
-        await asyncio.sleep(0.1) 
+    # --- 逻辑 B: 取消监控 (从 Neon 删除) ---
+    # 只要是回复了该消息，尝试移除任务
+    try:
+        if scheduler.get_job(job_id):
+            scheduler.remove_job(job_id)
+            print(f"🗑️ 任务已移除: ID {job_id}")
+    except Exception:
+        pass 
 
-# 4. 注册 Handler
+    await asyncio.sleep(0.1)
+
+# ================= 启动逻辑 =================
+# 1. 初始化 Application
+request_config = HTTPXRequest(read_timeout=20.0, connect_timeout=20.0, http_version="1.1")
+application = Application.builder().token(TOKEN).request(request_config).build()
+# 2. 注册 Handler
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.REPLY, handle_message))
 
-# 5. Webhook 路由 (接收 Telegram 推送的消息)
-@app.route('/webhook', methods=['POST'])
-async def webhook_handler():
-    # 将 Telegram 发送的 JSON 转换成 Update 对象
-    update = Update.de_json(await request.get_json(force=True), application.bot)
-    
-    # 将 Update 对象交给 Application 处理
-    await application.process_update(update)
-    
-    # 必须立刻返回 200 OK，告诉 Telegram 消息已收到
-    return "ok"
-
-# 6. 首页路由 (Render 健康检查)
-@app.route('/', methods=['GET'])
-def index():
-    return "Bot Webhook Server is running."
-
-# 7. 主程序启动 (由 Gunicorn 负责)
 if __name__ == '__main__':
-    # 仅在本地测试时使用 Flask 自带的 run()
+    # 本地测试用，Render 上由 Gunicorn 启动
     port = int(os.environ.get('PORT', 8080))
-    # Render 上不需要这个，由 Gunicorn 启动
-    # app.run(host='0.0.0.0', port=port) 
-    print("WARNING: Run with 'gunicorn main:app' on Render.")
+    # app.run(host='0.0.0.0', port=port)
+    print("Run with 'gunicorn main:app'")
