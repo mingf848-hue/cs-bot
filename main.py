@@ -8,6 +8,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.executors.pool import ThreadPoolExecutor
 from datetime import datetime, timedelta
+# ✅ 补全缺失的引用：HTTPXRequest
+from telegram.request import HTTPXRequest 
 
 # ================= 配置区域 =================
 TOKEN = '8276151101:AAFXQ03i6pyEqJCX2wOnbYoCATMTVIbowGQ'
@@ -109,10 +111,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         current_timeout_display = f"{TIMEOUT_SECONDS // 60} 分钟"
         alert_text = (
-            f"🚨 **客服超时预警 ({current_timeout_display})**\n\n"
+            f"🚨 **稍等超时预警 ({current_timeout_display})**\n\n"
             f"👤 客户: {original_user}\n"
-            f"🔑 触发签名: `{matched_signature}`\n"
-            f"⚠️ 状态: 客服回复稍等后，超过 {current_timeout_display} 未进一步回复。\n\n"
+            f"🔑 快捷: `{matched_signature}`\n"
+            f"⚠️ 状态: 回复稍等后，超过 {current_timeout_display} 未进一步回复。\n\n"
             f"🔗 [点击跳转处理]({msg_link})"
         )
 
@@ -145,15 +147,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await asyncio.sleep(0.1)
 
-# ================= 启动逻辑 =================
-# 1. 初始化 Application
+# ================= 启动逻辑 (全局初始化) =================
+# ✅ 这里修复了 NameError 问题
+# 将 Application 的构建移到了 if __name__ == '__main__': 之外
+# 这样 Gunicorn 导入文件时就能看到 application 变量
+
 request_config = HTTPXRequest(read_timeout=20.0, connect_timeout=20.0, http_version="1.1")
 application = Application.builder().token(TOKEN).request(request_config).build()
-# 2. 注册 Handler
+
+# 注册 Handler
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.REPLY, handle_message))
 
 if __name__ == '__main__':
-    # 本地测试用，Render 上由 Gunicorn 启动
+    # 本地测试用
     port = int(os.environ.get('PORT', 8080))
-    # app.run(host='0.0.0.0', port=port)
     print("Run with 'gunicorn main:app'")
