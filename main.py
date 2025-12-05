@@ -52,13 +52,17 @@ app = Flask(__name__)
 def index():
     return "Bot is running with Neon Database!"
 
-# ✅ 修正后的 Webhook 路由
+# ✅ 修正后的 Webhook 路由：增加手动初始化
 @app.route('/webhook', methods=['POST'])
 async def webhook_handler():
-    # 错误修复：移除了 request.get_json() 前面的 await
-    # Flask 的 get_json 是同步的，不需要 await
+    # 1. 检查 Application 是否已初始化，如果没有，手动初始化
+    if not application._initialized:
+        await application.initialize()
+
+    # 2. 获取 JSON 数据 (同步)
     json_data = request.get_json(force=True)
     
+    # 3. 处理更新
     update = Update.de_json(json_data, application.bot)
     await application.process_update(update)
     return "ok"
