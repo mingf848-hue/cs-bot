@@ -1,6 +1,7 @@
 python-telegram-bot
-Flask
+Flask[async]
 APScheduler
 gunicorn
 psycopg2-binary
 SQLAlchemy
+asgiref
