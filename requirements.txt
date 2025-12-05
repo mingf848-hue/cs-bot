@@ -2,3 +2,5 @@ python-telegram-bot
 Flask
 APScheduler
 gunicorn
+psycopg2-binary
+SQLAlchemy
