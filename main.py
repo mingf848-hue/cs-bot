@@ -17,7 +17,7 @@ TOKEN = '8276151101:AAFXQ03i6pyEqJCX2wOnbYoCATMTVIbowGQ'
 CS_GROUP_ID = -1003400471795     
 ALERT_GROUP_ID = -5093247908  
 CS_GROUP_USERNAME = 'adsgsh' 
-TIMEOUT_SECONDS = 12 * 60    # 正式模式 15 分钟
+TIMEOUT_SECONDS = 15 * 60    # 正式模式 15 分钟
 
 # 触发关键词
 WAIT_SIGNATURES = [
@@ -70,7 +70,7 @@ app = Flask(__name__)
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Bot is running (Underscore Fix)"
+    return "Bot is running (User Chase Alert Mode)"
 
 @app.route('/debug', methods=['GET'])
 def debug_jobs():
@@ -84,16 +84,11 @@ def debug_jobs():
                 diff = job.next_run_time - current_time
                 time_diff = f"{diff.total_seconds():.1f} 秒后"
             
-            # 尝试提取任务参数中的回复人信息
+            # 提取信息
             args_info = ""
-            if job.args and len(job.args) > 1:
-                try:
-                    content = job.args[1]
-                    if "👤 回复人:" in content:
-                        agent_part = content.split("👤 回复人:")[1].split("\n")[0].strip()
-                        args_info = f" (回复人: {agent_part})"
-                except:
-                    pass
+            if job.args and len(job.args) >= 4:
+                # args: [chat_id, text, agent_id, agent_name]
+                args_info = f" (客服: {job.args[3]})"
                     
             job_list.append(f"<li><strong>ID:</strong> {job.id}{args_info} <br> <strong>下次运行:</strong> {job.next_run_time} <br> <strong>倒计时:</strong> {time_diff}</li>")
         return f"<h1>任务监控面板</h1><p>当前时间: {current_time}</p><p>任务数: {len(jobs)}</p><hr><ul>{''.join(job_list)}</ul>"
@@ -111,9 +106,10 @@ async def webhook_handler():
     await application.process_update(update)
     return "ok"
 
-# ================= 预警任务函数 =================
-def send_alert_job(chat_id, text):
-    print(f"⚡️ 正在执行预警任务... (Chat ID: {chat_id})") 
+# ================= 预警任务函数 (15分钟超时) =================
+# 注意：这里增加了 args 参数接收 agent 信息，虽然这个函数里可能暂时用不到
+def send_alert_job(chat_id, text, agent_id, agent_name):
+    print(f"⚡️ 正在执行超时预警... (客服: {agent_name})") 
     temp_bot = Bot(token=TOKEN)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -121,14 +117,52 @@ def send_alert_job(chat_id, text):
         loop.run_until_complete(temp_bot.send_message(
             chat_id=chat_id,
             text=text,
-            parse_mode='Markdown', 
+            parse_mode='Markdown',
             disable_web_page_preview=True
         ))
-        print("✅ 预警消息已成功发送")
+        print("✅ 超时预警发送成功")
     except Exception as e:
-        print(f"❌ 预警发送失败: {e}")
+        print(f"❌ 超时预警发送失败: {e}")
     finally:
         loop.close()
+
+# ================= 🆕 客户追问提醒函数 (立即执行) =================
+async def send_chase_alert(context, agent_id, agent_name, original_msg_id, chase_text):
+    """
+    当客户追问时，立即在预警群艾特客服
+    """
+    if str(CS_GROUP_ID).startswith('-100'):
+        positive_chat_id = str(CS_GROUP_ID)[4:] 
+    else:
+        positive_chat_id = str(abs(CS_GROUP_ID))
+    msg_link = f"https://t.me/c/{positive_chat_id}/{original_msg_id}"
+
+    # 生成客服的艾特链接
+    agent_mention = f"[{agent_name}](tg://user?id={agent_id})"
+    
+    # 截取客户追问内容
+    safe_chase_text = chase_text.replace('`', "'")
+    if len(safe_chase_text) > 30:
+        safe_chase_text = safe_chase_text[:30] + "..."
+
+    alert_text = (
+        f"🔔 **客户追问提醒**\n\n"
+        f"👤 客服: {agent_mention}\n"
+        f"💬 追问: `{safe_chase_text}`\n"
+        f"⚠️ 状态: 客户正在催促，请尽快回复！\n\n"
+        f"🔗 [点击跳转回复]({msg_link})"
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=ALERT_GROUP_ID,
+            text=alert_text,
+            parse_mode='Markdown',
+            disable_web_page_preview=True
+        )
+        print(f"🔔 已发送客户追问提醒给 {agent_name}")
+    except Exception as e:
+        print(f"❌ 追问提醒发送失败: {e}")
 
 # ================= Bot 逻辑 =================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -141,32 +175,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     matched_signature = next((sig for sig in WAIT_SIGNATURES if sig in msg.text), None)
 
-    # --- 逻辑 A: 开启监控 ---
+    # --- 逻辑 A: 客服回复“稍等” (开启监控) ---
     if matched_signature:
-        # 获取当前发消息的回复人对象
         user = msg.from_user
         
-        # ✅ 获取原始消息内容
+        # 1. 原始消息内容
         raw_original_text = msg.reply_to_message.text if msg.reply_to_message.text else "[非文本消息]"
-        # 简单清洗：防止反引号破坏 Markdown
         safe_original_text = raw_original_text.replace('`', "'")
-        if len(safe_original_text) > 50:
-            safe_original_text = safe_original_text[:50] + "..."
+        if len(safe_original_text) > 50: safe_original_text = safe_original_text[:50] + "..."
         
-        # ✅ 关键修改：生成“艾特”格式并转义下划线
+        # 2. 生成艾特格式
         if user.username:
-            # 1. 获取用户名
-            raw_username = user.username
-            # 2. 这里的 replace 很关键：把 _ 变成 \_
-            safe_username = raw_username.replace("_", "\\_")
-            agent_mention = f"@{safe_username}"
+            agent_mention = f"@{user.username.replace('_', '\\_')}"
         else:
-            # 如果没有用户名，使用文字链接
-            # 名字里的特殊符号也最好清洗一下，防止破坏格式
-            safe_first_name = user.first_name.replace("[", "").replace("]", "")
-            agent_mention = f"[{safe_first_name}](tg://user?id={user.id})"
+            agent_mention = f"[{user.first_name}](tg://user?id={user.id})"
         
-        # 生成跳转链接
+        # 3. 链接
         if str(CS_GROUP_ID).startswith('-100'):
             positive_chat_id = str(CS_GROUP_ID)[4:] 
         else:
@@ -180,19 +204,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📩 原始消息: `{safe_original_text}`\n\n"
             f"🚨 **稍等超时预警 ({current_timeout_display})**\n"
             f"👤 回复人: {agent_mention}\n"
-            f"🔑 快捷: `{matched_signature}`\n"
+            f"🔑 稍等: `{matched_signature}`\n"
             f"⚠️ 状态: 回复稍等后，超过 {current_timeout_display} 未进一步回复。\n\n"
             f"🔗 [点击跳转处理]({msg_link})"
         )
 
-        print(f"📥 [新任务] ID: {job_id} | 回复人: {user.first_name}")
+        print(f"📥 [新任务] ID: {job_id} | 客服: {user.first_name}")
 
         run_time = datetime.now(timezone.utc) + timedelta(seconds=TIMEOUT_SECONDS)
         
         try:
             scheduler.add_job(
                 send_alert_job, 'date', run_date=run_time, id=job_id, replace_existing=True,
-                args=[ALERT_GROUP_ID, alert_text], misfire_grace_time=3600 
+                # ✅ 关键修改：把 agent_id 和 agent_name 存入参数，方便后续提取
+                args=[ALERT_GROUP_ID, alert_text, user.id, user.first_name], 
+                misfire_grace_time=3600 
             )
             print(f"💾 [已存入] 计划执行(UTC): {run_time}")
         except Exception as e:
@@ -201,13 +227,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(0.1)
         return
 
-    # --- 逻辑 B: 取消监控 ---
+    # --- 逻辑 B: 检测后续回复 (核心修改部分) ---
     try:
-        if scheduler.get_job(job_id):
-            scheduler.remove_job(job_id)
-            print(f"🗑️ [已取消] ID: {job_id}")
-    except Exception:
-        pass 
+        # 1. 检查这个消息是否在监控列表中
+        existing_job = scheduler.get_job(job_id)
+        
+        if existing_job:
+            # 2. 判断是谁回复的
+            # 原始消息发送者 ID (客户)
+            original_sender_id = msg.reply_to_message.from_user.id
+            # 当前回复者 ID
+            current_sender_id = msg.from_user.id
+            
+            # 情况 1: 客户自己回复了 (追问) -> 触发提醒，不取消任务
+            if current_sender_id == original_sender_id:
+                print(f"🔔 [客户追问] ID: {job_id} | 客户正在催促...")
+                
+                # 从任务参数中提取客服 ID (args[2]是 agent_id, args[3]是 agent_name)
+                # 注意：数据库里的 args 是 tuple
+                agent_id = existing_job.args[2]
+                agent_name = existing_job.args[3]
+                
+                # 发送追问提醒
+                await send_chase_alert(context, agent_id, agent_name, original_msg_id, msg.text)
+                
+                # 任务继续保留，不删除！
+                
+            # 情况 2: 其他人回复了 (通常是客服) -> 任务完成，删除
+            else:
+                scheduler.remove_job(job_id)
+                print(f"🗑️ [任务完成] ID: {job_id} | 客服已回复")
+
+    except Exception as e:
+        print(f"⚠️ 处理回复逻辑出错: {e}")
 
     await asyncio.sleep(0.1)
 
