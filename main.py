@@ -1,26 +1,25 @@
 import logging
 import os
 import sys
-import asyncio
-import time 
+import time
+import requests  # ✅ 新增：用最轻量的方式发请求
 from flask import Flask, request
-from telegram import Update, Bot
+from telegram import Update
 from telegram.ext import Application, MessageHandler, ContextTypes, filters
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.executors.pool import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone 
-from telegram.request import HTTPXRequest 
+from datetime import datetime, timedelta, timezone
+from telegram.request import HTTPXRequest
 from sqlalchemy import create_engine
-from sqlalchemy.exc import OperationalError
 
 # ================= 配置区域 =================
 TOKEN = '8276151101:AAFXQ03i6pyEqJCX2wOnbYoCATMTVIbowGQ'
-CS_GROUP_ID = -1003400471795      
-ALERT_GROUP_ID = -5093247908  
-CS_GROUP_USERNAME = 'adsgsh' 
-TIMEOUT_SECONDS = 2 * 60    # 稍等超时 (15分钟)
-GHOST_TIMEOUT = 2 * 60      # 无人理睬超时 (10分钟)
+CS_GROUP_ID = -1003400471795
+ALERT_GROUP_ID = -5093247908
+CS_GROUP_USERNAME = 'adsgsh'
+TIMEOUT_SECONDS = 1 * 60    # 15分钟
+GHOST_TIMEOUT = 2 * 60      # 10分钟
 
 # 触发关键词
 WAIT_SIGNATURES = [
@@ -30,15 +29,17 @@ WAIT_SIGNATURES = [
     "稍等-Be", "稍等-XW", "请稍等~d", "请稍等～yu"
 ]
 
-# ================= 日志设置 =================
+# ================= 日志 (仅保留关键信息) =================
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     level=logging.INFO,
-    stream=sys.stdout 
+    stream=sys.stdout
 )
-logging.getLogger('apscheduler').setLevel(logging.WARNING)
+# 屏蔽第三方库的废话日志
+for lib in ['apscheduler', 'httpx', 'telegram', 'werkzeug', 'sqlalchemy']:
+    logging.getLogger(lib).setLevel(logging.WARNING)
 
-# ================= 数据库连接设置 =================
+# ================= 数据库 (最低配模式) =================
 database_url = os.environ.get('DATABASE_URL', 'sqlite:///jobs.sqlite')
 if database_url and database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql://", 1)
@@ -47,243 +48,187 @@ engine = create_engine(
     database_url,
     pool_recycle=1800,
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20
+    pool_size=1,        # ✅ 极限压缩：只允许1个连接
+    max_overflow=2      # ✅ 允许突发加2个
 )
 
 jobstores = {'default': SQLAlchemyJobStore(engine=engine)}
-executors = {'default': ThreadPoolExecutor(30)}
-
-# ✅ 修改：去掉了 'misfire_grace_time': 3600
-job_defaults = {'coalesce': False, 'max_instances': 20}
+executors = {'default': ThreadPoolExecutor(3)} # ✅ 极限压缩：只开3个线程
+job_defaults = {'coalesce': True, 'max_instances': 3}
 
 scheduler = BackgroundScheduler(
-    jobstores=jobstores, 
-    executors=executors, 
+    jobstores=jobstores,
+    executors=executors,
     job_defaults=job_defaults,
-    timezone=timezone.utc 
+    timezone=timezone.utc
 )
 
 # 内存缓存
 JOB_CACHE = {}
 
 def sync_cache_from_db():
-    print("🔄 正在从数据库同步任务...")
+    if not scheduler.running: return
     try:
         jobs = scheduler.get_jobs()
         for job in jobs:
-            if job.id.startswith('ghost_'):
-                continue
-            if job.args and len(job.args) >= 4:
-                JOB_CACHE[job.id] = {
-                    'agent_id': job.args[2],
-                    'agent_name': job.args[3]
-                }
-        print(f"✅ 同步完成！活跃SLA任务: {len(JOB_CACHE)}")
+            if not job.id.startswith('ghost_') and job.args and len(job.args) >= 4:
+                JOB_CACHE[job.id] = {'agent_id': job.args[2], 'agent_name': job.args[3]}
+        print(f"✅ 缓存同步完成，监控任务数: {len(JOB_CACHE)}")
     except Exception as e:
-        print(f"⚠️ 缓存同步跳过: {e}")
+        print(f"⚠️ 同步缓存失败: {e}")
 
-# 启动通知 (北京时间)
-def send_startup_notification():
-    temp_bot = Bot(token=TOKEN)
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+# ================= ✅ 核心优化：纯 HTTP 发送函数 =================
+# 这个函数不依赖 telegram 库，不创建大对象，内存占用极低
+def send_raw_message(chat_id, text):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True
+    }
     try:
-        beijing_time = datetime.now(timezone.utc) + timedelta(hours=8)
-        time_str = beijing_time.strftime("%Y-%m-%d %H:%M:%S")
-        alert_text = f"♻️ **机器人已重启**\n📅 时间: `{time_str}`\n✅ 状态: 服务已恢复。"
-        loop.run_until_complete(temp_bot.send_message(chat_id=ALERT_GROUP_ID, text=alert_text, parse_mode='Markdown'))
-    except: pass
-    finally: loop.close()
-
-# ================= 启动调度器 =================
-scheduler.start()
-sync_cache_from_db()
-send_startup_notification()
-
-# ================= Flask =================
-app = Flask(__name__)
-
-@app.route('/', methods=['GET'])
-def index(): return f"Bot is running. Jobs: {len(JOB_CACHE)}"
-
-@app.route('/debug', methods=['GET'])
-def debug_jobs():
-    try:
-        jobs = scheduler.get_jobs()
-        job_list = []
-        current_time = datetime.now(timezone.utc) + timedelta(hours=8)
-        
-        for job in jobs:
-            time_diff = "未知"
-            if job.next_run_time:
-                diff = job.next_run_time - datetime.now(timezone.utc)
-                time_diff = f"{diff.total_seconds():.1f} 秒后"
-            
-            job_list.append(f"<li>ID: {job.id} | 倒计时: {time_diff}</li>")
-            
-        return f"<h1>任务监控 (北京时间: {current_time.strftime('%H:%M:%S')})</h1><hr><ul>{''.join(job_list)}</ul>"
+        # 设置短超时，防止卡住线程
+        requests.post(url, json=payload, timeout=5)
     except Exception as e:
-        return str(e)
+        print(f"❌ 发送消息失败: {e}")
 
-@app.route('/webhook', methods=['POST'])
-async def webhook_handler():
-    try: await application.initialize()
-    except: pass 
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    await application.process_update(update)
-    return "ok"
-
-# ================= 任务函数 =================
+# ================= 任务逻辑 (重构为轻量级) =================
 
 # 1. 稍等超时预警
-def send_alert_job(chat_id, text, agent_id, agent_name, job_id_for_cleanup=None):
-    temp_bot = Bot(token=TOKEN)
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(temp_bot.send_message(chat_id=chat_id, text=text, parse_mode='Markdown', disable_web_page_preview=True))
-    except Exception as e: print(f"❌ SLA预警失败: {e}")
-    finally: loop.close()
-    if job_id_for_cleanup and job_id_for_cleanup in JOB_CACHE:
-        del JOB_CACHE[job_id_for_cleanup]
+def send_alert_job(chat_id, text, agent_id, agent_name, job_id):
+    send_raw_message(chat_id, text)
+    # 清理缓存
+    if job_id in JOB_CACHE:
+        del JOB_CACHE[job_id]
 
 # 2. 👻 无人理睬预警
 def send_ghost_alert(chat_id, msg_id, user_name, text_preview, user_id):
-    temp_bot = Bot(token=TOKEN)
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    if str(CS_GROUP_ID).startswith('-100'): pid = str(CS_GROUP_ID)[4:] 
+    if str(CS_GROUP_ID).startswith('-100'): pid = str(CS_GROUP_ID)[4:]
     else: pid = str(abs(CS_GROUP_ID))
     msg_link = f"https://t.me/c/{pid}/{msg_id}"
-    
     user_mention = f"[{user_name}](tg://user?id={user_id})"
-    
+
     alert_text = (
-        f"⚠️ **群消息遗漏遗警告**\n\n"
+        f"⚠️ **群消息遗漏警告**\n\n"
         f"👤 用户: {user_mention}\n"
         f"⏳ 已等待: {GHOST_TIMEOUT // 60} 分钟\n"
         f"💬 内容: `{text_preview}`\n"
         f"👉 [点击立即回复]({msg_link})"
     )
-    
-    try:
-        loop.run_until_complete(temp_bot.send_message(chat_id=chat_id, text=alert_text, parse_mode='Markdown', disable_web_page_preview=True))
-    except Exception as e: print(f"❌ Ghost预警失败: {e}")
-    finally: loop.close()
+    send_raw_message(chat_id, alert_text)
 
-# 3. 追问提醒
+# 3. 追问提醒 (必须用 context 发送，因为这是在主程序里运行的)
 async def send_chase_alert(context, agent_id, agent_name, original_msg_id, chase_text):
-    if str(CS_GROUP_ID).startswith('-100'): pid = str(CS_GROUP_ID)[4:] 
+    if str(CS_GROUP_ID).startswith('-100'): pid = str(CS_GROUP_ID)[4:]
     else: pid = str(abs(CS_GROUP_ID))
     msg_link = f"https://t.me/c/{pid}/{original_msg_id}"
-    clean_text = chase_text.replace('`', "'")[:30] + "..." if len(chase_text)>30 else chase_text
-    text = f"🔔 **未引用稍等提醒**\n👤 回复人: [{agent_name}](tg://user?id={agent_id})\n💬 内容: `{clean_text}`\n🔗 [点击回复]({msg_link})"
-    try: await context.bot.send_message(chat_id=ALERT_GROUP_ID, text=text, parse_mode='Markdown', disable_web_page_preview=True)
+    clean = chase_text.replace('`', "'")[:30]
+    text = f"🔔 **未引用稍等提醒**\n👤 回复人: [{agent_name}](tg://user?id={agent_id})\n💬 内容: `{clean}`\n🔗 [点击回复]({msg_link})"
+    try:
+        await context.bot.send_message(chat_id=ALERT_GROUP_ID, text=text, parse_mode='Markdown', disable_web_page_preview=True)
     except: pass
 
-def get_job_with_retry(job_id, max_retries=3):
-    for i in range(max_retries):
-        try: return scheduler.get_job(job_id)
-        except Exception: time.sleep(0.5)
-    return None
+# ================= 启动流程 =================
+if not scheduler.running:
+    scheduler.start()
+    sync_cache_from_db()
+    # 启动通知也改用轻量级发送
+    beijing = datetime.now(timezone.utc) + timedelta(hours=8)
+    send_raw_message(ALERT_GROUP_ID, f"♻️ **Bot 重启 (Ultra-Lite)**\n📅 {beijing.strftime('%H:%M:%S')}")
 
-# ================= Bot 逻辑 =================
+# ================= Flask & Bot =================
+app = Flask(__name__)
+
+@app.route('/', methods=['GET'])
+def index():
+    return f"Lite Bot Running. Active Jobs: {len(JOB_CACHE)}"
+
+@app.route('/webhook', methods=['POST'])
+async def webhook_handler():
+    try: await application.initialize()
+    except: pass
+    try:
+        update = Update.de_json(request.get_json(force=True), application.bot)
+        await application.process_update(update)
+    except Exception as e:
+        print(f"Update error: {e}")
+    return "ok"
+
+# ================= 主逻辑 (Handle Message) =================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg or not msg.text or msg.chat_id != CS_GROUP_ID:
         return
 
-    matched_signature = next((sig for sig in WAIT_SIGNATURES if sig in msg.text), None)
-    
-    # ----------------------------------------------------
-    # 场景 1: 回复消息 (客服稍等 / 普通回复)
-    # ----------------------------------------------------
+    # 场景 1: 回复消息
     if msg.reply_to_message:
-        original_msg_id = msg.reply_to_message.message_id
-        job_id = str(original_msg_id)
+        job_id = str(msg.reply_to_message.message_id)
         
-        # 消除鬼影 (只要有人回，就不算无人接待)
-        ghost_user_job_id = f"ghost_user_{msg.reply_to_message.from_user.id}"
-        try:
-            if scheduler.get_job(ghost_user_job_id):
-                scheduler.remove_job(ghost_user_job_id)
-        except: pass
+        # 消除 Ghost 任务
+        ghost_id = f"ghost_user_{msg.reply_to_message.from_user.id}"
+        if scheduler.get_job(ghost_id):
+            scheduler.remove_job(ghost_id)
 
-        # -> 分支 A: 客服回复“稍等” (开启 SLA)
-        if matched_signature:
-            if job_id in JOB_CACHE: return 
+        # 检查是否包含关键词
+        matched_sig = next((sig for sig in WAIT_SIGNATURES if sig in msg.text), None)
+
+        if matched_sig:
+            # ---> 客服说了“稍等”
+            if job_id in JOB_CACHE: return # 只有第一次算数
             
             user = msg.from_user
-            raw_text = msg.reply_to_message.text if msg.reply_to_message.text else "[非文本]"
-            safe_text = raw_text.replace('`', "'")[:50] + "..." if len(raw_text) > 50 else raw_text.replace('`', "'")
-            agent_mention = f"@{user.username.replace('_', '\\_')}" if user.username else f"[{user.first_name}](tg://user?id={user.id})"
-            if str(CS_GROUP_ID).startswith('-100'): pid = str(CS_GROUP_ID)[4:] 
+            raw = msg.reply_to_message.text or "[非文本]"
+            safe_txt = raw.replace('`', "'")[:40]
+            agent_md = f"[{user.first_name}](tg://user?id={user.id})"
+            if str(CS_GROUP_ID).startswith('-100'): pid = str(CS_GROUP_ID)[4:]
             else: pid = str(abs(CS_GROUP_ID))
-            msg_link = f"https://t.me/c/{pid}/{original_msg_id}"
-            timeout_disp = "60 秒" if TIMEOUT_SECONDS == 60 else f"{TIMEOUT_SECONDS // 60} 分钟"
+            link = f"https://t.me/c/{pid}/{job_id}"
             
             alert_text = (
-                f"📩 原始消息: `{safe_text}`\n\n🚨 **稍等超时预警 ({timeout_disp})**\n"
-                f"👤 回复人: {agent_mention}\n🔑 稍等: `{matched_signature}`\n"
-                f"⚠️ 状态: 回复稍等后，超过 {timeout_disp} 未进一步回复。\n\n🔗 [点击进行回复]({msg_link})"
+                f"📩 消息: `{safe_txt}`\n🚨 **超时预警**\n"
+                f"👤 客服: {agent_md}\n🔑 触发: `{matched_sig}`\n"
+                f"⚠️ 状态: 超过 {TIMEOUT_SECONDS // 60} 分钟未回复。\n🔗 [点击回复]({link})"
             )
-            print(f"📥 [SLA任务] ID: {job_id}")
+            
             run_time = datetime.now(timezone.utc) + timedelta(seconds=TIMEOUT_SECONDS)
             JOB_CACHE[job_id] = {'agent_id': user.id, 'agent_name': user.first_name}
-            try:
-                # ✅ 修改：这里去掉了 misfire_grace_time=3600
-                scheduler.add_job(send_alert_job, 'date', run_date=run_time, id=job_id, replace_existing=True,
-                    args=[ALERT_GROUP_ID, alert_text, user.id, user.first_name, job_id])
-            except: pass
-            return
-
-        # -> 分支 B: 普通回复 (检测是否追问)
-        if job_id in JOB_CACHE:
-            cache = JOB_CACHE[job_id]
-            if msg.from_user.id == msg.reply_to_message.from_user.id:
-                print(f"🔔 [追问] ID: {job_id}")
-                await send_chase_alert(context, cache['agent_id'], cache['agent_name'], original_msg_id, msg.text)
-            else:
-                print(f"🗑️ [完成] ID: {job_id}")
-                del JOB_CACHE[job_id]
-                try: 
-                    get_job_with_retry(job_id)
-                    scheduler.remove_job(job_id)
-                except: pass
-        return
-
-    # ----------------------------------------------------
-    # 场景 2: 新消息 (开启鬼影 10分钟 倒计时)
-    # ----------------------------------------------------
-    if not msg.reply_to_message and not matched_signature:
-        if msg.from_user.is_bot: return
-
-        user_id = msg.from_user.id
-        ghost_user_job_id = f"ghost_user_{user_id}"
-        
-        if not scheduler.get_job(ghost_user_job_id):
-            msg_id = msg.message_id
-            user_name = msg.from_user.first_name
-            text_preview = msg.text.replace('`', "'")[:30] + "..." if len(msg.text) > 30 else msg.text
-            print(f"👻 [新客] 用户: {user_name}")
             
-            run_time = datetime.now(timezone.utc) + timedelta(seconds=GHOST_TIMEOUT)
-            try:
-                # 保持 Ghost 任务的 300s 宽限期（5分钟），如需去除也可删除
-                scheduler.add_job(
-                    send_ghost_alert, 'date', run_date=run_time, id=ghost_user_job_id, replace_existing=True,
-                    args=[ALERT_GROUP_ID, msg_id, user_name, text_preview, user_id],
-                    misfire_grace_time=300
-                )
-            except: pass
+            # ✅ 这里的 args 只有纯数据，没有 Bot 对象
+            scheduler.add_job(send_alert_job, 'date', run_date=run_time, id=job_id, replace_existing=True,
+                args=[ALERT_GROUP_ID, alert_text, user.id, user.first_name, job_id])
+            
+        elif job_id in JOB_CACHE:
+            # ---> 普通回复（检查是否追问）
+            cache = JOB_CACHE[job_id]
+            # 如果是客服自己回复自己，说明在处理
+            if msg.from_user.id == msg.reply_to_message.from_user.id:
+                 await send_chase_alert(context, cache['agent_id'], cache['agent_name'], job_id, msg.text)
+            else:
+                # 别人回复了/或者完结了，移除任务
+                del JOB_CACHE[job_id]
+                if scheduler.get_job(job_id):
+                    scheduler.remove_job(job_id)
 
-# ================= 启动 =================
-request_config = HTTPXRequest(read_timeout=20.0, connect_timeout=20.0, http_version="1.1")
-application = Application.builder().token(TOKEN).request(request_config).build()
+    # 场景 2: 新消息 (Ghost)
+    elif not msg.reply_to_message:
+        if msg.from_user.is_bot: return
+        
+        ghost_id = f"ghost_user_{msg.from_user.id}"
+        if not scheduler.get_job(ghost_id):
+            run_time = datetime.now(timezone.utc) + timedelta(seconds=GHOST_TIMEOUT)
+            txt = msg.text.replace('`', "'")[:30]
+            scheduler.add_job(
+                send_ghost_alert, 'date', run_date=run_time, id=ghost_id, replace_existing=True,
+                args=[ALERT_GROUP_ID, msg.message_id, msg.from_user.first_name, txt, msg.from_user.id],
+                misfire_grace_time=300
+            )
+
+# ================= Application Build =================
+# 限制连接池，节省内存
+req = HTTPXRequest(connection_pool_size=1, read_timeout=10.0)
+application = Application.builder().token(TOKEN).request(req).build()
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8080))
-    print("Run with 'gunicorn main:app'")
+    print("Use: gunicorn main:app --workers 1")
