@@ -4,4 +4,4 @@ APScheduler
 gunicorn
 psycopg2-binary
 SQLAlchemy
-asgiref
+requests
