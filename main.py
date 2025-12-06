@@ -19,8 +19,8 @@ TOKEN = '8276151101:AAFXQ03i6pyEqJCX2wOnbYoCATMTVIbowGQ'
 CS_GROUP_ID = -1003400471795      
 ALERT_GROUP_ID = -5093247908  
 CS_GROUP_USERNAME = 'adsgsh' 
-TIMEOUT_SECONDS = 15 * 60    # 稍等超时 (15分钟)
-GHOST_TIMEOUT = 10 * 60      # 无人理睬超时 (10分钟)
+TIMEOUT_SECONDS = 2 * 60    # 稍等超时 (15分钟)
+GHOST_TIMEOUT = 2 * 60      # 无人理睬超时 (10分钟)
 
 # 触发关键词
 WAIT_SIGNATURES = [
@@ -53,7 +53,9 @@ engine = create_engine(
 
 jobstores = {'default': SQLAlchemyJobStore(engine=engine)}
 executors = {'default': ThreadPoolExecutor(30)}
-job_defaults = {'coalesce': False, 'max_instances': 20, 'misfire_grace_time': 3600}
+
+# ✅ 修改：去掉了 'misfire_grace_time': 3600
+job_defaults = {'coalesce': False, 'max_instances': 20}
 
 scheduler = BackgroundScheduler(
     jobstores=jobstores, 
@@ -95,7 +97,6 @@ def send_startup_notification():
     finally: loop.close()
 
 # ================= 启动调度器 =================
-# 注意：此处已移除了 heartbeat 任务
 scheduler.start()
 sync_cache_from_db()
 send_startup_notification()
@@ -232,8 +233,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             run_time = datetime.now(timezone.utc) + timedelta(seconds=TIMEOUT_SECONDS)
             JOB_CACHE[job_id] = {'agent_id': user.id, 'agent_name': user.first_name}
             try:
+                # ✅ 修改：这里去掉了 misfire_grace_time=3600
                 scheduler.add_job(send_alert_job, 'date', run_date=run_time, id=job_id, replace_existing=True,
-                    args=[ALERT_GROUP_ID, alert_text, user.id, user.first_name, job_id], misfire_grace_time=3600)
+                    args=[ALERT_GROUP_ID, alert_text, user.id, user.first_name, job_id])
             except: pass
             return
 
@@ -269,6 +271,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             run_time = datetime.now(timezone.utc) + timedelta(seconds=GHOST_TIMEOUT)
             try:
+                # 保持 Ghost 任务的 300s 宽限期（5分钟），如需去除也可删除
                 scheduler.add_job(
                     send_ghost_alert, 'date', run_date=run_time, id=ghost_user_job_id, replace_existing=True,
                     args=[ALERT_GROUP_ID, msg_id, user_name, text_preview, user_id],
