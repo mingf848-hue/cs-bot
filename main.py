@@ -2,8 +2,9 @@ import logging
 import os
 import sys
 import asyncio
+import httpx  # 使用 httpx 直接发送请求，避免在线程中创建 Bot 实例
 from flask import Flask, request
-from telegram import Update, Bot
+from telegram import Update
 from telegram.ext import Application, MessageHandler, ContextTypes, filters
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
@@ -14,18 +15,18 @@ from sqlalchemy import create_engine
 
 # ================= 配置区域 =================
 TOKEN = '8276151101:AAFXQ03i6pyEqJCX2wOnbYoCATMTVIbowGQ'
-CS_GROUP_ID = -1003400471795     
+CS_GROUP_ID = -1003400471795      
 ALERT_GROUP_ID = -5093247908  
 CS_GROUP_USERNAME = 'adsgsh' 
-TIMEOUT_SECONDS = 12 * 60    # 正式模式 15 分钟
+TIMEOUT_SECONDS = 2 * 60    # 正式模式 15 分钟
 
-# 触发关键词
-WAIT_SIGNATURES = [
+# 触发关键词 (使用 set 稍微提升查找速度)
+WAIT_SIGNATURES = {
     "稍等-an", "请稍等elk", "稍等-jl", "请稍等-~cc", "请稍等～aja",
     "请稍等-HED", "请稍等-xxxx", "请稍等-MAD", "请稍等 - AB", "请稍等ART",
     "稍等～ys", "请稍等~lofi", "稍等-SO", "请稍等～～aug", "稍等--Gr💬",
     "稍等-Be", "稍等-XW", "请稍等~d", "请稍等～yu"
-]
+}
 
 # ================= 日志设置 =================
 logging.basicConfig(
@@ -33,23 +34,26 @@ logging.basicConfig(
     level=logging.INFO,
     stream=sys.stdout 
 )
-logging.getLogger('apscheduler').setLevel(logging.DEBUG)
+# 调高 apscheduler 日志级别，减少控制台刷屏
+logging.getLogger('apscheduler').setLevel(logging.WARNING)
 
 # ================= 数据库连接设置 =================
 database_url = os.environ.get('DATABASE_URL', 'sqlite:///jobs.sqlite')
 if database_url and database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql://", 1)
 
+# 内存优化：减小连接池大小
 engine = create_engine(
     database_url,
     pool_recycle=1800,
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20
+    pool_size=5,       # 优化：从 10 降为 5
+    max_overflow=10    # 优化：从 20 降为 10
 )
 
 jobstores = {'default': SQLAlchemyJobStore(engine=engine)}
-executors = {'default': ThreadPoolExecutor(30)}
+# 内存优化：减小并发线程数，10个并发通常足够处理预警发送
+executors = {'default': ThreadPoolExecutor(10)} 
 job_defaults = {'coalesce': False, 'max_instances': 20, 'misfire_grace_time': 3600}
 
 scheduler = BackgroundScheduler(
@@ -59,10 +63,7 @@ scheduler = BackgroundScheduler(
     timezone=timezone.utc 
 )
 
-def heartbeat():
-    print(f"💓 [系统存活] 调度器正在运行... {datetime.now(timezone.utc)}")
-
-scheduler.add_job(heartbeat, 'interval', seconds=10, id='heartbeat_job', replace_existing=True)
+# 移除了心跳检测 job
 scheduler.start()
 
 # ================= Flask Web Server =================
@@ -70,7 +71,7 @@ app = Flask(__name__)
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Bot is running (Underscore Fix)"
+    return "Bot is running (Optimized Version)"
 
 @app.route('/debug', methods=['GET'])
 def debug_jobs():
@@ -103,7 +104,9 @@ def debug_jobs():
 @app.route('/webhook', methods=['POST'])
 async def webhook_handler():
     try:
-        await application.initialize()
+        # 确保 app 已初始化
+        if not application.running:
+             await application.initialize()
     except Exception:
         pass 
     json_data = request.get_json(force=True)
@@ -111,24 +114,31 @@ async def webhook_handler():
     await application.process_update(update)
     return "ok"
 
-# ================= 预警任务函数 =================
+# ================= 预警任务函数 (内存优化版) =================
 def send_alert_job(chat_id, text):
+    """
+    优化说明：
+    不再在线程中创建 Bot 实例和 EventLoop。
+    直接使用 httpx 同步方法调用 API，大幅降低内存开销。
+    """
     print(f"⚡️ 正在执行预警任务... (Chat ID: {chat_id})") 
-    temp_bot = Bot(token=TOKEN)
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    api_url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True
+    }
+    
     try:
-        loop.run_until_complete(temp_bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            parse_mode='Markdown', 
-            disable_web_page_preview=True
-        ))
-        print("✅ 预警消息已成功发送")
+        # 使用同步请求，无需 asyncio
+        response = httpx.post(api_url, json=payload, timeout=10.0)
+        if response.status_code == 200:
+            print("✅ 预警消息已成功发送")
+        else:
+            print(f"❌ API 返回错误: {response.text}")
     except Exception as e:
         print(f"❌ 预警发送失败: {e}")
-    finally:
-        loop.close()
 
 # ================= Bot 逻辑 =================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -139,30 +149,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     original_msg_id = msg.reply_to_message.message_id
     job_id = str(original_msg_id) 
 
+    # 逻辑 A: 开启监控 (检查是否包含关键词)
     matched_signature = next((sig for sig in WAIT_SIGNATURES if sig in msg.text), None)
 
-    # --- 逻辑 A: 开启监控 ---
     if matched_signature:
-        # 获取当前发消息的回复人对象
         user = msg.from_user
         
         # ✅ 获取原始消息内容
         raw_original_text = msg.reply_to_message.text if msg.reply_to_message.text else "[非文本消息]"
-        # 简单清洗：防止反引号破坏 Markdown
         safe_original_text = raw_original_text.replace('`', "'")
         if len(safe_original_text) > 50:
             safe_original_text = safe_original_text[:50] + "..."
         
-        # ✅ 关键修改：生成“艾特”格式并转义下划线
+        # ✅ 生成“艾特”格式并转义下划线
         if user.username:
-            # 1. 获取用户名
-            raw_username = user.username
-            # 2. 这里的 replace 很关键：把 _ 变成 \_
-            safe_username = raw_username.replace("_", "\\_")
+            safe_username = user.username.replace("_", "\\_")
             agent_mention = f"@{safe_username}"
         else:
-            # 如果没有用户名，使用文字链接
-            # 名字里的特殊符号也最好清洗一下，防止破坏格式
             safe_first_name = user.first_name.replace("[", "").replace("]", "")
             agent_mention = f"[{safe_first_name}](tg://user?id={user.id})"
         
@@ -202,6 +205,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # --- 逻辑 B: 取消监控 ---
+    # 如果回复了，且没有触发关键词，说明可能是正式回复，尝试取消任务
     try:
         if scheduler.get_job(job_id):
             scheduler.remove_job(job_id)
@@ -218,4 +222,5 @@ application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
-    print("Run with 'gunicorn main:app'")
+    # 建议生产环境使用 gunicorn main:app
+    app.run(host='0.0.0.0', port=port)
