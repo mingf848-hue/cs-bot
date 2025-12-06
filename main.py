@@ -16,11 +16,11 @@ from sqlalchemy.exc import OperationalError
 
 # ================= 配置区域 =================
 TOKEN = '8276151101:AAFXQ03i6pyEqJCX2wOnbYoCATMTVIbowGQ'
-CS_GROUP_ID = -1003400471795     
+CS_GROUP_ID = -1003400471795      
 ALERT_GROUP_ID = -5093247908  
 CS_GROUP_USERNAME = 'adsgsh' 
 TIMEOUT_SECONDS = 15 * 60    # 稍等超时 (15分钟)
-GHOST_TIMEOUT = 10 * 60      # ✅ 修改：无人理睬超时改为 10 分钟
+GHOST_TIMEOUT = 10 * 60      # 无人理睬超时 (10分钟)
 
 # 触发关键词
 WAIT_SIGNATURES = [
@@ -94,9 +94,8 @@ def send_startup_notification():
     except: pass
     finally: loop.close()
 
-def heartbeat(): pass
-
-scheduler.add_job(heartbeat, 'interval', seconds=10, id='heartbeat_job', replace_existing=True)
+# ================= 启动调度器 =================
+# 注意：此处已移除了 heartbeat 任务
 scheduler.start()
 sync_cache_from_db()
 send_startup_notification()
