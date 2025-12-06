@@ -19,8 +19,8 @@ TOKEN = '8276151101:AAFXQ03i6pyEqJCX2wOnbYoCATMTVIbowGQ'
 CS_GROUP_ID = -1003400471795      
 ALERT_GROUP_ID = -5093247908   
 CS_GROUP_USERNAME = 'adsgsh' 
-TIMEOUT_SECONDS = 15 * 60    # SLA 超时时间 (15分钟)
-GHOST_TIMEOUT = 10 * 60      # 无人回复超时时间 (10分钟)
+TIMEOUT_SECONDS =  60    # SLA 超时时间 (15分钟)
+GHOST_TIMEOUT =  60      # 无人回复超时时间 (10分钟)
 
 # 触发关键词列表
 WAIT_SIGNATURES = [
@@ -36,30 +36,26 @@ logging.basicConfig(
     level=logging.INFO,
     stream=sys.stdout 
 )
-# 降低日志级别以节省资源
+# 降低日志级别以保持清爽
 logging.getLogger('apscheduler').setLevel(logging.WARNING)
 logging.getLogger('httpx').setLevel(logging.WARNING)
 
-# ================= 数据库连接设置 (已优化内存) =================
+# ================= 数据库连接设置 (内存优化版) =================
 database_url = os.environ.get('DATABASE_URL', 'sqlite:///jobs.sqlite')
 if database_url and database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql://", 1)
 
-# ✅ 优化 1: 针对免费版 Render 减小连接池大小
+# ✅ 优化: 针对免费版 Render 减小连接池
 engine = create_engine(
     database_url,
     pool_recycle=1800,
     pool_pre_ping=True,
-    pool_size=5,        # 从 10 降为 5
-    max_overflow=10     # 从 20 降为 10
+    pool_size=5,
+    max_overflow=10
 )
 
 jobstores = {'default': SQLAlchemyJobStore(engine=engine)}
-
-# ✅ 优化 2: 减少线程数 (30 -> 10)
 executors = {'default': ThreadPoolExecutor(10)}
-
-# ✅ 优化 3: 减少并发实例数 (20 -> 5)
 job_defaults = {'coalesce': False, 'max_instances': 5, 'misfire_grace_time': 3600}
 
 scheduler = BackgroundScheduler(
@@ -77,7 +73,6 @@ def sync_cache_from_db():
     try:
         jobs = scheduler.get_jobs()
         for job in jobs:
-            # 跳过 Ghost 任务，只同步 SLA 任务
             if job.id.startswith('ghost_'):
                 continue
             if job.args and len(job.args) >= 4:
@@ -97,16 +92,12 @@ def send_startup_notification():
     try:
         beijing_time = datetime.now(timezone.utc) + timedelta(hours=8)
         time_str = beijing_time.strftime("%Y-%m-%d %H:%M:%S")
-        alert_text = f"♻️ **机器人已重启 (内存优化版)**\n📅 时间: `{time_str}`\n✅ 状态: 正常运行中。"
+        alert_text = f"♻️ **机器人已重启**\n📅 时间: `{time_str}`\n✅ 状态: 正常运行，心跳日志已关闭。"
         loop.run_until_complete(temp_bot.send_message(chat_id=ALERT_GROUP_ID, text=alert_text, parse_mode='Markdown'))
     except: pass
     finally: loop.close()
 
-def heartbeat(): 
-    # 轻量级心跳，不做操作，仅占位
-    pass
-
-scheduler.add_job(heartbeat, 'interval', seconds=60, id='heartbeat_job', replace_existing=True)
+# ✅ 已移除心跳函数和定时任务
 scheduler.start()
 sync_cache_from_db()
 send_startup_notification()
@@ -161,7 +152,6 @@ def send_alert_job(chat_id, text, agent_id, agent_name, job_id_for_cleanup=None)
     except Exception as e: print(f"❌ SLA 预警发送失败: {e}")
     finally: loop.close()
     
-    # 清理缓存
     if job_id_for_cleanup and job_id_for_cleanup in JOB_CACHE:
         del JOB_CACHE[job_id_for_cleanup]
 
@@ -214,21 +204,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     matched_signature = next((sig for sig in WAIT_SIGNATURES if sig in msg.text), None)
     
-    # ----------------------------------------------------
-    # 场景 1: 回复消息 (可能是客服发稍等，也可能是普通回复)
-    # ----------------------------------------------------
     if msg.reply_to_message:
         original_msg_id = msg.reply_to_message.message_id
         job_id = str(original_msg_id)
         
-        # 只要有人回复，就移除 Ghost 任务 (说明有人接待了)
+        # 移除 Ghost 任务
         ghost_user_job_id = f"ghost_user_{msg.reply_to_message.from_user.id}"
         try:
             if scheduler.get_job(ghost_user_job_id):
                 scheduler.remove_job(ghost_user_job_id)
         except: pass
 
-        # -> 分支 A: 客服回复了“稍等” (开启 SLA 倒计时)
+        # -> 分支 A: 客服回复“稍等”
         if matched_signature:
             if job_id in JOB_CACHE: return 
             
@@ -250,7 +237,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print(f"📥 [SLA任务] ID: {job_id}")
             
             run_time = datetime.now(timezone.utc) + timedelta(seconds=TIMEOUT_SECONDS)
-            # 存入缓存
             JOB_CACHE[job_id] = {'agent_id': user.id, 'agent_name': user.first_name}
             
             try:
@@ -262,15 +248,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except: pass
             return
 
-        # -> 分支 B: 普通回复 (检测追问 / 清理任务)
+        # -> 分支 B: 普通回复
         if job_id in JOB_CACHE:
             cache = JOB_CACHE[job_id]
-            # 如果是客服自己回复了自己的“稍等”消息 (视为追问补充)
             if msg.from_user.id == msg.reply_to_message.from_user.id:
                 print(f"🔔 [追问] ID: {job_id}")
                 await send_chase_alert(context, cache['agent_id'], cache['agent_name'], original_msg_id, msg.text)
             else:
-                # 客服回复了客户，视为处理完毕，移除任务
                 print(f"🗑️ [完成] ID: {job_id}")
                 del JOB_CACHE[job_id]
                 try: 
@@ -280,7 +264,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ----------------------------------------------------
-    # 场景 2: 新用户消息 (开启 Ghost 10分钟 无人接待倒计时)
+    # 场景 2: 新消息 (Ghost)
     # ----------------------------------------------------
     if not msg.reply_to_message and not matched_signature:
         if msg.from_user.is_bot: return
@@ -288,7 +272,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = msg.from_user.id
         ghost_user_job_id = f"ghost_user_{user_id}"
         
-        # 只有当该用户没有正在进行的计时任务时才添加 (避免刷屏重置)
         if not scheduler.get_job(ghost_user_job_id):
             msg_id = msg.message_id
             user_name = msg.from_user.first_name
