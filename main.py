@@ -161,11 +161,11 @@ def send_ghost_alert(chat_id, msg_id, user_name, text_preview, user_id):
     user_mention = f"[{user_name}](tg://user?id={user_id})"
     
     alert_text = (
-        f"⚠️ **新客无人接待警告**\n\n"
-        f"👤 客户: {user_mention}\n"
+        f"⚠️ **群消息遗漏遗警告**\n\n"
+        f"👤 用户: {user_mention}\n"
         f"⏳ 已等待: {GHOST_TIMEOUT // 60} 分钟\n"
         f"💬 内容: `{text_preview}`\n"
-        f"👉 [点击立即接待]({msg_link})"
+        f"👉 [点击立即回复]({msg_link})"
     )
     
     try:
@@ -179,7 +179,7 @@ async def send_chase_alert(context, agent_id, agent_name, original_msg_id, chase
     else: pid = str(abs(CS_GROUP_ID))
     msg_link = f"https://t.me/c/{pid}/{original_msg_id}"
     clean_text = chase_text.replace('`', "'")[:30] + "..." if len(chase_text)>30 else chase_text
-    text = f"🔔 **追问提醒**\n👤 客服: [{agent_name}](tg://user?id={agent_id})\n💬 内容: `{clean_text}`\n🔗 [回复]({msg_link})"
+    text = f"🔔 **未引用稍等提醒**\n👤 回复人: [{agent_name}](tg://user?id={agent_id})\n💬 内容: `{clean_text}`\n🔗 [点击回复]({msg_link})"
     try: await context.bot.send_message(chat_id=ALERT_GROUP_ID, text=text, parse_mode='Markdown', disable_web_page_preview=True)
     except: pass
 
@@ -227,7 +227,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             alert_text = (
                 f"📩 原始消息: `{safe_text}`\n\n🚨 **稍等超时预警 ({timeout_disp})**\n"
                 f"👤 回复人: {agent_mention}\n🔑 稍等: `{matched_signature}`\n"
-                f"⚠️ 状态: 回复稍等后，超过 {timeout_disp} 未进一步回复。\n\n🔗 [点击跳转处理]({msg_link})"
+                f"⚠️ 状态: 回复稍等后，超过 {timeout_disp} 未进一步回复。\n\n🔗 [点击进行回复]({msg_link})"
             )
             print(f"📥 [SLA任务] ID: {job_id}")
             run_time = datetime.now(timezone.utc) + timedelta(seconds=TIMEOUT_SECONDS)
