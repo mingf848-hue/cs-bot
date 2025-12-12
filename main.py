@@ -98,7 +98,16 @@ async def task_reply_timeout(trigger_msg_id, sender_name, content, link):
 
 # ================= 主监控逻辑 =================
 if not SESSION_STRING: sys.exit("❌ SESSION_STRING Missing")
-client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+client = TelegramClient(
+    StringSession(SESSION_STRING), 
+    API_ID, 
+    API_HASH,
+    device_model="iPhone 14",  # 设备型号
+    system_version="26.0.1",       # 系统版本
+    app_version="10.6.1",          # App版本
+    lang_code="zh-hans",           # 语言
+    system_lang_code="zh-hans"
+)
 
 @client.on(events.NewMessage(chats=CS_GROUP_IDS))
 async def handler(event):
