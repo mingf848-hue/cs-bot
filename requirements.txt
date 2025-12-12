@@ -1,6 +1,3 @@
+telethon
 flask
-python-telegram-bot
-apscheduler
-sqlalchemy
 gunicorn
-httpx
