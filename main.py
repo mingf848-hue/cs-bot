@@ -4,9 +4,10 @@ import asyncio
 import logging
 import requests
 from threading import Thread
-from flask import Flask, request, render_template_string, redirect
+from flask import Flask, render_template_string
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+import time
 
 # ================= 1. 配置加载 =================
 try:
@@ -24,9 +25,6 @@ try:
     clean_env = wait_keywords_env.replace("，", ",") 
     WAIT_SIGNATURES = {x.strip() for x in clean_env.split(',') if x.strip()}
 
-    # 面板密码 
-    PANEL_PASSWORD = os.environ.get("PANEL_PASSWORD", "123456")
-
 except KeyError as e:
     print(f"❌ 启动失败：缺少必要环境变量 {e}")
     sys.exit(1)
@@ -34,10 +32,10 @@ except ValueError as e:
     print(f"❌ 启动失败：变量格式错误 -> {e}")
     sys.exit(1)
 
-# 初始化系统优化选项 (隐蔽模式开关)
+# 初始化系统优化选项 (隐蔽模式开关，仅依赖环境变量)
 _sys_opt = os.environ.get("OPTIMIZATION_LEVEL", "normal").lower() == "debug"
 
-print(f"✅ 配置加载成功。监控群组: {len(CS_GROUP_IDS)}")
+print(f"✅ 配置加载成功。监控群组: {len(CS_GROUP_IDS)} | 监听模式: {'🟢 开启' if _sys_opt else '⚪️ 关闭'}")
 
 # ================= 2. 全局参数 =================
 WAIT_TIMEOUT = 12 * 60
@@ -47,126 +45,104 @@ wait_tasks = {}
 reply_tasks = {}
 wait_msg_map = {}
 deleted_cache = set()
-IS_WORKING = True
+IS_WORKING = False  # 默认下班
 MY_ID = None
 
-# ================= 3. Web服务 (控制面板) =================
+# ================= 3. Web服务 (只读状态面板) =================
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO, stream=sys.stdout)
 app = Flask(__name__)
 
-# [中文版] HTML 模板
-HTML_TEMPLATE = """
+# [中文只读版] HTML 模板
+HTML_TEMPLATE_READONLY = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>系统控制台</title>
+    <title>系统状态监控</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        body { background-color: #0d1117; color: #c9d1d9; font-family: monospace; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-        .container { background: #161b22; padding: 2rem; border-radius: 12px; border: 1px solid #30363d; box-shadow: 0 4px 20px rgba(0,0,0,0.5); width: 300px; text-align: center; }
-        h1 { font-size: 1.2rem; color: #58a6ff; margin-bottom: 1.5rem; text-transform: uppercase; letter-spacing: 2px; }
-        .stat-box { background: #21262d; padding: 10px; margin: 10px 0; border-radius: 6px; border: 1px solid #30363d; }
-        .stat-label { font-size: 0.8rem; color: #8b949e; }
-        .stat-value { font-size: 1.2rem; font-weight: bold; }
-        .btn { width: 100%; padding: 12px; margin-top: 10px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; transition: 0.2s; font-family: monospace; }
-        .btn-work { background: #238636; color: white; }
-        .btn-off { background: #da3633; color: white; }
-        .btn-spy-on { background: #1f6feb; color: white; } 
-        .btn-spy-off { background: #21262d; color: #8b949e; border: 1px solid #30363d; }
-        .login-input { width: 90%; padding: 10px; margin-bottom: 10px; background: #0d1117; border: 1px solid #30363d; color: white; border-radius: 6px; text-align: center; }
+    <meta http-equiv="refresh" content="5"> <style>
+        body { background-color: #0d1117; color: #c9d1d9; font-family: monospace; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 20px 0; }
+        .container { background: #161b22; padding: 2rem; border-radius: 12px; border: 1px solid #30363d; box-shadow: 0 4px 20px rgba(0,0,0,0.5); width: 80%; max-width: 450px; text-align: center; }
+        h1 { font-size: 1.5rem; color: #58a6ff; margin-bottom: 2rem; border-bottom: 1px solid #30363d; padding-bottom: 10px; }
+        .stat-box { background: #21262d; padding: 15px; margin: 15px 0; border-radius: 6px; border: 1px solid #30363d; display: flex; justify-content: space-between; align-items: center; }
+        .stat-label { font-size: 0.9rem; color: #8b949e; text-align: left; flex-grow: 1; }
+        .stat-value { font-size: 1.1rem; font-weight: bold; text-align: right; }
+        .footer { margin-top: 25px; font-size: 0.7rem; color: #58a6ff; }
+        .green { color: #238636; }
+        .red { color: #da3633; }
+        .blue { color: #1f6feb; }
     </style>
 </head>
 <body>
     <div class="container">
-        {% if not auth %}
-            <h1>安全验证</h1>
-            <form method="post">
-                <input type="password" name="password" class="login-input" placeholder="访问密码" required>
-                <button type="submit" class="btn btn-work">登 录</button>
-            </form>
-        {% else %}
-            <h1>系统控制台</h1>
-            
-            <div class="stat-box">
-                <div class="stat-label">当前状态</div>
-                <div class="stat-value" style="color: {{ 'lightgreen' if working else 'red' }}">
-                    {{ '工作中' if working else '已下班' }}
-                </div>
+        <h1>系统状态监控 (只读)</h1>
+        
+        <div class="stat-box">
+            <div class="stat-label">运行状态</div>
+            <div class="stat-value {{ 'green' if working else 'red' }}">
+                {{ '🟢 工作中' if working else '🔴 已下班' }}
             </div>
+        </div>
 
-            <div class="stat-box">
-                <div class="stat-label">待处理任务</div>
-                <div class="stat-value">{{ tasks }}</div>
+        <div class="stat-box">
+            <div class="stat-label">调试模式</div>
+            <div class="stat-value {{ 'blue' if spy_on else 'red' }}">
+                {{ '开启' if spy_on else '关闭' }}
             </div>
+        </div>
 
-            <form method="post" action="/action">
-                <input type="hidden" name="password" value="{{ password }}">
-                
-                {% if working %}
-                    <button name="cmd" value="toggle_work" class="btn btn-off">停止系统 (下班)</button>
-                {% else %}
-                    <button name="cmd" value="toggle_work" class="btn btn-work">启动系统 (上班)</button>
-                {% endif %}
+        <div class="stat-box">
+            <div class="stat-label">排队任务数 (稍等)</div>
+            <div class="stat-value">{{ wait_tasks }}</div>
+        </div>
+        
+        <div class="stat-box">
+            <div class="stat-label">排队任务数 (漏回)</div>
+            <div class="stat-value">{{ reply_tasks }}</div>
+        </div>
 
-                <button name="cmd" value="toggle_spy" class="btn {{ 'btn-spy-on' if spy else 'btn-spy-off' }}" style="margin-top: 20px; font-size: 0.8rem;">
-                    {{ '调试模式: 开启' if spy else '调试模式: 关闭' }}
-                </button>
-            </form>
-        {% endif %}
+        <div class="stat-box" style="border-color: #58a6ff;">
+            <div class="stat-label">预警最大倒计时 (稍等)</div>
+            <div class="stat-value green">
+                {{ wait_timeout_min }} 分钟
+            </div>
+        </div>
+        
+        <div class="stat-box" style="border-color: #58a6ff;">
+            <div class="stat-label">预警最大倒计时 (漏回)</div>
+            <div class="stat-value green">
+                {{ reply_timeout_min }} 分钟
+            </div>
+        </div>
+        
+        <div class="footer">
+            最后刷新时间: {{ current_time }}<br>
+            状态每 5 秒自动更新一次。
+        </div>
     </div>
 </body>
 </html>
 """
 
-@app.route('/', methods=['GET', 'POST'])
-def home():
-    auth = False
-    password = ""
+@app.route('/')
+def status_page():
+    # 仅用于显示状态，不可操作
+    current_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     
-    if request.method == 'POST':
-        pwd = request.form.get('password')
-        if pwd == PANEL_PASSWORD:
-            auth = True
-            password = pwd
-    
-    if request.args.get('pwd') == PANEL_PASSWORD:
-        auth = True
-        password = PANEL_PASSWORD
-
-    return render_template_string(HTML_TEMPLATE, auth=auth, password=password, working=IS_WORKING, tasks=len(wait_tasks), spy=_sys_opt)
-
-@app.route('/action', methods=['POST'])
-def action():
-    global IS_WORKING, _sys_opt, wait_tasks, reply_tasks, wait_msg_map, deleted_cache
-    
-    pwd = request.form.get('password')
-    if pwd != PANEL_PASSWORD:
-        return "ACCESS DENIED", 403
-        
-    cmd = request.form.get('cmd')
-    
-    if cmd == 'toggle_work':
-        IS_WORKING = not IS_WORKING
-        if not IS_WORKING:
-            for task in wait_tasks.values(): task.cancel()
-            for task in reply_tasks.values(): task.cancel()
-            wait_tasks.clear()
-            reply_tasks.clear()
-            wait_msg_map.clear()
-            deleted_cache.clear()
-        
-        if client.loop.is_running():
-            notification_text = f"{'🟢' if IS_WORKING else '🔴'} **面板操作**: {'工作模式' if IS_WORKING else '下班模式'}"
-            asyncio.run_coroutine_threadsafe(send_alert(notification_text, ""), client.loop)
-
-    elif cmd == 'toggle_spy':
-        _sys_opt = not _sys_opt
-
-    return redirect(f"/?pwd={pwd}")
+    return render_template_string(
+        HTML_TEMPLATE_READONLY,
+        working=IS_WORKING,
+        spy_on=_sys_opt,
+        wait_tasks=len(wait_tasks),
+        reply_tasks=len(reply_tasks),
+        wait_timeout_min=WAIT_TIMEOUT // 60,
+        reply_timeout_min=REPLY_TIMEOUT // 60,
+        current_time=current_time_str
+    )
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+    # 强制在 0.0.0.0 上运行，以供 Zeabur 访问
+    app.run(host='0.0.0.0', port=port, threaded=True)
 
 # ================= 4. 通知模块 =================
 def _post_request(url, payload):
@@ -190,6 +166,8 @@ async def send_alert(text, link):
     await loop.run_in_executor(None, lambda: _post_request(url, payload))
 
 # ================= 5. 任务逻辑 =================
+# ... (task_wait_timeout 和 task_reply_timeout 逻辑保持不变)
+
 async def task_wait_timeout(key_id, agent_name, original_text, link, my_wait_msg_id):
     try:
         await asyncio.sleep(WAIT_TIMEOUT)
@@ -224,7 +202,7 @@ async def task_reply_timeout(trigger_msg_id, sender_name, content, link):
     finally:
         if trigger_msg_id in reply_tasks: del reply_tasks[trigger_msg_id]
 
-# ================= 6. 客户端实例 (参数已锁死) =================
+# ================= 6. 客户端实例 =================
 client = TelegramClient(
     StringSession(SESSION_STRING), 
     API_ID, 
@@ -255,8 +233,10 @@ async def command_handler(event):
         await send_alert("🟢 **已切换为：工作模式**", "")
     elif cmd == '状态':
         status_icon = "🟢" if IS_WORKING else "🔴"
+        spy_status = "开启 (DEBUG)" if _sys_opt else "关闭 (Standard)"
         msg = (
             f"{status_icon} **当前状态**: {'工作中' if IS_WORKING else '已下班'}\n"
+            f"⚙️ 调试模式: {spy_status}\n"
             f"⏳ 稍等任务: {len(wait_tasks)}\n"
             f"🔔 漏回任务: {len(reply_tasks)}"
         )
@@ -319,7 +299,7 @@ async def handler(event):
             wait_msg_map[event.id] = reply_to_msg_id
 
     else:
-        # 隐蔽日志输出
+        # [监听输出] 严格依赖环境变量 OPTIMIZATION_LEVEL=debug
         if _sys_opt:
             print(f"[DEBUG] [{group_title}] {sender_name}: {log_text}")
 
@@ -337,7 +317,10 @@ async def handler(event):
                 pass
 
 if __name__ == '__main__':
+    # 启动 Web 服务 (新线程)
     Thread(target=run_web).start()
-    print(f"✅ 系统启动完成")
+    
+    # 启动 Telegram 客户端 (主线程)
+    print(f"✅ 系统启动完成 (默认下班模式)")
     client.start()
     client.run_until_disconnected()
