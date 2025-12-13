@@ -8,22 +8,18 @@ from flask import Flask
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
-# ================= 1. 强制读取配置 (无备用值) =================
+# ================= 1. 强制读取配置 =================
 try:
-    # 必须配置的核心变量
     API_ID = int(os.environ["API_ID"])
     API_HASH = os.environ["API_HASH"]
     SESSION_STRING = os.environ["SESSION_STRING"]
     BOT_TOKEN = os.environ["BOT_TOKEN"]
     
-    # 监控群组
     cs_groups_env = os.environ["CS_GROUP_IDS"]
     CS_GROUP_IDS = [int(x.strip()) for x in cs_groups_env.split(',') if x.strip()]
     
-    # 报警接收人
     ALERT_GROUP_ID = int(os.environ["ALERT_GROUP_ID"])
     
-    # 稍等关键词
     wait_keywords_env = os.environ["WAIT_KEYWORDS"]
     clean_env = wait_keywords_env.replace("，", ",") 
     WAIT_SIGNATURES = {x.strip() for x in clean_env.split(',') if x.strip()}
@@ -64,7 +60,6 @@ def run_web():
 
 # ================= 4. 报警发送函数 =================
 def _post_request(url, payload):
-    """同步发送请求并检查结果"""
     try:
         resp = requests.post(url, json=payload, timeout=10)
         if resp.status_code != 200:
@@ -127,20 +122,27 @@ async def task_reply_timeout(trigger_msg_id, sender_name, content, link):
     finally:
         if trigger_msg_id in reply_tasks: del reply_tasks[trigger_msg_id]
 
-# ================= 6. 初始化客户端 (已严格改为 Mac) =================
+# ================= 6. 初始化客户端 (完全按你要求配置) =================
 client = TelegramClient(
     StringSession(SESSION_STRING), 
     API_ID, 
     API_HASH,
-    # 👇 这里严格改为 Mac 配置，不再变动
-    device_model="MacBook Pro",
-    app_version="5.8.3", 
-    system_version="macOS 14.0",
+    
+    # 1. 设备名称
+    device_model="Mac mini M2", 
+    
+    # 2. App 版本号
+    app_version="5.8.3 arm64 Mac App Store",     
+    
+    # 3. 系统版本
+    system_version="macOS 15.6.1",
+    
+    # 语言设置
     lang_code="zh-hans",
     system_lang_code="zh-hans"
 )
 
-# ================= 7. 遥控指令处理 (机器人推送版) =================
+# ================= 7. 遥控指令处理 =================
 @client.on(events.NewMessage(chats='me', pattern='^(上班|下班|状态)$'))
 async def command_handler(event):
     global IS_WORKING, wait_tasks, reply_tasks, wait_msg_map, deleted_cache
@@ -246,6 +248,6 @@ async def handler(event):
 
 if __name__ == '__main__':
     Thread(target=run_web).start()
-    print(f"✅ 监控系统启动。设备标识已锁定为 MacBook Pro。")
+    print(f"✅ 监控系统启动。设备标识：Mac mini M2 (v5.8.3)。")
     client.start()
     client.run_until_disconnected()
