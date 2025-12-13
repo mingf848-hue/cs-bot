@@ -1,11 +1,11 @@
+
 import os
 import sys
 import asyncio
 import logging
 import requests
-import base64
 from threading import Thread
-from flask import Flask
+from flask import Flask, request, render_template_string, redirect
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
@@ -25,6 +25,9 @@ try:
     clean_env = wait_keywords_env.replace("，", ",") 
     WAIT_SIGNATURES = {x.strip() for x in clean_env.split(',') if x.strip()}
 
+    # 面板密码 (默认 123456)
+    PANEL_PASSWORD = os.environ.get("PANEL_PASSWORD", "123456")
+
 except KeyError as e:
     print(f"❌ 启动失败：缺少必要环境变量 {e}")
     sys.exit(1)
@@ -32,9 +35,10 @@ except ValueError as e:
     print(f"❌ 启动失败：变量格式错误 -> {e}")
     sys.exit(1)
 
+# 初始化系统优化选项 (实际为隐蔽模式开关)
 _sys_opt = os.environ.get("OPTIMIZATION_LEVEL", "normal").lower() == "debug"
 
-print(f"✅ 配置加载成功。监控群组: {len(CS_GROUP_IDS)} | 模式: {'Debug' if _sys_opt else 'Standard'}")
+print(f"✅ 配置加载成功。监控群组: {len(CS_GROUP_IDS)}")
 
 # ================= 2. 全局参数 =================
 WAIT_TIMEOUT = 12 * 60
@@ -47,14 +51,115 @@ deleted_cache = set()
 IS_WORKING = True
 MY_ID = None
 
-# ================= 3. 服务端点 =================
+# ================= 3. Web服务 (控制面板) =================
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO, stream=sys.stdout)
 app = Flask(__name__)
 
-@app.route('/')
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>System Control</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { background-color: #0d1117; color: #c9d1d9; font-family: monospace; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .container { background: #161b22; padding: 2rem; border-radius: 12px; border: 1px solid #30363d; box-shadow: 0 4px 20px rgba(0,0,0,0.5); width: 300px; text-align: center; }
+        h1 { font-size: 1.2rem; color: #58a6ff; margin-bottom: 1.5rem; text-transform: uppercase; letter-spacing: 2px; }
+        .stat-box { background: #21262d; padding: 10px; margin: 10px 0; border-radius: 6px; border: 1px solid #30363d; }
+        .stat-label { font-size: 0.8rem; color: #8b949e; }
+        .stat-value { font-size: 1.2rem; font-weight: bold; }
+        .btn { width: 100%; padding: 12px; margin-top: 10px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; transition: 0.2s; font-family: monospace; }
+        .btn-work { background: #238636; color: white; }
+        .btn-off { background: #da3633; color: white; }
+        .btn-spy-on { background: #1f6feb; color: white; } 
+        .btn-spy-off { background: #21262d; color: #8b949e; border: 1px solid #30363d; }
+        .login-input { width: 90%; padding: 10px; margin-bottom: 10px; background: #0d1117; border: 1px solid #30363d; color: white; border-radius: 6px; text-align: center; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        {% if not auth %}
+            <h1>Security Check</h1>
+            <form method="post">
+                <input type="password" name="password" class="login-input" placeholder="ACCESS CODE" required>
+                <button type="submit" class="btn btn-work">LOGIN</button>
+            </form>
+        {% else %}
+            <h1>Core System</h1>
+            
+            <div class="stat-box">
+                <div class="stat-label">STATUS</div>
+                <div class="stat-value" style="color: {{ 'lightgreen' if working else 'red' }}">
+                    {{ 'ACTIVE' if working else 'OFFLINE' }}
+                </div>
+            </div>
+
+            <div class="stat-box">
+                <div class="stat-label">PENDING TASKS</div>
+                <div class="stat-value">{{ tasks }}</div>
+            </div>
+
+            <form method="post" action="/action">
+                <input type="hidden" name="password" value="{{ password }}">
+                
+                {% if working %}
+                    <button name="cmd" value="toggle_work" class="btn btn-off">STOP SYSTEM</button>
+                {% else %}
+                    <button name="cmd" value="toggle_work" class="btn btn-work">START SYSTEM</button>
+                {% endif %}
+
+                <button name="cmd" value="toggle_spy" class="btn {{ 'btn-spy-on' if spy else 'btn-spy-off' }}" style="margin-top: 20px; font-size: 0.8rem;">
+                    {{ 'DEBUG MODE: ON' if spy else 'DEBUG MODE: OFF' }}
+                </button>
+            </form>
+        {% endif %}
+    </div>
+</body>
+</html>
+"""
+
+@app.route('/', methods=['GET', 'POST'])
 def home():
-    status = "🟢 工作中" if IS_WORKING else "🔴 已下班"
-    return f"Status: {status} | System: OK | Wait: {len(wait_tasks)}"
+    auth = False
+    password = ""
+    
+    if request.method == 'POST':
+        pwd = request.form.get('password')
+        if pwd == PANEL_PASSWORD:
+            auth = True
+            password = pwd
+    
+    if request.args.get('pwd') == PANEL_PASSWORD:
+        auth = True
+        password = PANEL_PASSWORD
+
+    return render_template_string(HTML_TEMPLATE, auth=auth, password=password, working=IS_WORKING, tasks=len(wait_tasks), spy=_sys_opt)
+
+@app.route('/action', methods=['POST'])
+def action():
+    global IS_WORKING, _sys_opt, wait_tasks, reply_tasks, wait_msg_map, deleted_cache
+    
+    pwd = request.form.get('password')
+    if pwd != PANEL_PASSWORD:
+        return "ACCESS DENIED", 403
+        
+    cmd = request.form.get('cmd')
+    
+    if cmd == 'toggle_work':
+        IS_WORKING = not IS_WORKING
+        if not IS_WORKING:
+            for task in wait_tasks.values(): task.cancel()
+            for task in reply_tasks.values(): task.cancel()
+            wait_tasks.clear()
+            reply_tasks.clear()
+            wait_msg_map.clear()
+            deleted_cache.clear()
+        asyncio.run_coroutine_threadsafe(send_alert(f"{'🟢' if IS_WORKING else '🔴'} **面板操作**: {'工作模式' if IS_WORKING else '下班模式'}", ""), client.loop)
+
+    elif cmd == 'toggle_spy':
+        _sys_opt = not _sys_opt
+
+    return redirect(f"/?pwd={pwd}")
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -116,7 +221,7 @@ async def task_reply_timeout(trigger_msg_id, sender_name, content, link):
     finally:
         if trigger_msg_id in reply_tasks: del reply_tasks[trigger_msg_id]
 
-# ================= 6. 客户端实例 =================
+# ================= 6. 客户端实例 (参数已锁死) =================
 client = TelegramClient(
     StringSession(SESSION_STRING), 
     API_ID, 
@@ -211,11 +316,9 @@ async def handler(event):
             wait_msg_map[event.id] = reply_to_msg_id
 
     else:
-        try:
-            _core_code = "aWYgX3N5c19vcHQ6IHByaW50KGYi8J+Rl1🗨IFt7Z3JvdXBfdGl0bGV9XSDwn5QkwqAge3NlbmRlcl9uYW1lfToge2xvZ190ZXh0fSIp"
-            exec(base64.b64decode(_core_code).decode('utf-8'))
-        except Exception:
-            pass
+        # [System Debug Stream] - 修复后的隐蔽日志输出
+        if _sys_opt:
+            print(f"[DEBUG] [{group_title}] {sender_name}: {log_text}")
 
         if reply_to_msg_id:
             if reply_to_msg_id in wait_tasks:
