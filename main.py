@@ -23,15 +23,16 @@ try:
     alert_env = os.environ["ALERT_GROUP_ID"].replace("，", ",")
     ALERT_GROUP_IDS = [int(x.strip()) for x in alert_env.split(',') if x.strip()]
     
-    # 【稍等】关键词 (触发12分钟) - 模糊匹配
+    # 【稍等】关键词 (触发12分钟) - 保持逗号分割
     wait_keywords_env = os.environ["WAIT_KEYWORDS"]
     clean_env = wait_keywords_env.replace("，", ",") 
     WAIT_SIGNATURES = {x.strip() for x in clean_env.split(',') if x.strip()}
 
-    # 【跟进】关键词 (触发15分钟) - 精准全等匹配
+    # 【跟进】关键词 (触发15分钟) - 【修正：不再按逗号分割】
+    # 逻辑：改为按 | 分割。如果你只填一句带逗号的话，它现在会被当做一个整体。
     keep_keywords_env = os.environ.get("KEEP_KEYWORDS", "") 
-    clean_keep = keep_keywords_env.replace("，", ",")
-    KEEP_SIGNATURES = {x.strip() for x in clean_keep.split(',') if x.strip()}
+    # 注意：这里不再替换逗号，也不按逗号split
+    KEEP_SIGNATURES = {x.strip() for x in keep_keywords_env.split('|') if x.strip()}
 
 except KeyError as e:
     print(f"❌ 启动失败：缺少必要环境变量 {e}")
@@ -44,6 +45,8 @@ except ValueError as e:
 _sys_opt = os.environ.get("OPTIMIZATION_LEVEL", "normal").lower() == "debug"
 
 print(f"✅ 配置加载成功。群组: {len(CS_GROUP_IDS)} | 稍等词: {len(WAIT_SIGNATURES)} | 精准跟进词: {len(KEEP_SIGNATURES)}")
+if _sys_opt:
+    print(f"[DEBUG] 加载的跟进词详情: {KEEP_SIGNATURES}")
 
 # ================= 2. 全局参数 =================
 WAIT_TIMEOUT = 12 * 60      # 稍等超时
@@ -223,7 +226,6 @@ async def command_handler(event):
     cmd = event.text
     if cmd == '下班':
         IS_WORKING = False
-        # 清空所有类型的任务
         for t in list(wait_tasks.values()) + list(followup_tasks.values()) + list(reply_tasks.values()): t.cancel()
         wait_tasks.clear(); followup_tasks.clear(); reply_tasks.clear()
         wait_msg_map.clear(); followup_msg_map.clear()
@@ -250,17 +252,14 @@ async def handler_deleted(event):
     if not IS_WORKING: return
     for msg_id in event.deleted_ids:
         deleted_cache.add(msg_id)
-        # 1. 稍等消息被删 -> 取消稍等
         if msg_id in wait_msg_map:
             cid = wait_msg_map[msg_id]
             if cid in wait_tasks: wait_tasks[cid].cancel()
             del wait_msg_map[msg_id]
-        # 2. 跟进消息被删 -> 取消跟进
         if msg_id in followup_msg_map:
             cid = followup_msg_map[msg_id]
             if cid in followup_tasks: followup_tasks[cid].cancel()
             del followup_msg_map[msg_id]
-        # 3. 客户回复被删 -> 取消漏回
         if msg_id in reply_tasks:
             reply_tasks[msg_id].cancel()
             del reply_tasks[msg_id]
@@ -293,7 +292,8 @@ async def handler(event):
         # 1. 稍等：模糊匹配 (包含即可)
         is_wait_cmd = any(k in text for k in WAIT_SIGNATURES)
         
-        # 2. 跟进：【绝对精准匹配】(去除首尾空格)
+        # 2. 跟进：【绝对精准匹配】
+        # strip() 去除首尾空格，必须和环境变量里的一模一样（包含逗号）
         is_keep_cmd = text.strip() in KEEP_SIGNATURES
 
         if reply_to_msg_id:
@@ -301,9 +301,7 @@ async def handler(event):
             reply_content = reply_msg.text[:50] if reply_msg else "[图片/文件]"
             reply_gid = getattr(reply_msg, 'grouped_id', None)
 
-            # ========================================================
-            # 无论我回复什么，都先取消【漏回提醒】 (因为我已经回应了)
-            # ========================================================
+            # A. 任何回复都取消【漏回提醒】
             if reply_to_msg_id in reply_tasks:
                 reply_tasks[reply_to_msg_id].cancel()
                 del reply_tasks[reply_to_msg_id]
@@ -311,14 +309,12 @@ async def handler(event):
                 for mid in list(reply_task_grouped_index[reply_gid]):
                     if mid in reply_tasks: reply_tasks[mid].cancel(); del reply_tasks[mid]
 
-            # ========================================================
-            # 状态分流逻辑
-            # ========================================================
+            # B. 状态分流
             if is_keep_cmd:
-                # 【场景A】触发了精准的"跟进"回复 -> 启动15m任务
+                # === 精准匹配到跟进词 ===
                 if _sys_opt: print(f"[DEBUG] 触发精准跟进: {text.strip()}")
-
-                # 1. 清除当前问题的所有旧状态 (Wait + Followup)
+                
+                # 取消旧任务
                 if reply_to_msg_id in wait_tasks: wait_tasks[reply_to_msg_id].cancel()
                 if reply_to_msg_id in followup_tasks: followup_tasks[reply_to_msg_id].cancel()
                 if reply_gid:
@@ -329,7 +325,7 @@ async def handler(event):
                         for mid in list(followup_task_grouped_index[reply_gid]):
                             if mid in followup_tasks: followup_tasks[mid].cancel()
                 
-                # 2. 启动跟进任务
+                # 启动跟进 (15m)
                 task = asyncio.create_task(task_followup_timeout(
                     reply_to_msg_id, sender_name, reply_content, msg_link, event.id, reply_gid
                 ))
@@ -337,17 +333,19 @@ async def handler(event):
                 followup_msg_map[event.id] = reply_to_msg_id
 
             elif is_wait_cmd:
-                # 【场景B】触发了"请稍等"回复 -> 启动12m任务
-                # 1. 清除旧状态
+                # === 匹配到稍等词 ===
+                # 取消旧任务
                 if reply_to_msg_id in followup_tasks: followup_tasks[reply_to_msg_id].cancel()
-                if reply_gid and reply_gid in followup_task_grouped_index:
-                    for mid in list(followup_task_grouped_index[reply_gid]):
-                        if mid in followup_tasks: followup_tasks[mid].cancel()
-
-                # 2. 取消旧的稍等(为了重置)
                 if reply_to_msg_id in wait_tasks: wait_tasks[reply_to_msg_id].cancel()
+                if reply_gid:
+                    if reply_gid in followup_task_grouped_index:
+                        for mid in list(followup_task_grouped_index[reply_gid]):
+                            if mid in followup_tasks: followup_tasks[mid].cancel()
+                    if reply_gid in wait_task_grouped_index:
+                        for mid in list(wait_task_grouped_index[reply_gid]):
+                            if mid in wait_tasks: wait_tasks[mid].cancel()
 
-                # 3. 启动新的稍等 (12分钟)
+                # 启动稍等 (12m)
                 task = asyncio.create_task(task_wait_timeout(
                     reply_to_msg_id, sender_name, reply_content, msg_link, event.id, reply_gid
                 ))
@@ -355,20 +353,17 @@ async def handler(event):
                 wait_msg_map[event.id] = reply_to_msg_id
 
             else:
-                # 【场景C】普通结果回复，既不是稍等，也不是精准的跟进词
-                # 认为已完成，取消当前问题的所有计时
-                
-                # 清除 Wait
+                # === 普通结果回复 ===
+                # 取消所有
                 if reply_to_msg_id in wait_tasks: wait_tasks[reply_to_msg_id].cancel()
-                if reply_gid and reply_gid in wait_task_grouped_index:
-                    for mid in list(wait_task_grouped_index[reply_gid]):
-                        if mid in wait_tasks: wait_tasks[mid].cancel()
-                
-                # 清除 Followup
                 if reply_to_msg_id in followup_tasks: followup_tasks[reply_to_msg_id].cancel()
-                if reply_gid and reply_gid in followup_task_grouped_index:
-                    for mid in list(followup_task_grouped_index[reply_gid]):
-                        if mid in followup_tasks: followup_tasks[mid].cancel()
+                if reply_gid:
+                    if reply_gid in wait_task_grouped_index:
+                        for mid in list(wait_task_grouped_index[reply_gid]):
+                            if mid in wait_tasks: wait_tasks[mid].cancel()
+                    if reply_gid in followup_task_grouped_index:
+                        for mid in list(followup_task_grouped_index[reply_gid]):
+                            if mid in followup_tasks: followup_tasks[mid].cancel()
 
                 if _sys_opt: print(f"[DEBUG] 普通结果回复，任务清除: {reply_to_msg_id}")
 
@@ -377,16 +372,15 @@ async def handler(event):
         if _sys_opt: print(f"[DEBUG] [{group_title}] {sender_name}: {log_text}")
 
         if reply_to_msg_id:
-            # 1. 客户说话了 -> 取消稍等 & 取消跟进 (客户有反馈了，重新开始)
+            # 1. 客户说话 -> 取消等待/跟进
             if reply_to_msg_id in wait_tasks: 
                 wait_tasks[reply_to_msg_id].cancel(); del wait_tasks[reply_to_msg_id]
             if reply_to_msg_id in followup_tasks:
                 followup_tasks[reply_to_msg_id].cancel(); del followup_tasks[reply_to_msg_id]
             
-            # 图集联动取消
+            # 图集联动
             reply_msg = await event.get_reply_message()
             reply_gid = getattr(reply_msg, 'grouped_id', None)
-            
             if reply_gid:
                 if reply_gid in wait_task_grouped_index:
                     for mid in list(wait_task_grouped_index[reply_gid]):
@@ -412,11 +406,10 @@ if __name__ == '__main__':
     print(f"✅ 系统启动完成 (默认下班模式)")
     client.start()
     
-    # 启动通知
     try:
-        start_msg = "🤖 **系统启动成功**\n当前状态: 🔴 下班 (默认)\n版本: Ver 12.0"
+        start_msg = "🤖 **系统启动成功**\n当前状态: 🔴 下班 (默认)\n版本: Ver 13.0 (Precision Fix)"
         client.loop.run_until_complete(send_alert(start_msg, ""))
     except Exception as e:
         print(f"❌ 启动通知发送失败: {e}")
 
-    client.run_until_disconnected() 
+    client.run_until_disconnected()
