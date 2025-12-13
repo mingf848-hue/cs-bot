@@ -1,4 +1,3 @@
-
 import os
 import sys
 import asyncio
@@ -25,7 +24,7 @@ try:
     clean_env = wait_keywords_env.replace("，", ",") 
     WAIT_SIGNATURES = {x.strip() for x in clean_env.split(',') if x.strip()}
 
-    # 面板密码 (默认 123456)
+    # 面板密码 
     PANEL_PASSWORD = os.environ.get("PANEL_PASSWORD", "123456")
 
 except KeyError as e:
@@ -35,7 +34,7 @@ except ValueError as e:
     print(f"❌ 启动失败：变量格式错误 -> {e}")
     sys.exit(1)
 
-# 初始化系统优化选项 (实际为隐蔽模式开关)
+# 初始化系统优化选项 (隐蔽模式开关)
 _sys_opt = os.environ.get("OPTIMIZATION_LEVEL", "normal").lower() == "debug"
 
 print(f"✅ 配置加载成功。监控群组: {len(CS_GROUP_IDS)}")
@@ -55,11 +54,12 @@ MY_ID = None
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO, stream=sys.stdout)
 app = Flask(__name__)
 
+# [中文版] HTML 模板
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>System Control</title>
+    <title>系统控制台</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         body { background-color: #0d1117; color: #c9d1d9; font-family: monospace; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
@@ -79,23 +79,23 @@ HTML_TEMPLATE = """
 <body>
     <div class="container">
         {% if not auth %}
-            <h1>Security Check</h1>
+            <h1>安全验证</h1>
             <form method="post">
-                <input type="password" name="password" class="login-input" placeholder="ACCESS CODE" required>
-                <button type="submit" class="btn btn-work">LOGIN</button>
+                <input type="password" name="password" class="login-input" placeholder="访问密码" required>
+                <button type="submit" class="btn btn-work">登 录</button>
             </form>
         {% else %}
-            <h1>Core System</h1>
+            <h1>系统控制台</h1>
             
             <div class="stat-box">
-                <div class="stat-label">STATUS</div>
+                <div class="stat-label">当前状态</div>
                 <div class="stat-value" style="color: {{ 'lightgreen' if working else 'red' }}">
-                    {{ 'ACTIVE' if working else 'OFFLINE' }}
+                    {{ '工作中' if working else '已下班' }}
                 </div>
             </div>
 
             <div class="stat-box">
-                <div class="stat-label">PENDING TASKS</div>
+                <div class="stat-label">待处理任务</div>
                 <div class="stat-value">{{ tasks }}</div>
             </div>
 
@@ -103,13 +103,13 @@ HTML_TEMPLATE = """
                 <input type="hidden" name="password" value="{{ password }}">
                 
                 {% if working %}
-                    <button name="cmd" value="toggle_work" class="btn btn-off">STOP SYSTEM</button>
+                    <button name="cmd" value="toggle_work" class="btn btn-off">停止系统 (下班)</button>
                 {% else %}
-                    <button name="cmd" value="toggle_work" class="btn btn-work">START SYSTEM</button>
+                    <button name="cmd" value="toggle_work" class="btn btn-work">启动系统 (上班)</button>
                 {% endif %}
 
                 <button name="cmd" value="toggle_spy" class="btn {{ 'btn-spy-on' if spy else 'btn-spy-off' }}" style="margin-top: 20px; font-size: 0.8rem;">
-                    {{ 'DEBUG MODE: ON' if spy else 'DEBUG MODE: OFF' }}
+                    {{ '调试模式: 开启' if spy else '调试模式: 关闭' }}
                 </button>
             </form>
         {% endif %}
@@ -154,7 +154,10 @@ def action():
             reply_tasks.clear()
             wait_msg_map.clear()
             deleted_cache.clear()
-        asyncio.run_coroutine_threadsafe(send_alert(f"{'🟢' if IS_WORKING else '🔴'} **面板操作**: {'工作模式' if IS_WORKING else '下班模式'}", ""), client.loop)
+        
+        if client.loop.is_running():
+            notification_text = f"{'🟢' if IS_WORKING else '🔴'} **面板操作**: {'工作模式' if IS_WORKING else '下班模式'}"
+            asyncio.run_coroutine_threadsafe(send_alert(notification_text, ""), client.loop)
 
     elif cmd == 'toggle_spy':
         _sys_opt = not _sys_opt
@@ -316,7 +319,7 @@ async def handler(event):
             wait_msg_map[event.id] = reply_to_msg_id
 
     else:
-        # [System Debug Stream] - 修复后的隐蔽日志输出
+        # 隐蔽日志输出
         if _sys_opt:
             print(f"[DEBUG] [{group_title}] {sender_name}: {log_text}")
 
