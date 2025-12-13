@@ -1,3 +1,17 @@
+没问题。这就为你加上**启动通知**功能。
+
+只需要在 `client.start()` 之后，程序进入死循环监听之前，执行一次 `send_alert` 即可。
+
+### 🟢 最终完整版 (Ver 12.0)
+
+**更新内容**：
+
+1.  **启动通知**：程序重启/启动完成后，会自动往报警群发送一条 `🤖 系统启动完成` 的消息。
+2.  **保留所有功能**：严格的关键词匹配、图集联动、过程词检测、多管理员通知等逻辑全部保留。
+
+<!-- end list -->
+
+```python
 import os
 import sys
 import asyncio
@@ -19,14 +33,19 @@ try:
     cs_groups_env = os.environ["CS_GROUP_IDS"]
     CS_GROUP_IDS = [int(x.strip()) for x in cs_groups_env.split(',') if x.strip()]
     
-    # 多人通知：自动处理中文逗号
+    # 报警人配置
     alert_env = os.environ["ALERT_GROUP_ID"].replace("，", ",")
     ALERT_GROUP_IDS = [int(x.strip()) for x in alert_env.split(',') if x.strip()]
     
+    # 【稍等】关键词 (触发12分钟) - 模糊匹配
     wait_keywords_env = os.environ["WAIT_KEYWORDS"]
     clean_env = wait_keywords_env.replace("，", ",") 
-    # 严格读取环境变量
     WAIT_SIGNATURES = {x.strip() for x in clean_env.split(',') if x.strip()}
+
+    # 【跟进】关键词 (触发15分钟) - 精准全等匹配
+    keep_keywords_env = os.environ.get("KEEP_KEYWORDS", "") 
+    clean_keep = keep_keywords_env.replace("，", ",")
+    KEEP_SIGNATURES = {x.strip() for x in clean_keep.split(',') if x.strip()}
 
 except KeyError as e:
     print(f"❌ 启动失败：缺少必要环境变量 {e}")
@@ -38,19 +57,24 @@ except ValueError as e:
 # 初始化系统优化选项
 _sys_opt = os.environ.get("OPTIMIZATION_LEVEL", "normal").lower() == "debug"
 
-print(f"✅ 配置加载成功。监控群组: {len(CS_GROUP_IDS)} | 报警接收人: {ALERT_GROUP_IDS}")
+print(f"✅ 配置加载成功。群组: {len(CS_GROUP_IDS)} | 稍等词: {len(WAIT_SIGNATURES)} | 精准跟进词: {len(KEEP_SIGNATURES)}")
 
 # ================= 2. 全局参数 =================
-WAIT_TIMEOUT = 12 * 60
-REPLY_TIMEOUT = 5 * 60
+WAIT_TIMEOUT = 12 * 60      # 稍等超时
+FOLLOWUP_TIMEOUT = 15 * 60  # 跟进超时
+REPLY_TIMEOUT = 5 * 60      # 漏回超时
 
 wait_tasks = {}
+followup_tasks = {} 
 reply_tasks = {}
-wait_msg_map = {}
+
+wait_msg_map = {}     
+followup_msg_map = {} 
 deleted_cache = set()
 
 # 图集索引
 wait_task_grouped_index = {} 
+followup_task_grouped_index = {} 
 reply_task_grouped_index = {}
 
 IS_WORKING = False  # 默认下班
@@ -83,9 +107,9 @@ HTML_TEMPLATE_READONLY = """
     <div class="container">
         <h1>系统状态监控 (只读)</h1>
         <div class="stat-box"><div class="stat-label">运行状态</div><div class="stat-value {{ 'green' if working else 'red' }}">{{ '🟢 工作中' if working else '🔴 已下班' }}</div></div>
-        <div class="stat-box"><div class="stat-label">调试模式</div><div class="stat-value {{ 'blue' if spy_on else 'red' }}">{{ '开启' if spy_on else '关闭' }}</div></div>
-        <div class="stat-box"><div class="stat-label">排队任务 (稍等)</div><div class="stat-value">{{ wait_tasks }}</div></div>
-        <div class="stat-box"><div class="stat-label">排队任务 (漏回)</div><div class="stat-value">{{ reply_tasks }}</div></div>
+        <div class="stat-box"><div class="stat-label">稍等任务 (12m)</div><div class="stat-value">{{ wait_tasks }}</div></div>
+        <div class="stat-box"><div class="stat-label">跟进任务 (15m)</div><div class="stat-value">{{ followup_tasks }}</div></div>
+        <div class="stat-box"><div class="stat-label">漏回任务 (5m)</div><div class="stat-value">{{ reply_tasks }}</div></div>
         <div class="footer">最后刷新时间: {{ current_time }}</div>
     </div>
 </body>
@@ -98,8 +122,8 @@ def status_page():
     return render_template_string(
         HTML_TEMPLATE_READONLY,
         working=IS_WORKING,
-        spy_on=_sys_opt,
         wait_tasks=len(wait_tasks),
+        followup_tasks=len(followup_tasks),
         reply_tasks=len(reply_tasks),
         current_time=current_time_str
     )
@@ -122,24 +146,18 @@ async def send_alert(text, link):
     
     tasks = []
     for chat_id in ALERT_GROUP_IDS:
-        payload = {
-            "chat_id": chat_id, 
-            "text": text, 
-            "parse_mode": "Markdown", 
-            "disable_web_page_preview": True
-        }
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": True}
         tasks.append(loop.run_in_executor(None, lambda p=payload: _post_request(url, p)))
-    
     if tasks:
         await asyncio.gather(*tasks)
 
 # ================= 5. 任务逻辑 =================
 
-async def task_wait_timeout(key_id, agent_name, original_text, link, my_wait_msg_id, grouped_id=None):
+# 1. 稍等超时 (Wait) - 12分钟
+async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, grouped_id=None):
     try:
         if grouped_id:
-            if grouped_id not in wait_task_grouped_index:
-                wait_task_grouped_index[grouped_id] = set()
+            if grouped_id not in wait_task_grouped_index: wait_task_grouped_index[grouped_id] = set()
             wait_task_grouped_index[grouped_id].add(key_id)
 
         await asyncio.sleep(WAIT_TIMEOUT)
@@ -155,18 +173,41 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_wait_msg
     except asyncio.CancelledError: pass
     finally:
         if key_id in wait_tasks: del wait_tasks[key_id]
-        if my_wait_msg_id in wait_msg_map: del wait_msg_map[my_wait_msg_id]
-        if my_wait_msg_id in deleted_cache: deleted_cache.discard(my_wait_msg_id)
+        if my_msg_id in wait_msg_map: del wait_msg_map[my_msg_id]
         if grouped_id and grouped_id in wait_task_grouped_index:
             wait_task_grouped_index[grouped_id].discard(key_id)
-            if not wait_task_grouped_index[grouped_id]:
-                del wait_task_grouped_index[grouped_id]
+            if not wait_task_grouped_index[grouped_id]: del wait_task_grouped_index[grouped_id]
 
+# 2. 跟进超时 (Follow-up) - 15分钟
+async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_id, grouped_id=None):
+    try:
+        if grouped_id:
+            if grouped_id not in followup_task_grouped_index: followup_task_grouped_index[grouped_id] = set()
+            followup_task_grouped_index[grouped_id].add(key_id)
+
+        await asyncio.sleep(FOLLOWUP_TIMEOUT)
+        if not IS_WORKING: return
+        alert_text = (
+            f"📩 消息: `{original_text.replace('`', '')}`\n"
+            f"🚨 **跟进-超时预警**\n"
+            f"👤 客服: {agent_name}\n"
+            f"⚠️ 状态: **反馈核实内容超时未跟进回复** ({FOLLOWUP_TIMEOUT // 60} 分钟)\n"
+            f"🔗 [点击处理]({link})"
+        )
+        await send_alert(alert_text, link)
+    except asyncio.CancelledError: pass
+    finally:
+        if key_id in followup_tasks: del followup_tasks[key_id]
+        if my_msg_id in followup_msg_map: del followup_msg_map[my_msg_id]
+        if grouped_id and grouped_id in followup_task_grouped_index:
+            followup_task_grouped_index[grouped_id].discard(key_id)
+            if not followup_task_grouped_index[grouped_id]: del followup_task_grouped_index[grouped_id]
+
+# 3. 漏回超时 (Reply) - 5分钟
 async def task_reply_timeout(trigger_msg_id, sender_name, content, link, grouped_id=None):
     try:
         if grouped_id:
-            if grouped_id not in reply_task_grouped_index:
-                reply_task_grouped_index[grouped_id] = set()
+            if grouped_id not in reply_task_grouped_index: reply_task_grouped_index[grouped_id] = set()
             reply_task_grouped_index[grouped_id].add(trigger_msg_id)
 
         await asyncio.sleep(REPLY_TIMEOUT)
@@ -184,36 +225,23 @@ async def task_reply_timeout(trigger_msg_id, sender_name, content, link, grouped
         if trigger_msg_id in reply_tasks: del reply_tasks[trigger_msg_id]
         if grouped_id and grouped_id in reply_task_grouped_index:
             reply_task_grouped_index[grouped_id].discard(trigger_msg_id)
-            if not reply_task_grouped_index[grouped_id]:
-                del reply_task_grouped_index[grouped_id]
+            if not reply_task_grouped_index[grouped_id]: del reply_task_grouped_index[grouped_id]
 
 # ================= 6. 客户端实例 =================
-client = TelegramClient(
-    StringSession(SESSION_STRING), 
-    API_ID, 
-    API_HASH,
-    device_model="Mac mini M2",
-    app_version="5.10.7 arm64",     
-    system_version="macOS 15.6.1",
-    lang_code="zh-hans",
-    system_lang_code="zh-hans"
-)
+client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH, device_model="Mac mini M2", app_version="5.10.7", lang_code="zh-hans")
 
 # ================= 7. 控制指令 =================
 @client.on(events.NewMessage(chats='me', pattern='^(上班|下班|状态)$'))
 async def command_handler(event):
-    global IS_WORKING, wait_tasks, reply_tasks, wait_msg_map, deleted_cache
+    global IS_WORKING
     cmd = event.text
     if cmd == '下班':
         IS_WORKING = False
-        for task in wait_tasks.values(): task.cancel()
-        for task in reply_tasks.values(): task.cancel()
-        wait_tasks.clear()
-        reply_tasks.clear()
-        wait_msg_map.clear()
-        deleted_cache.clear()
-        wait_task_grouped_index.clear()
-        reply_task_grouped_index.clear()
+        # 清空所有类型的任务
+        for t in list(wait_tasks.values()) + list(followup_tasks.values()) + list(reply_tasks.values()): t.cancel()
+        wait_tasks.clear(); followup_tasks.clear(); reply_tasks.clear()
+        wait_msg_map.clear(); followup_msg_map.clear()
+        wait_task_grouped_index.clear(); followup_task_grouped_index.clear(); reply_task_grouped_index.clear()
         await send_alert("🔴 **已切换为：下班模式**", "")
     elif cmd == '上班':
         IS_WORKING = True
@@ -225,31 +253,31 @@ async def command_handler(event):
             f"{status_icon} **当前状态**: {'工作中' if IS_WORKING else '已下班'}\n"
             f"⚙️ 调试模式: {spy_status}\n"
             f"⏳ 稍等任务: {len(wait_tasks)}\n"
+            f"🕵️ 跟进任务: {len(followup_tasks)}\n"
             f"🔔 漏回任务: {len(reply_tasks)}"
         )
         await send_alert(msg, "")
 
-# ================= 8. 删除同步 (核心修复：增加对方删除的监听) =================
+# ================= 8. 删除同步 =================
 @client.on(events.MessageDeleted)
 async def handler_deleted(event):
     if not IS_WORKING: return
     for msg_id in event.deleted_ids:
         deleted_cache.add(msg_id)
-        
-        # 1. 场景：我删除了"请稍等" -> 取消稍等任务
+        # 1. 稍等消息被删 -> 取消稍等
         if msg_id in wait_msg_map:
-            customer_msg_id = wait_msg_map[msg_id]
-            if customer_msg_id in wait_tasks:
-                wait_tasks[customer_msg_id].cancel()
+            cid = wait_msg_map[msg_id]
+            if cid in wait_tasks: wait_tasks[cid].cancel()
             del wait_msg_map[msg_id]
-
-        # 2. 【核心修复】场景：对方(或误操作的客服)删除了回复消息 -> 取消漏回任务
+        # 2. 跟进消息被删 -> 取消跟进
+        if msg_id in followup_msg_map:
+            cid = followup_msg_map[msg_id]
+            if cid in followup_tasks: followup_tasks[cid].cancel()
+            del followup_msg_map[msg_id]
+        # 3. 客户回复被删 -> 取消漏回
         if msg_id in reply_tasks:
-            if _sys_opt: print(f"[DEBUG] 检测到漏回触发消息被删除，取消任务: {msg_id}")
             reply_tasks[msg_id].cancel()
             del reply_tasks[msg_id]
-            # 这里不需要特意清理 reply_task_grouped_index，
-            # 因为 task 的 finally 块或者下一次清理会自动处理
 
 # ================= 9. 消息处理主循环 =================
 @client.on(events.NewMessage(chats=CS_GROUP_IDS))
@@ -275,78 +303,135 @@ async def handler(event):
         group_title = chat_id_str
 
     if sender_id == MY_ID:
-        is_wait_command = any(sig.lower() in text.lower() for sig in WAIT_SIGNATURES)
+        # 指令检测
+        # 1. 稍等：模糊匹配 (包含即可)
+        is_wait_cmd = any(k in text for k in WAIT_SIGNATURES)
         
+        # 2. 跟进：【绝对精准匹配】(去除首尾空格)
+        is_keep_cmd = text.strip() in KEEP_SIGNATURES
+
         if reply_to_msg_id:
             reply_msg = await event.get_reply_message()
+            reply_content = reply_msg.text[:50] if reply_msg else "[图片/文件]"
             reply_gid = getattr(reply_msg, 'grouped_id', None)
 
-            # A. 取消【漏回提醒】
+            # ========================================================
+            # 无论我回复什么，都先取消【漏回提醒】 (因为我已经回应了)
+            # ========================================================
             if reply_to_msg_id in reply_tasks:
                 reply_tasks[reply_to_msg_id].cancel()
                 del reply_tasks[reply_to_msg_id]
-            
             if reply_gid and reply_gid in reply_task_grouped_index:
-                ids_to_cancel = list(reply_task_grouped_index[reply_gid])
-                for mid in ids_to_cancel:
-                    if mid in reply_tasks:
-                        reply_tasks[mid].cancel()
-                        del reply_tasks[mid]
-                        if _sys_opt: print(f"[DEBUG] 图集联动取消漏回: {mid}")
+                for mid in list(reply_task_grouped_index[reply_gid]):
+                    if mid in reply_tasks: reply_tasks[mid].cancel(); del reply_tasks[mid]
 
-            # B. 取消【稍等提醒】
-            if reply_to_msg_id in wait_tasks:
-                wait_tasks[reply_to_msg_id].cancel()
-            
-            if reply_gid and reply_gid in wait_task_grouped_index:
-                ids_to_cancel = list(wait_task_grouped_index[reply_gid])
-                for mid in ids_to_cancel:
-                    if mid in wait_tasks:
-                        wait_tasks[mid].cancel()
-                        if _sys_opt: print(f"[DEBUG] 图集联动取消稍等: {mid}")
+            # ========================================================
+            # 状态分流逻辑
+            # ========================================================
+            if is_keep_cmd:
+                # 【场景A】触发了精准的"跟进"回复 -> 启动15m任务
+                if _sys_opt: print(f"[DEBUG] 触发精准跟进: {text.strip()}")
 
-        # 启动新稍等
-        if is_wait_command and reply_to_msg_id:
-            reply_msg = await event.get_reply_message()
-            reply_content = reply_msg.text[:50] if reply_msg else "[图片/文件]"
-            target_grouped_id = getattr(reply_msg, 'grouped_id', None)
+                # 1. 清除当前问题的所有旧状态 (Wait + Followup)
+                if reply_to_msg_id in wait_tasks: wait_tasks[reply_to_msg_id].cancel()
+                if reply_to_msg_id in followup_tasks: followup_tasks[reply_to_msg_id].cancel()
+                if reply_gid:
+                    if reply_gid in wait_task_grouped_index:
+                        for mid in list(wait_task_grouped_index[reply_gid]):
+                            if mid in wait_tasks: wait_tasks[mid].cancel()
+                    if reply_gid in followup_task_grouped_index:
+                        for mid in list(followup_task_grouped_index[reply_gid]):
+                            if mid in followup_tasks: followup_tasks[mid].cancel()
+                
+                # 2. 启动跟进任务
+                task = asyncio.create_task(task_followup_timeout(
+                    reply_to_msg_id, sender_name, reply_content, msg_link, event.id, reply_gid
+                ))
+                followup_tasks[reply_to_msg_id] = task
+                followup_msg_map[event.id] = reply_to_msg_id
 
-            if reply_to_msg_id in wait_tasks:
-                wait_tasks[reply_to_msg_id].cancel()
+            elif is_wait_cmd:
+                # 【场景B】触发了"请稍等"回复 -> 启动12m任务
+                # 1. 清除旧状态
+                if reply_to_msg_id in followup_tasks: followup_tasks[reply_to_msg_id].cancel()
+                if reply_gid and reply_gid in followup_task_grouped_index:
+                    for mid in list(followup_task_grouped_index[reply_gid]):
+                        if mid in followup_tasks: followup_tasks[mid].cancel()
 
-            task = asyncio.create_task(task_wait_timeout(
-                reply_to_msg_id, sender_name, reply_content, msg_link, event.id, target_grouped_id
-            ))
-            wait_tasks[reply_to_msg_id] = task
-            wait_msg_map[event.id] = reply_to_msg_id
+                # 2. 取消旧的稍等(为了重置)
+                if reply_to_msg_id in wait_tasks: wait_tasks[reply_to_msg_id].cancel()
+
+                # 3. 启动新的稍等 (12分钟)
+                task = asyncio.create_task(task_wait_timeout(
+                    reply_to_msg_id, sender_name, reply_content, msg_link, event.id, reply_gid
+                ))
+                wait_tasks[reply_to_msg_id] = task
+                wait_msg_map[event.id] = reply_to_msg_id
+
+            else:
+                # 【场景C】普通结果回复，既不是稍等，也不是精准的跟进词
+                # 认为已完成，取消当前问题的所有计时
+                
+                # 清除 Wait
+                if reply_to_msg_id in wait_tasks: wait_tasks[reply_to_msg_id].cancel()
+                if reply_gid and reply_gid in wait_task_grouped_index:
+                    for mid in list(wait_task_grouped_index[reply_gid]):
+                        if mid in wait_tasks: wait_tasks[mid].cancel()
+                
+                # 清除 Followup
+                if reply_to_msg_id in followup_tasks: followup_tasks[reply_to_msg_id].cancel()
+                if reply_gid and reply_gid in followup_task_grouped_index:
+                    for mid in list(followup_task_grouped_index[reply_gid]):
+                        if mid in followup_tasks: followup_tasks[mid].cancel()
+
+                if _sys_opt: print(f"[DEBUG] 普通结果回复，任务清除: {reply_to_msg_id}")
 
     else:
-        if _sys_opt:
-            print(f"[DEBUG] [{group_title}] {sender_name}: {log_text}")
+        # 客户消息
+        if _sys_opt: print(f"[DEBUG] [{group_title}] {sender_name}: {log_text}")
 
         if reply_to_msg_id:
-            # 1. 客户说话了 -> 取消稍等
-            if reply_to_msg_id in wait_tasks:
-                wait_tasks[reply_to_msg_id].cancel()
-                del wait_tasks[reply_to_msg_id] 
+            # 1. 客户说话了 -> 取消稍等 & 取消跟进 (客户有反馈了，重新开始)
+            if reply_to_msg_id in wait_tasks: 
+                wait_tasks[reply_to_msg_id].cancel(); del wait_tasks[reply_to_msg_id]
+            if reply_to_msg_id in followup_tasks:
+                followup_tasks[reply_to_msg_id].cancel(); del followup_tasks[reply_to_msg_id]
             
-            # 2. 客户回复了我 -> 启动漏回
+            # 图集联动取消
+            reply_msg = await event.get_reply_message()
+            reply_gid = getattr(reply_msg, 'grouped_id', None)
+            
+            if reply_gid:
+                if reply_gid in wait_task_grouped_index:
+                    for mid in list(wait_task_grouped_index[reply_gid]):
+                        if mid in wait_tasks: wait_tasks[mid].cancel()
+                if reply_gid in followup_task_grouped_index:
+                    for mid in list(followup_task_grouped_index[reply_gid]):
+                        if mid in followup_tasks: followup_tasks[mid].cancel()
+
+            # 2. 启动漏回
             try:
                 replied_msg = await event.get_reply_message()
                 if replied_msg and replied_msg.sender_id == MY_ID:
                     if event.id in reply_tasks: reply_tasks[event.id].cancel()
-                    
                     current_grouped_id = getattr(event.message, 'grouped_id', None)
-
                     task = asyncio.create_task(task_reply_timeout(
                         event.id, sender_name, text[:50], msg_link, current_grouped_id
                     ))
                     reply_tasks[event.id] = task
-            except Exception as e:
-                pass
+            except Exception as e: pass
 
 if __name__ == '__main__':
     Thread(target=run_web).start()
     print(f"✅ 系统启动完成 (默认下班模式)")
     client.start()
+    
+    # 【新增】启动通知
+    try:
+        start_msg = "🤖 **系统启动成功**\n当前状态: 🔴 下班 (默认)\n版本: Ver 12.0"
+        client.loop.run_until_complete(send_alert(start_msg, ""))
+    except Exception as e:
+        print(f"❌ 启动通知发送失败: {e}")
+
     client.run_until_disconnected()
+```
