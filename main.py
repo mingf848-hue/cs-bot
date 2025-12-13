@@ -19,10 +19,13 @@ try:
     cs_groups_env = os.environ["CS_GROUP_IDS"]
     CS_GROUP_IDS = [int(x.strip()) for x in cs_groups_env.split(',') if x.strip()]
     
-    ALERT_GROUP_ID = int(os.environ["ALERT_GROUP_ID"])
+    # 【重要修复】支持多人通知：按逗号分割读取多个 ALERT_ID，而不是强转 int
+    alert_env = os.environ["ALERT_GROUP_ID"]
+    ALERT_GROUP_IDS = [int(x.strip()) for x in alert_env.split(',') if x.strip()]
     
     wait_keywords_env = os.environ["WAIT_KEYWORDS"]
     clean_env = wait_keywords_env.replace("，", ",") 
+    # 严格读取环境变量，不包含 =
     WAIT_SIGNATURES = {x.strip() for x in clean_env.split(',') if x.strip()}
 
 except KeyError as e:
@@ -32,10 +35,13 @@ except ValueError as e:
     print(f"❌ 启动失败：变量格式错误 -> {e}")
     sys.exit(1)
 
-# 初始化系统优化选项 (隐蔽模式开关，仅依赖环境变量)
+# 【重要修复】独立停止词，只停止不计时
+STOP_KEYWORDS = {'=', '＝'}
+
+# 初始化系统优化选项
 _sys_opt = os.environ.get("OPTIMIZATION_LEVEL", "normal").lower() == "debug"
 
-print(f"✅ 配置加载成功。监控群组: {len(CS_GROUP_IDS)} | 监听模式: {'🟢 开启' if _sys_opt else '⚪️ 关闭'}")
+print(f"✅ 配置加载成功。监控群组: {len(CS_GROUP_IDS)} | 报警接收人: {len(ALERT_GROUP_IDS)} | 监听模式: {'🟢 开启' if _sys_opt else '⚪️ 关闭'}")
 
 # ================= 2. 全局参数 =================
 WAIT_TIMEOUT = 12 * 60
@@ -45,6 +51,11 @@ wait_tasks = {}
 reply_tasks = {}
 wait_msg_map = {}
 deleted_cache = set()
+
+# 【重要修复】图集 ID 索引：用于解决回复图集某一张图无法取消任务的问题
+wait_task_grouped_index = {} 
+reply_task_grouped_index = {}
+
 IS_WORKING = False  # 默认下班
 MY_ID = None
 
@@ -52,7 +63,6 @@ MY_ID = None
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO, stream=sys.stdout)
 app = Flask(__name__)
 
-# [中文只读版] HTML 模板
 HTML_TEMPLATE_READONLY = """
 <!DOCTYPE html>
 <html>
@@ -125,9 +135,7 @@ HTML_TEMPLATE_READONLY = """
 
 @app.route('/')
 def status_page():
-    # 仅用于显示状态，不可操作
     current_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-    
     return render_template_string(
         HTML_TEMPLATE_READONLY,
         working=IS_WORKING,
@@ -141,35 +149,41 @@ def status_page():
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
-    # 强制在 0.0.0.0 上运行，以供 Zeabur 访问
     app.run(host='0.0.0.0', port=port, threaded=True)
 
 # ================= 4. 通知模块 =================
 def _post_request(url, payload):
     try:
-        resp = requests.post(url, json=payload, timeout=10)
-        if resp.status_code != 200:
-            print(f"❌ 发送失败: {resp.status_code}")
+        requests.post(url, json=payload, timeout=10)
     except Exception as e:
         print(f"❌ 网络异常: {e}")
 
 async def send_alert(text, link):
     if not BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": ALERT_GROUP_ID,
-        "text": text,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True
-    }
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, lambda: _post_request(url, payload))
+    
+    # 【重要修复】循环发送给 ALERT_GROUP_IDS 列表里的所有人
+    for chat_id in ALERT_GROUP_IDS:
+        payload = {
+            "chat_id": chat_id, 
+            "text": text, 
+            "parse_mode": "Markdown", 
+            "disable_web_page_preview": True
+        }
+        await loop.run_in_executor(None, lambda: _post_request(url, payload))
 
 # ================= 5. 任务逻辑 =================
-# ... (task_wait_timeout 和 task_reply_timeout 逻辑保持不变)
 
-async def task_wait_timeout(key_id, agent_name, original_text, link, my_wait_msg_id):
+# 【重要修复】增加了 grouped_id 参数处理图集
+async def task_wait_timeout(key_id, agent_name, original_text, link, my_wait_msg_id, grouped_id=None):
     try:
+        # 如果这个消息属于一个图集，记录到索引里
+        if grouped_id:
+            if grouped_id not in wait_task_grouped_index:
+                wait_task_grouped_index[grouped_id] = set()
+            wait_task_grouped_index[grouped_id].add(key_id)
+
         await asyncio.sleep(WAIT_TIMEOUT)
         if not IS_WORKING: return
         alert_text = (
@@ -185,9 +199,19 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_wait_msg
         if key_id in wait_tasks: del wait_tasks[key_id]
         if my_wait_msg_id in wait_msg_map: del wait_msg_map[my_wait_msg_id]
         if my_wait_msg_id in deleted_cache: deleted_cache.discard(my_wait_msg_id)
+        # 清理图集索引
+        if grouped_id and grouped_id in wait_task_grouped_index:
+            wait_task_grouped_index[grouped_id].discard(key_id)
+            if not wait_task_grouped_index[grouped_id]:
+                del wait_task_grouped_index[grouped_id]
 
-async def task_reply_timeout(trigger_msg_id, sender_name, content, link):
+async def task_reply_timeout(trigger_msg_id, sender_name, content, link, grouped_id=None):
     try:
+        if grouped_id:
+            if grouped_id not in reply_task_grouped_index:
+                reply_task_grouped_index[grouped_id] = set()
+            reply_task_grouped_index[grouped_id].add(trigger_msg_id)
+
         await asyncio.sleep(REPLY_TIMEOUT)
         if not IS_WORKING: return
         alert_text = (
@@ -201,6 +225,10 @@ async def task_reply_timeout(trigger_msg_id, sender_name, content, link):
     except asyncio.CancelledError: pass
     finally:
         if trigger_msg_id in reply_tasks: del reply_tasks[trigger_msg_id]
+        if grouped_id and grouped_id in reply_task_grouped_index:
+            reply_task_grouped_index[grouped_id].discard(trigger_msg_id)
+            if not reply_task_grouped_index[grouped_id]:
+                del reply_task_grouped_index[grouped_id]
 
 # ================= 6. 客户端实例 =================
 client = TelegramClient(
@@ -227,6 +255,8 @@ async def command_handler(event):
         reply_tasks.clear()
         wait_msg_map.clear()
         deleted_cache.clear()
+        wait_task_grouped_index.clear()
+        reply_task_grouped_index.clear()
         await send_alert("🔴 **已切换为：下班模式**", "")
     elif cmd == '上班':
         IS_WORKING = True
@@ -252,7 +282,6 @@ async def handler_deleted(event):
             customer_msg_id = wait_msg_map[msg_id]
             if customer_msg_id in wait_tasks:
                 wait_tasks[customer_msg_id].cancel()
-                del wait_tasks[customer_msg_id]
             del wait_msg_map[msg_id]
 
 # ================= 9. 消息处理主循环 =================
@@ -278,49 +307,94 @@ async def handler(event):
     except:
         group_title = chat_id_str
 
+    # ============ 客服 (我) 发言逻辑 ============
     if sender_id == MY_ID:
-        if reply_to_msg_id and reply_to_msg_id in reply_tasks:
-            reply_tasks[reply_to_msg_id].cancel()
-            del reply_tasks[reply_to_msg_id]
         
-        if reply_to_msg_id and reply_to_msg_id in wait_tasks:
-            wait_tasks[reply_to_msg_id].cancel()
-            if reply_to_msg_id in wait_tasks: del wait_tasks[reply_to_msg_id] 
-
-        matched = any(sig.lower() in text.lower() for sig in WAIT_SIGNATURES)
-        if matched and reply_to_msg_id:
+        # 1. 检查是否是停止指令 (包含 = 就算)
+        is_stop_command = any(k in text for k in STOP_KEYWORDS)
+        
+        # 2. 处理“漏回提醒”的取消
+        if reply_to_msg_id:
+            if reply_to_msg_id in reply_tasks:
+                reply_tasks[reply_to_msg_id].cancel()
+                del reply_tasks[reply_to_msg_id]
+            
+            # 【重要修复】如果是图集，顺便取消同组其他图片
             reply_msg = await event.get_reply_message()
-            reply_content = reply_msg.text[:50] if reply_msg else "[无引用]"
-            if event.id in deleted_cache: return
+            if reply_msg and reply_msg.grouped_id:
+                gid = reply_msg.grouped_id
+                if gid in reply_task_grouped_index:
+                    ids_to_cancel = list(reply_task_grouped_index[gid])
+                    for mid in ids_to_cancel:
+                        if mid in reply_tasks:
+                            reply_tasks[mid].cancel()
+                            del reply_tasks[mid]
+                            if _sys_opt: print(f"[DEBUG] 图集联动取消漏回任务: {mid} (Group: {gid})")
+
+        # 3. 处理“稍等提醒”的启动与取消
+        # 【重要修复】只有发 = 且有引用时，尝试取消稍等
+        if is_stop_command and reply_to_msg_id:
+            if reply_to_msg_id in wait_tasks:
+                wait_tasks[reply_to_msg_id].cancel()
+            
+            # 【重要修复】图集联动
+            reply_msg = await event.get_reply_message()
+            if reply_msg and reply_msg.grouped_id:
+                gid = reply_msg.grouped_id
+                if gid in wait_task_grouped_index:
+                    ids_to_cancel = list(wait_task_grouped_index[gid])
+                    for mid in ids_to_cancel:
+                        if mid in wait_tasks:
+                            wait_tasks[mid].cancel()
+                            if _sys_opt: print(f"[DEBUG] 图集联动取消稍等任务: {mid} (Group: {gid})")
+
+        # 4. 启动新的稍等任务 (仅当包含关键词且不包含=时)
+        is_wait_command = any(sig.lower() in text.lower() for sig in WAIT_SIGNATURES)
+        
+        if is_wait_command and reply_to_msg_id:
+            reply_msg = await event.get_reply_message()
+            reply_content = reply_msg.text[:50] if reply_msg else "[图片/文件]"
+            # 记录 grouped_id
+            target_grouped_id = getattr(reply_msg, 'grouped_id', None)
+
+            if reply_to_msg_id in wait_tasks:
+                wait_tasks[reply_to_msg_id].cancel()
+
+            # 启动任务时传入 grouped_id
             task = asyncio.create_task(task_wait_timeout(
-                reply_to_msg_id, sender_name, reply_content, msg_link, event.id
+                reply_to_msg_id, sender_name, reply_content, msg_link, event.id, target_grouped_id
             ))
             wait_tasks[reply_to_msg_id] = task
             wait_msg_map[event.id] = reply_to_msg_id
 
+    # ============ 客户 (他人) 发言逻辑 ============
     else:
-        # [监听输出] 严格依赖环境变量 OPTIMIZATION_LEVEL=debug
         if _sys_opt:
             print(f"[DEBUG] [{group_title}] {sender_name}: {log_text}")
 
         if reply_to_msg_id:
+            # 1. 客户回复了“稍等” -> 取消稍等任务
             if reply_to_msg_id in wait_tasks:
                 wait_tasks[reply_to_msg_id].cancel()
-                if reply_to_msg_id in wait_tasks: del wait_tasks[reply_to_msg_id]
+                del wait_tasks[reply_to_msg_id] 
             
+            # 2. 客户回复了我 -> 启动漏回任务
             try:
                 replied_msg = await event.get_reply_message()
                 if replied_msg and replied_msg.sender_id == MY_ID:
-                    task = asyncio.create_task(task_reply_timeout(event.id, sender_name, text[:50], msg_link))
+                    if event.id in reply_tasks: reply_tasks[event.id].cancel()
+
+                    current_grouped_id = getattr(event.message, 'grouped_id', None)
+
+                    task = asyncio.create_task(task_reply_timeout(
+                        event.id, sender_name, text[:50], msg_link, current_grouped_id
+                    ))
                     reply_tasks[event.id] = task
             except Exception as e:
                 pass
 
 if __name__ == '__main__':
-    # 启动 Web 服务 (新线程)
     Thread(target=run_web).start()
-    
-    # 启动 Telegram 客户端 (主线程)
     print(f"✅ 系统启动完成 (默认下班模式)")
     client.start()
     client.run_until_disconnected()
