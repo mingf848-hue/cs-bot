@@ -44,8 +44,8 @@ _sys_opt = os.environ.get("OPTIMIZATION_LEVEL", "normal").lower() == "debug"
 print(f"✅ 配置加载成功。监控群组: {len(CS_GROUP_IDS)} | 报警接收人: {len(ALERT_GROUP_IDS)} | 监听模式: {'🟢 开启' if _sys_opt else '⚪️ 关闭'}")
 
 # ================= 2. 全局参数 =================
-WAIT_TIMEOUT = 12 * 60
-REPLY_TIMEOUT = 5 * 60
+WAIT_TIMEOUT = 9 * 60
+REPLY_TIMEOUT = 4 * 60
 
 wait_tasks = {}
 reply_tasks = {}
