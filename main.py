@@ -10,7 +10,7 @@ from telethon.sessions import StringSession
 
 # ================= 1. 强制读取配置 (无备用值) =================
 try:
-    # 必须配置的核心变量，缺一不可
+    # 必须配置的核心变量
     API_ID = int(os.environ["API_ID"])
     API_HASH = os.environ["API_HASH"]
     SESSION_STRING = os.environ["SESSION_STRING"]
@@ -23,17 +23,16 @@ try:
     # 报警接收人
     ALERT_GROUP_ID = int(os.environ["ALERT_GROUP_ID"])
     
-    # 稍等关键词 (必须配置，否则无法工作)
+    # 稍等关键词
     wait_keywords_env = os.environ["WAIT_KEYWORDS"]
-    clean_env = wait_keywords_env.replace("，", ",") # 兼容中文逗号
+    clean_env = wait_keywords_env.replace("，", ",") 
     WAIT_SIGNATURES = {x.strip() for x in clean_env.split(',') if x.strip()}
 
 except KeyError as e:
     print(f"❌ 启动失败：缺少必要环境变量 {e}")
-    print("请去 Render 后台补充完整，不要留空。")
     sys.exit(1)
 except ValueError as e:
-    print(f"❌ 启动失败：变量格式错误 (ID必须是数字) -> {e}")
+    print(f"❌ 启动失败：变量格式错误 -> {e}")
     sys.exit(1)
 
 print(f"✅ 配置加载成功。监控群组数: {len(CS_GROUP_IDS)} | 关键词数: {len(WAIT_SIGNATURES)}")
@@ -63,7 +62,7 @@ def run_web():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# ================= 4. 报警发送函数 (调试增强版) =================
+# ================= 4. 报警发送函数 =================
 def _post_request(url, payload):
     """同步发送请求并检查结果"""
     try:
@@ -77,8 +76,8 @@ def _post_request(url, payload):
         print(f"❌ 网络请求异常: {e}")
 
 async def send_alert(text, link):
-    if not IS_WORKING: return
-    # URL 也是纯靠变量拼接，无硬编码
+    if not BOT_TOKEN: return
+    
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": ALERT_GROUP_ID,
@@ -127,25 +126,26 @@ async def task_reply_timeout(trigger_msg_id, sender_name, content, link):
         pass
     finally:
         if trigger_msg_id in reply_tasks: del reply_tasks[trigger_msg_id]
-            
-# ================= 6. 初始化客户端 (Mac 伪装版) =================
+
+# ================= 6. 初始化客户端 (已严格改为 Mac) =================
 client = TelegramClient(
     StringSession(SESSION_STRING), 
     API_ID, 
     API_HASH,
-    # 👇 改回 Mac mini M2
-    device_model="Mac mini M2",
-    app_version="5.8.3 arm64 Mac App Store",
-    system_version="macOS 15.6.1",
+    # 👇 这里严格改为 Mac 配置，不再变动
+    device_model="MacBook Pro",
+    app_version="5.8.3", 
+    system_version="macOS 14.0",
     lang_code="zh-hans",
     system_lang_code="zh-hans"
 )
 
-# ================= 7. 遥控指令处理 =================
+# ================= 7. 遥控指令处理 (机器人推送版) =================
 @client.on(events.NewMessage(chats='me', pattern='^(上班|下班|状态)$'))
 async def command_handler(event):
     global IS_WORKING, wait_tasks, reply_tasks, wait_msg_map, deleted_cache
     cmd = event.text
+    
     if cmd == '下班':
         IS_WORKING = False
         for task in wait_tasks.values(): task.cancel()
@@ -154,10 +154,15 @@ async def command_handler(event):
         reply_tasks.clear()
         wait_msg_map.clear()
         deleted_cache.clear()
-        await event.reply("🔴 **已切换为：下班模式**")
+        
+        await send_alert("🔴 **已切换为：下班模式**\n😴 所有监控暂停，任务已清空。好好休息！", "")
+        print("🔴 用户指令：下班")
+        
     elif cmd == '上班':
         IS_WORKING = True
-        await event.reply("🟢 **已切换为：工作模式**")
+        await send_alert("🟢 **已切换为：工作模式**\n💪 监控系统已激活，准备战斗！", "")
+        print("🟢 用户指令：上班")
+        
     elif cmd == '状态':
         status_icon = "🟢" if IS_WORKING else "🔴"
         msg = (
@@ -165,7 +170,7 @@ async def command_handler(event):
             f"⏳ 稍等任务: {len(wait_tasks)}\n"
             f"🔔 漏回任务: {len(reply_tasks)}"
         )
-        await event.reply(msg)
+        await send_alert(msg, "")
 
 # ================= 8. 消息删除监听 =================
 @client.on(events.MessageDeleted)
@@ -208,7 +213,6 @@ async def handler(event):
             if reply_to_msg_id in wait_tasks: del wait_tasks[reply_to_msg_id] 
             print(f"✅ [已跟进] 取消稍等报警")
 
-        # 触发“稍等” (只使用环境变量里的 WAIT_SIGNATURES)
         matched = any(sig.lower() in text.lower() for sig in WAIT_SIGNATURES)
         if matched and reply_to_msg_id:
             print(f"⚡️ [触发] 稍等关键词")
@@ -242,6 +246,6 @@ async def handler(event):
 
 if __name__ == '__main__':
     Thread(target=run_web).start()
-    print(f"✅ 监控系统启动 (纯净版)。")
+    print(f"✅ 监控系统启动。设备标识已锁定为 MacBook Pro。")
     client.start()
     client.run_until_disconnected()
