@@ -3,7 +3,7 @@ import sys
 import asyncio
 import logging
 import requests
-import re  # 【新增】引入正则，用于提取ID
+import re
 from threading import Thread
 from flask import Flask, render_template_string
 from telethon import TelegramClient, events
@@ -17,18 +17,12 @@ def normalize(text):
     return text.lower().replace('～', '~')
 
 def extract_id_list(env_str):
-    """
-    【新增】智能提取 ID 列表
-    允许输入：123456(小王), 789012-小李
-    自动忽略备注，只提取数字（支持负号，用于群组ID）
-    """
+    """提取 ID 列表，支持备注"""
     if not env_str: return []
-    # 替换中文逗号
     clean_str = env_str.replace("，", ",")
     items = clean_str.split(',')
     result = []
     for item in items:
-        # 正则查找：匹配可选的负号 + 连续数字
         match = re.search(r'-?\d+', item)
         if match:
             try:
@@ -43,25 +37,24 @@ try:
     SESSION_STRING = os.environ["SESSION_STRING"]
     BOT_TOKEN = os.environ["BOT_TOKEN"]
     
-    # 【升级】支持备注的群组 ID
+    # 支持备注的群组 ID
     cs_groups_env = os.environ["CS_GROUP_IDS"]
     CS_GROUP_IDS = extract_id_list(cs_groups_env)
     
-    # 【升级】支持备注的报警人 ID
+    # 支持备注的报警人 ID
     alert_env = os.environ["ALERT_GROUP_ID"]
     ALERT_GROUP_IDS = extract_id_list(alert_env)
 
-    # 【升级】支持备注的其他客服 ID
-    # 变量写法示例：123456(小王), 654321(小李)
+    # 支持备注的其他客服 ID
     other_cs_env = os.environ.get("OTHER_CS_IDS", "")
     OTHER_CS_IDS = extract_id_list(other_cs_env)
     
-    # 【稍等】关键词
+    # 【稍等】关键词 (模糊匹配 + 归一化)
     wait_keywords_env = os.environ["WAIT_KEYWORDS"]
     clean_env = wait_keywords_env.replace("，", ",") 
     WAIT_SIGNATURES = {normalize(x.strip()) for x in clean_env.split(',') if x.strip()}
 
-    # 【跟进】关键词 (精准)
+    # 【跟进】关键词 (精准匹配 | 分割)
     keep_keywords_env = os.environ.get("KEEP_KEYWORDS", "") 
     KEEP_SIGNATURES = {x.strip() for x in keep_keywords_env.split('|') if x.strip()}
 
@@ -74,9 +67,7 @@ except ValueError as e:
 
 _sys_opt = os.environ.get("OPTIMIZATION_LEVEL", "normal").lower() == "debug"
 
-print(f"✅ 配置加载成功。群组: {len(CS_GROUP_IDS)} | 客服ID(含同事): {len(OTHER_CS_IDS)+1} | 稍等词: {len(WAIT_SIGNATURES)}")
-if _sys_opt:
-    print(f"[DEBUG] 解析后的其他客服ID: {OTHER_CS_IDS}")
+print(f"✅ 配置加载成功。群组: {len(CS_GROUP_IDS)} | 客服ID: {len(OTHER_CS_IDS)+1} | 稍等词: {len(WAIT_SIGNATURES)}")
 
 # ================= 2. 全局参数 =================
 WAIT_TIMEOUT = 12 * 60
@@ -243,7 +234,16 @@ async def task_reply_timeout(trigger_msg_id, sender_name, content, link, grouped
             if not reply_task_grouped_index[grouped_id]: del reply_task_grouped_index[grouped_id]
 
 # ================= 6. 客户端实例 =================
-client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH, device_model="Mac mini M2", app_version="5.10.7", lang_code="zh-hans")
+client = TelegramClient(
+    StringSession(SESSION_STRING), 
+    API_ID, 
+    API_HASH,
+    device_model="Mac mini M2",
+    app_version="5.10.7 arm64",     
+    system_version="macOS 15.6.1",
+    lang_code="zh-hans",
+    system_lang_code="zh-hans"
+)
 
 # ================= 7. 控制指令 =================
 @client.on(events.NewMessage(chats='me', pattern='^(上班|下班|状态)$'))
@@ -314,7 +314,7 @@ async def handler(event):
         group_title = chat_id_str
 
     # ==============================================================
-    # 身份判断
+    # 身份判断 & 内容检测
     # ==============================================================
     norm_text = normalize(text)
     is_wait_cmd = any(k in norm_text for k in WAIT_SIGNATURES)
@@ -413,12 +413,11 @@ async def handler(event):
                     for mid in list(followup_task_grouped_index[reply_gid]):
                         if mid in followup_tasks: followup_tasks[mid].cancel()
 
-            # 2. 启动漏回
+            # 2. 启动漏回 (针对我 或 其他客服)
             try:
                 replied_msg = await event.get_reply_message()
                 target_id = replied_msg.sender_id
                 
-                # 检测是否回复了客服 (我 OR 同事)
                 if (target_id == MY_ID) or (target_id in OTHER_CS_IDS):
                     if event.id in reply_tasks: reply_tasks[event.id].cancel()
                     current_grouped_id = getattr(event.message, 'grouped_id', None)
@@ -434,7 +433,7 @@ if __name__ == '__main__':
     client.start()
     
     try:
-        start_msg = "🤖 **系统启动成功**\n当前状态: 🔴 下班 (默认)\n版本: Ver 17.0 (Comment Support)"
+        start_msg = "🤖 **系统启动成功**\n当前状态: 🔴 下班 (默认)\n版本: Ver 18.0 (Detailed Config Fix)"
         client.loop.run_until_complete(send_alert(start_msg, ""))
     except Exception as e:
         print(f"❌ 启动通知发送失败: {e}")
