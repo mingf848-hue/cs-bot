@@ -239,7 +239,7 @@ client = TelegramClient(
     API_ID, 
     API_HASH,
     device_model="Mac mini M2",
-    app_version="5.10.7 arm64",     
+    app_version="5.8.3 arm64 Mac App Store",     
     system_version="macOS 15.6.1",
     lang_code="zh-hans",
     system_lang_code="zh-hans"
