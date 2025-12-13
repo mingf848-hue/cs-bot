@@ -419,4 +419,4 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"❌ 启动通知发送失败: {e}")
 
-    client.run_until_disconnected()
+    client.run_until_disconnected() 
