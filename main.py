@@ -37,24 +37,19 @@ try:
     SESSION_STRING = os.environ["SESSION_STRING"]
     BOT_TOKEN = os.environ["BOT_TOKEN"]
     
-    # 支持备注的群组 ID
     cs_groups_env = os.environ["CS_GROUP_IDS"]
     CS_GROUP_IDS = extract_id_list(cs_groups_env)
     
-    # 支持备注的报警人 ID
     alert_env = os.environ["ALERT_GROUP_ID"]
     ALERT_GROUP_IDS = extract_id_list(alert_env)
 
-    # 支持备注的其他客服 ID
     other_cs_env = os.environ.get("OTHER_CS_IDS", "")
     OTHER_CS_IDS = extract_id_list(other_cs_env)
     
-    # 【稍等】关键词 (模糊匹配 + 归一化)
     wait_keywords_env = os.environ["WAIT_KEYWORDS"]
     clean_env = wait_keywords_env.replace("，", ",") 
     WAIT_SIGNATURES = {normalize(x.strip()) for x in clean_env.split(',') if x.strip()}
 
-    # 【跟进】关键词 (精准匹配 | 分割)
     keep_keywords_env = os.environ.get("KEEP_KEYWORDS", "") 
     KEEP_SIGNATURES = {x.strip() for x in keep_keywords_env.split('|') if x.strip()}
 
@@ -78,6 +73,11 @@ wait_tasks = {}
 followup_tasks = {} 
 reply_tasks = {}
 
+# 倒计时时间戳存储
+wait_timers = {}
+followup_timers = {}
+reply_timers = {}
+
 wait_msg_map = {}     
 followup_msg_map = {} 
 deleted_cache = set()
@@ -89,51 +89,219 @@ reply_task_grouped_index = {}
 IS_WORKING = False
 MY_ID = None
 
-# ================= 3. Web服务 =================
+# ================= 3. Web服务 (UI升级版) =================
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO, stream=sys.stdout)
 app = Flask(__name__)
 
-HTML_TEMPLATE_READONLY = """
+# 全新的现代化 HTML 模板
+HTML_TEMPLATE_DYNAMIC = """
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
-    <title>系统状态监控</title>
+    <meta charset="UTF-8">
+    <title>客服监控看板</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta http-equiv="refresh" content="5"> <style>
-        body { background-color: #0d1117; color: #c9d1d9; font-family: monospace; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 20px 0; }
-        .container { background: #161b22; padding: 2rem; border-radius: 12px; border: 1px solid #30363d; box-shadow: 0 4px 20px rgba(0,0,0,0.5); width: 80%; max-width: 450px; text-align: center; }
-        h1 { font-size: 1.5rem; color: #58a6ff; margin-bottom: 2rem; border-bottom: 1px solid #30363d; padding-bottom: 10px; }
-        .stat-box { background: #21262d; padding: 15px; margin: 15px 0; border-radius: 6px; border: 1px solid #30363d; display: flex; justify-content: space-between; align-items: center; }
-        .stat-label { font-size: 0.9rem; color: #8b949e; text-align: left; flex-grow: 1; }
-        .stat-value { font-size: 1.1rem; font-weight: bold; text-align: right; }
-        .footer { margin-top: 25px; font-size: 0.7rem; color: #58a6ff; }
-        .green { color: #238636; }
-        .red { color: #da3633; }
-        .blue { color: #1f6feb; }
+    <meta http-equiv="refresh" content="10"> 
+    <style>
+        :root {
+            --primary: #1890ff;
+            --success: #52c41a;
+            --error: #ff4d4f;
+            --warning: #faad14;
+            --bg: #f0f2f5;
+            --card-bg: #ffffff;
+            --text-main: #000000;
+            --text-sub: #8c8c8c;
+        }
+        body { 
+            background-color: var(--bg); 
+            color: var(--text-main); 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            margin: 0; 
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+        }
+        .container { 
+            width: 100%; 
+            max-width: 600px; 
+            display: flex; 
+            flex-direction: column; 
+            gap: 16px; 
+        }
+        
+        /* 顶部状态卡片 */
+        .header-card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+            text-align: center;
+            border-top: 4px solid var(--text-sub);
+        }
+        .header-card.online { border-top-color: var(--success); }
+        .header-card.offline { border-top-color: var(--error); }
+        
+        .status-title { font-size: 14px; color: var(--text-sub); margin-bottom: 8px; }
+        .status-value { font-size: 24px; font-weight: 700; }
+        .online .status-value { color: var(--success); }
+        .offline .status-value { color: var(--error); }
+
+        /* 任务列表卡片 */
+        .task-card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        .card-title { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+        .badge { 
+            background: #f5f5f5; 
+            color: var(--text-sub); 
+            padding: 2px 8px; 
+            border-radius: 10px; 
+            font-size: 12px; 
+            font-weight: normal; 
+        }
+        .badge.active { background: #e6f7ff; color: var(--primary); font-weight: bold; }
+
+        .task-list { display: flex; flex-direction: column; gap: 10px; }
+        .task-item { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            font-size: 14px; 
+            padding: 8px;
+            background: #fafafa;
+            border-radius: 6px;
+        }
+        .timer-text { font-family: 'Monaco', monospace; font-weight: 600; color: var(--primary); }
+        .timer-text.urgent { color: var(--error); }
+        .empty-tip { text-align: center; color: var(--text-sub); font-size: 13px; padding: 10px 0; }
+
+        .footer { text-align: center; font-size: 12px; color: var(--text-sub); margin-top: 20px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>系统状态监控 (只读)</h1>
-        <div class="stat-box"><div class="stat-label">运行状态</div><div class="stat-value {{ 'green' if working else 'red' }}">{{ '🟢 工作中' if working else '🔴 已下班' }}</div></div>
-        <div class="stat-box"><div class="stat-label">稍等任务 (12m)</div><div class="stat-value">{{ wait_tasks }}</div></div>
-        <div class="stat-box"><div class="stat-label">跟进任务 (15m)</div><div class="stat-value">{{ followup_tasks }}</div></div>
-        <div class="stat-box"><div class="stat-label">漏回任务 (5m)</div><div class="stat-value">{{ reply_tasks }}</div></div>
-        <div class="footer">最后刷新时间: {{ current_time }}</div>
+        <div class="header-card {{ 'online' if working else 'offline' }}">
+            <div class="status-title">当前系统状态</div>
+            <div class="status-value">
+                {{ '🟢 客服工作中' if working else '🔴 已下班 (暂停监控)' }}
+            </div>
+        </div>
+
+        <div class="task-card">
+            <div class="card-header">
+                <div class="card-title">⏳ 稍等任务 (12分钟)</div>
+                <div class="badge {{ 'active' if wait_timers|length > 0 }}">
+                    {{ wait_timers|length }}
+                </div>
+            </div>
+            <div class="task-list">
+                {% if wait_timers %}
+                    {% for mid, end_ts in wait_timers.items() %}
+                    <div class="task-item">
+                        <span>消息ID: {{ mid }}</span>
+                        <span class="timer-text" data-end="{{ end_ts }}">计算中...</span>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="empty-tip">暂无排队任务</div>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="task-card">
+            <div class="card-header">
+                <div class="card-title">🕵️ 跟进任务 (15分钟)</div>
+                <div class="badge {{ 'active' if followup_timers|length > 0 }}">
+                    {{ followup_timers|length }}
+                </div>
+            </div>
+            <div class="task-list">
+                {% if followup_timers %}
+                    {% for mid, end_ts in followup_timers.items() %}
+                    <div class="task-item">
+                        <span>消息ID: {{ mid }}</span>
+                        <span class="timer-text" data-end="{{ end_ts }}">计算中...</span>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="empty-tip">暂无跟进任务</div>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="task-card">
+            <div class="card-header">
+                <div class="card-title">🔔 漏回监控 (5分钟)</div>
+                <div class="badge {{ 'active' if reply_timers|length > 0 }}">
+                    {{ reply_timers|length }}
+                </div>
+            </div>
+            <div class="task-list">
+                {% if reply_timers %}
+                    {% for mid, end_ts in reply_timers.items() %}
+                    <div class="task-item">
+                        <span>消息ID: {{ mid }}</span>
+                        <span class="timer-text" data-end="{{ end_ts }}">计算中...</span>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="empty-tip">暂无漏回预警</div>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="footer">最后更新时间: {{ current_time }}</div>
     </div>
+
+    <script>
+        function updateTimers() {
+            const now = Date.now() / 1000;
+            document.querySelectorAll('.timer-text').forEach(el => {
+                const endTs = parseFloat(el.getAttribute('data-end'));
+                const diff = endTs - now;
+                
+                if (diff <= 0) {
+                    el.innerText = "已超时";
+                    el.classList.add('urgent');
+                } else {
+                    const m = Math.floor(diff / 60);
+                    const s = Math.floor(diff % 60);
+                    el.innerText = `${m}分 ${s.toString().padStart(2, '0')}秒`;
+                    // 剩余时间少于1分钟变红
+                    if (diff < 60) {
+                        el.classList.add('urgent');
+                    }
+                }
+            });
+        }
+        setInterval(updateTimers, 1000);
+        updateTimers();
+    </script>
 </body>
 </html>
 """
 
 @app.route('/')
 def status_page():
-    current_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    current_time_str = time.strftime("%H:%M:%S", time.localtime())
     return render_template_string(
-        HTML_TEMPLATE_READONLY,
+        HTML_TEMPLATE_DYNAMIC,
         working=IS_WORKING,
-        wait_tasks=len(wait_tasks),
-        followup_tasks=len(followup_tasks),
-        reply_tasks=len(reply_tasks),
+        wait_timers=wait_timers,
+        followup_timers=followup_timers,
+        reply_timers=reply_timers,
         current_time=current_time_str
     )
 
@@ -146,7 +314,7 @@ def _post_request(url, payload):
     try:
         requests.post(url, json=payload, timeout=8)
     except Exception as e:
-        print(f"❌ 发送异常 (ID: {payload.get('chat_id')}): {e}")
+        print(f"❌ 发送异常: {e}")
 
 async def send_alert(text, link):
     if not BOT_TOKEN: return
@@ -164,6 +332,9 @@ async def send_alert(text, link):
 
 async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, grouped_id=None):
     try:
+        end_time = time.time() + WAIT_TIMEOUT
+        wait_timers[key_id] = end_time
+        
         if grouped_id:
             if grouped_id not in wait_task_grouped_index: wait_task_grouped_index[grouped_id] = set()
             wait_task_grouped_index[grouped_id].add(key_id)
@@ -181,6 +352,7 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
     except asyncio.CancelledError: pass
     finally:
         if key_id in wait_tasks: del wait_tasks[key_id]
+        if key_id in wait_timers: del wait_timers[key_id]
         if my_msg_id in wait_msg_map: del wait_msg_map[my_msg_id]
         if grouped_id and grouped_id in wait_task_grouped_index:
             wait_task_grouped_index[grouped_id].discard(key_id)
@@ -188,6 +360,9 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
 
 async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_id, grouped_id=None):
     try:
+        end_time = time.time() + FOLLOWUP_TIMEOUT
+        followup_timers[key_id] = end_time
+
         if grouped_id:
             if grouped_id not in followup_task_grouped_index: followup_task_grouped_index[grouped_id] = set()
             followup_task_grouped_index[grouped_id].add(key_id)
@@ -205,6 +380,7 @@ async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_
     except asyncio.CancelledError: pass
     finally:
         if key_id in followup_tasks: del followup_tasks[key_id]
+        if key_id in followup_timers: del followup_timers[key_id]
         if my_msg_id in followup_msg_map: del followup_msg_map[my_msg_id]
         if grouped_id and grouped_id in followup_task_grouped_index:
             followup_task_grouped_index[grouped_id].discard(key_id)
@@ -212,6 +388,9 @@ async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_
 
 async def task_reply_timeout(trigger_msg_id, sender_name, content, link, grouped_id=None):
     try:
+        end_time = time.time() + REPLY_TIMEOUT
+        reply_timers[trigger_msg_id] = end_time
+
         if grouped_id:
             if grouped_id not in reply_task_grouped_index: reply_task_grouped_index[grouped_id] = set()
             reply_task_grouped_index[grouped_id].add(trigger_msg_id)
@@ -229,17 +408,18 @@ async def task_reply_timeout(trigger_msg_id, sender_name, content, link, grouped
     except asyncio.CancelledError: pass
     finally:
         if trigger_msg_id in reply_tasks: del reply_tasks[trigger_msg_id]
+        if trigger_msg_id in reply_timers: del reply_timers[trigger_msg_id]
         if grouped_id and grouped_id in reply_task_grouped_index:
             reply_task_grouped_index[grouped_id].discard(trigger_msg_id)
             if not reply_task_grouped_index[grouped_id]: del reply_task_grouped_index[grouped_id]
 
-# ================= 6. 客户端实例 =================
+# ================= 6. 客户端实例 (严格禁止修改) =================
 client = TelegramClient(
     StringSession(SESSION_STRING), 
     API_ID, 
     API_HASH,
     device_model="Mac mini M2",
-    app_version="5.8.3 arm64 Mac App Store",     
+    app_version="5.8.3 arm64 Mac App Store",      
     system_version="macOS 15.6.1",
     lang_code="zh-hans",
     system_lang_code="zh-hans"
@@ -254,6 +434,7 @@ async def command_handler(event):
         IS_WORKING = False
         for t in list(wait_tasks.values()) + list(followup_tasks.values()) + list(reply_tasks.values()): t.cancel()
         wait_tasks.clear(); followup_tasks.clear(); reply_tasks.clear()
+        wait_timers.clear(); followup_timers.clear(); reply_timers.clear()
         wait_msg_map.clear(); followup_msg_map.clear()
         wait_task_grouped_index.clear(); followup_task_grouped_index.clear(); reply_task_grouped_index.clear()
         await send_alert("🔴 **已切换为：下班模式**", "")
@@ -313,9 +494,6 @@ async def handler(event):
     except:
         group_title = chat_id_str
 
-    # ==============================================================
-    # 身份判断 & 内容检测
-    # ==============================================================
     norm_text = normalize(text)
     is_wait_cmd = any(k in norm_text for k in WAIT_SIGNATURES)
     is_keep_cmd = text.strip() in KEEP_SIGNATURES
@@ -324,22 +502,18 @@ async def handler(event):
     is_cs_action = is_sender_cs or is_wait_cmd or is_keep_cmd
 
     if is_cs_action:
-        # === 客服发言 ===
         if reply_to_msg_id:
             reply_msg = await event.get_reply_message()
             reply_content = reply_msg.text[:50] if reply_msg else "[图片/文件]"
             reply_gid = getattr(reply_msg, 'grouped_id', None)
 
-            # A. 客服回复 -> 取消漏回
             if reply_to_msg_id in reply_tasks:
                 reply_tasks[reply_to_msg_id].cancel(); del reply_tasks[reply_to_msg_id]
             if reply_gid and reply_gid in reply_task_grouped_index:
                 for mid in list(reply_task_grouped_index[reply_gid]):
                     if mid in reply_tasks: reply_tasks[mid].cancel(); del reply_tasks[mid]
 
-            # B. 状态分流
             if is_keep_cmd:
-                # 精准跟进
                 if _sys_opt: print(f"[DEBUG] 触发精准跟进({sender_name}): {text.strip()}")
                 
                 if reply_to_msg_id in wait_tasks: wait_tasks[reply_to_msg_id].cancel()
@@ -359,7 +533,6 @@ async def handler(event):
                 followup_msg_map[event.id] = reply_to_msg_id
 
             elif is_wait_cmd:
-                # 稍等
                 if _sys_opt: print(f"[DEBUG] 触发稍等({sender_name}): {text.strip()}")
                 
                 if reply_to_msg_id in followup_tasks: followup_tasks[reply_to_msg_id].cancel()
@@ -379,7 +552,6 @@ async def handler(event):
                 wait_msg_map[event.id] = reply_to_msg_id
 
             else:
-                # 普通回复 -> 完成
                 if reply_to_msg_id in wait_tasks: wait_tasks[reply_to_msg_id].cancel()
                 if reply_to_msg_id in followup_tasks: followup_tasks[reply_to_msg_id].cancel()
                 if reply_gid:
@@ -393,11 +565,9 @@ async def handler(event):
                 if _sys_opt: print(f"[DEBUG] 普通结果回复({sender_name})，任务清除: {reply_to_msg_id}")
 
     else:
-        # === 客户发言 ===
         if _sys_opt: print(f"[DEBUG] [{group_title}] {sender_name}: {log_text}")
 
         if reply_to_msg_id:
-            # 1. 客户说话 -> 取消稍等/跟进
             if reply_to_msg_id in wait_tasks: 
                 wait_tasks[reply_to_msg_id].cancel(); del wait_tasks[reply_to_msg_id]
             if reply_to_msg_id in followup_tasks:
@@ -413,7 +583,6 @@ async def handler(event):
                     for mid in list(followup_task_grouped_index[reply_gid]):
                         if mid in followup_tasks: followup_tasks[mid].cancel()
 
-            # 2. 启动漏回 (针对我 或 其他客服)
             try:
                 replied_msg = await event.get_reply_message()
                 target_id = replied_msg.sender_id
@@ -433,7 +602,7 @@ if __name__ == '__main__':
     client.start()
     
     try:
-        start_msg = "🤖 **系统启动成功**\n当前状态: 🔴 下班 (默认)\n版本: Ver 18.0 (Detailed Config Fix)"
+        start_msg = "🤖 **系统启动成功**\n当前状态: 🔴 下班 (默认)\n版本: Ver 20.0 (UI Redesign)"
         client.loop.run_until_complete(send_alert(start_msg, ""))
     except Exception as e:
         print(f"❌ 启动通知发送失败: {e}")
