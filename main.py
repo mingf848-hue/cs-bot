@@ -132,7 +132,7 @@ client = TelegramClient(
     device_model="Mac mini M2", 
     
     # 2. App 版本号
-    app_version="5.8.3 arm64 Mac App Store",     
+    app_version="5.8.3 arm64",     
     
     # 3. 系统版本
     system_version="macOS 15.6.1",
