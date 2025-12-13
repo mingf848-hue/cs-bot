@@ -127,15 +127,16 @@ async def task_reply_timeout(trigger_msg_id, sender_name, content, link):
         pass
     finally:
         if trigger_msg_id in reply_tasks: del reply_tasks[trigger_msg_id]
-
-# ================= 6. 初始化客户端 =================
+            
+# ================= 6. 初始化客户端 (Mac 伪装版) =================
 client = TelegramClient(
     StringSession(SESSION_STRING), 
     API_ID, 
     API_HASH,
-    device_model="iPhone 14",
-    system_version="26.0.1",
-    app_version="10.6.1",
+    # 👇 改回 Mac mini M2
+    device_model="Mac mini M2",
+    app_version="5.8.3 arm64 Mac App Store",
+    system_version="macOS 15.6.1",
     lang_code="zh-hans",
     system_lang_code="zh-hans"
 )
