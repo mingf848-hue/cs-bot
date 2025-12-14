@@ -12,10 +12,12 @@ import time
 
 # ================= 0. 辅助函数 =================
 def normalize(text):
+    """归一化：转小写 + 半角波浪线"""
     if not text: return ""
     return text.lower().replace('～', '~')
 
 def extract_id_list(env_str):
+    """提取 ID 列表，支持备注"""
     if not env_str: return []
     clean_str = env_str.replace("，", ",")
     items = clean_str.split(',')
@@ -72,7 +74,7 @@ wait_tasks = {}
 followup_tasks = {} 
 reply_tasks = {}
 
-# 倒计时时间戳
+# 倒计时及信息存储: {msg_id: {'ts': end_time, 'user': name, 'url': link}}
 wait_timers = {}
 followup_timers = {}
 reply_timers = {}
@@ -102,18 +104,23 @@ HTML_TEMPLATE_DYNAMIC = """
     <meta http-equiv="refresh" content="10"> 
     <style>
         body { background-color: #0d1117; color: #c9d1d9; font-family: 'Menlo', 'Monaco', monospace; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 20px 0; }
-        .container { background: #161b22; padding: 2rem; border-radius: 12px; border: 1px solid #30363d; box-shadow: 0 4px 20px rgba(0,0,0,0.5); width: 90%; max-width: 500px; text-align: center; }
+        .container { background: #161b22; padding: 2rem; border-radius: 12px; border: 1px solid #30363d; box-shadow: 0 4px 20px rgba(0,0,0,0.5); width: 90%; max-width: 600px; text-align: center; }
         h1 { font-size: 1.4rem; color: #58a6ff; margin-bottom: 1.5rem; border-bottom: 1px solid #30363d; padding-bottom: 10px; }
         .stat-box { background: #21262d; padding: 12px; margin: 10px 0; border-radius: 6px; border: 1px solid #30363d; }
         .stat-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
         .stat-label { font-size: 0.9rem; color: #8b949e; font-weight: bold; }
         .stat-count { font-size: 1.1rem; font-weight: bold; }
-        .task-list { text-align: left; font-size: 0.8rem; margin-top: 5px; padding-top: 5px; border-top: 1px dashed #30363d; }
-        .task-item { display: flex; justify-content: space-between; color: #79c0ff; margin: 2px 0; }
-        .timer-text { color: #f0883e; font-family: monospace; }
+        .task-list { text-align: left; font-size: 0.8rem; margin-top: 8px; padding-top: 8px; border-top: 1px dashed #30363d; }
+        .task-item { display: flex; justify-content: space-between; align-items: center; color: #79c0ff; margin: 6px 0; padding: 4px; background: #1a1f26; border-radius: 4px; }
+        .task-info { display: flex; flex-direction: column; gap: 2px; text-align: left; overflow: hidden; }
+        .user-name { color: #d2a8ff; font-weight: bold; font-size: 0.9rem; }
+        .msg-link { color: #58a6ff; text-decoration: none; font-size: 0.75rem; }
+        .msg-link:hover { text-decoration: underline; }
+        .timer-text { color: #f0883e; font-family: monospace; font-size: 1rem; white-space: nowrap; margin-left: 10px; }
         .footer { margin-top: 25px; font-size: 0.7rem; color: #58a6ff; }
         .green { color: #238636; }
         .red { color: #da3633; }
+        .empty-tip { color: #484f58; font-style: italic; padding: 5px; }
     </style>
 </head>
 <body>
@@ -125,46 +132,70 @@ HTML_TEMPLATE_DYNAMIC = """
                 <div class="stat-count {{ 'green' if working else 'red' }}">{{ '🟢 工作中' if working else '🔴 已下班' }}</div>
             </div>
         </div>
+        
         <div class="stat-box">
             <div class="stat-header">
                 <div class="stat-label">⏳ 稍等任务 (12m)</div>
                 <div class="stat-count">{{ wait_timers|length }}</div>
             </div>
             <div class="task-list">
-                {% for mid, end_ts in wait_timers.items() %}
-                <div class="task-item">
-                    <span>MsgID: {{ mid }}</span>
-                    <span class="timer-text" data-end="{{ end_ts }}">计算中...</span>
-                </div>
-                {% endfor %}
+                {% if wait_timers %}
+                    {% for mid, info in wait_timers.items() %}
+                    <div class="task-item">
+                        <div class="task-info">
+                            <span class="user-name">👤 {{ info.user }}</span>
+                            <a href="{{ info.url }}" target="_blank" class="msg-link">🔗 查看消息</a>
+                        </div>
+                        <span class="timer-text" data-end="{{ info.ts }}">计算中...</span>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="empty-tip">无进行中任务</div>
+                {% endif %}
             </div>
         </div>
+
         <div class="stat-box">
             <div class="stat-header">
                 <div class="stat-label">🕵️ 跟进任务 (15m)</div>
                 <div class="stat-count">{{ followup_timers|length }}</div>
             </div>
             <div class="task-list">
-                {% for mid, end_ts in followup_timers.items() %}
-                <div class="task-item">
-                    <span>MsgID: {{ mid }}</span>
-                    <span class="timer-text" data-end="{{ end_ts }}">计算中...</span>
-                </div>
-                {% endfor %}
+                {% if followup_timers %}
+                    {% for mid, info in followup_timers.items() %}
+                    <div class="task-item">
+                        <div class="task-info">
+                            <span class="user-name">👤 {{ info.user }}</span>
+                            <a href="{{ info.url }}" target="_blank" class="msg-link">🔗 查看消息</a>
+                        </div>
+                        <span class="timer-text" data-end="{{ info.ts }}">计算中...</span>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="empty-tip">无进行中任务</div>
+                {% endif %}
             </div>
         </div>
+
         <div class="stat-box">
             <div class="stat-header">
                 <div class="stat-label">🔔 漏回任务 (5m)</div>
                 <div class="stat-count">{{ reply_timers|length }}</div>
             </div>
             <div class="task-list">
-                {% for mid, end_ts in reply_timers.items() %}
-                <div class="task-item">
-                    <span>MsgID: {{ mid }}</span>
-                    <span class="timer-text" data-end="{{ end_ts }}">计算中...</span>
-                </div>
-                {% endfor %}
+                {% if reply_timers %}
+                    {% for mid, info in reply_timers.items() %}
+                    <div class="task-item">
+                        <div class="task-info">
+                            <span class="user-name">👤 {{ info.user }}</span>
+                            <a href="{{ info.url }}" target="_blank" class="msg-link">🔗 查看消息</a>
+                        </div>
+                        <span class="timer-text" data-end="{{ info.ts }}">计算中...</span>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="empty-tip">无进行中任务</div>
+                {% endif %}
             </div>
         </div>
         <div class="footer">更新时间: {{ current_time }}<br>Ver: 22.0 (Smart Cancel & Check)</div>
@@ -265,7 +296,7 @@ async def check_msg_exists(channel_id, msg_id):
 async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, customer_id):
     try:
         end_time = time.time() + WAIT_TIMEOUT
-        wait_timers[key_id] = end_time
+        wait_timers[key_id] = {'ts': end_time, 'user': agent_name, 'url': link}
         add_user_task(chat_id, customer_id, key_id)
 
         await asyncio.sleep(WAIT_TIMEOUT)
@@ -294,7 +325,7 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
 async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, customer_id):
     try:
         end_time = time.time() + FOLLOWUP_TIMEOUT
-        followup_timers[key_id] = end_time
+        followup_timers[key_id] = {'ts': end_time, 'user': agent_name, 'url': link}
         add_user_task(chat_id, customer_id, key_id)
 
         await asyncio.sleep(FOLLOWUP_TIMEOUT)
@@ -323,7 +354,7 @@ async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_
 async def task_reply_timeout(trigger_msg_id, sender_name, content, link):
     try:
         end_time = time.time() + REPLY_TIMEOUT
-        reply_timers[trigger_msg_id] = end_time
+        reply_timers[trigger_msg_id] = {'ts': end_time, 'user': sender_name, 'url': link}
         await asyncio.sleep(REPLY_TIMEOUT)
         if not IS_WORKING: return
         alert_text = (
