@@ -457,7 +457,10 @@ async def handler(event):
     is_keep_cmd = text.strip() in KEEP_SIGNATURES
     
     is_sender_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS)
-    is_cs_action = is_sender_cs or is_wait_cmd or is_keep_cmd
+    # [关键修复]: 必须是客服ID，才判断是否为客服动作。
+    # 之前是 'or is_wait_cmd or is_keep_cmd'，导致任何人发关键词都被视为 CS 动作
+    # 现在只要 is_sender_cs 为真，它发送的关键词才有效。
+    is_cs_action = is_sender_cs 
 
     # ==================== 客服发言逻辑 ====================
     if is_cs_action:
@@ -501,6 +504,12 @@ async def handler(event):
                 ))
                 wait_tasks[reply_to_msg_id] = task
                 wait_msg_map[event.id] = reply_to_msg_id
+
+            else:
+                # 即使没有触发关键词，普通回复也应该尝试取消针对该消息的旧任务（如漏回）
+                # 智能销单已经覆盖了大部分情况，这里保留作为针对特定消息ID的清理
+                if reply_to_msg_id in wait_tasks: wait_tasks[reply_to_msg_id].cancel()
+                if reply_to_msg_id in followup_tasks: followup_tasks[reply_to_msg_id].cancel()
 
     # ==================== 客户发言逻辑 ====================
     else:
