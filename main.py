@@ -53,6 +53,13 @@ try:
     keep_keywords_env = os.environ.get("KEEP_KEYWORDS", "") 
     KEEP_SIGNATURES = {x.strip() for x in keep_keywords_env.split('|') if x.strip()}
 
+    # [新增] 忽略关键词 (结束语过滤)
+    # 如果客户回复的内容是这些词，则不触发漏回警告
+    default_ignore = "好的,谢谢,收到,明白,好的谢谢,ok,thx,thanks,好的呢,好滴,1"
+    ignore_env = os.environ.get("IGNORE_KEYWORDS", default_ignore)
+    clean_ignore = ignore_env.replace("，", ",")
+    IGNORE_SIGNATURES = {normalize(x.strip()) for x in clean_ignore.split(',') if x.strip()}
+
 except KeyError as e:
     print(f"❌ 启动失败：缺少必要环境变量 {e}")
     sys.exit(1)
@@ -84,8 +91,7 @@ wait_msg_map = {}
 followup_msg_map = {} 
 deleted_cache = set()
 
-# 【新增】用户任务索引：(chat_id, user_id) -> Set[msg_id]
-# 用于解决：回复了该用户的其中一条消息，则视为回复了该用户所有挂起任务
+# 用户任务索引：(chat_id, user_id) -> Set[msg_id]
 chat_user_active_msgs = {}
 
 IS_WORKING = False
@@ -198,7 +204,7 @@ HTML_TEMPLATE_DYNAMIC = """
                 {% endif %}
             </div>
         </div>
-        <div class="footer">更新时间: {{ current_time }}<br>Ver: 22.0 (Smart Cancel & Check)</div>
+        <div class="footer">更新时间: {{ current_time }}<br>Ver: 22.1 (Smart Cancel & Ignore)</div>
     </div>
     <script>
         function updateTimers() {
@@ -280,15 +286,11 @@ async def check_msg_exists(channel_id, msg_id):
     """起飞前安检：检查消息是否还存在"""
     try:
         # 使用 Telethon 获取单条消息
-        # 如果消息被删，entity 可能会是 None 或者 message.text 是 None
         msg = await client.get_messages(channel_id, ids=msg_id)
-        if not msg:
-            return False # 消息对象直接没了
-        if msg.text is None and msg.media is None:
-            return False # 空消息体，可能是被删的占位符
+        if not msg: return False 
+        if msg.text is None and msg.media is None: return False
         return True
     except Exception:
-        # 如果报错（比如找不到），默认视为不存在
         return False
 
 # ================= 6. 任务逻辑 =================
@@ -302,7 +304,6 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
         await asyncio.sleep(WAIT_TIMEOUT)
         if not IS_WORKING: return
 
-        # [修复3] 起飞前安检：如果“稍等”这条消息(my_msg_id)已经被删了，就不报警
         if my_msg_id and not await check_msg_exists(chat_id, my_msg_id):
             if _sys_opt: print(f"[DEBUG] 稍等消息 {my_msg_id} 已删除，取消报警")
             return
@@ -331,7 +332,6 @@ async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_
         await asyncio.sleep(FOLLOWUP_TIMEOUT)
         if not IS_WORKING: return
 
-        # [修复3] 起飞前安检
         if my_msg_id and not await check_msg_exists(chat_id, my_msg_id):
             if _sys_opt: print(f"[DEBUG] 跟进消息 {my_msg_id} 已删除，取消报警")
             return
@@ -393,7 +393,7 @@ async def command_handler(event):
         wait_tasks.clear(); followup_tasks.clear(); reply_tasks.clear()
         wait_timers.clear(); followup_timers.clear(); reply_timers.clear()
         wait_msg_map.clear(); followup_msg_map.clear()
-        chat_user_active_msgs.clear() # 清理用户映射
+        chat_user_active_msgs.clear()
         await send_alert("🔴 **已切换为：下班模式**", "")
     elif cmd == '上班':
         IS_WORKING = True
@@ -457,9 +457,6 @@ async def handler(event):
     is_keep_cmd = text.strip() in KEEP_SIGNATURES
     
     is_sender_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS)
-    # [关键修复]: 必须是客服ID，才判断是否为客服动作。
-    # 之前是 'or is_wait_cmd or is_keep_cmd'，导致任何人发关键词都被视为 CS 动作
-    # 现在只要 is_sender_cs 为真，它发送的关键词才有效。
     is_cs_action = is_sender_cs 
 
     # ==================== 客服发言逻辑 ====================
@@ -468,24 +465,19 @@ async def handler(event):
             reply_msg = await event.get_reply_message()
             reply_content = reply_msg.text[:50] if reply_msg else "[图片/文件]"
             
-            # 获取被回复的客户ID (用于批量销单)
             customer_id = reply_msg.sender_id if reply_msg else None
 
-            # [修复2] 智能销单：无论客服回复了客户的哪句话，都清除该客户在这个群的所有挂起任务
             if customer_id:
                 user_key = (event.chat_id, customer_id)
-                # 检查该用户是否有挂起的任务
                 if user_key in chat_user_active_msgs:
-                    active_msgs = list(chat_user_active_msgs[user_key]) # 复制列表以防迭代时删除
+                    active_msgs = list(chat_user_active_msgs[user_key]) 
                     for mid in active_msgs:
                         if mid in wait_tasks: wait_tasks[mid].cancel()
                         if mid in followup_tasks: followup_tasks[mid].cancel()
                         if mid in reply_tasks: reply_tasks[mid].cancel()
-                    # 清理记录
                     if user_key in chat_user_active_msgs: del chat_user_active_msgs[user_key]
                     if _sys_opt: print(f"[DEBUG] 智能销单: 清除用户 {customer_id} 所有任务")
 
-            # 原有逻辑保留 (作为双重保险)
             if reply_to_msg_id in reply_tasks:
                 reply_tasks[reply_to_msg_id].cancel(); del reply_tasks[reply_to_msg_id]
 
@@ -506,8 +498,6 @@ async def handler(event):
                 wait_msg_map[event.id] = reply_to_msg_id
 
             else:
-                # 即使没有触发关键词，普通回复也应该尝试取消针对该消息的旧任务（如漏回）
-                # 智能销单已经覆盖了大部分情况，这里保留作为针对特定消息ID的清理
                 if reply_to_msg_id in wait_tasks: wait_tasks[reply_to_msg_id].cancel()
                 if reply_to_msg_id in followup_tasks: followup_tasks[reply_to_msg_id].cancel()
 
@@ -528,22 +518,28 @@ async def handler(event):
                 target_id = replied_msg.sender_id
                 
                 if (target_id == MY_ID) or (target_id in OTHER_CS_IDS):
+                    # 【核心修复】检测是否为结束语
+                    if normalize(text.strip()) in IGNORE_SIGNATURES:
+                        if _sys_opt: print(f"[DEBUG] 忽略结束语({sender_name}): {text.strip()}")
+                        # 仅忽略，不启动新任务，但上方已经执行了“取消等待/跟进”的操作
+                        # 所以这里直接 return 即可
+                        return
+
                     if event.id in reply_tasks: reply_tasks[event.id].cancel()
                     task = asyncio.create_task(task_reply_timeout(
                         event.id, sender_name, text[:50], msg_link
                     ))
                     reply_tasks[event.id] = task
-                    # 记录该任务归属的用户，方便后续批量销单
                     add_user_task(event.chat_id, sender_id, event.id)
             except Exception as e: pass
 
 if __name__ == '__main__':
     Thread(target=run_web).start()
-    print(f"✅ 系统启动完成 (默认下班模式) | Ver 22.0")
+    print(f"✅ 系统启动完成 (默认下班模式) | Ver 22.1")
     client.start()
     
     try:
-        start_msg = "🤖 **系统启动成功**\n当前状态: 🔴 下班 (默认)\n版本: Ver 22.0 (Smart Cancel & Fail-safe)"
+        start_msg = "🤖 **系统启动成功**\n当前状态: 🔴 下班 (默认)\n版本: Ver 22.1 (Smart Cancel & Ignore)"
         client.loop.run_until_complete(send_alert(start_msg, ""))
     except Exception as e:
         print(f"❌ 启动通知发送失败: {e}")
