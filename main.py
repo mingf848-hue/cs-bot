@@ -84,7 +84,7 @@ followup_timers = {}
 reply_timers = {}
 
 # 消息映射表
-wait_msg_map = {}     
+wait_msg_map = {}      
 followup_msg_map = {} 
 deleted_cache = set()
 
@@ -94,54 +94,153 @@ chat_user_active_msgs = {}
 IS_WORKING = False
 MY_ID = None
 
-# ================= 3. Web服务 & 日志配置 =================
-# 配置基础日志格式
+# ================= 3. Web服务 & 前端优化 =================
 logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.INFO, stream=sys.stdout)
-
-# [新增] 强行屏蔽 Flask (Werkzeug) 的访问日志，只显示错误
-# 这样就不会因为页面自动刷新而刷屏了
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
 app = Flask(__name__)
 
+# 优化后的前端：浅色背景、系统字体、卡片式设计
 HTML_TEMPLATE_DYNAMIC = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>系统状态监控</title>
+    <title>客服系统监控中心</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta http-equiv="refresh" content="10"> 
     <style>
-        body { background-color: #0d1117; color: #c9d1d9; font-family: 'Menlo', 'Monaco', monospace; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 20px 0; }
-        .container { background: #161b22; padding: 2rem; border-radius: 12px; border: 1px solid #30363d; box-shadow: 0 4px 20px rgba(0,0,0,0.5); width: 90%; max-width: 600px; text-align: center; }
-        h1 { font-size: 1.4rem; color: #58a6ff; margin-bottom: 1.5rem; border-bottom: 1px solid #30363d; padding-bottom: 10px; }
-        .stat-box { background: #21262d; padding: 12px; margin: 10px 0; border-radius: 6px; border: 1px solid #30363d; }
-        .stat-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
-        .stat-label { font-size: 0.9rem; color: #8b949e; font-weight: bold; }
-        .stat-count { font-size: 1.1rem; font-weight: bold; }
-        .task-list { text-align: left; font-size: 0.8rem; margin-top: 8px; padding-top: 8px; border-top: 1px dashed #30363d; }
-        .task-item { display: flex; justify-content: space-between; align-items: center; color: #79c0ff; margin: 6px 0; padding: 4px; background: #1a1f26; border-radius: 4px; }
-        .task-info { display: flex; flex-direction: column; gap: 2px; text-align: left; overflow: hidden; }
-        .user-name { color: #d2a8ff; font-weight: bold; font-size: 0.9rem; }
-        .msg-link { color: #58a6ff; text-decoration: none; font-size: 0.75rem; }
+        :root {
+            --bg-color: #f5f7fa;
+            --card-bg: #ffffff;
+            --text-main: #2c3e50;
+            --text-sub: #7f8c8d;
+            --border-color: #ecf0f1;
+            --accent-blue: #3498db;
+            --success-green: #27ae60;
+            --danger-red: #e74c3c;
+            --warning-orange: #f39c12;
+        }
+        body { 
+            background-color: var(--bg-color); 
+            color: var(--text-main); 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
+            margin: 0; 
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+        }
+        .container { 
+            background: var(--card-bg); 
+            width: 100%;
+            max-width: 600px; 
+            border-radius: 12px; 
+            box-shadow: 0 4px 20px rgba(0,0,0,0.05); 
+            padding: 24px;
+        }
+        h1 { 
+            font-size: 1.5rem; 
+            color: var(--text-main); 
+            margin: 0 0 20px 0; 
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 2px solid var(--bg-color);
+            padding-bottom: 15px;
+        }
+        .status-badge {
+            font-size: 0.9rem;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-weight: 600;
+        }
+        .status-on { background-color: #e8f8f5; color: var(--success-green); }
+        .status-off { background-color: #fdedec; color: var(--danger-red); }
+
+        .stat-box { 
+            margin-bottom: 20px; 
+        }
+        .stat-header { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            margin-bottom: 10px;
+            padding: 8px 0;
+        }
+        .stat-label { 
+            font-size: 1rem; 
+            font-weight: 600; 
+            color: var(--text-main);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .stat-count { 
+            background: var(--bg-color);
+            padding: 2px 10px;
+            border-radius: 10px;
+            font-size: 0.9rem;
+            font-weight: bold;
+            color: var(--text-sub);
+        }
+        
+        .task-list { 
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .task-item { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border-color);
+            background: #fff;
+            transition: background 0.2s;
+        }
+        .task-item:last-child { border-bottom: none; }
+        .task-item:hover { background: #fafafa; }
+
+        .task-info { display: flex; flex-direction: column; gap: 4px; }
+        .user-name { font-weight: 600; font-size: 0.95rem; color: var(--text-main); }
+        .msg-link { 
+            font-size: 0.8rem; 
+            color: var(--accent-blue); 
+            text-decoration: none; 
+        }
         .msg-link:hover { text-decoration: underline; }
-        .timer-text { color: #f0883e; font-family: monospace; font-size: 1rem; white-space: nowrap; margin-left: 10px; }
-        .footer { margin-top: 25px; font-size: 0.7rem; color: #58a6ff; }
-        .green { color: #238636; }
-        .red { color: #da3633; }
-        .empty-tip { color: #484f58; font-style: italic; padding: 5px; }
+        
+        .timer-text { 
+            font-family: 'SF Mono', 'Roboto Mono', monospace; 
+            font-weight: 600; 
+            color: var(--warning-orange);
+            font-size: 0.95rem;
+        }
+        .timer-overdue { color: var(--danger-red); }
+
+        .empty-tip { 
+            padding: 15px; 
+            text-align: center; 
+            color: var(--text-sub); 
+            font-size: 0.9rem;
+            background: #fafafa;
+        }
+        .footer { 
+            margin-top: 30px; 
+            text-align: center; 
+            font-size: 0.75rem; 
+            color: var(--text-sub); 
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🔍 系统状态监控</h1>
-        <div class="stat-box">
-            <div class="stat-header">
-                <div class="stat-label">运行状态</div>
-                <div class="stat-count {{ 'green' if working else 'red' }}">{{ '🟢 工作中' if working else '🔴 已下班' }}</div>
-            </div>
-        </div>
+        <h1>
+            <span>🛡️ 监控中心</span>
+            <span class="status-badge {{ 'status-on' if working else 'status-off' }}">
+                {{ '🟢 监控中' if working else '🔴 已暂停' }}
+            </span>
+        </h1>
         
         <div class="stat-box">
             <div class="stat-header">
@@ -153,14 +252,14 @@ HTML_TEMPLATE_DYNAMIC = """
                     {% for mid, info in wait_timers.items() %}
                     <div class="task-item">
                         <div class="task-info">
-                            <span class="user-name">👤 {{ info.user }}</span>
-                            <a href="{{ info.url }}" target="_blank" class="msg-link">🔗 查看消息</a>
+                            <span class="user-name">{{ info.user }}</span>
+                            <a href="{{ info.url }}" target="_blank" class="msg-link">查看消息 &rarr;</a>
                         </div>
                         <span class="timer-text" data-end="{{ info.ts }}">计算中...</span>
                     </div>
                     {% endfor %}
                 {% else %}
-                    <div class="empty-tip">无进行中任务</div>
+                    <div class="empty-tip">当前无活跃任务</div>
                 {% endif %}
             </div>
         </div>
@@ -175,14 +274,14 @@ HTML_TEMPLATE_DYNAMIC = """
                     {% for mid, info in followup_timers.items() %}
                     <div class="task-item">
                         <div class="task-info">
-                            <span class="user-name">👤 {{ info.user }}</span>
-                            <a href="{{ info.url }}" target="_blank" class="msg-link">🔗 查看消息</a>
+                            <span class="user-name">{{ info.user }}</span>
+                            <a href="{{ info.url }}" target="_blank" class="msg-link">查看消息 &rarr;</a>
                         </div>
                         <span class="timer-text" data-end="{{ info.ts }}">计算中...</span>
                     </div>
                     {% endfor %}
                 {% else %}
-                    <div class="empty-tip">无进行中任务</div>
+                    <div class="empty-tip">当前无活跃任务</div>
                 {% endif %}
             </div>
         </div>
@@ -197,18 +296,22 @@ HTML_TEMPLATE_DYNAMIC = """
                     {% for mid, info in reply_timers.items() %}
                     <div class="task-item">
                         <div class="task-info">
-                            <span class="user-name">👤 {{ info.user }}</span>
-                            <a href="{{ info.url }}" target="_blank" class="msg-link">🔗 查看消息</a>
+                            <span class="user-name">{{ info.user }}</span>
+                            <a href="{{ info.url }}" target="_blank" class="msg-link">查看消息 &rarr;</a>
                         </div>
                         <span class="timer-text" data-end="{{ info.ts }}">计算中...</span>
                     </div>
                     {% endfor %}
                 {% else %}
-                    <div class="empty-tip">无进行中任务</div>
+                    <div class="empty-tip">当前无活跃任务</div>
                 {% endif %}
             </div>
         </div>
-        <div class="footer">更新时间: {{ current_time }}<br>Ver: 23.1 (Log Cleaner)</div>
+
+        <div class="footer">
+            最后更新: {{ current_time }}<br>
+            System Ver: 24.0 (DeepTrace & LightUI)
+        </div>
     </div>
     <script>
         function updateTimers() {
@@ -217,8 +320,8 @@ HTML_TEMPLATE_DYNAMIC = """
                 const endTs = parseFloat(el.getAttribute('data-end'));
                 const diff = endTs - now;
                 if (diff <= 0) {
-                    el.innerText = "00:00 (超时)";
-                    el.style.color = "#da3633";
+                    el.innerText = "已超时";
+                    el.classList.add('timer-overdue');
                 } else {
                     const m = Math.floor(diff / 60);
                     const s = Math.floor(diff % 60);
@@ -443,7 +546,40 @@ async def handler_deleted(event):
             reply_tasks[msg_id].cancel()
             del reply_tasks[msg_id]
 
-# ================= 10. 消息处理主循环 =================
+# ================= 9.5 深度溯源函数 (核心修复) =================
+async def get_traceable_sender(chat_id, reply_to_msg_id, current_recursion=0):
+    """
+    深度查找：顺藤摸瓜找到真正的客户ID
+    1. 查 API (最准，防止本地缓存缺失)
+    2. 如果发现回复的是同事/自己，继续往上找 (递归)
+    """
+    if current_recursion > 3: return None
+    
+    try:
+        # 强制获取消息对象（即使本地没有缓存）
+        msgs = await client.get_messages(chat_id, ids=[reply_to_msg_id])
+        if not msgs: return None
+        target_msg = msgs[0]
+        if not target_msg: return None
+    except Exception:
+        return None
+
+    sender_id = target_msg.sender_id
+    cs_ids = [MY_ID] + OTHER_CS_IDS
+
+    # 如果是客户，找到了
+    if sender_id and sender_id not in cs_ids:
+        return sender_id
+
+    # 如果是客服/自己，继续往上找
+    if sender_id in cs_ids:
+        if target_msg.reply_to_msg_id:
+            if _sys_opt: print(f"[DEBUG] 溯源: 客服引用消息 -> 继续查找 {target_msg.reply_to_msg_id}")
+            return await get_traceable_sender(chat_id, target_msg.reply_to_msg_id, current_recursion + 1)
+    
+    return None
+
+# ================= 10. 消息处理主循环 (智能版) =================
 @client.on(events.NewMessage(chats=CS_GROUP_IDS))
 @client.on(events.MessageEdited(chats=CS_GROUP_IDS))
 async def handler(event):
@@ -474,58 +610,44 @@ async def handler(event):
     is_sender_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS)
     is_cs_action = is_sender_cs 
 
-    # [全局逻辑] 智能销单：无论谁发言，只要能关联到客户，就销单
-    target_customer_id = None
+    # ==================== [核心优化] 智能溯源销单 ====================
+    real_customer_id = None
+
     if reply_to_msg_id:
-        reply_msg = await event.get_reply_message()
-        if reply_msg:
-            # 1. 如果回复了客户 -> 目标是该客户
-            if reply_msg.sender_id not in [MY_ID] + OTHER_CS_IDS:
-                target_customer_id = reply_msg.sender_id
-            
-            # 2. 如果回复了客服(自己/同事) -> 可能是链式回复 -> 追溯原客户
-            else:
-                # 查 wait_msg_map (回复了"稍等"消息)
-                if reply_to_msg_id in wait_msg_map:
-                    orig_msg_id = wait_msg_map[reply_to_msg_id]
-                    # 反查该消息属于哪个客户
-                    for (cid, uid), msg_set in chat_user_active_msgs.items():
-                        if cid == event.chat_id and orig_msg_id in msg_set:
-                            target_customer_id = uid
-                            if _sys_opt: print(f"[DEBUG] 溯源销单: 回复稍等 -> 客户 {uid}")
-                            break
-                
-                # 查 followup_msg_map (回复了"跟进"消息)
-                elif reply_to_msg_id in followup_msg_map:
-                    orig_msg_id = followup_msg_map[reply_to_msg_id]
-                    for (cid, uid), msg_set in chat_user_active_msgs.items():
-                        if cid == event.chat_id and orig_msg_id in msg_set:
-                            target_customer_id = uid
-                            if _sys_opt: print(f"[DEBUG] 溯源销单: 回复跟进 -> 客户 {uid}")
-                            break
+        # 1. 尝试本地映射表快速查找
+        if reply_to_msg_id in wait_msg_map:
+            wait_origin_msg = wait_msg_map[reply_to_msg_id]
+            for (cid, uid), msg_set in chat_user_active_msgs.items():
+                if cid == event.chat_id and wait_origin_msg in msg_set:
+                    real_customer_id = uid
+                    if _sys_opt: print(f"[DEBUG] 快速命中: 客户 {uid}")
+                    break
+        
+        # 2. 深度溯源 (强制联网查询，解决误报核心)
+        if not real_customer_id:
+            real_customer_id = await get_traceable_sender(event.chat_id, reply_to_msg_id)
+            if real_customer_id and _sys_opt:
+                print(f"[DEBUG] 深度溯源: 消息最终指向客户 -> {real_customer_id}")
 
     # 执行销单
-    if target_customer_id:
-        cancel_all_tasks_for_user(event.chat_id, target_customer_id)
+    if real_customer_id:
+        cancel_all_tasks_for_user(event.chat_id, real_customer_id)
     
-    # 客户自言自语也算活跃
     if not is_sender_cs:
         cancel_all_tasks_for_user(event.chat_id, sender_id)
 
-
-    # ==================== 客服发言逻辑 ====================
+    # ==================== 客服发言处理 ====================
     if is_cs_action:
         if reply_to_msg_id:
             reply_msg = await event.get_reply_message()
             reply_content = reply_msg.text[:50] if reply_msg else "[图片/文件]"
-            customer_id = reply_msg.sender_id if reply_msg else None
+            customer_id = reply_msg.sender_id if reply_msg else real_customer_id
 
-            # 双重保险：如果是直接回复，再次尝试销单
             if reply_to_msg_id in reply_tasks:
                 reply_tasks[reply_to_msg_id].cancel(); del reply_tasks[reply_to_msg_id]
 
             if is_keep_cmd:
-                if _sys_opt: print(f"[DEBUG] 触发精准跟进({sender_name}): {text.strip()}")
+                if _sys_opt: print(f"[DEBUG] 触发精准跟进({sender_name})")
                 task = asyncio.create_task(task_followup_timeout(
                     reply_to_msg_id, sender_name, reply_content, msg_link, event.id, event.chat_id, customer_id
                 ))
@@ -533,25 +655,30 @@ async def handler(event):
                 followup_msg_map[event.id] = reply_to_msg_id
 
             elif is_wait_cmd:
-                if _sys_opt: print(f"[DEBUG] 触发稍等({sender_name}): {text.strip()}")
+                if _sys_opt: print(f"[DEBUG] 触发稍等({sender_name})")
                 task = asyncio.create_task(task_wait_timeout(
                     reply_to_msg_id, sender_name, reply_content, msg_link, event.id, event.chat_id, customer_id
                 ))
                 wait_tasks[reply_to_msg_id] = task
                 wait_msg_map[event.id] = reply_to_msg_id
 
-    # ==================== 客户发言逻辑 ====================
+    # ==================== 客户发言处理 ====================
     else:
         if _sys_opt: print(f"[DEBUG] [{group_title}] {sender_name}: {log_text}")
 
         if reply_to_msg_id:
             try:
+                # 只有当客户确实在回复客服的时候，才算"漏回任务"
+                target_id = None
                 replied_msg = await event.get_reply_message()
-                target_id = replied_msg.sender_id
-                
+                if replied_msg:
+                    target_id = replied_msg.sender_id
+                else:
+                    msgs = await client.get_messages(event.chat_id, ids=[reply_to_msg_id])
+                    if msgs: target_id = msgs[0].sender_id
+
                 if (target_id == MY_ID) or (target_id in OTHER_CS_IDS):
                     if normalize(text.strip()) in IGNORE_SIGNATURES:
-                        if _sys_opt: print(f"[DEBUG] 忽略结束语({sender_name}): {text.strip()}")
                         return
 
                     if event.id in reply_tasks: reply_tasks[event.id].cancel()
@@ -564,11 +691,11 @@ async def handler(event):
 
 if __name__ == '__main__':
     Thread(target=run_web).start()
-    print(f"✅ 系统启动完成 (默认下班模式) | Ver 23.1")
+    print(f"✅ 系统启动完成 (默认下班模式) | Ver 24.0 (DeepTrace)")
     client.start()
     
     try:
-        start_msg = "🤖 **系统启动成功**\n当前状态: 🔴 下班 (默认)\n版本: Ver 23.1 (Log Cleaner)"
+        start_msg = "🤖 **系统启动成功**\n当前状态: 🔴 下班 (默认)\n版本: Ver 24.0 (智能溯源版)"
         client.loop.run_until_complete(send_alert(start_msg, ""))
     except Exception as e:
         print(f"❌ 启动通知发送失败: {e}")
