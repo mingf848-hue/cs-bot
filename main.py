@@ -6,23 +6,26 @@ import requests
 import re
 import time
 from threading import Thread
-from flask import Flask, render_template_string
+from flask import Flask, render_template_string, Response
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
-# ================= 0. 高级日志配置 (黑匣子) =================
-# 这是核心修改：将运行细节同时写入文件和控制台
-# ---------------------------------------------------------
+# ==========================================
+# 模块 0: 黑匣子日志系统 (核心调试工具)
+# ==========================================
 logger = logging.getLogger("BotLogger")
 logger.setLevel(logging.DEBUG)
 
-# 1. 文件处理器 (记录所有细节，用于查错)
-file_handler = logging.FileHandler('bot_debug.log', mode='w', encoding='utf-8')
+# 设置日志文件路径
+LOG_FILE_PATH = 'bot_debug.log'
+
+# 配置 1: 文件记录器
+file_handler = logging.FileHandler(LOG_FILE_PATH, mode='w', encoding='utf-8')
 file_handler.setLevel(logging.DEBUG)
 file_fmt = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 file_handler.setFormatter(file_fmt)
 
-# 2. 控制台处理器 (只显示重要信息，保持界面清爽)
+# 配置 2: 控制台记录器
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setLevel(logging.INFO)
 console_fmt = logging.Formatter('%(asctime)s - %(message)s', datefmt='%H:%M:%S')
@@ -31,24 +34,24 @@ console_handler.setFormatter(console_fmt)
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
-# 屏蔽第三方库的噪音
+# 屏蔽底层噪音
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
 logging.getLogger('telethon').setLevel(logging.WARNING)
 
-# 环境变量开关
 _sys_opt = os.environ.get("OPTIMIZATION_LEVEL", "normal").lower() == "debug"
 
 def log_debug(msg):
-    """同时写入文件和控制台(如果是调试模式)"""
     if _sys_opt:
         logger.info(f"🔍 {msg}")
     else:
-        logger.debug(f"[TRACE] {msg}") # 仅写入文件
+        logger.debug(f"[TRACE] {msg}")
 
 def log_info(msg):
     logger.info(msg)
 
-# ================= 1. 辅助函数 =================
+# ==========================================
+# 模块 1: 基础工具函数
+# ==========================================
 def normalize(text):
     if not text: return ""
     return text.lower().replace('～', '~')
@@ -66,7 +69,9 @@ def extract_id_list(env_str):
             except: pass
     return result
 
-# ================= 2. 配置加载 =================
+# ==========================================
+# 模块 2: 配置加载
+# ==========================================
 try:
     API_ID = int(os.environ["API_ID"])
     API_HASH = os.environ["API_HASH"]
@@ -103,7 +108,9 @@ except ValueError as e:
 
 log_info(f"✅ 配置加载成功 | 稍等词: {len(WAIT_SIGNATURES)} | 跟进词: {len(KEEP_SIGNATURES)}")
 
-# ================= 3. 全局参数 =================
+# ==========================================
+# 模块 3: 全局状态
+# ==========================================
 WAIT_TIMEOUT = 12 * 60
 FOLLOWUP_TIMEOUT = 15 * 60
 REPLY_TIMEOUT = 5 * 60
@@ -124,7 +131,9 @@ chat_user_active_msgs = {}
 IS_WORKING = False
 MY_ID = None
 
-# ================= 4. Web服务 (纯白高清版) =================
+# ==========================================
+# 模块 4: Web服务
+# ==========================================
 app = Flask(__name__)
 
 HTML_TEMPLATE = """
@@ -135,145 +144,53 @@ HTML_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta http-equiv="refresh" content="5"> 
     <style>
-        :root {
-            --bg-body: #ffffff;
-            --text-main: #000000;
-            --text-sub: #666666;
-            --card-bg: #f8f9fa;
-            --border: #e9ecef;
-            --green: #28a745;
-            --red: #dc3545;
-            --blue: #007bff;
-        }
-        body { 
-            background-color: var(--bg-body); 
-            color: var(--text-main); 
-            font-family: -apple-system, "Microsoft YaHei", sans-serif; 
-            margin: 0; 
-            padding: 20px;
-            max-width: 600px;
-            margin: 0 auto;
-        }
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 2px solid var(--text-main);
-            padding-bottom: 15px;
-            margin-bottom: 20px;
-        }
+        :root { --bg: #fff; --text: #000; --gray: #f8f9fa; --border: #e9ecef; --green: #28a745; --red: #dc3545; --blue: #007bff; }
+        body { background: var(--bg); color: var(--text); font-family: -apple-system, "Microsoft YaHei", sans-serif; margin: 0; padding: 20px; max-width: 600px; margin: 0 auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #000; padding-bottom: 15px; margin-bottom: 20px; }
         h1 { margin: 0; font-size: 1.4rem; font-weight: 800; }
-        .status-tag {
-            padding: 5px 10px;
-            border-radius: 4px;
-            font-weight: bold;
-            font-size: 0.9rem;
-        }
-        .status-on { background: var(--green); color: #fff; }
-        .status-off { background: var(--red); color: #fff; }
-        .group-box { margin-bottom: 30px; }
-        .group-title {
-            font-size: 1rem;
-            font-weight: 700;
-            color: var(--text-sub);
-            margin-bottom: 10px;
-            border-left: 4px solid var(--text-main);
-            padding-left: 10px;
-            display: flex;
-            justify-content: space-between;
-        }
-        .card { 
-            background: var(--card-bg);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 15px;
-            margin-bottom: 10px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .card-left { display: flex; flex-direction: column; gap: 5px; }
-        .user { font-weight: 700; font-size: 1.1rem; }
-        .link { font-size: 0.85rem; color: var(--blue); text-decoration: none; }
-        .timer { font-family: monospace; font-size: 1.2rem; font-weight: 700; color: #d63384; }
-        .timer.late { color: var(--red); text-decoration: underline; }
+        .tag { padding: 5px 10px; border-radius: 4px; font-weight: bold; font-size: 0.9rem; }
+        .on { background: var(--green); color: #fff; } .off { background: var(--red); color: #fff; }
+        .box { margin-bottom: 30px; }
+        .title { font-size: 1rem; font-weight: 700; color: #666; margin-bottom: 10px; border-left: 4px solid #000; padding-left: 10px; display: flex; justify-content: space-between; }
+        .card { background: var(--gray); border: 1px solid var(--border); border-radius: 8px; padding: 15px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+        .u { font-weight: 700; font-size: 1.1rem; display: block; }
+        .l { font-size: 0.85rem; color: var(--blue); text-decoration: none; }
+        .t { font-family: monospace; font-size: 1.2rem; font-weight: 700; color: #d63384; }
+        .late { color: var(--red); text-decoration: underline; }
         .empty { color: #ccc; text-align: center; padding: 10px; font-style: italic; }
         .footer { text-align: center; color: #ccc; font-size: 0.8rem; margin-top: 40px; }
+        .log-btn { display: block; width: 100%; padding: 12px; margin-top: 20px; background: #222; color: #fff; text-align: center; text-decoration: none; border-radius: 8px; font-weight: bold; border: none; cursor: pointer; }
+        .log-btn:hover { background: #000; }
     </style>
 </head>
 <body>
     <div class="header">
         <h1>⚡️ 实时监控</h1>
-        <div class="status-tag {{ 'status-on' if working else 'status-off' }}">
-            {{ '正在工作' if working else '休息中' }}
-        </div>
+        <div class="tag {{ 'on' if working else 'off' }}">{{ '正在工作' if working else '休息中' }}</div>
     </div>
     
-    <div class="group-box">
-        <div class="group-title"><span>⏳ 稍等 (12m)</span><span>{{ wait_timers|length }}</span></div>
-        {% if wait_timers %}
-            {% for mid, info in wait_timers.items() %}
-            <div class="card">
-                <div class="card-left">
-                    <span class="user">{{ info.user }}</span>
-                    <a href="{{ info.url }}" target="_blank" class="link">跳转消息 &rarr;</a>
-                </div>
-                <span class="timer" data-end="{{ info.ts }}">--:--</span>
-            </div>
-            {% endfor %}
-        {% else %}
-            <div class="empty">无进行中任务</div>
-        {% endif %}
-    </div>
+    <div class="box"><div class="title"><span>⏳ 稍等 (12m)</span><span>{{ wait_timers|length }}</span></div>
+    {% if wait_timers %}{% for mid, info in wait_timers.items() %}<div class="card"><div><span class="u">{{ info.user }}</span><a href="{{ info.url }}" target="_blank" class="l">跳转消息 &rarr;</a></div><span class="t" data-end="{{ info.ts }}">--:--</span></div>{% endfor %}
+    {% else %}<div class="empty">无进行中任务</div>{% endif %}</div>
 
-    <div class="group-box">
-        <div class="group-title"><span>🕵️ 跟进 (15m)</span><span>{{ followup_timers|length }}</span></div>
-        {% if followup_timers %}
-            {% for mid, info in followup_timers.items() %}
-            <div class="card">
-                <div class="card-left">
-                    <span class="user">{{ info.user }}</span>
-                    <a href="{{ info.url }}" target="_blank" class="link">跳转消息 &rarr;</a>
-                </div>
-                <span class="timer" data-end="{{ info.ts }}">--:--</span>
-            </div>
-            {% endfor %}
-        {% else %}
-            <div class="empty">无进行中任务</div>
-        {% endif %}
-    </div>
+    <div class="box"><div class="title"><span>🕵️ 跟进 (15m)</span><span>{{ followup_timers|length }}</span></div>
+    {% if followup_timers %}{% for mid, info in followup_timers.items() %}<div class="card"><div><span class="u">{{ info.user }}</span><a href="{{ info.url }}" target="_blank" class="l">跳转消息 &rarr;</a></div><span class="t" data-end="{{ info.ts }}">--:--</span></div>{% endfor %}
+    {% else %}<div class="empty">无进行中任务</div>{% endif %}</div>
 
-    <div class="group-box">
-        <div class="group-title"><span>🔔 漏回 (5m)</span><span>{{ reply_timers|length }}</span></div>
-        {% if reply_timers %}
-            {% for mid, info in reply_timers.items() %}
-            <div class="card">
-                <div class="card-left">
-                    <span class="user">{{ info.user }}</span>
-                    <a href="{{ info.url }}" target="_blank" class="link">跳转消息 &rarr;</a>
-                </div>
-                <span class="timer" data-end="{{ info.ts }}">--:--</span>
-            </div>
-            {% endfor %}
-        {% else %}
-            <div class="empty">无进行中任务</div>
-        {% endif %}
-    </div>
-    <div class="footer">更新时间: {{ current_time }} | Ver: 25.0 (BlackBox)</div>
+    <div class="box"><div class="title"><span>🔔 漏回 (5m)</span><span>{{ reply_timers|length }}</span></div>
+    {% if reply_timers %}{% for mid, info in reply_timers.items() %}<div class="card"><div><span class="u">{{ info.user }}</span><a href="{{ info.url }}" target="_blank" class="l">跳转消息 &rarr;</a></div><span class="t" data-end="{{ info.ts }}">--:--</span></div>{% endfor %}
+    {% else %}<div class="empty">无进行中任务</div>{% endif %}</div>
+
+    <a href="/log" target="_blank" class="log-btn">📂 查看黑匣子日志 (Debug)</a>
+
+    <div class="footer">更新: {{ current_time }} | Ver: 25.5 (Mac Fix)</div>
     <script>
         function update() {
             const now = Date.now() / 1000;
-            document.querySelectorAll('.timer').forEach(el => {
-                const end = parseFloat(el.dataset.end);
-                const diff = end - now;
-                if (diff <= 0) {
-                    el.innerText = "已超时";
-                    el.classList.add('late');
-                } else {
-                    const m = Math.floor(diff / 60);
-                    const s = Math.floor(diff % 60);
-                    el.innerText = `${m}:${s.toString().padStart(2, '0')}`;
-                }
+            document.querySelectorAll('.t').forEach(el => {
+                const diff = parseFloat(el.dataset.end) - now;
+                if (diff <= 0) { el.innerText = "已超时"; el.classList.add('late'); }
+                else { const m = Math.floor(diff/60), s = Math.floor(diff%60); el.innerText = `${m}:${s.toString().padStart(2,'0')}`; }
             });
         }
         setInterval(update, 1000);
@@ -289,11 +206,22 @@ def status_page():
     return render_template_string(HTML_TEMPLATE, working=IS_WORKING, wait_timers=wait_timers, 
                                 followup_timers=followup_timers, reply_timers=reply_timers, current_time=current_time_str)
 
+@app.route('/log')
+def view_log():
+    try:
+        with open(LOG_FILE_PATH, 'r', encoding='utf-8') as f:
+            content = f.read()
+        return Response(content, mimetype='text/plain')
+    except FileNotFoundError:
+        return "日志文件尚未生成，请稍后再试。"
+
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port, threaded=True)
 
-# ================= 5. 通知与网络模块 =================
+# ==========================================
+# 模块 5: 通知与网络检测 (Fail-Safe)
+# ==========================================
 def _post_request(url, payload):
     try:
         requests.post(url, json=payload, timeout=8)
@@ -313,10 +241,7 @@ async def send_alert(text, link):
         await asyncio.gather(*tasks)
 
 async def check_msg_exists(channel_id, msg_id):
-    """
-    检查消息是否存在。
-    FAIL-SAFE: 网络错误视为消息存在，防止漏报。
-    """
+    """FAIL-SAFE: 网络错误视为消息存在"""
     try:
         msg = await client.get_messages(channel_id, ids=msg_id)
         if not msg: 
@@ -324,15 +249,16 @@ async def check_msg_exists(channel_id, msg_id):
             return False 
         return True
     except Exception as e:
-        log_debug(f"⚠️ 检查消息 {msg_id} 时网络异常 ({e}) -> 强制视为存在")
-        return True # 关键：报错也当做存在
+        log_debug(f"⚠️ 检查消息 {msg_id} 时网络异常 ({e}) -> 强制视为存在 (防漏报)")
+        return True 
 
-# ================= 6. 任务管理 =================
+# ==========================================
+# 模块 6: 任务管理
+# ==========================================
 def add_user_task(chat_id, user_id, msg_id):
     if not user_id: return
     key = (chat_id, user_id)
-    if key not in chat_user_active_msgs:
-        chat_user_active_msgs[key] = set()
+    if key not in chat_user_active_msgs: chat_user_active_msgs[key] = set()
     chat_user_active_msgs[key].add(msg_id)
 
 def remove_user_task(chat_id, user_id, msg_id):
@@ -340,8 +266,7 @@ def remove_user_task(chat_id, user_id, msg_id):
     key = (chat_id, user_id)
     if key in chat_user_active_msgs:
         chat_user_active_msgs[key].discard(msg_id)
-        if not chat_user_active_msgs[key]:
-            del chat_user_active_msgs[key]
+        if not chat_user_active_msgs[key]: del chat_user_active_msgs[key]
 
 def cancel_all_tasks_for_user(chat_id, user_id):
     if not user_id: return
@@ -358,7 +283,9 @@ def cancel_all_tasks_for_user(chat_id, user_id):
         if count > 0:
             log_debug(f"🗑️ 智能销单: 用户 {user_id} -> 清除 {count} 个任务")
 
-# ================= 7. 倒计时任务逻辑 =================
+# ==========================================
+# 模块 7: 倒计时任务逻辑
+# ==========================================
 async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, customer_id):
     try:
         log_debug(f"⏳ [启动] 稍等倒计时: Msg={key_id} Agent={agent_name}")
@@ -374,14 +301,7 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
             return
 
         log_debug(f"🚨 [触发] 稍等超时报警: Msg={key_id}")
-        alert_text = (
-            f"📩 消息: `{original_text.replace('`', '')}`\n"
-            f"🚨 **稍等-超时预警**\n"
-            f"👤 客服: {agent_name}\n"
-            f"⚠️ 状态: 已过 {WAIT_TIMEOUT // 60} 分钟 (无后续回复)\n"
-            f"🔗 [点击处理]({link})"
-        )
-        await send_alert(alert_text, link)
+        await send_alert(f"📩 消息: `{original_text.replace('`', '')}`\n🚨 **稍等-超时预警**\n👤 客服: {agent_name}\n⚠️ 状态: 已过 {WAIT_TIMEOUT // 60} 分钟 (无后续回复)\n🔗 [点击处理]({link})", link)
     except asyncio.CancelledError:
         log_debug(f"🛑 [中断] 稍等任务被取消: Msg={key_id}")
     finally:
@@ -405,14 +325,7 @@ async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_
             return
 
         log_debug(f"🚨 [触发] 跟进超时报警: Msg={key_id}")
-        alert_text = (
-            f"📩 消息: `{original_text.replace('`', '')}`\n"
-            f"🚨 **跟进-超时预警**\n"
-            f"👤 客服: {agent_name}\n"
-            f"⚠️ 状态: **反馈核实内容超时未跟进回复** ({FOLLOWUP_TIMEOUT // 60} 分钟)\n"
-            f"🔗 [点击处理]({link})"
-        )
-        await send_alert(alert_text, link)
+        await send_alert(f"📩 消息: `{original_text.replace('`', '')}`\n🚨 **跟进-超时预警**\n👤 客服: {agent_name}\n⚠️ 状态: **反馈核实内容超时未跟进回复** ({FOLLOWUP_TIMEOUT // 60} 分钟)\n🔗 [点击处理]({link})", link)
     except asyncio.CancelledError:
         log_debug(f"🛑 [中断] 跟进任务被取消: Msg={key_id}")
     finally:
@@ -430,27 +343,23 @@ async def task_reply_timeout(trigger_msg_id, sender_name, content, link):
         if not IS_WORKING: return
         
         log_debug(f"🚨 [触发] 漏回报警: Msg={trigger_msg_id}")
-        alert_text = (
-            f"📩 内容: `{content.replace('`', '')}`\n"
-            f"🔔 **漏回消息提醒**\n"
-            f"👤 用户: {sender_name} 回复了你\n"
-            f"⚠️ 状态: 已 {REPLY_TIMEOUT // 60} 分钟未回复\n"
-            f"🔗 [点击回复]({link})"
-        )
-        await send_alert(alert_text, link)
+        await send_alert(f"📩 内容: `{content.replace('`', '')}`\n🔔 **漏回消息提醒**\n👤 用户: {sender_name} 回复了你\n⚠️ 状态: 已 {REPLY_TIMEOUT // 60} 分钟未回复\n🔗 [点击回复]({link})", link)
     except asyncio.CancelledError:
-        pass # 漏回任务取消很频繁，不打Log防止刷屏
+        pass 
     finally:
         if trigger_msg_id in reply_tasks: del reply_tasks[trigger_msg_id]
         if trigger_msg_id in reply_timers: del reply_timers[trigger_msg_id]
 
-# ================= 8. Telethon 客户端 =================
+# ==========================================
+# 模块 8: Telethon 客户端初始化
+# ==========================================
+# ⚠️ 这里已还原为你指定的 Mac mini 设备信息，请勿修改！
 client = TelegramClient(
     StringSession(SESSION_STRING), 
     API_ID, 
     API_HASH,
     device_model="Mac mini M2",
-    app_version="5.8.3",      
+    app_version="5.8.3 arm64 Mac App Store",      
     system_version="macOS 15.6.1",
     lang_code="zh-hans",
     system_lang_code="zh-hans"
@@ -489,7 +398,6 @@ async def handler_deleted(event):
     if not IS_WORKING: return
     for msg_id in event.deleted_ids:
         deleted_cache.add(msg_id)
-        # 这里不打log，因为删除事件非常频繁，只处理逻辑
         if msg_id in wait_msg_map:
             cid = wait_msg_map[msg_id]
             if cid in wait_tasks: wait_tasks[cid].cancel()
@@ -502,7 +410,9 @@ async def handler_deleted(event):
             reply_tasks[msg_id].cancel()
             del reply_tasks[msg_id]
 
-# ================= 9. 溯源逻辑 (Deep Trace) =================
+# ==========================================
+# 模块 9: 智能溯源 (Deep Trace)
+# ==========================================
 async def get_traceable_sender(chat_id, reply_to_msg_id, current_recursion=0):
     if current_recursion > 3: return None
     try:
@@ -526,7 +436,9 @@ async def get_traceable_sender(chat_id, reply_to_msg_id, current_recursion=0):
     
     return None
 
-# ================= 10. 主循环 Handler =================
+# ==========================================
+# 模块 10: 主逻辑 Handler
+# ==========================================
 @client.on(events.NewMessage(chats=CS_GROUP_IDS))
 @client.on(events.MessageEdited(chats=CS_GROUP_IDS))
 async def handler(event):
@@ -557,7 +469,7 @@ async def handler(event):
     is_sender_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS)
     is_cs_action = is_sender_cs 
 
-    # --- 1. 智能溯源销单 ---
+    # 1. 智能溯源销单
     real_customer_id = None
     if reply_to_msg_id:
         if reply_to_msg_id in wait_msg_map:
@@ -578,7 +490,7 @@ async def handler(event):
     if not is_sender_cs:
         cancel_all_tasks_for_user(event.chat_id, sender_id)
 
-    # --- 2. 客服操作 ---
+    # 2. 客服操作
     if is_cs_action:
         if reply_to_msg_id and reply_to_msg_id in reply_tasks:
             reply_tasks[reply_to_msg_id].cancel(); del reply_tasks[reply_to_msg_id]
@@ -604,7 +516,7 @@ async def handler(event):
                 wait_tasks[reply_to_msg_id] = task
                 wait_msg_map[event.id] = reply_to_msg_id
 
-    # --- 3. 客户操作 ---
+    # 3. 客户操作
     else:
         log_debug(f"📩 [{group_title}] {sender_name}: {log_text[:30]}")
         if reply_to_msg_id:
@@ -631,11 +543,11 @@ async def handler(event):
 
 if __name__ == '__main__':
     Thread(target=run_web).start()
-    log_info(f"✅ 系统启动完成 (Ver 25.0 BlackBox) - 日志文件: bot_debug.log")
+    log_info(f"✅ 系统启动完成 (Ver 25.5 Mac Fixed) - 日志文件: bot_debug.log")
     client.start()
     
     try:
-        start_msg = "🤖 **系统启动成功**\n当前状态: 🔴 下班 (默认)\n版本: Ver 25.0 (黑匣子日志版)"
+        start_msg = "🤖 **系统启动成功**\n当前状态: 🔴 下班 (默认)\n版本: Ver 25.5 (Mac伪装修复版)"
         client.loop.run_until_complete(send_alert(start_msg, ""))
     except Exception as e:
         logger.error(f"❌ 启动通知发送失败: {e}")
