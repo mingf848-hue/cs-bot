@@ -18,20 +18,17 @@ logger = logging.getLogger("BotLogger")
 logger.setLevel(logging.DEBUG)
 LOG_FILE_PATH = 'bot_debug.log'
 
-# 自定义北京时间格式
 class BeijingFormatter(logging.Formatter):
     def converter(self, timestamp):
         return datetime.fromtimestamp(timestamp, timezone.utc).astimezone(timezone(timedelta(hours=8)))
     def formatTime(self, record, datefmt=None):
         return self.converter(record.created).strftime('%H:%M:%S')
 
-# 文件日志 (详细)
 file_fmt = BeijingFormatter('%(asctime)s %(message)s', datefmt='%H:%M:%S')
 file_handler = logging.FileHandler(LOG_FILE_PATH, mode='w', encoding='utf-8')
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(file_fmt)
 
-# 控制台日志 (精简)
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setLevel(logging.INFO)
 console_handler.setFormatter(file_fmt)
@@ -45,22 +42,16 @@ logging.getLogger('telethon').setLevel(logging.WARNING)
 _sys_opt = os.environ.get("OPTIMIZATION_LEVEL", "normal").lower() == "debug"
 
 def log_tree(level, msg):
-    """
-    生成强可视化的树状日志
-    """
     prefix = ""
-    if level == 0:   prefix = "📦 "          # 根节点 (收到消息)
-    elif level == 1: prefix = " ┣━━ "        # 中间节点 (逻辑处理)
-    elif level == 2: prefix = " ┗━━ "        # 结束节点 (销单/结果)
-    elif level == 3: prefix = " 🚨 [ALERT] " # 报警专用
-    elif level == 9: prefix = " ❌ [ERROR] " # 错误专用
+    if level == 0:   prefix = "📦 "
+    elif level == 1: prefix = " ┣━━ "
+    elif level == 2: prefix = " ┗━━ "
+    elif level == 3: prefix = " 🚨 [ALERT] "
+    elif level == 9: prefix = " ❌ [ERROR] "
     
     full_msg = f"{prefix}{msg}"
-    
-    if _sys_opt or level >= 2: # 关键节点强制打印
-        logger.info(full_msg)
-    else:
-        logger.debug(full_msg)
+    if _sys_opt or level >= 2: logger.info(full_msg)
+    else: logger.debug(full_msg)
 
 # ==========================================
 # 模块 1: 基础函数
@@ -135,11 +126,10 @@ IS_WORKING = False
 MY_ID = None
 
 # ==========================================
-# 模块 4: 高级 Web 控制台 (Flask)
+# 模块 4: 高级 Web 控制台
 # ==========================================
 app = Flask(__name__)
 
-# 主看板 (状态监控)
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html>
@@ -182,7 +172,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 25.9 (LogAnalyzer)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 26.1 (Strict Device)</div>
     <script>
         setInterval(() => {
             const now = Date.now() / 1000;
@@ -197,7 +187,6 @@ DASHBOARD_HTML = """
 </html>
 """
 
-# 日志分析器 HTML (暗黑风格，带搜索)
 LOG_VIEWER_HTML = """
 <!DOCTYPE html>
 <html>
@@ -212,14 +201,12 @@ LOG_VIEWER_HTML = """
         #log-container { flex-grow: 1; overflow-y: auto; padding: 15px; white-space: pre; font-size: 13px; line-height: 1.5; }
         .line { padding: 2px 0; }
         .highlight { background: #444; color: #fff; font-weight: bold; }
-        
-        /* 语法高亮 */
         .time { color: #569cd6; margin-right: 10px; }
         .tree { color: #808080; }
         .alert { color: #f44747; font-weight: bold; }
         .success { color: #6a9955; font-weight: bold; }
         .error { color: #f48771; font-weight: bold; background: #2f0d0d; }
-        .info { color: #9cdcfe; }
+        .delete { color: #d7ba7d; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -229,56 +216,38 @@ LOG_VIEWER_HTML = """
         <button onclick="scrollToBottom()">⬇️ 到底部</button>
     </div>
     <div id="log-container">加载中...</div>
-
     <script>
         const container = document.getElementById('log-container');
-        
-        // 自动着色并显示日志
         fetch('/log_raw').then(r => r.text()).then(text => {
             const lines = text.split('\\n');
             let html = '';
             lines.forEach(line => {
                 if(!line.trim()) return;
-                // 简单的语法高亮解析
                 let className = 'line';
                 if(line.includes('[ALERT]')) className += ' alert';
-                else if(line.includes('[销单成功]')) className += ' success';
+                else if(line.includes('销单成功')) className += ' success';
+                else if(line.includes('物理删除')) className += ' delete';
                 else if(line.includes('[ERROR]') || line.includes('❌')) className += ' error';
                 
-                // 提取时间
                 const timeMatch = line.match(/^(\\d{2}:\\d{2}:\\d{2})/);
                 let formattedLine = line;
-                if(timeMatch) {
-                    formattedLine = `<span class="time">${timeMatch[1]}</span>` + line.substring(8);
-                }
-                
-                // 树状图颜色
+                if(timeMatch) formattedLine = `<span class="time">${timeMatch[1]}</span>` + line.substring(8);
                 formattedLine = formattedLine.replace(/(┣━━|┗━━)/g, '<span class="tree">$1</span>');
-                
                 html += `<div class="${className}">${formattedLine}</div>`;
             });
             container.innerHTML = html;
             scrollToBottom();
         });
-
         function filterLogs() {
             const term = document.getElementById('search').value.toLowerCase();
             const divs = container.getElementsByTagName('div');
             for(let div of divs) {
                 const text = div.innerText.toLowerCase();
-                if(text.includes(term)) {
-                    div.style.display = "block";
-                    if(term.length > 2) div.classList.add('highlight');
-                } else {
-                    div.style.display = "none";
-                    div.classList.remove('highlight');
-                }
+                if(text.includes(term)) { div.style.display = "block"; if(term.length > 2) div.classList.add('highlight'); } 
+                else { div.style.display = "none"; div.classList.remove('highlight'); }
             }
         }
-
-        function scrollToBottom() {
-            container.scrollTop = container.scrollHeight;
-        }
+        function scrollToBottom() { container.scrollTop = container.scrollHeight; }
     </script>
 </body>
 </html>
@@ -286,13 +255,11 @@ LOG_VIEWER_HTML = """
 
 @app.route('/')
 def status_page():
-    # 北京时间显示
     now = datetime.now(timezone(timedelta(hours=8))).strftime('%H:%M:%S')
     return render_template_string(DASHBOARD_HTML, working=IS_WORKING, w=wait_timers, f=followup_timers, r=reply_timers, current_time=now)
 
 @app.route('/log')
-def log_ui():
-    return render_template_string(LOG_VIEWER_HTML)
+def log_ui(): return render_template_string(LOG_VIEWER_HTML)
 
 @app.route('/log_raw')
 def log_raw():
@@ -305,15 +272,13 @@ def run_web():
     app.run(host='0.0.0.0', port=port, threaded=True)
 
 # ==========================================
-# 模块 5: 通知与网络 (防漏报)
+# 模块 5: 通知与网络
 # ==========================================
 def _post_request(url, payload):
     try:
         resp = requests.post(url, json=payload, timeout=10)
-        if resp.status_code != 200:
-            log_tree(9, f"API推送失败: {resp.status_code}")
-    except Exception as e:
-        log_tree(9, f"网络异常: {e}")
+        if resp.status_code != 200: log_tree(9, f"API推送失败: {resp.status_code}")
+    except Exception as e: log_tree(9, f"网络异常: {e}")
 
 async def send_alert(text, link):
     if not BOT_TOKEN: return
@@ -325,14 +290,13 @@ async def send_alert(text, link):
     for chat_id in ALERT_GROUP_IDS:
         payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": True}
         tasks.append(loop.run_in_executor(None, lambda p=payload: _post_request(url, p)))
-    if tasks:
-        await asyncio.gather(*tasks)
+    if tasks: await asyncio.gather(*tasks)
 
 async def check_msg_exists(channel_id, msg_id):
     try:
         msg = await client.get_messages(channel_id, ids=msg_id)
         if not msg: 
-            log_tree(2, f"❌ 消息 {msg_id} 已物理删除")
+            log_tree(2, f"❌ 检查发现消息 {msg_id} 已物理删除")
             return False 
         return True
     except Exception as e:
@@ -435,9 +399,14 @@ async def task_reply_timeout(trigger_msg_id, sender_name, content, link):
 # 模块 8: 客户端
 # ==========================================
 client = TelegramClient(
-    StringSession(SESSION_STRING), API_ID, API_HASH,
-    device_model="Mac mini M2", app_version="5.8.3 arm64",
-    system_version="macOS 15.6.1", lang_code="zh-hans", system_lang_code="zh-hans"
+    StringSession(SESSION_STRING), 
+    API_ID, 
+    API_HASH,
+    device_model="Mac mini M2", 
+    app_version="5.8.3 arm64 Mac App Store",     
+    system_version="macOS 15.6.1",
+    lang_code="zh-hans",
+    system_lang_code="zh-hans"
 )
 
 @client.on(events.NewMessage(chats='me', pattern=r'^\s*(上班|下班|状态)\s*$'))
@@ -464,16 +433,24 @@ async def handler_deleted(event):
     if not IS_WORKING: return
     for msg_id in event.deleted_ids:
         deleted_cache.add(msg_id)
+        # 稍等任务
         if msg_id in wait_msg_map:
             cid = wait_msg_map[msg_id]
-            if cid in wait_tasks: wait_tasks[cid].cancel()
+            if cid in wait_tasks: 
+                wait_tasks[cid].cancel()
+                log_tree(2, f"🗑️ 物理删除侦测 Msg={msg_id} -> 🛑 撤销 [稍等] 任务")
             del wait_msg_map[msg_id]
+        # 跟进任务
         if msg_id in followup_msg_map:
             cid = followup_msg_map[msg_id]
-            if cid in followup_tasks: followup_tasks[cid].cancel()
+            if cid in followup_tasks: 
+                followup_tasks[cid].cancel()
+                log_tree(2, f"🗑️ 物理删除侦测 Msg={msg_id} -> 🛑 撤销 [跟进] 任务")
             del followup_msg_map[msg_id]
+        # 漏回任务
         if msg_id in reply_tasks:
             reply_tasks[msg_id].cancel()
+            log_tree(2, f"🗑️ 物理删除侦测 Msg={msg_id} -> 🛑 撤销 [漏回] 监控")
             del reply_tasks[msg_id]
 
 async def get_traceable_sender(chat_id, reply_to_msg_id, current_recursion=0):
@@ -582,6 +559,6 @@ async def handler(event):
 
 if __name__ == '__main__':
     Thread(target=run_web).start()
-    log_tree(0, "✅ 系统启动 (Ver 25.9 LogAnalyzer)")
+    log_tree(0, "✅ 系统启动 (Ver 26.1 Strict Device)")
     client.start()
     client.run_until_disconnected()
