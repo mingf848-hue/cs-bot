@@ -172,7 +172,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 26.1 (Strict Device)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 26.2 (Verbose Log)</div>
     <script>
         setInterval(() => {
             const now = Date.now() / 1000;
@@ -333,7 +333,7 @@ def cancel_all_tasks_for_user(chat_id, user_id, reason="未知"):
         
         if key in chat_user_active_msgs: del chat_user_active_msgs[key]
         if count > 0:
-            log_tree(2, f"销单成功 [原因: {reason}] 用户: {user_id} 任务数: {count}")
+            log_tree(2, f"销单成功 | {reason} | 归属用户: {user_id} | 任务数: {count}")
 
 # ==========================================
 # 模块 7: 倒计时任务
@@ -433,21 +433,18 @@ async def handler_deleted(event):
     if not IS_WORKING: return
     for msg_id in event.deleted_ids:
         deleted_cache.add(msg_id)
-        # 稍等任务
         if msg_id in wait_msg_map:
             cid = wait_msg_map[msg_id]
             if cid in wait_tasks: 
                 wait_tasks[cid].cancel()
                 log_tree(2, f"🗑️ 物理删除侦测 Msg={msg_id} -> 🛑 撤销 [稍等] 任务")
             del wait_msg_map[msg_id]
-        # 跟进任务
         if msg_id in followup_msg_map:
             cid = followup_msg_map[msg_id]
             if cid in followup_tasks: 
                 followup_tasks[cid].cancel()
                 log_tree(2, f"🗑️ 物理删除侦测 Msg={msg_id} -> 🛑 撤销 [跟进] 任务")
             del followup_msg_map[msg_id]
-        # 漏回任务
         if msg_id in reply_tasks:
             reply_tasks[msg_id].cancel()
             log_tree(2, f"🗑️ 物理删除侦测 Msg={msg_id} -> 🛑 撤销 [漏回] 监控")
@@ -492,6 +489,15 @@ async def handler(event):
     is_keep_cmd = text.strip() in KEEP_SIGNATURES
     is_sender_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS)
 
+    # 1. 抓取被回复的内容（用于日志）
+    reply_content_summary = "无内容"
+    if reply_to_msg_id:
+        try:
+            r_msg = await event.get_reply_message()
+            if r_msg: reply_content_summary = (r_msg.text or "[文件/图片]")[:20]
+        except: pass
+
+    # 2. 智能销单
     real_customer_id = None
     if reply_to_msg_id:
         if reply_to_msg_id in wait_msg_map:
@@ -507,16 +513,21 @@ async def handler(event):
                 log_tree(1, f" ┣━━ 智能溯源: 消息 {event.id} -> 客户 {real_customer_id}")
 
     if real_customer_id:
-        cancel_all_tasks_for_user(chat_id, real_customer_id, reason=f"溯源命中 [{sender_name}]")
+        # [修改] 叙事性销单原因
+        reason_str = f"因为 [客服 {sender_name}] 回复了内容: [{text[:10]}...] (原消息: {reply_content_summary}...)"
+        cancel_all_tasks_for_user(chat_id, real_customer_id, reason=reason_str)
     
     if not is_sender_cs:
-        cancel_all_tasks_for_user(chat_id, sender_id, reason=f"客户发言 [{sender_name}]")
+        # [修改] 叙事性销单原因
+        reason_str = f"因为 [客户 {sender_name}] 本人发言: [{text[:10]}...]"
+        cancel_all_tasks_for_user(chat_id, sender_id, reason=reason_str)
 
+    # 3. 客服操作
     if is_sender_cs:
         if reply_to_msg_id and reply_to_msg_id in reply_tasks:
             reply_tasks[reply_to_msg_id].cancel()
             del reply_tasks[reply_to_msg_id]
-            log_tree(2, f" ┗━━ 销单: 回复了漏回消息")
+            log_tree(2, f" ┗━━ 暴力销单: 客服回复了漏回监控 (Msg {reply_to_msg_id})")
 
         if reply_to_msg_id:
             reply_msg = await event.get_reply_message()
@@ -537,8 +548,10 @@ async def handler(event):
                 wait_tasks[reply_to_msg_id] = task
                 wait_msg_map[event.id] = reply_to_msg_id
 
+    # 4. 客户操作
     else:
-        log_tree(0, f"[{chat_id}] {sender_name}: {text[:20]}")
+        # [修改] 完整显示消息内容 (移除[:20])
+        log_tree(0, f"[{chat_id}] {sender_name}: {text}") 
         if reply_to_msg_id:
             try:
                 target_id = None
@@ -559,6 +572,6 @@ async def handler(event):
 
 if __name__ == '__main__':
     Thread(target=run_web).start()
-    log_tree(0, "✅ 系统启动 (Ver 26.1 Strict Device)")
+    log_tree(0, "✅ 系统启动 (Ver 26.2 Narrative Log)")
     client.start()
     client.run_until_disconnected()
