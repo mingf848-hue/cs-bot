@@ -4,14 +4,51 @@ import asyncio
 import logging
 import requests
 import re
+import time
 from threading import Thread
 from flask import Flask, render_template_string
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.tl.types import Message
-import time
 
-# ================= 0. 辅助函数 =================
+# ================= 0. 高级日志配置 (黑匣子) =================
+# 这是核心修改：将运行细节同时写入文件和控制台
+# ---------------------------------------------------------
+logger = logging.getLogger("BotLogger")
+logger.setLevel(logging.DEBUG)
+
+# 1. 文件处理器 (记录所有细节，用于查错)
+file_handler = logging.FileHandler('bot_debug.log', mode='w', encoding='utf-8')
+file_handler.setLevel(logging.DEBUG)
+file_fmt = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
+file_handler.setFormatter(file_fmt)
+
+# 2. 控制台处理器 (只显示重要信息，保持界面清爽)
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_fmt = logging.Formatter('%(asctime)s - %(message)s', datefmt='%H:%M:%S')
+console_handler.setFormatter(console_fmt)
+
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+
+# 屏蔽第三方库的噪音
+logging.getLogger('werkzeug').setLevel(logging.ERROR)
+logging.getLogger('telethon').setLevel(logging.WARNING)
+
+# 环境变量开关
+_sys_opt = os.environ.get("OPTIMIZATION_LEVEL", "normal").lower() == "debug"
+
+def log_debug(msg):
+    """同时写入文件和控制台(如果是调试模式)"""
+    if _sys_opt:
+        logger.info(f"🔍 {msg}")
+    else:
+        logger.debug(f"[TRACE] {msg}") # 仅写入文件
+
+def log_info(msg):
+    logger.info(msg)
+
+# ================= 1. 辅助函数 =================
 def normalize(text):
     if not text: return ""
     return text.lower().replace('～', '~')
@@ -29,7 +66,7 @@ def extract_id_list(env_str):
             except: pass
     return result
 
-# ================= 1. 配置加载 =================
+# ================= 2. 配置加载 =================
 try:
     API_ID = int(os.environ["API_ID"])
     API_HASH = os.environ["API_HASH"]
@@ -45,33 +82,28 @@ try:
     other_cs_env = os.environ.get("OTHER_CS_IDS", "")
     OTHER_CS_IDS = extract_id_list(other_cs_env)
     
-    # 稍等词 (触发12分钟)
     wait_keywords_env = os.environ["WAIT_KEYWORDS"]
     clean_env = wait_keywords_env.replace("，", ",") 
     WAIT_SIGNATURES = {normalize(x.strip()) for x in clean_env.split(',') if x.strip()}
 
-    # 跟进词 (触发15分钟)
     keep_keywords_env = os.environ.get("KEEP_KEYWORDS", "") 
     KEEP_SIGNATURES = {x.strip() for x in keep_keywords_env.split('|') if x.strip()}
 
-    # 忽略词
     default_ignore = "好的,谢谢,收到,明白,好的谢谢,ok,thx,thanks,好的呢,好滴"
     ignore_env = os.environ.get("IGNORE_KEYWORDS", default_ignore)
     clean_ignore = ignore_env.replace("，", ",")
     IGNORE_SIGNATURES = {normalize(x.strip()) for x in clean_ignore.split(',') if x.strip()}
 
 except KeyError as e:
-    print(f"❌ 启动失败：缺少必要环境变量 {e}")
+    logger.error(f"❌ 启动失败：缺少必要环境变量 {e}")
     sys.exit(1)
 except ValueError as e:
-    print(f"❌ 启动失败：变量格式错误 -> {e}")
+    logger.error(f"❌ 启动失败：变量格式错误 -> {e}")
     sys.exit(1)
 
-_sys_opt = os.environ.get("OPTIMIZATION_LEVEL", "normal").lower() == "debug"
+log_info(f"✅ 配置加载成功 | 稍等词: {len(WAIT_SIGNATURES)} | 跟进词: {len(KEEP_SIGNATURES)}")
 
-print(f"✅ 配置加载成功 | 稍等词: {len(WAIT_SIGNATURES)} | 跟进词: {len(KEEP_SIGNATURES)}")
-
-# ================= 2. 全局参数 =================
+# ================= 3. 全局参数 =================
 WAIT_TIMEOUT = 12 * 60
 FOLLOWUP_TIMEOUT = 15 * 60
 REPLY_TIMEOUT = 5 * 60
@@ -92,15 +124,10 @@ chat_user_active_msgs = {}
 IS_WORKING = False
 MY_ID = None
 
-# ================= 3. Web服务 & 前端(纯白高清版) =================
-logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.INFO, stream=sys.stdout)
-log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)
-logging.getLogger('telethon').setLevel(logging.WARNING)
-
+# ================= 4. Web服务 (纯白高清版) =================
 app = Flask(__name__)
 
-HTML_TEMPLATE_DYNAMIC = """
+HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
@@ -144,7 +171,6 @@ HTML_TEMPLATE_DYNAMIC = """
         }
         .status-on { background: var(--green); color: #fff; }
         .status-off { background: var(--red); color: #fff; }
-
         .group-box { margin-bottom: 30px; }
         .group-title {
             font-size: 1rem;
@@ -156,7 +182,6 @@ HTML_TEMPLATE_DYNAMIC = """
             display: flex;
             justify-content: space-between;
         }
-        
         .card { 
             background: var(--card-bg);
             border: 1px solid var(--border);
@@ -170,10 +195,8 @@ HTML_TEMPLATE_DYNAMIC = """
         .card-left { display: flex; flex-direction: column; gap: 5px; }
         .user { font-weight: 700; font-size: 1.1rem; }
         .link { font-size: 0.85rem; color: var(--blue); text-decoration: none; }
-        
         .timer { font-family: monospace; font-size: 1.2rem; font-weight: 700; color: #d63384; }
         .timer.late { color: var(--red); text-decoration: underline; }
-
         .empty { color: #ccc; text-align: center; padding: 10px; font-style: italic; }
         .footer { text-align: center; color: #ccc; font-size: 0.8rem; margin-top: 40px; }
     </style>
@@ -187,10 +210,7 @@ HTML_TEMPLATE_DYNAMIC = """
     </div>
     
     <div class="group-box">
-        <div class="group-title">
-            <span>⏳ 稍等 (12m)</span>
-            <span>{{ wait_timers|length }}</span>
-        </div>
+        <div class="group-title"><span>⏳ 稍等 (12m)</span><span>{{ wait_timers|length }}</span></div>
         {% if wait_timers %}
             {% for mid, info in wait_timers.items() %}
             <div class="card">
@@ -207,10 +227,7 @@ HTML_TEMPLATE_DYNAMIC = """
     </div>
 
     <div class="group-box">
-        <div class="group-title">
-            <span>🕵️ 跟进 (15m)</span>
-            <span>{{ followup_timers|length }}</span>
-        </div>
+        <div class="group-title"><span>🕵️ 跟进 (15m)</span><span>{{ followup_timers|length }}</span></div>
         {% if followup_timers %}
             {% for mid, info in followup_timers.items() %}
             <div class="card">
@@ -227,10 +244,7 @@ HTML_TEMPLATE_DYNAMIC = """
     </div>
 
     <div class="group-box">
-        <div class="group-title">
-            <span>🔔 漏回 (5m)</span>
-            <span>{{ reply_timers|length }}</span>
-        </div>
+        <div class="group-title"><span>🔔 漏回 (5m)</span><span>{{ reply_timers|length }}</span></div>
         {% if reply_timers %}
             {% for mid, info in reply_timers.items() %}
             <div class="card">
@@ -245,9 +259,7 @@ HTML_TEMPLATE_DYNAMIC = """
             <div class="empty">无进行中任务</div>
         {% endif %}
     </div>
-
-    <div class="footer">更新时间: {{ current_time }} | Ver: Stable 24.5 (Pure Fix)</div>
-
+    <div class="footer">更新时间: {{ current_time }} | Ver: 25.0 (BlackBox)</div>
     <script>
         function update() {
             const now = Date.now() / 1000;
@@ -274,28 +286,23 @@ HTML_TEMPLATE_DYNAMIC = """
 @app.route('/')
 def status_page():
     current_time_str = time.strftime("%H:%M:%S", time.localtime())
-    return render_template_string(
-        HTML_TEMPLATE_DYNAMIC,
-        working=IS_WORKING,
-        wait_timers=wait_timers,
-        followup_timers=followup_timers,
-        reply_timers=reply_timers,
-        current_time=current_time_str
-    )
+    return render_template_string(HTML_TEMPLATE, working=IS_WORKING, wait_timers=wait_timers, 
+                                followup_timers=followup_timers, reply_timers=reply_timers, current_time=current_time_str)
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port, threaded=True)
 
-# ================= 4. 通知模块 =================
+# ================= 5. 通知与网络模块 =================
 def _post_request(url, payload):
     try:
         requests.post(url, json=payload, timeout=8)
     except Exception as e:
-        print(f"❌ 发送异常: {e}")
+        logger.error(f"❌ Telegram API发送异常: {e}")
 
 async def send_alert(text, link):
     if not BOT_TOKEN: return
+    log_debug(f"🔔 准备发送警报: {text.splitlines()[1] if len(text.splitlines())>1 else '...'} -> {link}")
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     loop = asyncio.get_event_loop()
     tasks = []
@@ -305,24 +312,22 @@ async def send_alert(text, link):
     if tasks:
         await asyncio.gather(*tasks)
 
-# ================= 5. 任务辅助逻辑 (核心修复) =================
-
 async def check_msg_exists(channel_id, msg_id):
     """
-    【重要修复】
-    在倒计时结束时调用。
-    如果网络正常，返回 True/False。
-    如果网络异常（ConnectionResetError），强制返回 True！
-    避免因网络波动导致机器人误以为消息被删，从而漏发提醒。
+    检查消息是否存在。
+    FAIL-SAFE: 网络错误视为消息存在，防止漏报。
     """
     try:
         msg = await client.get_messages(channel_id, ids=msg_id)
-        if not msg: return False 
+        if not msg: 
+            log_debug(f"❌ 消息 {msg_id} 已物理删除/不存在")
+            return False 
         return True
     except Exception as e:
-        if _sys_opt: print(f"[WARN] 检查消息时网络异常(视为存在，强制提醒): {e}")
-        return True # <--- 关键修改：报错也当做存在，必须提醒
+        log_debug(f"⚠️ 检查消息 {msg_id} 时网络异常 ({e}) -> 强制视为存在")
+        return True # 关键：报错也当做存在
 
+# ================= 6. 任务管理 =================
 def add_user_task(chat_id, user_id, msg_id):
     if not user_id: return
     key = (chat_id, user_id)
@@ -350,12 +355,13 @@ def cancel_all_tasks_for_user(chat_id, user_id):
             if mid in reply_tasks: reply_tasks[mid].cancel(); count += 1
         
         if key in chat_user_active_msgs: del chat_user_active_msgs[key]
-        if _sys_opt and count > 0: print(f"[DEBUG] 智能销单: 已清除用户 {user_id} 的 {count} 个任务")
+        if count > 0:
+            log_debug(f"🗑️ 智能销单: 用户 {user_id} -> 清除 {count} 个任务")
 
-# ================= 6. 任务逻辑 =================
-
+# ================= 7. 倒计时任务逻辑 =================
 async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, customer_id):
     try:
+        log_debug(f"⏳ [启动] 稍等倒计时: Msg={key_id} Agent={agent_name}")
         end_time = time.time() + WAIT_TIMEOUT
         wait_timers[key_id] = {'ts': end_time, 'user': agent_name, 'url': link}
         add_user_task(chat_id, customer_id, key_id)
@@ -363,10 +369,11 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
         await asyncio.sleep(WAIT_TIMEOUT)
         if not IS_WORKING: return
 
-        # 检查消息（网络报错也会返回True，确保不漏）
         if my_msg_id and not await check_msg_exists(chat_id, my_msg_id):
+            log_debug(f"🔕 [取消] 稍等报警: 触发消息 {my_msg_id} 已不存在")
             return
 
+        log_debug(f"🚨 [触发] 稍等超时报警: Msg={key_id}")
         alert_text = (
             f"📩 消息: `{original_text.replace('`', '')}`\n"
             f"🚨 **稍等-超时预警**\n"
@@ -375,7 +382,8 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
             f"🔗 [点击处理]({link})"
         )
         await send_alert(alert_text, link)
-    except asyncio.CancelledError: pass
+    except asyncio.CancelledError:
+        log_debug(f"🛑 [中断] 稍等任务被取消: Msg={key_id}")
     finally:
         if key_id in wait_tasks: del wait_tasks[key_id]
         if key_id in wait_timers: del wait_timers[key_id]
@@ -384,6 +392,7 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
 
 async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, customer_id):
     try:
+        log_debug(f"🕵️ [启动] 跟进倒计时: Msg={key_id} Agent={agent_name}")
         end_time = time.time() + FOLLOWUP_TIMEOUT
         followup_timers[key_id] = {'ts': end_time, 'user': agent_name, 'url': link}
         add_user_task(chat_id, customer_id, key_id)
@@ -391,10 +400,11 @@ async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_
         await asyncio.sleep(FOLLOWUP_TIMEOUT)
         if not IS_WORKING: return
 
-        # 检查消息（网络报错也会返回True，确保不漏）
         if my_msg_id and not await check_msg_exists(chat_id, my_msg_id):
+            log_debug(f"🔕 [取消] 跟进报警: 触发消息 {my_msg_id} 已不存在")
             return
 
+        log_debug(f"🚨 [触发] 跟进超时报警: Msg={key_id}")
         alert_text = (
             f"📩 消息: `{original_text.replace('`', '')}`\n"
             f"🚨 **跟进-超时预警**\n"
@@ -403,7 +413,8 @@ async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_
             f"🔗 [点击处理]({link})"
         )
         await send_alert(alert_text, link)
-    except asyncio.CancelledError: pass
+    except asyncio.CancelledError:
+        log_debug(f"🛑 [中断] 跟进任务被取消: Msg={key_id}")
     finally:
         if key_id in followup_tasks: del followup_tasks[key_id]
         if key_id in followup_timers: del followup_timers[key_id]
@@ -412,10 +423,13 @@ async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_
 
 async def task_reply_timeout(trigger_msg_id, sender_name, content, link):
     try:
+        log_debug(f"🔔 [启动] 漏回监控: Msg={trigger_msg_id} User={sender_name}")
         end_time = time.time() + REPLY_TIMEOUT
         reply_timers[trigger_msg_id] = {'ts': end_time, 'user': sender_name, 'url': link}
         await asyncio.sleep(REPLY_TIMEOUT)
         if not IS_WORKING: return
+        
+        log_debug(f"🚨 [触发] 漏回报警: Msg={trigger_msg_id}")
         alert_text = (
             f"📩 内容: `{content.replace('`', '')}`\n"
             f"🔔 **漏回消息提醒**\n"
@@ -424,28 +438,29 @@ async def task_reply_timeout(trigger_msg_id, sender_name, content, link):
             f"🔗 [点击回复]({link})"
         )
         await send_alert(alert_text, link)
-    except asyncio.CancelledError: pass
+    except asyncio.CancelledError:
+        pass # 漏回任务取消很频繁，不打Log防止刷屏
     finally:
         if trigger_msg_id in reply_tasks: del reply_tasks[trigger_msg_id]
         if trigger_msg_id in reply_timers: del reply_timers[trigger_msg_id]
 
-# ================= 7. 客户端启动 =================
+# ================= 8. Telethon 客户端 =================
 client = TelegramClient(
     StringSession(SESSION_STRING), 
     API_ID, 
     API_HASH,
     device_model="Mac mini M2",
-    app_version="5.8.3 arm64 Mac App Store",      
+    app_version="5.8.3",      
     system_version="macOS 15.6.1",
     lang_code="zh-hans",
     system_lang_code="zh-hans"
 )
 
-# ================= 8. 控制指令 =================
 @client.on(events.NewMessage(chats='me', pattern=r'^\s*(上班|下班|状态)\s*$'))
 async def command_handler(event):
     global IS_WORKING
     cmd = event.text.strip()
+    log_info(f"收到指令: {cmd}")
     if cmd == '下班':
         IS_WORKING = False
         for t in list(wait_tasks.values()) + list(followup_tasks.values()) + list(reply_tasks.values()): t.cancel()
@@ -469,12 +484,12 @@ async def command_handler(event):
         )
         await send_alert(msg, "")
 
-# ================= 9. 删除事件 =================
 @client.on(events.MessageDeleted)
 async def handler_deleted(event):
     if not IS_WORKING: return
     for msg_id in event.deleted_ids:
         deleted_cache.add(msg_id)
+        # 这里不打log，因为删除事件非常频繁，只处理逻辑
         if msg_id in wait_msg_map:
             cid = wait_msg_map[msg_id]
             if cid in wait_tasks: wait_tasks[cid].cancel()
@@ -487,7 +502,7 @@ async def handler_deleted(event):
             reply_tasks[msg_id].cancel()
             del reply_tasks[msg_id]
 
-# ================= 9.5 深度溯源 (保留这个好用的功能) =================
+# ================= 9. 溯源逻辑 (Deep Trace) =================
 async def get_traceable_sender(chat_id, reply_to_msg_id, current_recursion=0):
     if current_recursion > 3: return None
     try:
@@ -506,12 +521,12 @@ async def get_traceable_sender(chat_id, reply_to_msg_id, current_recursion=0):
 
     if sender_id in cs_ids:
         if target_msg.reply_to_msg_id:
-            if _sys_opt: print(f"[DEBUG] 溯源: 客服引用消息 -> 继续查找 {target_msg.reply_to_msg_id}")
+            log_debug(f"🔗 溯源递归: 消息 {reply_to_msg_id} 是客服 -> 继续查 {target_msg.reply_to_msg_id}")
             return await get_traceable_sender(chat_id, target_msg.reply_to_msg_id, current_recursion + 1)
     
     return None
 
-# ================= 10. 核心逻辑 =================
+# ================= 10. 主循环 Handler =================
 @client.on(events.NewMessage(chats=CS_GROUP_IDS))
 @client.on(events.MessageEdited(chats=CS_GROUP_IDS))
 async def handler(event):
@@ -536,14 +551,13 @@ async def handler(event):
         group_title = chat_id_str
 
     norm_text = normalize(text)
-    
     is_wait_cmd = any(k in norm_text for k in WAIT_SIGNATURES)
     is_keep_cmd = text.strip() in KEEP_SIGNATURES
     
     is_sender_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS)
     is_cs_action = is_sender_cs 
 
-    # 1. 溯源销单
+    # --- 1. 智能溯源销单 ---
     real_customer_id = None
     if reply_to_msg_id:
         if reply_to_msg_id in wait_msg_map:
@@ -551,13 +565,12 @@ async def handler(event):
             for (cid, uid), msg_set in chat_user_active_msgs.items():
                 if cid == event.chat_id and wait_origin_msg in msg_set:
                     real_customer_id = uid
-                    if _sys_opt: print(f"[DEBUG] 快速命中: 客户 {uid}")
                     break
         
         if not real_customer_id:
             real_customer_id = await get_traceable_sender(event.chat_id, reply_to_msg_id)
             if real_customer_id and _sys_opt:
-                print(f"[DEBUG] 深度溯源: 消息最终指向客户 -> {real_customer_id}")
+                log_debug(f"🎯 溯源成功: 消息 {event.id} 指向客户 {real_customer_id}")
 
     if real_customer_id:
         cancel_all_tasks_for_user(event.chat_id, real_customer_id)
@@ -565,11 +578,10 @@ async def handler(event):
     if not is_sender_cs:
         cancel_all_tasks_for_user(event.chat_id, sender_id)
 
-    # 2. 客服操作
+    # --- 2. 客服操作 ---
     if is_cs_action:
-        if reply_to_msg_id:
-            if reply_to_msg_id in reply_tasks:
-                reply_tasks[reply_to_msg_id].cancel(); del reply_tasks[reply_to_msg_id]
+        if reply_to_msg_id and reply_to_msg_id in reply_tasks:
+            reply_tasks[reply_to_msg_id].cancel(); del reply_tasks[reply_to_msg_id]
 
         if reply_to_msg_id:
             reply_msg = await event.get_reply_message()
@@ -577,7 +589,7 @@ async def handler(event):
             customer_id = reply_msg.sender_id if reply_msg else real_customer_id
 
             if is_keep_cmd:
-                if _sys_opt: print(f"[DEBUG] 触发精准跟进({sender_name})")
+                log_debug(f"⚙️ 触发跟进任务: {sender_name} -> ID {reply_to_msg_id}")
                 task = asyncio.create_task(task_followup_timeout(
                     reply_to_msg_id, sender_name, reply_content, msg_link, event.id, event.chat_id, customer_id
                 ))
@@ -585,17 +597,16 @@ async def handler(event):
                 followup_msg_map[event.id] = reply_to_msg_id
 
             elif is_wait_cmd:
-                if _sys_opt: print(f"[DEBUG] 触发稍等({sender_name})")
+                log_debug(f"⚙️ 触发稍等任务: {sender_name} -> ID {reply_to_msg_id}")
                 task = asyncio.create_task(task_wait_timeout(
                     reply_to_msg_id, sender_name, reply_content, msg_link, event.id, event.chat_id, customer_id
                 ))
                 wait_tasks[reply_to_msg_id] = task
                 wait_msg_map[event.id] = reply_to_msg_id
 
-    # 3. 客户操作
+    # --- 3. 客户操作 ---
     else:
-        if _sys_opt: print(f"[DEBUG] [{group_title}] {sender_name}: {log_text}")
-
+        log_debug(f"📩 [{group_title}] {sender_name}: {log_text[:30]}")
         if reply_to_msg_id:
             try:
                 target_id = None
@@ -616,17 +627,17 @@ async def handler(event):
                     ))
                     reply_tasks[event.id] = task
                     add_user_task(event.chat_id, sender_id, event.id)
-            except Exception as e: pass
+            except Exception: pass
 
 if __name__ == '__main__':
     Thread(target=run_web).start()
-    print(f"✅ 系统启动完成 (网络波动防护版) | Ver 24.5")
+    log_info(f"✅ 系统启动完成 (Ver 25.0 BlackBox) - 日志文件: bot_debug.log")
     client.start()
     
     try:
-        start_msg = "🤖 **系统启动成功**\n当前状态: 🔴 下班 (默认)\n版本: Ver 24.5 (Pure Fix)"
+        start_msg = "🤖 **系统启动成功**\n当前状态: 🔴 下班 (默认)\n版本: Ver 25.0 (黑匣子日志版)"
         client.loop.run_until_complete(send_alert(start_msg, ""))
     except Exception as e:
-        print(f"❌ 启动通知发送失败: {e}")
+        logger.error(f"❌ 启动通知发送失败: {e}")
 
     client.run_until_disconnected()
