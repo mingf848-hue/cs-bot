@@ -121,9 +121,9 @@ reply_timers = {}
 wait_msg_map = {}       
 followup_msg_map = {} 
 deleted_cache = set()
-# 核心状态结构: (chat_id, user_id) -> set(msg_ids)
 chat_user_active_msgs = {} 
-msg_to_user_cache = {} # MsgID -> UserID
+# [Ver 27.3] 缓存系统: (chat_id, msg_id) -> user_id
+msg_to_user_cache = {} 
 
 IS_WORKING = False
 MY_ID = None
@@ -175,7 +175,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 27.0 (Triangle Fix)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 27.3 (Memory Fix)</div>
     <script>
         setInterval(() => {
             const now = Date.now() / 1000;
@@ -232,6 +232,7 @@ LOG_VIEWER_HTML = """
                 else if(line.includes('物理删除')) className += ' delete';
                 else if(line.includes('[ERROR]') || line.includes('❌')) className += ' error';
                 else if(line.includes('客服操作')) className += ' delete';
+                else if(line.includes('新知识')) className += ' success'; /* 高亮新学到的缓存 */
                 
                 const timeMatch = line.match(/^(\\d{2}:\\d{2}:\\d{2})/);
                 let formattedLine = line;
@@ -315,8 +316,8 @@ def add_user_task(chat_id, user_id, msg_id):
     key = (chat_id, user_id)
     if key not in chat_user_active_msgs: chat_user_active_msgs[key] = set()
     chat_user_active_msgs[key].add(msg_id)
-    # 缓存: 消息 -> 用户 (仅作参考，多对多场景下不唯一，但用于反查客户回复很有用)
-    msg_to_user_cache[msg_id] = user_id
+    # [Ver 27.3] 即使是任务绑定，也顺便更新缓存
+    msg_to_user_cache[(chat_id, msg_id)] = user_id
 
 def remove_user_task(chat_id, user_id, msg_id):
     if not user_id: return
@@ -324,39 +325,35 @@ def remove_user_task(chat_id, user_id, msg_id):
     if key in chat_user_active_msgs:
         chat_user_active_msgs[key].discard(msg_id)
         if not chat_user_active_msgs[key]: del chat_user_active_msgs[key]
-    # 注意：这里不删除 msg_to_user_cache，因为可能被多个用户共享，删除可能影响其他逻辑，且缓存即使残留也无大碍
 
 def cancel_all_tasks_for_user(chat_id, user_id, reason="未知"):
     if not user_id: return
     key = (chat_id, user_id)
     if key in chat_user_active_msgs:
         active_msgs = list(chat_user_active_msgs[key])
+        
+        log_tree(1, f" ┣━━ 尝试销单: 用户 {user_id} | 当前任务池: {active_msgs}")
+        
         count = 0
         cleared_ids = []
         for mid in active_msgs:
-            # 无论任务绑定了多少人，只要取消一次，整个任务（Wait/Followup/Reply）就应该停止
             if mid in wait_tasks: wait_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
             if mid in followup_tasks: followup_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
             if mid in reply_tasks: reply_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
         
-        # 清理该用户在该群的所有关联
         if key in chat_user_active_msgs: del chat_user_active_msgs[key]
         
         if count > 0:
             log_tree(2, f"销单成功 | {reason} | 归属用户: {user_id} | 任务: {cleared_ids}")
 
 # ==========================================
-# 模块 7: 倒计时任务 (支持多用户绑定)
+# 模块 7: 倒计时任务
 # ==========================================
 async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, user_ids_list):
     try:
-        # 1. 记录日志，显示所有关联用户
         log_tree(1, f"启动 [稍等] 倒计时 (12m) Msg={key_id} | 关联用户组: {user_ids_list}")
-        
         end_time = time.time() + WAIT_TIMEOUT
         wait_timers[key_id] = {'ts': end_time, 'user': agent_name, 'url': link}
-        
-        # 2. 对列表中的每个人都添加任务绑定
         for uid in user_ids_list:
             add_user_task(chat_id, uid, key_id)
 
@@ -372,8 +369,6 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
         if key_id in wait_tasks: del wait_tasks[key_id]
         if key_id in wait_timers: del wait_timers[key_id]
         if my_msg_id in wait_msg_map: del wait_msg_map[my_msg_id]
-        
-        # 3. 任务结束时，移除所有关联用户的绑定
         for uid in user_ids_list:
             remove_user_task(chat_id, uid, key_id)
 
@@ -382,7 +377,6 @@ async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_
         log_tree(1, f"启动 [跟进] 倒计时 (15m) Msg={key_id} | 关联用户组: {user_ids_list}")
         end_time = time.time() + FOLLOWUP_TIMEOUT
         followup_timers[key_id] = {'ts': end_time, 'user': agent_name, 'url': link}
-        
         for uid in user_ids_list:
             add_user_task(chat_id, uid, key_id)
 
@@ -398,12 +392,10 @@ async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_
         if key_id in followup_tasks: del followup_tasks[key_id]
         if key_id in followup_timers: del followup_timers[key_id]
         if my_msg_id in followup_msg_map: del followup_msg_map[my_msg_id]
-        
         for uid in user_ids_list:
             remove_user_task(chat_id, uid, key_id)
 
 async def task_reply_timeout(trigger_msg_id, sender_name, content, link, chat_id, user_id):
-    # 漏回监控通常只绑定触发者自己
     try:
         log_tree(1, f"启动 [漏回] 监控 (5m) Msg={trigger_msg_id} | 用户: {user_id}")
         end_time = time.time() + REPLY_TIMEOUT
@@ -460,62 +452,56 @@ async def handler_deleted(event):
     if not IS_WORKING: return
     for msg_id in event.deleted_ids:
         deleted_cache.add(msg_id)
-        # 物理删除处理：仅取消任务，不手动移除用户绑定，让task finally去清理
-        if msg_id in wait_tasks: 
-            wait_tasks[msg_id].cancel()
-            log_tree(2, f"🗑️ 物理删除侦测 Msg={msg_id} -> 🛑 撤销 [稍等] 任务")
-        if msg_id in followup_tasks: 
-            followup_tasks[msg_id].cancel()
-            log_tree(2, f"🗑️ 物理删除侦测 Msg={msg_id} -> 🛑 撤销 [跟进] 任务")
-        if msg_id in reply_tasks:
-            reply_tasks[msg_id].cancel()
-            log_tree(2, f"🗑️ 物理删除侦测 Msg={msg_id} -> 🛑 撤销 [漏回] 监控")
+        if msg_id in wait_tasks: wait_tasks[msg_id].cancel()
+        if msg_id in followup_tasks: followup_tasks[msg_id].cancel()
+        if msg_id in reply_tasks: reply_tasks[msg_id].cancel()
 
 async def get_traceable_sender(chat_id, reply_to_msg_id, current_recursion=0):
+    # 优先查缓存
+    if (chat_id, reply_to_msg_id) in msg_to_user_cache:
+        return msg_to_user_cache[(chat_id, reply_to_msg_id)]
+
     if current_recursion > 3: return None
     try:
         msgs = await client.get_messages(chat_id, ids=[reply_to_msg_id])
         if not msgs: return None
         target_msg = msgs[0]
         if not target_msg: return None
+        
+        # [Ver 27.3] 关键修复: 如果API查到了，立刻写入缓存！
+        # 这样下次再引用这条消息时，就不需要API了，直接读缓存
+        if target_msg.sender_id:
+            cs_ids = [MY_ID] + OTHER_CS_IDS
+            if target_msg.sender_id not in cs_ids:
+                msg_to_user_cache[(chat_id, reply_to_msg_id)] = target_msg.sender_id
+                log_tree(1, f" ┣━━ 🧠 学习新知识: Msg({reply_to_msg_id}) 属于 User({target_msg.sender_id})")
+            return target_msg.sender_id
+            
+        return None
     except Exception: return None
 
-    sender_id = target_msg.sender_id
-    cs_ids = [MY_ID] + OTHER_CS_IDS
-
-    if sender_id and sender_id not in cs_ids: return sender_id
-    if sender_id in cs_ids:
-        if target_msg.reply_to_msg_id:
-            log_tree(1, f" ┣━━ 递归溯源: 客服引用 -> Msg {target_msg.reply_to_msg_id}")
-            return await get_traceable_sender(chat_id, target_msg.reply_to_msg_id, current_recursion + 1)
-    return None
-
 async def get_context_users(chat_id, msg_id):
-    """
-    [新功能] 获取上下文相关的所有用户（用于解决加白申请-领导同意-客服回复领导 这种三角关系）
-    返回列表: [直接被回复的人, 被回复的人引用的那个人]
-    """
     users = set()
     try:
-        # 1. 获取目标消息 (例如领导的"同意")
         msgs = await client.get_messages(chat_id, ids=[msg_id])
         if not msgs or not msgs[0]: return []
         msg = msgs[0]
         
-        # 添加直接发送者 (领导)
-        if msg.sender_id: users.add(msg.sender_id)
+        if msg.sender_id: 
+            users.add(msg.sender_id)
+            # [Ver 27.3] 顺手缓存一下当前消息
+            if msg.sender_id not in ([MY_ID] + OTHER_CS_IDS):
+                msg_to_user_cache[(chat_id, msg_id)] = msg.sender_id
         
-        # 2. 检查这条消息是否引用了别人 (领导是否引用了申请人)
         if msg.reply_to_msg_id:
-            parents = await client.get_messages(chat_id, ids=[msg.reply_to_msg_id])
-            if parents and parents[0] and parents[0].sender_id:
-                users.add(parents[0].sender_id)
-                log_tree(1, f" ┣━━ 🔗 三角关联探测: Msg({msg_id}) -> Parent({msg.reply_to_msg_id})")
+            parent_user_id = await get_traceable_sender(chat_id, msg.reply_to_msg_id)
+            if parent_user_id:
+                users.add(parent_user_id)
+                log_tree(1, f" ┣━━ 🔗 三角关联探测: Msg({msg_id}) -> ParentUser({parent_user_id})")
                 
     except Exception as e:
         log_tree(9, f"上下文获取失败: {e}")
         
-    # 过滤掉自己和其他客服
     cs_ids = [MY_ID] + OTHER_CS_IDS
     return [u for u in users if u not in cs_ids]
 
@@ -541,10 +527,11 @@ async def handler(event):
 
     real_customer_id = None
     if reply_to_msg_id:
-        if reply_to_msg_id in msg_to_user_cache:
-            real_customer_id = msg_to_user_cache[reply_to_msg_id]
-            if _sys_opt: log_tree(1, f" ┣━━ 缓存命中: 消息 {reply_to_msg_id} -> 客户 {real_customer_id}")
+        # 1. 查缓存
+        if (chat_id, reply_to_msg_id) in msg_to_user_cache:
+            real_customer_id = msg_to_user_cache[(chat_id, reply_to_msg_id)]
         
+        # 2. 查任务反推
         if not real_customer_id and reply_to_msg_id in wait_msg_map:
             wait_origin_msg = wait_msg_map[reply_to_msg_id]
             for (cid, uid), msg_set in chat_user_active_msgs.items():
@@ -552,60 +539,54 @@ async def handler(event):
                     real_customer_id = uid
                     break
         
+        # 3. 查API (Ver 27.3: 如果查到了会自动写入缓存)
         if not real_customer_id:
             real_customer_id = await get_traceable_sender(chat_id, reply_to_msg_id)
-            if real_customer_id and _sys_opt:
-                log_tree(1, f" ┣━━ API溯源: 消息 {reply_to_msg_id} -> 客户 {real_customer_id}")
 
     # ==================== 客服发言 ====================
     if is_sender_cs:
         if reply_to_msg_id:
-            log_tree(1, f"⚡️ 客服操作捕获 | 内容: [{text}] | 引用 Msg: {reply_to_msg_id}")
+            # 记录详细日志，帮助排查
+            source_info = "未知"
+            if (chat_id, reply_to_msg_id) in msg_to_user_cache: source_info = "缓存命中"
+            elif real_customer_id: source_info = "API实时查询"
+            
+            log_tree(1, f"⚡️ 客服操作捕获 | 引用 Msg: {reply_to_msg_id} | 判定归属: {real_customer_id} ({source_info})")
 
-        # 销单逻辑：尝试清除该用户的所有挂起任务
+        # 销单逻辑
         if real_customer_id:
-            cancel_all_tasks_for_user(chat_id, real_customer_id, reason=f"客服 [{sender_name}] 回复了内容: [{text[:15]}...]")
+            cancel_all_tasks_for_user(chat_id, real_customer_id, reason=f"客服回复: [{text[:10]}...]")
         
-        # 漏回销单逻辑
         if reply_to_msg_id and reply_to_msg_id in reply_tasks:
             reply_tasks[reply_to_msg_id].cancel()
             del reply_tasks[reply_to_msg_id]
-            log_tree(2, f" ┗━━ ✅ [任务完成] 客服精准回复了漏回消息 (Msg {reply_to_msg_id})")
 
-        # 开启新任务逻辑
         if reply_to_msg_id:
-            reply_msg = await event.get_reply_message()
-            reply_content = reply_msg.text[:50] if reply_msg else "[文件]"
-            
-            # [Fix] 获取关联用户组 (直接回复的人 + 被那个人引用的人)
-            related_users = []
-            if reply_msg:
-                # 尝试使用新函数获取 (领导 + 申请人)
-                related_users = await get_context_users(chat_id, reply_to_msg_id)
-            
-            # 如果没获取到，保底使用 real_customer_id
+            related_users = await get_context_users(chat_id, reply_to_msg_id)
             if not related_users and real_customer_id:
                 related_users = [real_customer_id]
 
             if related_users:
                 if is_keep_cmd:
                     task = asyncio.create_task(task_followup_timeout(
-                        reply_to_msg_id, sender_name, reply_content, msg_link, event.id, chat_id, related_users
+                        reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users
                     ))
                     followup_tasks[reply_to_msg_id] = task
                     followup_msg_map[event.id] = reply_to_msg_id
 
                 elif is_wait_cmd:
                     task = asyncio.create_task(task_wait_timeout(
-                        reply_to_msg_id, sender_name, reply_content, msg_link, event.id, chat_id, related_users
+                        reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users
                     ))
                     wait_tasks[reply_to_msg_id] = task
                     wait_msg_map[event.id] = reply_to_msg_id
 
     # ==================== 客户发言 ====================
     else:
-        # 只要客户发言，就视为一种交互，尝试取消该客户名下的任务（避免客户一直说话而报警未跟进）
-        cancel_all_tasks_for_user(chat_id, sender_id, reason=f"客户 [{sender_name}] 再次发言: [{text[:15]}...]")
+        # [Ver 27.3] 只要有人说话，就强行记忆，防止未来引用找不到人
+        msg_to_user_cache[(chat_id, event.id)] = sender_id
+        
+        cancel_all_tasks_for_user(chat_id, sender_id, reason=f"客户发言: [{text[:10]}...]")
         
         log_tree(0, f"[{chat_id}] {sender_name}: {text}")
         if reply_to_msg_id:
@@ -617,7 +598,6 @@ async def handler(event):
                     msgs = await client.get_messages(chat_id, ids=[reply_to_msg_id])
                     if msgs: target_id = msgs[0].sender_id
 
-                # 如果回复的是客服 (开启漏回监控)
                 if (target_id == MY_ID) or (target_id in OTHER_CS_IDS):
                     if normalize(text.strip()) in IGNORE_SIGNATURES: return
                     if event.id in reply_tasks: reply_tasks[event.id].cancel()
@@ -628,6 +608,6 @@ async def handler(event):
 
 if __name__ == '__main__':
     Thread(target=run_web).start()
-    log_tree(0, "✅ 系统启动 (Ver 27.0 Triangle Fix)")
+    log_tree(0, "✅ 系统启动 (Ver 27.3 Memory Fix)")
     client.start()
     client.run_until_disconnected()
