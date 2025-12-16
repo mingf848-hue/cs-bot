@@ -111,7 +111,6 @@ log_tree(0, f"系统启动 | 稍等词: {len(WAIT_SIGNATURES)} | 跟进词: {len
 WAIT_TIMEOUT = 12 * 60
 FOLLOWUP_TIMEOUT = 15 * 60
 REPLY_TIMEOUT = 5 * 60
-# [Ver 27.4] 内存保护: 最大缓存条数 (约占用 10-20MB 内存)
 MAX_CACHE_SIZE = 50000 
 
 wait_tasks = {}
@@ -120,11 +119,11 @@ reply_tasks = {}
 wait_timers = {}
 followup_timers = {}
 reply_timers = {}
+# 记录映射: 客服回复ID -> 客户原始消息ID
 wait_msg_map = {}       
 followup_msg_map = {} 
 deleted_cache = set()
 chat_user_active_msgs = {} 
-# [Ver 27.3] 缓存系统: (chat_id, msg_id) -> user_id
 msg_to_user_cache = {} 
 
 IS_WORKING = False
@@ -133,9 +132,8 @@ MY_ID = None
 # [Ver 27.4] 内存安全写入函数
 def update_msg_cache(chat_id, msg_id, user_id):
     key = (chat_id, msg_id)
-    # 如果缓存满了，删除最早插入的一条 (Python 3.7+ 字典是有序的，pop(next(iter)) 删除最旧的)
     if len(msg_to_user_cache) >= MAX_CACHE_SIZE:
-        if key not in msg_to_user_cache: # 只有插入新key才需要腾空间
+        if key not in msg_to_user_cache: 
             try:
                 msg_to_user_cache.pop(next(iter(msg_to_user_cache)))
             except StopIteration: pass
@@ -188,7 +186,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 27.4 (MemSafe)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 27.5 (Delete Fix)</div>
     <script>
         setInterval(() => {
             const now = Date.now() / 1000;
@@ -245,7 +243,7 @@ LOG_VIEWER_HTML = """
                 else if(line.includes('物理删除')) className += ' delete';
                 else if(line.includes('[ERROR]') || line.includes('❌')) className += ' error';
                 else if(line.includes('客服操作')) className += ' delete';
-                else if(line.includes('新知识')) className += ' success'; /* 高亮新学到的缓存 */
+                else if(line.includes('新知识')) className += ' success';
                 
                 const timeMatch = line.match(/^(\\d{2}:\\d{2}:\\d{2})/);
                 let formattedLine = line;
@@ -329,7 +327,6 @@ def add_user_task(chat_id, user_id, msg_id):
     key = (chat_id, user_id)
     if key not in chat_user_active_msgs: chat_user_active_msgs[key] = set()
     chat_user_active_msgs[key].add(msg_id)
-    # [Ver 27.4] 使用安全更新函数
     update_msg_cache(chat_id, msg_id, user_id)
 
 def remove_user_task(chat_id, user_id, msg_id):
@@ -465,12 +462,36 @@ async def handler_deleted(event):
     if not IS_WORKING: return
     for msg_id in event.deleted_ids:
         deleted_cache.add(msg_id)
-        if msg_id in wait_tasks: wait_tasks[msg_id].cancel()
-        if msg_id in followup_tasks: followup_tasks[msg_id].cancel()
-        if msg_id in reply_tasks: reply_tasks[msg_id].cancel()
+        
+        # 1. 直接删除任务本体
+        if msg_id in wait_tasks: 
+            wait_tasks[msg_id].cancel()
+            log_tree(2, f"🗑️ 物理删除侦测(任务本体) Msg={msg_id} -> 🛑 撤销 [稍等] 任务")
+
+        # 2. [Ver 27.5] 删除触发指令 (客服的回复)
+        if msg_id in wait_msg_map:
+            target_id = wait_msg_map[msg_id]
+            if target_id in wait_tasks:
+                wait_tasks[target_id].cancel()
+                log_tree(2, f"🗑️ 物理删除侦测(触发指令) Msg={msg_id} -> 🛑 撤销 [稍等] 任务(Target={target_id})")
+            del wait_msg_map[msg_id]
+
+        if msg_id in followup_tasks: 
+            followup_tasks[msg_id].cancel()
+            log_tree(2, f"🗑️ 物理删除侦测(任务本体) Msg={msg_id} -> 🛑 撤销 [跟进] 任务")
+
+        if msg_id in followup_msg_map:
+            target_id = followup_msg_map[msg_id]
+            if target_id in followup_tasks:
+                followup_tasks[target_id].cancel()
+                log_tree(2, f"🗑️ 物理删除侦测(触发指令) Msg={msg_id} -> 🛑 撤销 [跟进] 任务(Target={target_id})")
+            del followup_msg_map[msg_id]
+
+        if msg_id in reply_tasks: 
+            reply_tasks[msg_id].cancel()
+            log_tree(2, f"🗑️ 物理删除侦测 Msg={msg_id} -> 🛑 撤销 [漏回] 监控")
 
 async def get_traceable_sender(chat_id, reply_to_msg_id, current_recursion=0):
-    # 优先查缓存
     if (chat_id, reply_to_msg_id) in msg_to_user_cache:
         return msg_to_user_cache[(chat_id, reply_to_msg_id)]
 
@@ -481,11 +502,9 @@ async def get_traceable_sender(chat_id, reply_to_msg_id, current_recursion=0):
         target_msg = msgs[0]
         if not target_msg: return None
         
-        # [Ver 27.3] 关键修复: 如果API查到了，立刻写入缓存！
         if target_msg.sender_id:
             cs_ids = [MY_ID] + OTHER_CS_IDS
             if target_msg.sender_id not in cs_ids:
-                # [Ver 27.4] 安全写入
                 update_msg_cache(chat_id, reply_to_msg_id, target_msg.sender_id)
                 log_tree(1, f" ┣━━ 🧠 学习新知识: Msg({reply_to_msg_id}) 属于 User({target_msg.sender_id})")
             return target_msg.sender_id
@@ -503,7 +522,6 @@ async def get_context_users(chat_id, msg_id):
         if msg.sender_id: 
             users.add(msg.sender_id)
             if msg.sender_id not in ([MY_ID] + OTHER_CS_IDS):
-                # [Ver 27.4] 安全写入
                 update_msg_cache(chat_id, msg_id, msg.sender_id)
         
         if msg.reply_to_msg_id:
@@ -540,11 +558,9 @@ async def handler(event):
 
     real_customer_id = None
     if reply_to_msg_id:
-        # 1. 查缓存
         if (chat_id, reply_to_msg_id) in msg_to_user_cache:
             real_customer_id = msg_to_user_cache[(chat_id, reply_to_msg_id)]
         
-        # 2. 查任务反推
         if not real_customer_id and reply_to_msg_id in wait_msg_map:
             wait_origin_msg = wait_msg_map[reply_to_msg_id]
             for (cid, uid), msg_set in chat_user_active_msgs.items():
@@ -552,7 +568,6 @@ async def handler(event):
                     real_customer_id = uid
                     break
         
-        # 3. 查API (Ver 27.3: 如果查到了会自动写入缓存)
         if not real_customer_id:
             real_customer_id = await get_traceable_sender(chat_id, reply_to_msg_id)
 
@@ -565,7 +580,6 @@ async def handler(event):
             
             log_tree(1, f"⚡️ 客服操作捕获 | 引用 Msg: {reply_to_msg_id} | 判定归属: {real_customer_id} ({source_info})")
 
-        # 销单逻辑
         if real_customer_id:
             cancel_all_tasks_for_user(chat_id, real_customer_id, reason=f"客服回复: [{text[:10]}...]")
         
@@ -595,7 +609,6 @@ async def handler(event):
 
     # ==================== 客户发言 ====================
     else:
-        # [Ver 27.4] 安全记忆
         update_msg_cache(chat_id, event.id, sender_id)
         
         cancel_all_tasks_for_user(chat_id, sender_id, reason=f"客户发言: [{text[:10]}...]")
@@ -620,6 +633,6 @@ async def handler(event):
 
 if __name__ == '__main__':
     Thread(target=run_web).start()
-    log_tree(0, "✅ 系统启动 (Ver 27.4 MemSafe)")
+    log_tree(0, "✅ 系统启动 (Ver 27.5 Delete Fix)")
     client.start()
     client.run_until_disconnected()
