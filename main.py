@@ -111,6 +111,8 @@ log_tree(0, f"系统启动 | 稍等词: {len(WAIT_SIGNATURES)} | 跟进词: {len
 WAIT_TIMEOUT = 12 * 60
 FOLLOWUP_TIMEOUT = 15 * 60
 REPLY_TIMEOUT = 5 * 60
+# [Ver 27.4] 内存保护: 最大缓存条数 (约占用 10-20MB 内存)
+MAX_CACHE_SIZE = 50000 
 
 wait_tasks = {}
 followup_tasks = {} 
@@ -127,6 +129,17 @@ msg_to_user_cache = {}
 
 IS_WORKING = False
 MY_ID = None
+
+# [Ver 27.4] 内存安全写入函数
+def update_msg_cache(chat_id, msg_id, user_id):
+    key = (chat_id, msg_id)
+    # 如果缓存满了，删除最早插入的一条 (Python 3.7+ 字典是有序的，pop(next(iter)) 删除最旧的)
+    if len(msg_to_user_cache) >= MAX_CACHE_SIZE:
+        if key not in msg_to_user_cache: # 只有插入新key才需要腾空间
+            try:
+                msg_to_user_cache.pop(next(iter(msg_to_user_cache)))
+            except StopIteration: pass
+    msg_to_user_cache[key] = user_id
 
 # ==========================================
 # 模块 4: Web 控制台
@@ -175,7 +188,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 27.3 (Memory Fix)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 27.4 (MemSafe)</div>
     <script>
         setInterval(() => {
             const now = Date.now() / 1000;
@@ -316,8 +329,8 @@ def add_user_task(chat_id, user_id, msg_id):
     key = (chat_id, user_id)
     if key not in chat_user_active_msgs: chat_user_active_msgs[key] = set()
     chat_user_active_msgs[key].add(msg_id)
-    # [Ver 27.3] 即使是任务绑定，也顺便更新缓存
-    msg_to_user_cache[(chat_id, msg_id)] = user_id
+    # [Ver 27.4] 使用安全更新函数
+    update_msg_cache(chat_id, msg_id, user_id)
 
 def remove_user_task(chat_id, user_id, msg_id):
     if not user_id: return
@@ -469,11 +482,11 @@ async def get_traceable_sender(chat_id, reply_to_msg_id, current_recursion=0):
         if not target_msg: return None
         
         # [Ver 27.3] 关键修复: 如果API查到了，立刻写入缓存！
-        # 这样下次再引用这条消息时，就不需要API了，直接读缓存
         if target_msg.sender_id:
             cs_ids = [MY_ID] + OTHER_CS_IDS
             if target_msg.sender_id not in cs_ids:
-                msg_to_user_cache[(chat_id, reply_to_msg_id)] = target_msg.sender_id
+                # [Ver 27.4] 安全写入
+                update_msg_cache(chat_id, reply_to_msg_id, target_msg.sender_id)
                 log_tree(1, f" ┣━━ 🧠 学习新知识: Msg({reply_to_msg_id}) 属于 User({target_msg.sender_id})")
             return target_msg.sender_id
             
@@ -489,9 +502,9 @@ async def get_context_users(chat_id, msg_id):
         
         if msg.sender_id: 
             users.add(msg.sender_id)
-            # [Ver 27.3] 顺手缓存一下当前消息
             if msg.sender_id not in ([MY_ID] + OTHER_CS_IDS):
-                msg_to_user_cache[(chat_id, msg_id)] = msg.sender_id
+                # [Ver 27.4] 安全写入
+                update_msg_cache(chat_id, msg_id, msg.sender_id)
         
         if msg.reply_to_msg_id:
             parent_user_id = await get_traceable_sender(chat_id, msg.reply_to_msg_id)
@@ -546,7 +559,6 @@ async def handler(event):
     # ==================== 客服发言 ====================
     if is_sender_cs:
         if reply_to_msg_id:
-            # 记录详细日志，帮助排查
             source_info = "未知"
             if (chat_id, reply_to_msg_id) in msg_to_user_cache: source_info = "缓存命中"
             elif real_customer_id: source_info = "API实时查询"
@@ -583,8 +595,8 @@ async def handler(event):
 
     # ==================== 客户发言 ====================
     else:
-        # [Ver 27.3] 只要有人说话，就强行记忆，防止未来引用找不到人
-        msg_to_user_cache[(chat_id, event.id)] = sender_id
+        # [Ver 27.4] 安全记忆
+        update_msg_cache(chat_id, event.id, sender_id)
         
         cancel_all_tasks_for_user(chat_id, sender_id, reason=f"客户发言: [{text[:10]}...]")
         
@@ -608,6 +620,6 @@ async def handler(event):
 
 if __name__ == '__main__':
     Thread(target=run_web).start()
-    log_tree(0, "✅ 系统启动 (Ver 27.3 Memory Fix)")
+    log_tree(0, "✅ 系统启动 (Ver 27.4 MemSafe)")
     client.start()
     client.run_until_disconnected()
