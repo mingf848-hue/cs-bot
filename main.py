@@ -128,6 +128,8 @@ msg_content_cache = {}
 
 IS_WORKING = False
 MY_ID = None
+# [Ver 27.9] 全局 EventLoop 引用 (解决线程安全问题)
+bot_loop = None
 
 # 内存安全写入函数
 def update_msg_cache(chat_id, msg_id, user_id):
@@ -201,7 +203,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 27.8 (Web Fix)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 27.9 (Loop Fix)</div>
     <script>
         function ctrl(s) {
             /* 增加时间戳防止缓存，确保请求送达 */
@@ -316,18 +318,16 @@ def api_ctrl():
     s = request.args.get('s', type=int)
     log_tree(1, f"🌐 Web指令接收: {'上班' if s==1 else '下班'}")
     
-    # 核心修复：确保调用的是主线程的 Telethon Loop
-    try:
-        loop = client.loop
-        if loop.is_closed(): raise Exception("Loop Closed")
-    except Exception as e:
-        log_tree(9, f"❌ Web控制失败: Client Loop未就绪 ({e})")
-        return f"Error: Loop Not Ready - {e}", 500
+    # [Ver 27.9] 使用全局抓取的 Loop，不再使用 client.loop
+    global bot_loop
+    if not bot_loop:
+        log_tree(9, "❌ Web控制失败: 全局 EventLoop 未初始化")
+        return "Error: Loop Not Ready", 500
 
     coro = perform_start_work() if s == 1 else perform_stop_work()
     
     try:
-        asyncio.run_coroutine_threadsafe(coro, loop)
+        asyncio.run_coroutine_threadsafe(coro, bot_loop)
     except Exception as e:
         log_tree(9, f"❌ Web调度失败: {e}")
         return str(e), 500
@@ -690,7 +690,10 @@ async def handler(event):
             except Exception: pass
 
 if __name__ == '__main__':
+    # 捕获主线程的 EventLoop
+    bot_loop = asyncio.get_event_loop()
+    
     Thread(target=run_web).start()
-    log_tree(0, "✅ 系统启动 (Ver 27.8 Web Fix)")
+    log_tree(0, "✅ 系统启动 (Ver 27.9 Loop Fix)")
     client.start()
     client.run_until_disconnected()
