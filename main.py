@@ -201,10 +201,11 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 27.7 (Web Ctrl)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 27.8 (Web Fix)</div>
     <script>
         function ctrl(s) {
-            fetch('/api/ctrl?s=' + s).then(() => setTimeout(() => location.reload(), 500));
+            /* 增加时间戳防止缓存，确保请求送达 */
+            fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => setTimeout(() => location.reload(), 500));
         }
         setInterval(() => {
             const now = Date.now() / 1000;
@@ -232,7 +233,7 @@ LOG_VIEWER_HTML = """
         button:hover { background: #1177bb; }
         #log-container { flex-grow: 1; overflow-y: auto; padding: 15px; white-space: pre; font-size: 13px; line-height: 1.5; }
         .line { padding: 2px 0; }
-        .search-match { background-color: #264f78; border-left: 3px solid #55aaff; color: #fff; } /* 搜索高亮样式 */
+        .search-match { background-color: #264f78; border-left: 3px solid #55aaff; color: #fff; }
         .time { color: #569cd6; margin-right: 10px; }
         .tree { color: #808080; }
         .alert { color: #f44747; font-weight: bold; }
@@ -277,32 +278,18 @@ LOG_VIEWER_HTML = """
         function filterLogs() {
             const term = document.getElementById('search').value.toLowerCase();
             const divs = container.getElementsByTagName('div');
-            
-            // 清除旧的高亮
-            for(let div of divs) {
-                div.classList.remove('search-match');
-            }
-            
+            for(let div of divs) { div.classList.remove('search-match'); }
             if(!term) return;
-
             let lastMatch = null;
-            let matchCount = 0;
-            
             for(let div of divs) {
                 const text = div.innerText.toLowerCase();
                 if(text.includes(term)) {
                     div.classList.add('search-match');
                     lastMatch = div;
-                    matchCount++;
                 }
             }
-            
-            // 自动滚动到最后一条匹配的日志 (保留上下文)
-            if(lastMatch) {
-                lastMatch.scrollIntoView({behavior: "smooth", block: "center"});
-            }
+            if(lastMatch) { lastMatch.scrollIntoView({behavior: "smooth", block: "center"}); }
         }
-        
         function scrollToBottom() { container.scrollTop = container.scrollHeight; }
     </script>
 </body>
@@ -327,10 +314,24 @@ def log_raw():
 @app.route('/api/ctrl')
 def api_ctrl():
     s = request.args.get('s', type=int)
-    if s == 1:
-        asyncio.run_coroutine_threadsafe(perform_start_work(), client.loop)
-    else:
-        asyncio.run_coroutine_threadsafe(perform_stop_work(), client.loop)
+    log_tree(1, f"🌐 Web指令接收: {'上班' if s==1 else '下班'}")
+    
+    # 核心修复：确保调用的是主线程的 Telethon Loop
+    try:
+        loop = client.loop
+        if loop.is_closed(): raise Exception("Loop Closed")
+    except Exception as e:
+        log_tree(9, f"❌ Web控制失败: Client Loop未就绪 ({e})")
+        return f"Error: Loop Not Ready - {e}", 500
+
+    coro = perform_start_work() if s == 1 else perform_stop_work()
+    
+    try:
+        asyncio.run_coroutine_threadsafe(coro, loop)
+    except Exception as e:
+        log_tree(9, f"❌ Web调度失败: {e}")
+        return str(e), 500
+        
     return "OK"
 
 def run_web():
@@ -690,6 +691,6 @@ async def handler(event):
 
 if __name__ == '__main__':
     Thread(target=run_web).start()
-    log_tree(0, "✅ 系统启动 (Ver 27.7 Web Ctrl)")
+    log_tree(0, "✅ 系统启动 (Ver 27.8 Web Fix)")
     client.start()
     client.run_until_disconnected()
