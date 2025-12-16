@@ -20,4 +20,4 @@ EXPOSE 10000
 
 # 7. 启动命令 (关键！)
 # 如果你的 Python 脚本名不是 tg_bot_v27_triangle_fix.py，请修改下面这一行
-CMD ["python", "tg_bot_v27_triangle_fix.py"]
+CMD ["python", "main.py"]
