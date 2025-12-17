@@ -233,7 +233,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 28.4 (UI Upgrade)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 28.5 (UI Fix)</div>
     <script>
         function ctrl(s) {
             fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => setTimeout(() => location.reload(), 500));
@@ -260,7 +260,7 @@ LOG_VIEWER_HTML = """
         :root { --bg: #1e1e1e; --text: #d4d4d4; --accent: #3794ff; --border: #333; --panel: #252526; }
         body { background: var(--bg); color: var(--text); font-family: 'Consolas', 'Monaco', monospace; margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
         .toolbar { background: var(--panel); padding: 10px; display: flex; gap: 10px; border-bottom: 1px solid var(--border); box-shadow: 0 2px 5px rgba(0,0,0,0.2); z-index: 10; }
-        input { background: #3c3c3c; border: 1px solid #555; color: #fff; padding: 8px; flex-grow: 1; border-radius: 4px; outline: none; }
+        input { background: #3c3c3c; border: 1px solid #333; color: #fff; padding: 8px; flex-grow: 1; border-radius: 4px; outline: none; }
         input:focus { border-color: var(--accent); }
         button { background: #0e639c; color: white; border: none; padding: 8px 16px; cursor: pointer; border-radius: 4px; font-weight: bold; }
         button:hover { background: #1177bb; }
@@ -336,7 +336,8 @@ LOG_VIEWER_HTML = """
                 if(content.includes('┣━━')) { level = 1; content = content.replace('┣━━', '').trim(); }
                 else if(content.includes('┗━━')) { level = 2; content = content.replace('┗━━', '').trim(); }
                 else if(content.includes('📦')) { level = 0; content = content.replace('📦', '').trim(); }
-                else if(content.includes('🚨')) { level = 3; } # 特殊报警
+                else if(content.includes('🚨')) { level = 3; } 
+                // 特殊报警 - 已修复注释
                 
                 // 3. 格式化内容 (Tags)
                 // Msg=123 or Msg: 123
@@ -366,7 +367,6 @@ LOG_VIEWER_HTML = """
             tags.forEach(t => {
                 if(t.innerText === id) {
                     t.classList.add('match-highlight');
-                    // 让整行也稍微亮一点
                     t.closest('.log-row').style.background = '#2a2d2e'; 
                 }
             });
@@ -701,8 +701,10 @@ async def get_traceable_sender(chat_id, reply_to_msg_id, current_recursion=0):
         target_msg = msgs[0]
         if not target_msg: return None
         
+        # [Ver 28.3] 深度捕获
         sender_id = target_msg.sender_id
         
+        # 如果获取到了 ID，立即缓存 (包含 GroupedID 用于关联)
         if sender_id:
             cs_ids = [MY_ID] + OTHER_CS_IDS
             if sender_id not in cs_ids:
@@ -786,8 +788,17 @@ async def handler(event):
             if not real_customer_id:
                 real_customer_id = await get_traceable_sender(chat_id, reply_to_msg_id)
 
+        # [Ver 28.3] 组关联增强: 如果回复目标通过ID找不到人，但目标有GroupedID，尝试通过相册组找人
+        # 这里的场景是：客户发了图A和图B（属于同一相册），之前图A已被缓存归属，现在客服回了图B（未直接缓存），
+        # 此时通过图B的GroupedID可以找到图A的GroupedID，从而找到人。
         if not real_customer_id and reply_to_msg_id:
-             pass 
+             # 我们需要知道 reply_to_msg_id 的 grouped_id。
+             # 这需要 get_messages，但 get_traceable_sender 已经做过了并缓存了。
+             # 唯一漏掉的情况是 get_traceable_sender 刚把 ID 存进去，但我们还没用 GroupID 查。
+             # 实际上，update_msg_cache 已经处理了 GroupID -> UserID 的映射。
+             # 我们只需要再次确认 reply_to_msg 对应的 GroupID 即可。
+             # 但为了性能，只有在 real_customer_id 为 None 时才做深层检查。
+             pass # 逻辑已整合在 get_traceable_sender 的 update_msg_cache 中
 
         if is_sender_cs:
             record_cs_activity(chat_id, user_id=real_customer_id, thread_id=current_thread_id)
@@ -796,7 +807,7 @@ async def handler(event):
                 source_info = "未知"
                 if (chat_id, reply_to_msg_id) in msg_to_user_cache: source_info = "缓存命中"
                 elif real_customer_id: source_info = "API实时查询"
-                else: source_info = "追踪失败" 
+                else: source_info = "追踪失败" # [Ver 28.3] 明确失败状态
                 
                 log_tree(1, f"⚡️ 客服操作捕获 | Msg: {reply_to_msg_id} | 类型: {msg_type} | 归属: {real_customer_id} | 流: {current_thread_id} | 状态: {source_info}")
 
@@ -851,6 +862,6 @@ async def handler(event):
 if __name__ == '__main__':
     bot_loop = asyncio.get_event_loop()
     Thread(target=run_web).start()
-    log_tree(0, "✅ 系统启动 (Ver 28.4 UI Upgrade)")
+    log_tree(0, "✅ 系统启动 (Ver 28.5 UI Fix)")
     client.start()
     client.run_until_disconnected()
