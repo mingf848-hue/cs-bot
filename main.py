@@ -119,29 +119,42 @@ reply_tasks = {}
 wait_timers = {}
 followup_timers = {}
 reply_timers = {}
+# 记录映射: 客服回复ID -> 客户原始消息ID
 wait_msg_map = {}       
 followup_msg_map = {} 
 deleted_cache = set()
 
-# 用户任务池: (chat_id, user_id) -> set(msg_ids)
 chat_user_active_msgs = {}
-# [Ver 28.0] 消息流任务池: (chat_id, thread_id) -> set(msg_ids)
 chat_thread_active_msgs = {}
 
 msg_to_user_cache = {} 
 msg_content_cache = {}
+# (chat_id, grouped_id) -> user_id (用于相册关联)
+group_to_user_cache = {}
+
+cs_activity_log = {}
 
 IS_WORKING = False
 MY_ID = None
 bot_loop = None
 
-def update_msg_cache(chat_id, msg_id, user_id):
+def update_msg_cache(chat_id, msg_id, user_id, grouped_id=None):
+    # 1. 缓存 MsgID -> UserID
     key = (chat_id, msg_id)
     if len(msg_to_user_cache) >= MAX_CACHE_SIZE:
         if key not in msg_to_user_cache: 
             try: msg_to_user_cache.pop(next(iter(msg_to_user_cache)))
             except StopIteration: pass
     msg_to_user_cache[key] = user_id
+    
+    # 2. 缓存 GroupedID -> UserID (媒体组关联)
+    if grouped_id:
+        g_key = (chat_id, grouped_id)
+        if len(group_to_user_cache) >= 5000:
+             if g_key not in group_to_user_cache:
+                 try: group_to_user_cache.pop(next(iter(group_to_user_cache)))
+                 except StopIteration: pass
+        group_to_user_cache[g_key] = user_id
 
 def update_content_cache(chat_id, msg_id, name, text):
     key = (chat_id, msg_id)
@@ -152,21 +165,18 @@ def update_content_cache(chat_id, msg_id, name, text):
     safe_text = text[:30].replace('\n', ' ') if text else "[非文本/空]"
     msg_content_cache[key] = {'name': name, 'text': safe_text}
 
-# [Ver 28.0] 获取消息流 ID (Thread ID)
+def record_cs_activity(chat_id, user_id=None, thread_id=None):
+    now = time.time()
+    if user_id:
+        cs_activity_log[(chat_id, user_id)] = now
+    if thread_id:
+        cs_activity_log[(chat_id, thread_id)] = now
+
 def get_thread_context(event):
-    """
-    返回 (thread_id, source)
-    优先使用 reply_to_top_id (官方 Thread/Topic 根节点)
-    如果无，回退到 reply_to_msg_id (假设回复的那个消息就是流的根)
-    """
-    if not event.message.reply_to:
-        return None, None
-    
+    if not event.message.reply_to: return None, None
     r = event.message.reply_to
-    if r.reply_to_top_id:
-        return r.reply_to_top_id, "Topic/Thread"
-    if r.reply_to_msg_id:
-        return r.reply_to_msg_id, "ReplyChain"
+    if r.reply_to_top_id: return r.reply_to_top_id, "Topic"
+    if r.reply_to_msg_id: return r.reply_to_msg_id, "Reply"
     return None, None
 
 # ==========================================
@@ -223,7 +233,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 28.0 (Thread Aware)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 28.4 (UI Upgrade)</div>
     <script>
         function ctrl(s) {
             fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => setTimeout(() => location.reload(), 500));
@@ -247,72 +257,145 @@ LOG_VIEWER_HTML = """
 <head>
     <title>日志分析器</title>
     <style>
-        body { background: #1e1e1e; color: #d4d4d4; font-family: 'Consolas', 'Monaco', monospace; margin: 0; display: flex; flex-direction: column; height: 100vh; }
-        .toolbar { background: #252526; padding: 10px; display: flex; gap: 10px; border-bottom: 1px solid #333; }
-        input { background: #3c3c3c; border: 1px solid #333; color: #fff; padding: 6px; flex-grow: 1; border-radius: 4px; }
-        button { background: #0e639c; color: white; border: none; padding: 6px 12px; cursor: pointer; border-radius: 4px; }
+        :root { --bg: #1e1e1e; --text: #d4d4d4; --accent: #3794ff; --border: #333; --panel: #252526; }
+        body { background: var(--bg); color: var(--text); font-family: 'Consolas', 'Monaco', monospace; margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+        .toolbar { background: var(--panel); padding: 10px; display: flex; gap: 10px; border-bottom: 1px solid var(--border); box-shadow: 0 2px 5px rgba(0,0,0,0.2); z-index: 10; }
+        input { background: #3c3c3c; border: 1px solid #555; color: #fff; padding: 8px; flex-grow: 1; border-radius: 4px; outline: none; }
+        input:focus { border-color: var(--accent); }
+        button { background: #0e639c; color: white; border: none; padding: 8px 16px; cursor: pointer; border-radius: 4px; font-weight: bold; }
         button:hover { background: #1177bb; }
-        #log-container { flex-grow: 1; overflow-y: auto; padding: 15px; white-space: pre; font-size: 13px; line-height: 1.5; }
-        .line { padding: 2px 0; }
-        .search-match { background-color: #264f78; border-left: 3px solid #55aaff; color: #fff; }
-        .time { color: #569cd6; margin-right: 10px; }
-        .tree { color: #808080; }
-        .alert { color: #f44747; font-weight: bold; }
-        .success { color: #6a9955; font-weight: bold; }
-        .error { color: #f48771; font-weight: bold; background: #2f0d0d; }
-        .delete { color: #d7ba7d; font-weight: bold; }
-        .stream { color: #c586c0; } /* 消息流高亮 */
+        #log-container { flex-grow: 1; overflow-y: auto; padding: 20px; font-size: 13px; line-height: 1.6; }
+        
+        /* 核心布局 */
+        .log-row { display: flex; margin-bottom: 2px; padding: 2px 0; border-radius: 4px; transition: background 0.1s; }
+        .log-row:hover { background: #2a2d2e; }
+        .time-col { min-width: 80px; color: #569cd6; font-size: 0.9em; opacity: 0.8; user-select: none; padding-top: 2px; }
+        .tree-col { min-width: 30px; display: flex; justify-content: center; position: relative; opacity: 0.5; }
+        .tree-line { width: 1px; background: #555; height: 100%; position: absolute; top: 0; left: 50%; }
+        .tree-node { width: 8px; height: 8px; border-radius: 50%; background: #555; position: relative; z-index: 2; top: 6px; }
+        .content-col { flex-grow: 1; word-break: break-all; white-space: pre-wrap; padding-left: 8px; }
+
+        /* 层级样式 */
+        .level-0 .tree-node { background: #4ec9b0; width: 10px; height: 10px; left: -1px; } /* 根节点 */
+        .level-1 .tree-col { padding-left: 0; }
+        .level-1 .content-col { border-left: 2px solid #444; padding-left: 12px; margin-left: 5px; }
+        .level-2 .content-col { border-left: 2px solid #444; padding-left: 12px; margin-left: 25px; }
+
+        /* 标签样式 */
+        .tag { padding: 2px 6px; border-radius: 4px; font-size: 0.9em; margin: 0 2px; display: inline-block; vertical-align: middle; cursor: pointer; }
+        .tag-msg { background: #264f78; color: #a5d6ff; border: 1px solid #3c6f9e; }
+        .tag-user { background: #3a3d41; color: #ce9178; border: 1px solid #555; }
+        .tag-thread { background: #4d2d52; color: #d7ba7d; border: 1px solid #6e4e75; }
+        .tag-cs { background: #204a2e; color: #4ec9b0; border: 1px solid #2e6b42; font-weight: bold; }
+        .tag-alert { background: #5a1d1d; color: #ff6b6b; font-weight: bold; border: 1px solid #8c2626; }
+        
+        /* 状态文本 */
+        .txt-gray { color: #808080; font-style: italic; }
+        .txt-highlight { color: #fff; font-weight: bold; }
+        
+        /* 交互高亮 */
+        .match-highlight { background-color: #4a4000 !important; color: #fff; box-shadow: 0 0 0 2px #ffe600; border-radius: 2px; z-index: 5; }
+        .search-row { background: #1f3852; border-left: 4px solid #55aaff; }
     </style>
 </head>
 <body>
     <div class="toolbar">
-        <input type="text" id="search" placeholder="🔍 输入关键词 (回车跳转)..." onkeyup="if(event.key==='Enter') filterLogs()">
-        <button onclick="filterLogs()">🔍 搜索</button>
-        <button onclick="window.location.reload()">🔄 刷新</button>
-        <button onclick="scrollToBottom()">⬇️ 到底部</button>
+        <input type="text" id="search" placeholder="🔍 输入 ID / 关键词 (回车跳转)..." onkeyup="if(event.key==='Enter') doSearch()">
+        <button onclick="doSearch()">查找</button>
+        <button onclick="window.location.reload()">刷新</button>
+        <button onclick="scrollToBottom()">⬇️ 底部</button>
     </div>
     <div id="log-container">加载中...</div>
+    
     <script>
         const container = document.getElementById('log-container');
+        let rawData = "";
+
         fetch('/log_raw').then(r => r.text()).then(text => {
-            const lines = text.split('\\n');
-            let html = '';
-            lines.forEach(line => {
-                if(!line.trim()) return;
-                let className = 'line';
-                if(line.includes('[ALERT]')) className += ' alert';
-                else if(line.includes('销单成功') || line.includes('任务已完成')) className += ' success';
-                else if(line.includes('物理删除')) className += ' delete';
-                else if(line.includes('[ERROR]') || line.includes('❌')) className += ' error';
-                else if(line.includes('客服操作')) className += ' delete';
-                else if(line.includes('新知识')) className += ' success';
-                
-                const timeMatch = line.match(/^(\\d{2}:\\d{2}:\\d{2})/);
-                let formattedLine = line;
-                if(timeMatch) formattedLine = `<span class="time">${timeMatch[1]}</span>` + line.substring(8);
-                formattedLine = formattedLine.replace(/(┣━━|┗━━)/g, '<span class="tree">$1</span>');
-                formattedLine = formattedLine.replace(/消息流 ID:\d+/g, '<span class="stream">$&</span>');
-                html += `<div class="${className}">${formattedLine}</div>`;
-            });
-            container.innerHTML = html;
+            rawData = text;
+            renderLogs(text);
             scrollToBottom();
         });
-        
-        function filterLogs() {
-            const term = document.getElementById('search').value.toLowerCase();
-            const divs = container.getElementsByTagName('div');
-            for(let div of divs) { div.classList.remove('search-match'); }
-            if(!term) return;
-            let lastMatch = null;
-            for(let div of divs) {
-                const text = div.innerText.toLowerCase();
-                if(text.includes(term)) {
-                    div.classList.add('search-match');
-                    lastMatch = div;
-                }
-            }
-            if(lastMatch) { lastMatch.scrollIntoView({behavior: "smooth", block: "center"}); }
+
+        function renderLogs(text) {
+            const lines = text.split('\\n');
+            let html = '';
+            
+            lines.forEach(line => {
+                if(!line.trim()) return;
+                
+                // 1. 提取时间
+                const timeMatch = line.match(/^(\\d{2}:\\d{2}:\\d{2})(.*)/);
+                if(!timeMatch) return;
+                
+                const time = timeMatch[1];
+                let content = timeMatch[2];
+                
+                // 2. 识别层级 (Tree)
+                let level = 0;
+                if(content.includes('┣━━')) { level = 1; content = content.replace('┣━━', '').trim(); }
+                else if(content.includes('┗━━')) { level = 2; content = content.replace('┗━━', '').trim(); }
+                else if(content.includes('📦')) { level = 0; content = content.replace('📦', '').trim(); }
+                else if(content.includes('🚨')) { level = 3; } # 特殊报警
+                
+                // 3. 格式化内容 (Tags)
+                // Msg=123 or Msg: 123
+                content = content.replace(/(Msg[=:]\\s?)(\\d+)/g, '$1<span class="tag tag-msg" onmouseover="highlight(\\'$2\\')" onmouseout="unhighlight()">$2</span>');
+                // User=123 or 用户: 123
+                content = content.replace(/(归属|User|用户)[:=]\\s?(\\d+)/g, '$1: <span class="tag tag-user" onmouseover="highlight(\\'$2\\')" onmouseout="unhighlight()">$2</span>');
+                // Thread=123 or 流: 123
+                content = content.replace(/(流|Thread|Topic)[:=]\\s?(\\d+)/g, '$1: <span class="tag tag-thread" onmouseover="highlight(\\'$2\\')" onmouseout="unhighlight()">$2</span>');
+                // Alert
+                if(line.includes('[ALERT]')) content = `<span class="tag tag-alert">⚠️ ALARM</span> ${content}`;
+                // CS Operation
+                if(content.includes('客服操作')) content = `<span class="tag tag-cs">⚡️ 客服操作</span> ` + content.replace('⚡️ 客服操作捕获 | ', '');
+                
+                // 4. 构建 HTML
+                html += `
+                <div class="log-row level-${level}">
+                    <div class="time-col">${time}</div>
+                    <div class="tree-col"><div class="tree-line"></div><div class="tree-node"></div></div>
+                    <div class="content-col">${content}</div>
+                </div>`;
+            });
+            container.innerHTML = html;
         }
+
+        function highlight(id) {
+            const tags = document.querySelectorAll('.tag');
+            tags.forEach(t => {
+                if(t.innerText === id) {
+                    t.classList.add('match-highlight');
+                    // 让整行也稍微亮一点
+                    t.closest('.log-row').style.background = '#2a2d2e'; 
+                }
+            });
+        }
+
+        function unhighlight() {
+            document.querySelectorAll('.match-highlight').forEach(t => {
+                t.classList.remove('match-highlight');
+                t.closest('.log-row').style.background = '';
+            });
+        }
+
+        function doSearch() {
+            const term = document.getElementById('search').value;
+            const rows = document.querySelectorAll('.log-row');
+            rows.forEach(r => r.classList.remove('search-row'));
+            
+            if(!term) return;
+            
+            let last = null;
+            rows.forEach(r => {
+                if(r.innerText.toLowerCase().includes(term.toLowerCase())) {
+                    r.classList.add('search-row');
+                    last = r;
+                }
+            });
+            if(last) last.scrollIntoView({behavior: "smooth", block: "center"});
+        }
+
         function scrollToBottom() { container.scrollTop = container.scrollHeight; }
     </script>
 </body>
@@ -391,9 +474,11 @@ async def perform_stop_work():
     wait_timers.clear(); followup_timers.clear(); reply_timers.clear()
     wait_msg_map.clear(); followup_msg_map.clear()
     chat_user_active_msgs.clear()
-    chat_thread_active_msgs.clear() # [Ver 28.0]
+    chat_thread_active_msgs.clear()
     msg_to_user_cache.clear()
     msg_content_cache.clear()
+    group_to_user_cache.clear()
+    cs_activity_log.clear()
     await send_alert("🔴 **已切换为：下班模式 (网页/指令)**", "")
 
 async def perform_start_work():
@@ -401,16 +486,12 @@ async def perform_start_work():
     IS_WORKING = True
     await send_alert(f"🟢 **已切换为：工作模式 (网页/指令)**", "")
 
-# [Ver 28.0] 注册任务：同时绑定 用户 和 消息流
 def register_task(chat_id, user_id, msg_id, thread_id=None):
-    # 1. 绑定用户
     if user_id:
         u_key = (chat_id, user_id)
         if u_key not in chat_user_active_msgs: chat_user_active_msgs[u_key] = set()
         chat_user_active_msgs[u_key].add(msg_id)
         update_msg_cache(chat_id, msg_id, user_id)
-    
-    # 2. 绑定消息流
     if thread_id:
         t_key = (chat_id, thread_id)
         if t_key not in chat_thread_active_msgs: chat_thread_active_msgs[t_key] = set()
@@ -422,35 +503,28 @@ def remove_task_record(chat_id, user_id, msg_id, thread_id=None):
         if u_key in chat_user_active_msgs:
             chat_user_active_msgs[u_key].discard(msg_id)
             if not chat_user_active_msgs[u_key]: del chat_user_active_msgs[u_key]
-    
     if thread_id:
         t_key = (chat_id, thread_id)
         if t_key in chat_thread_active_msgs:
             chat_thread_active_msgs[t_key].discard(msg_id)
             if not chat_thread_active_msgs[t_key]: del chat_thread_active_msgs[t_key]
 
-# [Ver 28.0] 强力销单：同时检查 用户 和 消息流
 def cancel_tasks(chat_id, user_id, thread_id=None, reason="未知"):
     targets = set()
-    
-    # 收集用户相关的任务
     if user_id:
         u_key = (chat_id, user_id)
         if u_key in chat_user_active_msgs:
             targets.update(chat_user_active_msgs[u_key])
-            del chat_user_active_msgs[u_key] # 暂存销单，清空记录
-            
-    # 收集消息流相关的任务
+            del chat_user_active_msgs[u_key]
     if thread_id:
         t_key = (chat_id, thread_id)
         if t_key in chat_thread_active_msgs:
             targets.update(chat_thread_active_msgs[t_key])
-            del chat_thread_active_msgs[t_key] # 暂存销单，清空记录
+            del chat_thread_active_msgs[t_key]
 
     if not targets: return
 
-    # 执行销单
-    log_tree(1, f" ┣━━ 尝试销单 | 用户: {user_id} | 消息流 ID: {thread_id} | 任务池: {list(targets)}")
+    log_tree(1, f" ┣━━ 尝试销单 | 用户: {user_id} | 流: {thread_id} | 任务池: {list(targets)}")
     count = 0
     cleared_ids = []
     for mid in targets:
@@ -459,15 +533,29 @@ def cancel_tasks(chat_id, user_id, thread_id=None, reason="未知"):
         if mid in reply_tasks: reply_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
     
     if count > 0:
-        log_tree(2, f"销单成功 | {reason} | 消息流 ID: {thread_id} | 任务: {cleared_ids}")
+        log_tree(2, f"销单成功 | {reason} | 流: {thread_id} | 任务: {cleared_ids}")
+
+def check_recent_activity_safe(chat_id, task_start_time, user_ids=None, thread_id=None):
+    buffer_seconds = 10
+    if user_ids:
+        for uid in user_ids:
+            last_act = cs_activity_log.get((chat_id, uid), 0)
+            if last_act > task_start_time + buffer_seconds:
+                return True, f"用户 {uid} 下有新回复"
+    if thread_id:
+        last_act = cs_activity_log.get((chat_id, thread_id), 0)
+        if last_act > task_start_time + buffer_seconds:
+            return True, f"消息流 {thread_id} 下有新回复"
+    return False, None
 
 # ==========================================
 # 模块 7: 倒计时任务
 # ==========================================
 async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, user_ids_list, thread_id=None):
+    task_start_time = time.time()
     try:
         log_tree(1, f"启动 [稍等] 倒计时 (12m) Msg={key_id} | Users={user_ids_list} | Thread={thread_id}")
-        end_time = time.time() + WAIT_TIMEOUT
+        end_time = task_start_time + WAIT_TIMEOUT
         wait_timers[key_id] = {'ts': end_time, 'user': agent_name, 'url': link}
         for uid in user_ids_list:
             register_task(chat_id, uid, key_id, thread_id)
@@ -476,6 +564,11 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
         if not IS_WORKING: return
 
         if my_msg_id and not await check_msg_exists(chat_id, my_msg_id): return
+
+        is_safe, safe_reason = check_recent_activity_safe(chat_id, task_start_time, user_ids_list, thread_id)
+        if is_safe:
+            log_tree(2, f"🛡️ 拦截误报 [稍等] Msg={key_id} | 原因: {safe_reason} (客服已处理)")
+            return
 
         log_tree(2, f"触发 [稍等] 超时 Msg={key_id}")
         await send_alert(f"📩 消息: `{original_text.replace('`', '')}`\n🚨 **稍等-超时预警**\n👤 客服: {agent_name}\n⚠️ 状态: 已过 {WAIT_TIMEOUT // 60} 分钟 (无后续回复)\n🔗 [点击处理]({link})", link)
@@ -488,9 +581,10 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
             remove_task_record(chat_id, uid, key_id, thread_id)
 
 async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, user_ids_list, thread_id=None):
+    task_start_time = time.time()
     try:
         log_tree(1, f"启动 [跟进] 倒计时 (15m) Msg={key_id} | Users={user_ids_list} | Thread={thread_id}")
-        end_time = time.time() + FOLLOWUP_TIMEOUT
+        end_time = task_start_time + FOLLOWUP_TIMEOUT
         followup_timers[key_id] = {'ts': end_time, 'user': agent_name, 'url': link}
         for uid in user_ids_list:
             register_task(chat_id, uid, key_id, thread_id)
@@ -499,6 +593,11 @@ async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_
         if not IS_WORKING: return
 
         if my_msg_id and not await check_msg_exists(chat_id, my_msg_id): return
+
+        is_safe, safe_reason = check_recent_activity_safe(chat_id, task_start_time, user_ids_list, thread_id)
+        if is_safe:
+            log_tree(2, f"🛡️ 拦截误报 [跟进] Msg={key_id} | 原因: {safe_reason}")
+            return
 
         log_tree(2, f"触发 [跟进] 超时 Msg={key_id}")
         await send_alert(f"📩 消息: `{original_text.replace('`', '')}`\n🚨 **跟进-超时预警**\n👤 客服: {agent_name}\n⚠️ 状态: **反馈核实内容超时未跟进回复** ({FOLLOWUP_TIMEOUT // 60} 分钟)\n🔗 [点击处理]({link})", link)
@@ -602,12 +701,14 @@ async def get_traceable_sender(chat_id, reply_to_msg_id, current_recursion=0):
         target_msg = msgs[0]
         if not target_msg: return None
         
-        if target_msg.sender_id:
+        sender_id = target_msg.sender_id
+        
+        if sender_id:
             cs_ids = [MY_ID] + OTHER_CS_IDS
-            if target_msg.sender_id not in cs_ids:
-                update_msg_cache(chat_id, reply_to_msg_id, target_msg.sender_id)
-                log_tree(1, f" ┣━━ 🧠 学习新知识: Msg({reply_to_msg_id}) 属于 User({target_msg.sender_id})")
-            return target_msg.sender_id
+            if sender_id not in cs_ids:
+                update_msg_cache(chat_id, reply_to_msg_id, sender_id, target_msg.grouped_id)
+                log_tree(1, f" ┣━━ 🧠 学习新知识: Msg({reply_to_msg_id}) 属于 User({sender_id})")
+            return sender_id
             
         return None
     except Exception: return None
@@ -622,7 +723,7 @@ async def get_context_users(chat_id, msg_id):
         if msg.sender_id: 
             users.add(msg.sender_id)
             if msg.sender_id not in ([MY_ID] + OTHER_CS_IDS):
-                update_msg_cache(chat_id, msg_id, msg.sender_id)
+                update_msg_cache(chat_id, msg_id, msg.sender_id, msg.grouped_id)
         
         if msg.reply_to_msg_id:
             parent_user_id = await get_traceable_sender(chat_id, msg.reply_to_msg_id)
@@ -639,87 +740,99 @@ async def get_context_users(chat_id, msg_id):
 @client.on(events.NewMessage(chats=CS_GROUP_IDS))
 @client.on(events.MessageEdited(chats=CS_GROUP_IDS))
 async def handler(event):
-    global MY_ID
-    if not MY_ID: MY_ID = (await client.get_me()).id
-    if not IS_WORKING: return
+    try:
+        global MY_ID
+        if not MY_ID: MY_ID = (await client.get_me()).id
+        if not IS_WORKING: return
 
-    text = event.text or ""
-    sender_id = event.sender_id
-    reply_to_msg_id = event.reply_to_msg_id
-    sender = await event.get_sender()
-    sender_name = getattr(sender, 'first_name', 'Unknown')
-    chat_id = event.chat_id
-    msg_link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{event.id}"
+        text = event.text or ""
+        msg_type = "文本"
+        if event.message.file:
+            msg_type = "文件/图片"
+            if not text: text = "[媒体文件]"
+        if event.message.sticker:
+            msg_type = "贴纸"
+            if not text: text = "[贴纸]"
 
-    update_content_cache(chat_id, event.id, sender_name, text)
+        sender_id = event.sender_id
+        reply_to_msg_id = event.reply_to_msg_id
+        grouped_id = event.message.grouped_id
+        sender = await event.get_sender()
+        sender_name = getattr(sender, 'first_name', 'Unknown')
+        chat_id = event.chat_id
+        msg_link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{event.id}"
 
-    norm_text = normalize(text)
-    is_wait_cmd = any(k in norm_text for k in WAIT_SIGNATURES)
-    is_keep_cmd = text.strip() in KEEP_SIGNATURES
-    is_sender_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS)
+        update_content_cache(chat_id, event.id, sender_name, text)
 
-    # [Ver 28.0] 获取当前消息的 Thread ID
-    current_thread_id, thread_type = get_thread_context(event)
+        norm_text = normalize(text)
+        is_wait_cmd = any(k in norm_text for k in WAIT_SIGNATURES)
+        is_keep_cmd = text.strip() in KEEP_SIGNATURES
+        is_sender_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS)
 
-    real_customer_id = None
-    if reply_to_msg_id:
-        if (chat_id, reply_to_msg_id) in msg_to_user_cache:
-            real_customer_id = msg_to_user_cache[(chat_id, reply_to_msg_id)]
-        
-        if not real_customer_id and reply_to_msg_id in wait_msg_map:
-            wait_origin_msg = wait_msg_map[reply_to_msg_id]
-            for (cid, uid), msg_set in chat_user_active_msgs.items():
-                if cid == chat_id and wait_origin_msg in msg_set:
-                    real_customer_id = uid
-                    break
-        
-        if not real_customer_id:
-            real_customer_id = await get_traceable_sender(chat_id, reply_to_msg_id)
+        current_thread_id, thread_type = get_thread_context(event)
 
-    if is_sender_cs:
+        real_customer_id = None
         if reply_to_msg_id:
-            source_info = "未知"
-            if (chat_id, reply_to_msg_id) in msg_to_user_cache: source_info = "缓存命中"
-            elif real_customer_id: source_info = "API实时查询"
+            if (chat_id, reply_to_msg_id) in msg_to_user_cache:
+                real_customer_id = msg_to_user_cache[(chat_id, reply_to_msg_id)]
             
-            log_tree(1, f"⚡️ 客服操作捕获 | Msg: {reply_to_msg_id} | 归属: {real_customer_id} | 流: {current_thread_id}({thread_type})")
+            if not real_customer_id and reply_to_msg_id in wait_msg_map:
+                wait_origin_msg = wait_msg_map[reply_to_msg_id]
+                for (cid, uid), msg_set in chat_user_active_msgs.items():
+                    if cid == chat_id and wait_origin_msg in msg_set:
+                        real_customer_id = uid
+                        break
+            
+            if not real_customer_id:
+                real_customer_id = await get_traceable_sender(chat_id, reply_to_msg_id)
 
-        # 销单逻辑：尝试通过 UserID 销单，或者通过 ThreadID 销单
-        if real_customer_id or current_thread_id:
-            cancel_tasks(chat_id, real_customer_id, current_thread_id, reason=f"客服回复: [{text[:10]}...]")
-        
-        if reply_to_msg_id and reply_to_msg_id in reply_tasks:
-            reply_tasks[reply_to_msg_id].cancel()
-            del reply_tasks[reply_to_msg_id]
+        if not real_customer_id and reply_to_msg_id:
+             pass 
 
-        if reply_to_msg_id:
-            related_users = await get_context_users(chat_id, reply_to_msg_id)
-            if not related_users and real_customer_id:
-                related_users = [real_customer_id]
+        if is_sender_cs:
+            record_cs_activity(chat_id, user_id=real_customer_id, thread_id=current_thread_id)
 
-            if related_users:
-                if is_keep_cmd:
-                    task = asyncio.create_task(task_followup_timeout(
-                        reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users, current_thread_id
-                    ))
-                    followup_tasks[reply_to_msg_id] = task
-                    followup_msg_map[event.id] = reply_to_msg_id
+            if reply_to_msg_id:
+                source_info = "未知"
+                if (chat_id, reply_to_msg_id) in msg_to_user_cache: source_info = "缓存命中"
+                elif real_customer_id: source_info = "API实时查询"
+                else: source_info = "追踪失败" 
+                
+                log_tree(1, f"⚡️ 客服操作捕获 | Msg: {reply_to_msg_id} | 类型: {msg_type} | 归属: {real_customer_id} | 流: {current_thread_id} | 状态: {source_info}")
 
-                elif is_wait_cmd:
-                    task = asyncio.create_task(task_wait_timeout(
-                        reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users, current_thread_id
-                    ))
-                    wait_tasks[reply_to_msg_id] = task
-                    wait_msg_map[event.id] = reply_to_msg_id
+            if real_customer_id or current_thread_id:
+                cancel_tasks(chat_id, real_customer_id, current_thread_id, reason=f"客服回复: [{text[:10]}...]")
+            
+            if reply_to_msg_id and reply_to_msg_id in reply_tasks:
+                reply_tasks[reply_to_msg_id].cancel()
+                del reply_tasks[reply_to_msg_id]
 
-    else:
-        update_msg_cache(chat_id, event.id, sender_id)
-        # 客户说话也尝试销单（根据 ThreadID 销单非常有用，防止客户一直说话导致超时）
-        cancel_tasks(chat_id, sender_id, current_thread_id, reason=f"客户发言: [{text[:10]}...]")
-        
-        log_tree(0, f"[{chat_id}] {sender_name}: {text}")
-        if reply_to_msg_id:
-            try:
+            if reply_to_msg_id:
+                related_users = await get_context_users(chat_id, reply_to_msg_id)
+                if not related_users and real_customer_id:
+                    related_users = [real_customer_id]
+
+                if related_users:
+                    if is_keep_cmd:
+                        task = asyncio.create_task(task_followup_timeout(
+                            reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users, current_thread_id
+                        ))
+                        followup_tasks[reply_to_msg_id] = task
+                        followup_msg_map[event.id] = reply_to_msg_id
+
+                    elif is_wait_cmd:
+                        task = asyncio.create_task(task_wait_timeout(
+                            reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users, current_thread_id
+                        ))
+                        wait_tasks[reply_to_msg_id] = task
+                        wait_msg_map[event.id] = reply_to_msg_id
+
+        else:
+            update_msg_cache(chat_id, event.id, sender_id, grouped_id)
+            cancel_tasks(chat_id, sender_id, current_thread_id, reason=f"客户发言: [{text[:10]}...]")
+            
+            log_tree(0, f"[{chat_id}] {sender_name}: {text} [{msg_type}]")
+            if reply_to_msg_id:
                 target_id = None
                 replied_msg = await event.get_reply_message()
                 if replied_msg: target_id = replied_msg.sender_id
@@ -732,11 +845,12 @@ async def handler(event):
                     if event.id in reply_tasks: reply_tasks[event.id].cancel()
                     task = asyncio.create_task(task_reply_timeout(event.id, sender_name, text[:50], msg_link, chat_id, sender_id, current_thread_id))
                     reply_tasks[event.id] = task
-            except Exception: pass
+    except Exception as e:
+        log_tree(9, f"❌ Handler 异常: {e}")
 
 if __name__ == '__main__':
     bot_loop = asyncio.get_event_loop()
     Thread(target=run_web).start()
-    log_tree(0, "✅ 系统启动 (Ver 28.0 Thread Aware)")
+    log_tree(0, "✅ 系统启动 (Ver 28.4 UI Upgrade)")
     client.start()
     client.run_until_disconnected()
