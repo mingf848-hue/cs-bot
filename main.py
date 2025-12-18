@@ -13,20 +13,20 @@ from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
 # ==========================================
-# 模块 0: 北京时间树状日志系统
+# 模块 8: 客户端与逻辑增强
 # ==========================================
-logger = logging.getLogger("BotLogger")
-logger.setLevel(logging.DEBUG)
-LOG_FILE_PATH = 'bot_debug.log'
+client = TelegramClient(
+    StringSession(SESSION_STRING), 
+    API_ID, 
+    API_HASH,
+    device_model="Mac mini M2", 
+    app_version="5.8.3 arm64 Mac App Store",      
+    system_version="macOS 15.6.1",
+    lang_code="zh-hans",
+    system_lang_code="zh-hans"
+)
 
-class BeijingFormatter(logging.Formatter):
-    def converter(self, timestamp):
-        return datetime.fromtimestamp(timestamp, timezone.utc).astimezone(timezone(timedelta(hours=8)))
-    def formatTime(self, record, datefmt=None):
-        return self.converter(record.created).strftime('%H:%M:%S')
-
-file_fmt = BeijingFormatter('%(asctime)s %(message)s', datefmt='%H:%M:%S')
-file_handler = logging.FileHandler(LOG_FILE_PATH, mode='a', encoding='utf-8')
+@client.on(events.NewMessage(chats='me', pattern=r'^\s*(上班|下班|状态)\s*$'))
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(file_fmt)
 
@@ -244,7 +244,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 30.4 (Debug Buttons)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 30.5 (Audit Logic Fix)</div>
     <script>
         function ctrl(s) {
             fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => setTimeout(() => location.reload(), 500));
@@ -462,7 +462,6 @@ def _post_request(url, payload):
 async def send_alert(text, link, extra_log=""):
     if not BOT_TOKEN: return
     summary = text.splitlines()[1] if len(text.splitlines()) > 1 else '通知'
-    # [Ver 30.4] 在日志中注入 IDs
     log_tree(3, f"{extra_log} [ALERT] 发送报警 -> 全文:\n{text}")
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     loop = asyncio.get_event_loop()
@@ -486,6 +485,7 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
+# [Ver 30.5] 优化：宽松判定下班巡检
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】...")
     await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近活跃的消息流，检查是否有遗漏...", "")
@@ -496,44 +496,81 @@ async def audit_pending_tasks():
     for chat_id in CS_GROUP_IDS:
         try:
             log_tree(4, f"正在扫描群组 {chat_id} ...")
-            active_threads = {}
-            async for message in client.iter_messages(chat_id, limit=SCAN_LIMIT):
-                thread_root = message.reply_to.reply_to_top_id if (message.reply_to and message.reply_to.reply_to_top_id) else None
-                if not thread_root and message.reply_to: thread_root = message.reply_to.reply_to_msg_id
-                if not thread_root: thread_root = message.id 
-                if thread_root not in active_threads: active_threads[thread_root] = message
+            # 1. 抓取历史
+            history = await client.get_messages(chat_id, limit=SCAN_LIMIT)
             
-            for root_id, last_msg in active_threads.items():
-                sender_id = last_msg.sender_id
-                is_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS)
+            # 2. 按 Thread ID 分组消息
+            threads_map = defaultdict(list)
+            
+            for m in history:
+                # 确定 Thread ID
+                thread_id = None
+                if m.reply_to:
+                    thread_id = m.reply_to.reply_to_top_id # Topic ID
+                    if not thread_id: thread_id = m.reply_to.reply_to_msg_id # Reply ID
+                if not thread_id: thread_id = m.id
                 
-                if is_cs:
-                    text = normalize(last_msg.text or "")
-                    is_wait = any(k in text for k in WAIT_SIGNATURES)
-                    is_keep = text.strip() in KEEP_SIGNATURES
+                threads_map[thread_id].append(m)
+            
+            # 3. 检查每个 Thread
+            for t_id, msgs in threads_map.items():
+                last_wait_msg = None
+                last_wait_idx = -1
+                
+                # 找到该 Thread 中最后一条客服发出的“稍等”
+                for i, m in enumerate(msgs):
+                    sender_id = m.sender_id
+                    is_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS)
+                    if is_cs:
+                        text = normalize(m.text or "")
+                        if any(k in text for k in WAIT_SIGNATURES) or (text.strip() in KEEP_SIGNATURES):
+                            last_wait_msg = m
+                            last_wait_idx = i
+                            break # 找到了最新的稍等，停止
+                
+                if last_wait_msg:
+                    # 找到了“稍等”。检查在它之后有没有任何新回复 (宽松判定)
+                    has_newer_reply = False
+                    if last_wait_idx > 0:
+                        # 只要有比它新的消息，且是客服发的，就算闭环
+                        newer_msgs = msgs[:last_wait_idx]
+                        for nm in newer_msgs:
+                             sender_id = nm.sender_id
+                             is_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS)
+                             if is_cs:
+                                 has_newer_reply = True
+                                 break
                     
-                    if is_wait or is_keep:
+                    if not has_newer_reply:
+                        # 真的没回复
                         issues_found += 1
-                        link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{root_id}"
-                        warning_type = "稍等" if is_wait else "跟进"
                         
-                        # [Ver 30.4] 注入调试 ID
-                        debug_id_str = f"Msg={last_msg.id}"
+                        m = last_wait_msg
+                        link = ""
+                        # [Ver 30.5] 修复 Topic 链接
+                        if m.reply_to and m.reply_to.reply_to_top_id:
+                             link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}?thread={m.reply_to.reply_to_top_id}"
+                        else:
+                             link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}"
+
+                        debug_id_str = f"Msg={m.id}"
+                        safe_text = (m.text or "[媒体]")[:50]
                         
-                        log_tree(4, f"❌ 发现遗漏 ({warning_type}) | Msg={last_msg.id} | Link={link}")
+                        log_tree(4, f"❌ 发现遗漏 | Msg={m.id} | Link={link}")
                         await send_alert(
-                            f"👮 **下班巡检-发现遗漏**\n⚠️ 类型: {warning_type}未闭环\n💬 最后回复: {(last_msg.text or '[媒体]')[:50]}\n🔗 [点击跳转]({link})", 
+                            f"👮 **下班巡检-发现遗漏**\n💬 客服未闭环: {safe_text}\n🔗 [点击跳转对话]({link})", 
                             link,
                             debug_id_str
                         )
                         await asyncio.sleep(1)
-                        
+
         except Exception as e:
             log_tree(9, f"群组 {chat_id} 巡检失败: {e}")
 
     log_tree(4, f"巡检结束，共发现 {issues_found} 个问题。")
     await send_alert(f"🏁 **下班巡检结束**\n共发现 **{issues_found}** 个未闭环的对话。", "")
 
+# ... [Rest of the file remains unchanged from V30.4] ...
 async def perform_stop_work():
     global IS_WORKING
     if IS_WORKING:
@@ -624,7 +661,6 @@ def check_recent_activity_safe(chat_id, task_start_time, user_ids=None, thread_i
 async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, user_ids_list, thread_id=None):
     task_start_time = time.time()
     try:
-        # [Ver 30.4] 格式化 User ID 字符串给前端用
         ids_str = f"Msg={key_id}"
         if user_ids_list: ids_str += " " + " ".join([f"User={u}" for u in user_ids_list])
         
@@ -654,9 +690,6 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
 async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, user_ids_list, thread_id=None):
     task_start_time = time.time()
     try:
-        ids_str = f"Msg={key_id}"
-        if user_ids_list: ids_str += " " + " ".join([f"User={u}" for u in user_ids_list])
-
         log_tree(1, f"启动 [跟进] 倒计时 (15m) {ids_str} | Thread={thread_id}")
         end_time = task_start_time + FOLLOWUP_TIMEOUT
         followup_timers[key_id] = {'ts': end_time, 'user': agent_name, 'url': link}
@@ -698,118 +731,6 @@ async def task_reply_timeout(trigger_msg_id, sender_name, content, link, chat_id
         if trigger_msg_id in reply_tasks: del reply_tasks[trigger_msg_id]
         if trigger_msg_id in reply_timers: del reply_timers[trigger_msg_id]
         remove_task_record(chat_id, user_id, trigger_msg_id, thread_id)
-
-# ==========================================
-# 模块 8: 客户端与逻辑增强
-# ==========================================
-client = TelegramClient(
-    StringSession(SESSION_STRING), 
-    API_ID, 
-    API_HASH,
-    device_model="Mac mini M2", 
-    app_version="5.8.3 arm64 Mac App Store",      
-    system_version="macOS 15.6.1",
-    lang_code="zh-hans",
-    system_lang_code="zh-hans"
-)
-
-@client.on(events.NewMessage(chats='me', pattern=r'^\s*(上班|下班|状态)\s*$'))
-async def command_handler(event):
-    cmd = event.text.strip()
-    log_tree(0, f"收到指令: {cmd}")
-    if cmd == '下班':
-        await perform_stop_work()
-    elif cmd == '上班':
-        await perform_start_work()
-    elif cmd == '状态':
-        await send_alert(f"🟢 **当前状态**: {'工作中' if IS_WORKING else '已下班'}\n⏳ 稍等: {len(wait_tasks)}\n🕵️ 跟进: {len(followup_tasks)}\n🔔 漏回: {len(reply_tasks)}", "")
-
-@client.on(events.MessageDeleted)
-async def handler_deleted(event):
-    if not IS_WORKING: return
-    for msg_id in event.deleted_ids:
-        deleted_cache.append(msg_id)
-        
-        deleted_info = {'name': '未知', 'text': '未知'}
-        if event.chat_id:
-             deleted_info = msg_content_cache.get((event.chat_id, msg_id), deleted_info)
-
-        sender_info_str = f"发送者: {deleted_info['name']} | 内容: [{deleted_info['text']}]"
-
-        if msg_id in wait_tasks: 
-            wait_tasks[msg_id].cancel()
-            log_tree(2, f"🗑️ 物理删除侦测(任务本体) Msg={msg_id} | {sender_info_str} -> 🛑 撤销 [稍等] 任务")
-
-        if msg_id in wait_msg_map:
-            target_id = wait_msg_map[msg_id]
-            if target_id in wait_tasks:
-                wait_tasks[target_id].cancel()
-                log_tree(2, f"🗑️ 物理删除侦测(触发指令) Msg={msg_id} | {sender_info_str} -> 🛑 撤销 [稍等] 任务(Target={target_id})")
-            del wait_msg_map[msg_id]
-
-        if msg_id in followup_tasks: 
-            followup_tasks[msg_id].cancel()
-            log_tree(2, f"🗑️ 物理删除侦测(任务本体) Msg={msg_id} | {sender_info_str} -> 🛑 撤销 [跟进] 任务")
-
-        if msg_id in followup_msg_map:
-            target_id = followup_msg_map[msg_id]
-            if target_id in followup_tasks:
-                followup_tasks[target_id].cancel()
-                log_tree(2, f"🗑️ 物理删除侦测(触发指令) Msg={msg_id} | {sender_info_str} -> 🛑 撤销 [跟进] 任务(Target={target_id})")
-            del followup_msg_map[msg_id]
-
-        if msg_id in reply_tasks: 
-            reply_tasks[msg_id].cancel()
-            log_tree(2, f"🗑️ 物理删除侦测 Msg={msg_id} | {sender_info_str} -> 🛑 撤销 [漏回] 监控")
-
-async def get_traceable_sender(chat_id, reply_to_msg_id, current_recursion=0):
-    if (chat_id, reply_to_msg_id) in msg_to_user_cache:
-        return msg_to_user_cache[(chat_id, reply_to_msg_id)]
-
-    if current_recursion > 3: return None
-    try:
-        msgs = await client.get_messages(chat_id, ids=[reply_to_msg_id])
-        if not msgs: return None
-        target_msg = msgs[0]
-        if not target_msg: return None
-        
-        # [Ver 28.3] 深度捕获
-        sender_id = target_msg.sender_id
-        
-        # 如果获取到了 ID，立即缓存 (包含 GroupedID 用于关联)
-        if sender_id:
-            cs_ids = [MY_ID] + OTHER_CS_IDS
-            if sender_id not in cs_ids:
-                update_msg_cache(chat_id, reply_to_msg_id, sender_id, target_msg.grouped_id)
-                log_tree(1, f" ┣━━ 🧠 学习新知识: Msg({reply_to_msg_id}) 属于 User({sender_id})")
-            return sender_id
-            
-        return None
-    except Exception: return None
-
-async def get_context_users(chat_id, msg_id):
-    users = set()
-    try:
-        msgs = await client.get_messages(chat_id, ids=[msg_id])
-        if not msgs or not msgs[0]: return []
-        msg = msgs[0]
-        
-        if msg.sender_id: 
-            users.add(msg.sender_id)
-            if msg.sender_id not in ([MY_ID] + OTHER_CS_IDS):
-                update_msg_cache(chat_id, msg_id, msg.sender_id, msg.grouped_id)
-        
-        if msg.reply_to_msg_id:
-            parent_user_id = await get_traceable_sender(chat_id, msg.reply_to_msg_id)
-            if parent_user_id:
-                users.add(parent_user_id)
-                log_tree(1, f" ┣━━ 🔗 三角关联探测: Msg({msg_id}) -> ParentUser({parent_user_id})")
-                
-    except Exception as e:
-        log_tree(9, f"上下文获取失败: {e}")
-        
-    cs_ids = [MY_ID] + OTHER_CS_IDS
-    return [u for u in users if u not in cs_ids]
 
 @client.on(events.NewMessage(chats=CS_GROUP_IDS))
 @client.on(events.MessageEdited(chats=CS_GROUP_IDS))
@@ -941,6 +862,6 @@ if __name__ == '__main__':
     bot_loop = asyncio.get_event_loop()
     bot_loop.create_task(maintenance_task())
     Thread(target=run_web).start()
-    log_tree(0, "✅ 系统启动 (Ver 30.4 Debug Buttons)")
+    log_tree(0, "✅ 系统启动 (Ver 30.5 Audit Logic Fix)")
     client.start()
     client.run_until_disconnected()
