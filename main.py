@@ -101,8 +101,8 @@ try:
     clean_ignore = ignore_env.replace("，", ",")
     IGNORE_SIGNATURES = {normalize(x.strip()) for x in clean_ignore.split(',') if x.strip()}
 
-    # [Ver 30.6] 客服名称前缀
-    CS_NAME_PREFIX = "YY_6/9_值班号"
+    # [Ver 30.8] 客服名称前缀列表
+    CS_NAME_PREFIXES = ["YY_6/9_值班号", "Y_YY"]
 
 except Exception as e:
     logger.error(f"❌ 配置错误: {e}")
@@ -177,7 +177,7 @@ def get_thread_context(event):
     if r.reply_to_msg_id: return r.reply_to_msg_id, "Reply"
     return None, None
 
-# [Ver 30.6] 增强版客服判定 (支持ID白名单 + 名称前缀)
+# [Ver 30.8] 增强版客服判定 (支持ID白名单 + 名称前缀)
 async def is_official_cs(message):
     if not message: return False
     sender_id = message.sender_id
@@ -190,7 +190,8 @@ async def is_official_cs(message):
         if not sender: return False
         name = getattr(sender, 'first_name', '') or ''
         # 如果名字以特定前缀开头
-        if name.startswith(CS_NAME_PREFIX): return True
+        for prefix in CS_NAME_PREFIXES:
+            if name.startswith(prefix): return True
     except: pass
     
     return False
@@ -265,7 +266,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 30.7 (Audit Delete Check)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 30.8 (Audit Strict & Fuzzy)</div>
     <script>
         function ctrl(s) {
             fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => setTimeout(() => location.reload(), 500));
@@ -506,7 +507,7 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 30.7] 优化：下班巡检逻辑 (增加死单检查)
+# [Ver 30.8] 优化：下班巡检逻辑 (无人回复检测 + 死单检测 + 客服模糊匹配)
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】...")
     await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近活跃的消息流，检查是否有遗漏...", "")
@@ -517,7 +518,10 @@ async def audit_pending_tasks():
     for chat_id in CS_GROUP_IDS:
         try:
             log_tree(4, f"正在扫描群组 {chat_id} ...")
+            # 1. 抓取历史 (List to ensure order)
             history = await client.get_messages(chat_id, limit=SCAN_LIMIT)
+            
+            # 2. 按 Thread ID 分组消息
             threads_map = defaultdict(list)
             
             for m in history:
@@ -528,7 +532,59 @@ async def audit_pending_tasks():
                 if not thread_id: thread_id = m.id
                 threads_map[thread_id].append(m)
             
+            # 3. 检查每个 Thread
             for t_id, msgs in threads_map.items():
+                # msgs is ordered new->old (because get_messages returns new->old)
+                
+                # Check for "Unanswered User Message" (Highest Priority)
+                # Find the latest message that counts (CS or User)
+                is_unanswered = False
+                unanswered_msg = None
+                
+                # Scan from newest to oldest
+                for m in msgs:
+                    # Is it CS?
+                    if await is_official_cs(m):
+                        # CS replied last (or recently). So not unanswered. Stop checking this thread.
+                        break
+                    else:
+                        # It is user. Is it ignored text?
+                        text = normalize(m.text or "")
+                        if text not in IGNORE_SIGNATURES:
+                            # It's a valid user question/statement.
+                            # Since we haven't hit a CS message yet (and we are going new->old),
+                            # this means the conversation ended with the user speaking.
+                            # It is unanswered.
+                            is_unanswered = True
+                            unanswered_msg = m
+                            break # Found the unanswered msg, stop checking
+                
+                if is_unanswered:
+                     # Report "Unanswered"
+                     issues_found += 1
+                     m = unanswered_msg
+                     link = ""
+                     if m.reply_to and m.reply_to.reply_to_top_id:
+                          link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}?thread={m.reply_to.reply_to_top_id}"
+                     else:
+                          link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}"
+
+                     debug_id_str = f"Msg={m.id}"
+                     safe_text = (m.text or "[媒体]")[:50]
+                     
+                     log_tree(4, f"❌ 发现无人回复 | Msg={m.id} | Text={safe_text} | Link={link}")
+                     await send_alert(
+                         f"👮 **下班巡检-发现遗漏**\n"
+                         f"⚠️ 类型: 客户提问未回复\n"
+                         f"💬 客户内容: {safe_text}\n"
+                         f"🔗 [点击跳转对话]({link})", 
+                         link,
+                         debug_id_str
+                     )
+                     await asyncio.sleep(1)
+                     continue # Thread handled, move to next thread
+
+                # If not unanswered (meaning CS replied last), check if CS left it on "Wait"
                 last_wait_msg = None
                 last_wait_idx = -1
                 
@@ -591,7 +647,7 @@ async def audit_pending_tasks():
                         debug_id_str = f"Msg={m.id}"
                         safe_text = (m.text or "[媒体]")[:50]
                         
-                        log_tree(4, f"❌ 发现遗漏 | Msg={m.id} | CS={cs_name} | RootText={root_text} | Link={link}")
+                        log_tree(4, f"❌ 发现遗漏 (Wait/Keep) | Msg={m.id} | CS={cs_name} | RootText={root_text} | Link={link}")
                         await send_alert(
                             f"👮 **下班巡检-发现遗漏**\n"
                             f"👤 客服: {cs_name}\n"
@@ -1013,6 +1069,6 @@ if __name__ == '__main__':
     bot_loop = asyncio.get_event_loop()
     bot_loop.create_task(maintenance_task())
     Thread(target=run_web).start()
-    log_tree(0, "✅ 系统启动 (Ver 30.7 Audit Delete Check)")
+    log_tree(0, "✅ 系统启动 (Ver 30.8 Audit Strict & Fuzzy)")
     client.start()
     client.run_until_disconnected()
