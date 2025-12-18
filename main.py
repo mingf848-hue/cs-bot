@@ -276,7 +276,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 33.0 (Robust Keep Match)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 33.1 (Fix Crash)</div>
     
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
@@ -1132,7 +1132,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 33.0 Robust Keep Match)")
+        log_tree(0, "✅ 系统启动 (Ver 33.1 Fix Crash)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
