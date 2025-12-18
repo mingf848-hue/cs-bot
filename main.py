@@ -61,8 +61,13 @@ def log_tree(level, msg):
 # ==========================================
 def normalize(text):
     if not text: return ""
-    # 统一标点和格式，确保匹配准确
-    return text.lower().replace('～', '~').replace('，', ',').replace('。', '.').strip()
+    # [Ver 32.0] 终极清洗：移除不可见字符，统一标点，去除两端空白
+    # 替换全角标点
+    text = text.replace('～', '~').replace('，', ',').replace('。', '.').replace('！', '!')
+    # 移除不可见字符 (Zero Width Space 等)
+    text = re.sub(r'[\u200b\u200c\u200d\u200e\u200f\ufeff]', '', text)
+    # 统一换行符并去除首尾空格
+    return text.strip().lower()
 
 def extract_id_list(env_str):
     if not env_str: return []
@@ -96,7 +101,7 @@ try:
     WAIT_SIGNATURES = {normalize(x.strip()) for x in clean_env.split(',') if x.strip()}
 
     keep_keywords_env = os.environ.get("KEEP_KEYWORDS", "") 
-    # [关键修复] 配置加载时做了 normalize，匹配时也必须做！
+    # [Ver 32.0] 使用增强版 normalize 处理配置
     KEEP_SIGNATURES = {normalize(x.strip()) for x in keep_keywords_env.split('|') if x.strip()}
 
     default_ignore = "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴"
@@ -266,7 +271,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 31.9 (Double Kill Fix)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 32.0 (Strict Keep Debug)</div>
     
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
@@ -583,9 +588,9 @@ async def audit_pending_tasks():
                 for i, m in enumerate(msgs):
                     if await is_official_cs(m):
                         text = normalize(m.text or "")
-                        # [Ver 31.7] KEEP normalized match
+                        # [Ver 32.0] KEEP = EXACT MATCH, WAIT = CONTAINS
                         is_wait = any(k in text for k in WAIT_SIGNATURES)
-                        is_keep = normalize(text) in KEEP_SIGNATURES # STRICT MATCH
+                        is_keep = normalize(text) in KEEP_SIGNATURES # STRICT EXACT MATCH
                         
                         if is_wait or is_keep:
                             last_wait_msg = m
@@ -1041,8 +1046,6 @@ async def handler(event):
                 log_tree(1, f"⚡️ 客服操作捕获 | Msg: {reply_to_msg_id} | 客服: {sender_name} | 内容: [{text[:100]}] | 归属: {real_customer_id} | 流: {current_thread_id} | 状态: {source_info}")
 
             if real_customer_id or current_thread_id:
-                # [Ver 31.9] 双杀修复：如果是客服编辑消息，算作更新，允许销单。如果是普通回复，当然也销单。
-                # 但这里是客服操作，所以一定有权限销单。
                 cancel_tasks(chat_id, real_customer_id, current_thread_id, reason=f"客服回复: [{text[:100]}...]")
             
             if reply_to_msg_id and reply_to_msg_id in reply_tasks:
@@ -1120,7 +1123,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 31.9 Double Kill Fix)")
+        log_tree(0, "✅ 系统启动 (Ver 32.0 Strict Keep Debug)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
