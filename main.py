@@ -265,7 +265,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 30.6 (Audit Pro)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 30.7 (Audit Delete Check)</div>
     <script>
         function ctrl(s) {
             fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => setTimeout(() => location.reload(), 500));
@@ -506,7 +506,7 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 30.6] 优化：下班巡检逻辑
+# [Ver 30.7] 优化：下班巡检逻辑 (增加死单检查)
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】...")
     await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近活跃的消息流，检查是否有遗漏...", "")
@@ -517,10 +517,7 @@ async def audit_pending_tasks():
     for chat_id in CS_GROUP_IDS:
         try:
             log_tree(4, f"正在扫描群组 {chat_id} ...")
-            # 1. 抓取历史
             history = await client.get_messages(chat_id, limit=SCAN_LIMIT)
-            
-            # 2. 按 Thread ID 分组消息
             threads_map = defaultdict(list)
             
             for m in history:
@@ -529,15 +526,12 @@ async def audit_pending_tasks():
                     thread_id = m.reply_to.reply_to_top_id 
                     if not thread_id: thread_id = m.reply_to.reply_to_msg_id
                 if not thread_id: thread_id = m.id
-                
                 threads_map[thread_id].append(m)
             
-            # 3. 检查每个 Thread
             for t_id, msgs in threads_map.items():
                 last_wait_msg = None
                 last_wait_idx = -1
                 
-                # 找到该 Thread 中最后一条客服发出的“稍等”
                 for i, m in enumerate(msgs):
                     if await is_official_cs(m):
                         text = normalize(m.text or "")
@@ -547,7 +541,6 @@ async def audit_pending_tasks():
                             break 
                 
                 if last_wait_msg:
-                    # 找到了“稍等”。检查在它之后有没有任何新回复
                     has_newer_reply = False
                     if last_wait_idx > 0:
                         newer_msgs = msgs[:last_wait_idx]
@@ -557,21 +550,37 @@ async def audit_pending_tasks():
                                  break
                     
                     if not has_newer_reply:
-                        issues_found += 1
                         m = last_wait_msg
                         
-                        # [Ver 30.6] 获取客服名字
+                        # [Ver 30.7] 新增：检查原消息是否已删除
+                        if m.reply_to and m.reply_to.reply_to_msg_id:
+                            reply_id = m.reply_to.reply_to_msg_id
+                            original_in_history = False
+                            for hm in history:
+                                if hm.id == reply_id:
+                                    original_in_history = True
+                                    break
+                            
+                            if not original_in_history:
+                                try:
+                                    origin_msg = await client.get_messages(chat_id, ids=reply_id)
+                                    if not origin_msg:
+                                        log_tree(4, f"🛡️ 拦截误报 [巡检] | Msg={m.id} | 原因: 原消息已删除")
+                                        continue
+                                except Exception:
+                                    continue
+
+                        issues_found += 1
+                        
                         cs_name = "未知客服"
                         try:
                             sender = await m.get_sender()
                             if sender: cs_name = getattr(sender, 'first_name', 'Unknown')
                         except: pass
 
-                        # [Ver 30.6] 尝试获取对话源头 (Thread Root) 的内容
                         root_text = "无法获取源头"
-                        root_msg = msgs[-1] # msgs 是按时间倒序的，最后一个是最早的
-                        if root_msg:
-                            root_text = (root_msg.text or "[媒体文件]")[:50]
+                        root_msg = msgs[-1]
+                        if root_msg: root_text = (root_msg.text or "[媒体文件]")[:50]
 
                         link = ""
                         if m.reply_to and m.reply_to.reply_to_top_id:
@@ -582,9 +591,7 @@ async def audit_pending_tasks():
                         debug_id_str = f"Msg={m.id}"
                         safe_text = (m.text or "[媒体]")[:50]
                         
-                        # [Ver 30.6] 详细巡检日志 (方便 DEBUG)
                         log_tree(4, f"❌ 发现遗漏 | Msg={m.id} | CS={cs_name} | RootText={root_text} | Link={link}")
-                        
                         await send_alert(
                             f"👮 **下班巡检-发现遗漏**\n"
                             f"👤 客服: {cs_name}\n"
@@ -1006,6 +1013,6 @@ if __name__ == '__main__':
     bot_loop = asyncio.get_event_loop()
     bot_loop.create_task(maintenance_task())
     Thread(target=run_web).start()
-    log_tree(0, "✅ 系统启动 (Ver 30.6 Audit Pro)")
+    log_tree(0, "✅ 系统启动 (Ver 30.7 Audit Delete Check)")
     client.start()
     client.run_until_disconnected()
