@@ -5,6 +5,7 @@ import logging
 import requests
 import re
 import time
+from collections import deque, defaultdict
 from datetime import datetime, timedelta, timezone
 from threading import Thread
 from flask import Flask, render_template_string, Response, request
@@ -25,7 +26,7 @@ class BeijingFormatter(logging.Formatter):
         return self.converter(record.created).strftime('%H:%M:%S')
 
 file_fmt = BeijingFormatter('%(asctime)s %(message)s', datefmt='%H:%M:%S')
-file_handler = logging.FileHandler(LOG_FILE_PATH, mode='w', encoding='utf-8')
+file_handler = logging.FileHandler(LOG_FILE_PATH, mode='a', encoding='utf-8')
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(file_fmt)
 
@@ -47,6 +48,7 @@ def log_tree(level, msg):
     elif level == 1: prefix = " ┣━━ "
     elif level == 2: prefix = " ┗━━ "
     elif level == 3: prefix = " 🚨 [ALERT] "
+    elif level == 4: prefix = " 👮 [AUDIT] " 
     elif level == 9: prefix = " ❌ [ERROR] "
     
     full_msg = f"{prefix}{msg}"
@@ -119,10 +121,9 @@ reply_tasks = {}
 wait_timers = {}
 followup_timers = {}
 reply_timers = {}
-# 记录映射: 客服回复ID -> 客户原始消息ID
 wait_msg_map = {}       
 followup_msg_map = {} 
-deleted_cache = set()
+deleted_cache = deque(maxlen=10000)
 
 chat_user_active_msgs = {}
 chat_thread_active_msgs = {}
@@ -144,7 +145,6 @@ def update_msg_cache(chat_id, msg_id, user_id, grouped_id=None):
             try: msg_to_user_cache.pop(next(iter(msg_to_user_cache)))
             except StopIteration: pass
     msg_to_user_cache[key] = user_id
-    
     if grouped_id:
         g_key = (chat_id, grouped_id)
         if len(group_to_user_cache) >= 5000:
@@ -173,6 +173,15 @@ def get_thread_context(event):
     if r.reply_to_top_id: return r.reply_to_top_id, "Topic"
     if r.reply_to_msg_id: return r.reply_to_msg_id, "Reply"
     return None, None
+
+async def maintenance_task():
+    while True:
+        try:
+            await asyncio.sleep(600)
+            now = time.time()
+            expired_keys = [k for k, v in cs_activity_log.items() if now - v > 3600]
+            for k in expired_keys: del cs_activity_log[k]
+        except Exception as e: logger.error(f"维护任务出错: {e}")
 
 # ==========================================
 # 模块 4: Web 控制台
@@ -228,7 +237,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 29.4 (Web Fix)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 30.1 (Audit Search)</div>
     <script>
         function ctrl(s) {
             fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => setTimeout(() => location.reload(), 500));
@@ -252,42 +261,34 @@ LOG_VIEWER_HTML = """
 <head>
     <title>日志流</title>
     <style>
-        :root { --bg: #121212; --bg-card: #1e1e1e; --text-main: #e0e0e0; --text-sub: #a0a0a0; --accent: #bb86fc; --user-msg: #263238; --cs-msg: #1b5e20; --alert: #b00020; }
+        :root { --bg: #121212; --bg-card: #1e1e1e; --text-main: #e0e0e0; --text-sub: #a0a0a0; --accent: #bb86fc; --user-msg: #263238; --cs-msg: #1b5e20; --alert: #b00020; --audit: #ff6f00; }
         body { background: var(--bg); color: var(--text-main); font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-        
         .toolbar { background: var(--bg-card); padding: 12px; display: flex; gap: 10px; border-bottom: 1px solid #333; box-shadow: 0 2px 4px rgba(0,0,0,0.5); z-index: 100; }
         input { background: #2c2c2c; border: 1px solid #444; color: #fff; padding: 8px 12px; border-radius: 6px; flex-grow: 1; outline: none; font-size: 14px; }
         input:focus { border-color: var(--accent); }
         button { background: var(--accent); color: #000; border: none; padding: 8px 16px; cursor: pointer; border-radius: 6px; font-weight: bold; }
         button:hover { opacity: 0.9; }
-
-        #log-container { flex-grow: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 8px; }
-        
+        #log-container { flex-grow: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
         .msg-row { display: flex; flex-direction: column; width: 100%; position: relative; }
-        .msg-meta { font-size: 12px; color: #666; margin-bottom: 2px; margin-left: 10px; font-family: monospace; display: flex; align-items: center; gap: 8px; }
-        
-        .bubble { max-width: 80%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.5; word-wrap: break-word; position: relative; white-space: pre-wrap; box-shadow: 0 1px 2px rgba(0,0,0,0.3); }
-        
+        .msg-meta { font-size: 12px; color: #666; margin-bottom: 4px; margin-left: 10px; font-family: monospace; display: flex; align-items: center; gap: 8px; }
+        .bubble { max-width: 80%; padding: 12px 16px; border-radius: 12px; font-size: 14px; line-height: 1.5; word-wrap: break-word; position: relative; white-space: pre-wrap; box-shadow: 0 1px 2px rgba(0,0,0,0.3); }
         .msg-user .bubble { background-color: var(--user-msg); align-self: flex-start; border-bottom-left-radius: 2px; color: #eceff1; border-left: 3px solid #607d8b; }
         .msg-user .msg-meta { justify-content: flex-start; }
-        
         .msg-cs .bubble { background-color: var(--cs-msg); align-self: flex-end; border-bottom-right-radius: 2px; color: #e8f5e9; border-right: 3px solid #66bb6a; }
         .msg-cs .msg-meta { justify-content: flex-end; margin-right: 10px; }
         .msg-cs { align-items: flex-end; }
-
         .msg-sys { align-items: center; margin: 5px 0; }
         .msg-sys .bubble { background: transparent; color: var(--text-sub); font-size: 12px; font-family: monospace; padding: 4px 10px; border: 1px solid #333; max-width: 90%; }
-        
         .msg-alert .bubble { background-color: rgba(176, 0, 32, 0.2); border: 1px solid var(--alert); color: #ff8a80; width: 90%; text-align: center; }
-
+        .msg-audit .bubble { background-color: rgba(255, 111, 0, 0.15); border: 1px solid var(--audit); color: #ffb74d; width: 90%; text-align: center; font-weight: bold; }
+        
         .pill { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin: 0 2px; cursor: pointer; border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.3); }
         .pill:hover { background: rgba(255,255,255,0.1); }
-        
         .highlight-row .bubble { box-shadow: 0 0 0 2px #ffd700, 0 0 15px rgba(255, 215, 0, 0.3); z-index: 2; }
-        
-        .btn-debug { cursor: pointer; opacity: 0.6; transition: opacity 0.2s; font-size: 1.1em; display: inline-flex; align-items: center; }
-        .btn-debug:hover { opacity: 1; transform: scale(1.1); }
-        
+        .btn-report { font-size: 11px; padding: 2px 8px; border-radius: 4px; cursor: pointer; border: 1px solid transparent; font-weight: bold; transition: all 0.2s; opacity: 0.7; }
+        .btn-report:hover { opacity: 1; transform: scale(1.05); }
+        .btn-missed { background: #ff9800; color: #000; border-color: #f57c00; }
+        .btn-false { background: #f44336; color: #fff; border-color: #d32f2f; }
         .error-msg { color: #cf6679; text-align: center; padding: 20px; font-weight: bold; }
     </style>
 </head>
@@ -299,53 +300,30 @@ LOG_VIEWER_HTML = """
         <button onclick="scrollToBottom()">⬇️ 底部</button>
     </div>
     <div id="log-container">Loading logs...</div>
-    
     <script>
         const container = document.getElementById('log-container');
         let parsedLogs = [];
-
-        // Add timestamp to prevent caching
         fetch('/log_raw?t=' + Date.now())
-            .then(r => {
-                if (!r.ok) throw new Error('Network response was not ok');
-                return r.text();
-            })
+            .then(r => { if (!r.ok) throw new Error('Network response was not ok'); return r.text(); })
             .then(text => {
-                if (!text.trim()) {
-                    container.innerHTML = '<div class="error-msg">暂无日志数据</div>';
-                    return;
-                }
-                try {
-                    parseLogs(text);
-                    renderLogs();
-                    scrollToBottom();
-                } catch (e) {
-                    console.error("Log parsing error:", e);
-                    container.innerHTML = `<div class="error-msg">日志解析错误: ${e.message}</div>`;
-                }
+                if (!text.trim()) { container.innerHTML = '<div class="error-msg">暂无日志数据</div>'; return; }
+                try { parseLogs(text); renderLogs(); scrollToBottom(); } 
+                catch (e) { console.error("Log parsing error:", e); container.innerHTML = `<div class="error-msg">日志解析错误: ${e.message}</div>`; }
             })
-            .catch(err => {
-                container.innerHTML = `<div class="error-msg">加载失败: ${err.message}</div>`;
-            });
+            .catch(err => { container.innerHTML = `<div class="error-msg">加载失败: ${err.message}</div>`; });
 
         function parseLogs(text) {
-            // Robust splitting for different newline types
             const rawLines = text.split(/\\r?\\n/);
             parsedLogs = [];
             let currentEntry = null;
-
             rawLines.forEach(line => {
                 if(!line.trim()) return;
-                // Use [0-9] for compatibility
                 const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2})(.*)/);
                 if (timeMatch) {
                     if (currentEntry) parsedLogs.push(currentEntry);
                     currentEntry = { time: timeMatch[1], raw: timeMatch[2], content: timeMatch[2].trim(), fullText: timeMatch[2] };
                 } else {
-                    if (currentEntry) {
-                        currentEntry.fullText += '\\n' + line;
-                        currentEntry.content += '\\n' + line;
-                    }
+                    if (currentEntry) { currentEntry.fullText += '\\n' + line; currentEntry.content += '\\n' + line; }
                 }
             });
             if (currentEntry) parsedLogs.push(currentEntry);
@@ -357,8 +335,6 @@ LOG_VIEWER_HTML = """
                 let type = 'sys';
                 let content = entry.content;
                 let raw = entry.raw || "";
-                
-                // Extract IDs for debug button
                 let ids = [];
                 const idRegex = /(Msg|User|Thread|流|归属|用户)[:=]?\\s?(\\d+)/g;
                 let match;
@@ -368,27 +344,35 @@ LOG_VIEWER_HTML = """
                 if (raw.includes('📦')) { type = 'user'; content = content.replace('📦', '').trim(); }
                 else if (raw.includes('客服操作') || (raw.includes('⚡️') && raw.includes('┣━━'))) { type = 'cs'; content = content.replace(/[┣┗]━━/, '').replace('⚡️', '⚡️ ').trim(); }
                 else if (raw.includes('🚨') || raw.includes('[ALERT]')) { type = 'alert'; }
+                else if (raw.includes('👮') || raw.includes('[AUDIT]')) { type = 'audit'; }
                 else if (raw.includes('┣━━') || raw.includes('┗━━')) { type = 'sys'; }
 
-                // Safe quote handling for onclick
                 content = content.replace(/(Msg[:=]?\\s?)(\\d+)/g, '$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
                 content = content.replace(/(User|用户|归属)[:=]?\\s?(\\d+)/g, '$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
                 
-                let debugBtn = ids.length > 0 ? `<span class="btn-debug" title="复制调试详情" onclick="copyDebugInfo('${idsStr}')">🐞</span>` : '';
-                let metaHtml = `<div class="msg-meta">${entry.time} #${idx} ${debugBtn}</div>`;
+                let actionBtn = '';
+                if (type === 'user') {
+                    actionBtn = ids.length > 0 ? `<span class="btn-report btn-missed" onclick="reportBug('漏报', '${idsStr}')">🐞 漏报</span>` : '';
+                } else if (type === 'alert' || type === 'audit') {
+                    actionBtn = ids.length > 0 ? `<span class="btn-report btn-false" onclick="reportBug('误报', '${idsStr}')">🐞 误报</span>` : '';
+                }
                 
+                let metaHtml = `<div class="msg-meta">${entry.time} #${idx} ${actionBtn}</div>`;
                 let rowClass = `msg-row msg-${type}`;
+                
                 if (type === 'user' || type === 'cs') {
                     html += `<div class="${rowClass}" id="log-${idx}">${type === 'cs' ? metaHtml : ''}<div class="bubble">${content}</div>${type === 'user' ? metaHtml : ''}</div>`;
                 } else {
-                    html += `<div class="${rowClass}" id="log-${idx}"><div class="bubble">${debugBtn} ${entry.time} ${content}</div></div>`;
+                    if (type === 'alert' || type === 'audit') {
+                         html += `<div class="${rowClass}" id="log-${idx}"><div class="bubble">${actionBtn} <b>${content}</b></div></div>`;
+                    } else {
+                         html += `<div class="${rowClass}" id="log-${idx}"><div class="bubble">${entry.time} ${content}</div></div>`;
+                    }
                 }
             });
             container.innerHTML = html;
         }
-
         function searchId(id) { document.getElementById('search').value = id; doSearch(); }
-
         function doSearch() {
             const term = document.getElementById('search').value.toLowerCase();
             if (!term) return;
@@ -402,31 +386,18 @@ LOG_VIEWER_HTML = """
                 }
             }
         }
-
-        function copyDebugInfo(idsStr) {
+        function reportBug(type, idsStr) {
             const ids = idsStr.split(',');
             if (ids.length === 0) return;
-            
-            let report = "=== 调试详情报告 ===\\n";
-            report += `相关 ID: ${idsStr}\\n\\n-- 日志流 --\\n`;
-            
+            let report = `=== ${type}反馈报告 ===\\n`;
+            report += `类型: ${type}\\n涉及 ID: ${idsStr}\\n\\n-- 关键日志流 --\\n`;
             parsedLogs.forEach(entry => {
                 let hit = false;
-                for (let id of ids) {
-                    if (entry.raw.includes(id)) { hit = true; break; }
-                }
-                if (hit) {
-                    report += `[${entry.time}] ${entry.content}\\n`;
-                }
+                for (let id of ids) { if (entry.raw.includes(id)) { hit = true; break; } }
+                if (hit) { report += `[${entry.time}] ${entry.content}\\n`; }
             });
-            
-            navigator.clipboard.writeText(report).then(() => {
-                alert("✅ 已复制调试信息到剪贴板，请直接粘贴发给开发人员分析！");
-            }).catch(err => {
-                alert("❌ 复制失败: " + err);
-            });
+            navigator.clipboard.writeText(report).then(() => { alert(`✅ [${type}] 详情已复制！请直接粘贴发送。`); });
         }
-
         function scrollToBottom() { container.scrollTop = container.scrollHeight; }
     </script>
 </body>
@@ -444,10 +415,14 @@ def log_ui(): return render_template_string(LOG_VIEWER_HTML)
 @app.route('/log_raw')
 def log_raw():
     try:
-        with open(LOG_FILE_PATH, 'r', encoding='utf-8') as f: return Response(f.read(), mimetype='text/plain')
-    except: return ""
+        file_size = os.path.getsize(LOG_FILE_PATH)
+        read_size = 200 * 1024 
+        with open(LOG_FILE_PATH, 'rb') as f:
+            if file_size > read_size: f.seek(file_size - read_size)
+            content = f.read().decode('utf-8', errors='ignore')
+        return Response(content, mimetype='text/plain')
+    except Exception as e: return f"Log read error: {e}"
 
-# Add cache control headers
 @app.after_request
 def add_header(response):
     response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
@@ -503,7 +478,75 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
+# [Ver 30.1] 优化：下班巡检逻辑
+async def audit_pending_tasks():
+    log_tree(4, "开始执行【下班巡检】...")
+    await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近活跃的消息流，检查是否有遗漏...", "")
+    
+    issues_found = 0
+    # [Ver 30.1] 加大扫描深度至 600
+    SCAN_LIMIT = 600 
+    
+    for chat_id in CS_GROUP_IDS:
+        try:
+            log_tree(4, f"正在扫描群组 {chat_id} ...")
+            # 1. 获取消息并重建 Threads
+            # Key: Thread_Root_ID, Value: Last_Message_Obj
+            active_threads = {}
+            
+            # 使用 iter_messages 获取历史 (高效获取时间线状态)
+            async for message in client.iter_messages(chat_id, limit=SCAN_LIMIT):
+                if not message.text: continue
+                
+                # 确定 Thread ID (根消息ID)
+                thread_root = message.reply_to.reply_to_top_id if (message.reply_to and message.reply_to.reply_to_top_id) else None
+                if not thread_root and message.reply_to: thread_root = message.reply_to.reply_to_msg_id
+                if not thread_root: thread_root = message.id 
+                
+                # 记录最新的那条
+                if thread_root not in active_threads:
+                    active_threads[thread_root] = message
+            
+            # 2. 分析 Thread 的最后一条消息
+            for root_id, last_msg in active_threads.items():
+                sender_id = last_msg.sender_id
+                
+                # 判断发送者是否是客服
+                is_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS)
+                
+                if is_cs:
+                    text = normalize(last_msg.text or "")
+                    is_wait = any(k in text for k in WAIT_SIGNATURES)
+                    is_keep = text.strip() in KEEP_SIGNATURES
+                    
+                    if is_wait or is_keep:
+                        # 🎯 发现漏单
+                        issues_found += 1
+                        link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{root_id}"
+                        
+                        warning_type = "稍等" if is_wait else "跟进"
+                        # [Ver 30.1] 记录带ID的日志以便前端生成“误报”按钮
+                        log_tree(4, f"❌ 发现遗漏 ({warning_type}) | Msg={last_msg.id} | Link={link}")
+                        
+                        await send_alert(
+                            f"👮 **下班巡检-发现遗漏**\n"
+                            f"⚠️ 类型: {warning_type}未闭环\n"
+                            f"💬 最后回复: {last_msg.text[:50]}\n"
+                            f"🔗 [点击跳转至对话源头]({link})", 
+                            link
+                        )
+                        await asyncio.sleep(1)
+                        
+        except Exception as e:
+            log_tree(9, f"群组 {chat_id} 巡检失败: {e}")
+
+    log_tree(4, f"巡检结束，共发现 {issues_found} 个问题。")
+    await send_alert(f"🏁 **下班巡检结束**\n共发现 **{issues_found}** 个未闭环的对话。", "")
+
 async def perform_stop_work():
+    if IS_WORKING:
+        await audit_pending_tasks()
+        
     global IS_WORKING
     IS_WORKING = False
     for t in list(wait_tasks.values()) + list(followup_tasks.values()) + list(reply_tasks.values()): t.cancel()
@@ -693,7 +736,7 @@ async def command_handler(event):
 async def handler_deleted(event):
     if not IS_WORKING: return
     for msg_id in event.deleted_ids:
-        deleted_cache.add(msg_id)
+        deleted_cache.append(msg_id)
         
         deleted_info = {'name': '未知', 'text': '未知'}
         if event.chat_id:
@@ -825,17 +868,8 @@ async def handler(event):
             if not real_customer_id:
                 real_customer_id = await get_traceable_sender(chat_id, reply_to_msg_id)
 
-        # [Ver 28.3] 组关联增强: 如果回复目标通过ID找不到人，但目标有GroupedID，尝试通过相册组找人
-        # 这里的场景是：客户发了图A和图B（属于同一相册），之前图A已被缓存归属，现在客服回了图B（未直接缓存），
-        # 此时通过图B的GroupedID可以找到图A的GroupedID，从而找到人。
         if not real_customer_id and reply_to_msg_id:
-             # 我们需要知道 reply_to_msg_id 的 grouped_id。
-             # 这需要 get_messages，但 get_traceable_sender 已经做过了并缓存了。
-             # 唯一漏掉的情况是 get_traceable_sender 刚把 ID 存进去，但我们还没用 GroupID 查。
-             # 实际上，update_msg_cache 已经处理了 GroupID -> UserID 的映射。
-             # 我们只需要再次确认 reply_to_msg 对应的 GroupID 即可。
-             # 但为了性能，只有在 real_customer_id 为 None 时才做深层检查。
-             pass # 逻辑已整合在 get_traceable_sender 的 update_msg_cache 中
+             pass 
 
         if is_sender_cs:
             record_cs_activity(chat_id, user_id=real_customer_id, thread_id=current_thread_id)
@@ -882,7 +916,7 @@ async def handler(event):
             # [Ver 29.1] 记录更详细的客户发言日志
             cancel_tasks(chat_id, sender_id, current_thread_id, reason=f"客户发言: [{text[:100]}...]")
             
-            log_tree(0, f"[{chat_id}] {sender_name}: {text} [{msg_type}]")
+            log_tree(0, f"Msg={event.id} | User={sender_id} | [{chat_id}] {sender_name}: {text} [{msg_type}]")
             if reply_to_msg_id:
                 target_id = None
                 replied_msg = await event.get_reply_message()
@@ -901,7 +935,8 @@ async def handler(event):
 
 if __name__ == '__main__':
     bot_loop = asyncio.get_event_loop()
+    bot_loop.create_task(maintenance_task())
     Thread(target=run_web).start()
-    log_tree(0, "✅ 系统启动 (Ver 29.4 Web Fix)")
+    log_tree(0, "✅ 系统启动 (Ver 30.1 Audit Search)")
     client.start()
     client.run_until_disconnected()
