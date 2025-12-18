@@ -13,20 +13,20 @@ from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
 # ==========================================
-# 模块 8: 客户端与逻辑增强
+# 模块 0: 北京时间树状日志系统
 # ==========================================
-client = TelegramClient(
-    StringSession(SESSION_STRING), 
-    API_ID, 
-    API_HASH,
-    device_model="Mac mini M2", 
-    app_version="5.8.3 arm64 Mac App Store",      
-    system_version="macOS 15.6.1",
-    lang_code="zh-hans",
-    system_lang_code="zh-hans"
-)
+logger = logging.getLogger("BotLogger")
+logger.setLevel(logging.DEBUG)
+LOG_FILE_PATH = 'bot_debug.log'
 
-@client.on(events.NewMessage(chats='me', pattern=r'^\s*(上班|下班|状态)\s*$'))
+class BeijingFormatter(logging.Formatter):
+    def converter(self, timestamp):
+        return datetime.fromtimestamp(timestamp, timezone.utc).astimezone(timezone(timedelta(hours=8)))
+    def formatTime(self, record, datefmt=None):
+        return self.converter(record.created).strftime('%H:%M:%S')
+
+file_fmt = BeijingFormatter('%(asctime)s %(message)s', datefmt='%H:%M:%S')
+file_handler = logging.FileHandler(LOG_FILE_PATH, mode='a', encoding='utf-8')
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(file_fmt)
 
@@ -570,11 +570,12 @@ async def audit_pending_tasks():
     log_tree(4, f"巡检结束，共发现 {issues_found} 个问题。")
     await send_alert(f"🏁 **下班巡检结束**\n共发现 **{issues_found}** 个未闭环的对话。", "")
 
-# ... [Rest of the file remains unchanged from V30.4] ...
 async def perform_stop_work():
     global IS_WORKING
+    # [Ver 30.1] 修复：确保 global 声明在引用 IS_WORKING 之前
     if IS_WORKING:
         await audit_pending_tasks()
+        
     IS_WORKING = False
     for t in list(wait_tasks.values()) + list(followup_tasks.values()) + list(reply_tasks.values()): t.cancel()
     wait_tasks.clear(); followup_tasks.clear(); reply_tasks.clear()
@@ -731,6 +732,118 @@ async def task_reply_timeout(trigger_msg_id, sender_name, content, link, chat_id
         if trigger_msg_id in reply_tasks: del reply_tasks[trigger_msg_id]
         if trigger_msg_id in reply_timers: del reply_timers[trigger_msg_id]
         remove_task_record(chat_id, user_id, trigger_msg_id, thread_id)
+
+# ==========================================
+# 模块 8: 客户端与逻辑增强
+# ==========================================
+client = TelegramClient(
+    StringSession(SESSION_STRING), 
+    API_ID, 
+    API_HASH,
+    device_model="Mac mini M2", 
+    app_version="5.8.3 arm64 Mac App Store",      
+    system_version="macOS 15.6.1",
+    lang_code="zh-hans",
+    system_lang_code="zh-hans"
+)
+
+@client.on(events.NewMessage(chats='me', pattern=r'^\s*(上班|下班|状态)\s*$'))
+async def command_handler(event):
+    cmd = event.text.strip()
+    log_tree(0, f"收到指令: {cmd}")
+    if cmd == '下班':
+        await perform_stop_work()
+    elif cmd == '上班':
+        await perform_start_work()
+    elif cmd == '状态':
+        await send_alert(f"🟢 **当前状态**: {'工作中' if IS_WORKING else '已下班'}\n⏳ 稍等: {len(wait_tasks)}\n🕵️ 跟进: {len(followup_tasks)}\n🔔 漏回: {len(reply_tasks)}", "")
+
+@client.on(events.MessageDeleted)
+async def handler_deleted(event):
+    if not IS_WORKING: return
+    for msg_id in event.deleted_ids:
+        deleted_cache.append(msg_id)
+        
+        deleted_info = {'name': '未知', 'text': '未知'}
+        if event.chat_id:
+             deleted_info = msg_content_cache.get((event.chat_id, msg_id), deleted_info)
+
+        sender_info_str = f"发送者: {deleted_info['name']} | 内容: [{deleted_info['text']}]"
+
+        if msg_id in wait_tasks: 
+            wait_tasks[msg_id].cancel()
+            log_tree(2, f"🗑️ 物理删除侦测(任务本体) Msg={msg_id} | {sender_info_str} -> 🛑 撤销 [稍等] 任务")
+
+        if msg_id in wait_msg_map:
+            target_id = wait_msg_map[msg_id]
+            if target_id in wait_tasks:
+                wait_tasks[target_id].cancel()
+                log_tree(2, f"🗑️ 物理删除侦测(触发指令) Msg={msg_id} | {sender_info_str} -> 🛑 撤销 [稍等] 任务(Target={target_id})")
+            del wait_msg_map[msg_id]
+
+        if msg_id in followup_tasks: 
+            followup_tasks[msg_id].cancel()
+            log_tree(2, f"🗑️ 物理删除侦测(任务本体) Msg={msg_id} | {sender_info_str} -> 🛑 撤销 [跟进] 任务")
+
+        if msg_id in followup_msg_map:
+            target_id = followup_msg_map[msg_id]
+            if target_id in followup_tasks:
+                followup_tasks[target_id].cancel()
+                log_tree(2, f"🗑️ 物理删除侦测(触发指令) Msg={msg_id} | {sender_info_str} -> 🛑 撤销 [跟进] 任务(Target={target_id})")
+            del followup_msg_map[msg_id]
+
+        if msg_id in reply_tasks: 
+            reply_tasks[msg_id].cancel()
+            log_tree(2, f"🗑️ 物理删除侦测 Msg={msg_id} | {sender_info_str} -> 🛑 撤销 [漏回] 监控")
+
+async def get_traceable_sender(chat_id, reply_to_msg_id, current_recursion=0):
+    if (chat_id, reply_to_msg_id) in msg_to_user_cache:
+        return msg_to_user_cache[(chat_id, reply_to_msg_id)]
+
+    if current_recursion > 3: return None
+    try:
+        msgs = await client.get_messages(chat_id, ids=[reply_to_msg_id])
+        if not msgs: return None
+        target_msg = msgs[0]
+        if not target_msg: return None
+        
+        # [Ver 28.3] 深度捕获
+        sender_id = target_msg.sender_id
+        
+        # 如果获取到了 ID，立即缓存 (包含 GroupedID 用于关联)
+        if sender_id:
+            cs_ids = [MY_ID] + OTHER_CS_IDS
+            if sender_id not in cs_ids:
+                update_msg_cache(chat_id, reply_to_msg_id, sender_id, target_msg.grouped_id)
+                log_tree(1, f" ┣━━ 🧠 学习新知识: Msg({reply_to_msg_id}) 属于 User({sender_id})")
+            return sender_id
+            
+        return None
+    except Exception: return None
+
+async def get_context_users(chat_id, msg_id):
+    users = set()
+    try:
+        msgs = await client.get_messages(chat_id, ids=[msg_id])
+        if not msgs or not msgs[0]: return []
+        msg = msgs[0]
+        
+        if msg.sender_id: 
+            users.add(msg.sender_id)
+            if msg.sender_id not in ([MY_ID] + OTHER_CS_IDS):
+                update_msg_cache(chat_id, msg_id, msg.sender_id, msg.grouped_id)
+        
+        if msg.reply_to_msg_id:
+            parent_user_id = await get_traceable_sender(chat_id, msg.reply_to_msg_id)
+            if parent_user_id:
+                users.add(parent_user_id)
+                log_tree(1, f" ┣━━ 🔗 三角关联探测: Msg({msg_id}) -> ParentUser({parent_user_id})")
+                
+    except Exception as e:
+        log_tree(9, f"上下文获取失败: {e}")
+        
+    cs_ids = [MY_ID] + OTHER_CS_IDS
+    return [u for u in users if u not in cs_ids]
 
 @client.on(events.NewMessage(chats=CS_GROUP_IDS))
 @client.on(events.MessageEdited(chats=CS_GROUP_IDS))
