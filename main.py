@@ -229,7 +229,14 @@ DASHBOARD_HTML = """
         {% if timers %}
             {% for mid, info in timers.items() %}
             <div class="card">
-                <div><b>{{ info.user }}</b><br><a href="{{ info.url }}" target="_blank" style="font-size:0.8rem">🔗跳转</a></div>
+                <div>
+                    <b>{{ info.user }}</b>
+                    {% if title == '🔔 漏回 (5m)' and info.target %}
+                        <span style="font-size:0.85rem; color:#666"> ➔ {{ info.target }}</span>
+                    {% endif %}
+                    <br>
+                    <a href="{{ info.url }}" target="_blank" style="font-size:0.8rem">🔗跳转</a>
+                </div>
                 <span class="t" data-end="{{ info.ts }}">--:--</span>
             </div>
             {% endfor %}
@@ -237,7 +244,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 30.2 (Audit Fix)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 30.4 (Debug Buttons)</div>
     <script>
         function ctrl(s) {
             fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => setTimeout(() => location.reload(), 500));
@@ -452,10 +459,11 @@ def _post_request(url, payload):
         if resp.status_code != 200: log_tree(9, f"API推送失败: {resp.status_code}")
     except Exception as e: log_tree(9, f"网络异常: {e}")
 
-async def send_alert(text, link):
+async def send_alert(text, link, extra_log=""):
     if not BOT_TOKEN: return
     summary = text.splitlines()[1] if len(text.splitlines()) > 1 else '通知'
-    log_tree(3, f"发送报警 -> 全文:\n{text}")
+    # [Ver 30.4] 在日志中注入 IDs
+    log_tree(3, f"{extra_log} [ALERT] 发送报警 -> 全文:\n{text}")
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     loop = asyncio.get_event_loop()
     tasks = []
@@ -478,41 +486,25 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 30.1] 优化：下班巡检逻辑 (修复了忽略非文本消息的 Bug)
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】...")
     await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近活跃的消息流，检查是否有遗漏...", "")
     
     issues_found = 0
-    # [Ver 30.1] 加大扫描深度至 600
     SCAN_LIMIT = 600 
     
     for chat_id in CS_GROUP_IDS:
         try:
             log_tree(4, f"正在扫描群组 {chat_id} ...")
-            # 1. 获取消息并重建 Threads
-            # Key: Thread_Root_ID, Value: Last_Message_Obj
             active_threads = {}
-            
-            # 使用 iter_messages 获取历史 (高效获取时间线状态)
             async for message in client.iter_messages(chat_id, limit=SCAN_LIMIT):
-                # [Ver 30.2] 移除文本过滤：图片/文件回复也是有效回复，不能忽略
-                # if not message.text: continue
-                
-                # 确定 Thread ID (根消息ID)
                 thread_root = message.reply_to.reply_to_top_id if (message.reply_to and message.reply_to.reply_to_top_id) else None
                 if not thread_root and message.reply_to: thread_root = message.reply_to.reply_to_msg_id
                 if not thread_root: thread_root = message.id 
-                
-                # 记录最新的那条
-                if thread_root not in active_threads:
-                    active_threads[thread_root] = message
+                if thread_root not in active_threads: active_threads[thread_root] = message
             
-            # 2. 分析 Thread 的最后一条消息
             for root_id, last_msg in active_threads.items():
                 sender_id = last_msg.sender_id
-                
-                # 判断发送者是否是客服
                 is_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS)
                 
                 if is_cs:
@@ -521,21 +513,18 @@ async def audit_pending_tasks():
                     is_keep = text.strip() in KEEP_SIGNATURES
                     
                     if is_wait or is_keep:
-                        # 🎯 发现漏单
                         issues_found += 1
                         link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{root_id}"
-                        
                         warning_type = "稍等" if is_wait else "跟进"
-                        # [Ver 30.1] 记录带ID的日志以便前端生成“误报”按钮
-                        log_tree(4, f"❌ 发现遗漏 ({warning_type}) | Msg={last_msg.id} | Link={link}")
                         
-                        safe_text = (last_msg.text or "[媒体文件]")[:50]
+                        # [Ver 30.4] 注入调试 ID
+                        debug_id_str = f"Msg={last_msg.id}"
+                        
+                        log_tree(4, f"❌ 发现遗漏 ({warning_type}) | Msg={last_msg.id} | Link={link}")
                         await send_alert(
-                            f"👮 **下班巡检-发现遗漏**\n"
-                            f"⚠️ 类型: {warning_type}未闭环\n"
-                            f"💬 最后回复: {safe_text}\n"
-                            f"🔗 [点击跳转至对话源头]({link})", 
-                            link
+                            f"👮 **下班巡检-发现遗漏**\n⚠️ 类型: {warning_type}未闭环\n💬 最后回复: {(last_msg.text or '[媒体]')[:50]}\n🔗 [点击跳转]({link})", 
+                            link,
+                            debug_id_str
                         )
                         await asyncio.sleep(1)
                         
@@ -549,7 +538,6 @@ async def perform_stop_work():
     global IS_WORKING
     if IS_WORKING:
         await audit_pending_tasks()
-        
     IS_WORKING = False
     for t in list(wait_tasks.values()) + list(followup_tasks.values()) + list(reply_tasks.values()): t.cancel()
     wait_tasks.clear(); followup_tasks.clear(); reply_tasks.clear()
@@ -636,73 +624,75 @@ def check_recent_activity_safe(chat_id, task_start_time, user_ids=None, thread_i
 async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, user_ids_list, thread_id=None):
     task_start_time = time.time()
     try:
-        log_tree(1, f"启动 [稍等] 倒计时 (12m) Msg={key_id} | Users={user_ids_list} | Thread={thread_id}")
+        # [Ver 30.4] 格式化 User ID 字符串给前端用
+        ids_str = f"Msg={key_id}"
+        if user_ids_list: ids_str += " " + " ".join([f"User={u}" for u in user_ids_list])
+        
+        log_tree(1, f"启动 [稍等] 倒计时 (12m) {ids_str} | Thread={thread_id}")
         end_time = task_start_time + WAIT_TIMEOUT
         wait_timers[key_id] = {'ts': end_time, 'user': agent_name, 'url': link}
-        for uid in user_ids_list:
-            register_task(chat_id, uid, key_id, thread_id)
+        for uid in user_ids_list: register_task(chat_id, uid, key_id, thread_id)
 
         await asyncio.sleep(WAIT_TIMEOUT)
         if not IS_WORKING: return
-
         if my_msg_id and not await check_msg_exists(chat_id, my_msg_id): return
 
         is_safe, safe_reason = check_recent_activity_safe(chat_id, task_start_time, user_ids_list, thread_id)
         if is_safe:
-            log_tree(2, f"🛡️ 拦截误报 [稍等] Msg={key_id} | 原因: {safe_reason} (客服已处理)")
+            log_tree(2, f"🛡️ 拦截误报 [稍等] {ids_str} | 原因: {safe_reason}")
             return
 
         log_tree(2, f"触发 [稍等] 超时 Msg={key_id}")
-        await send_alert(f"📩 消息: `{original_text.replace('`', '')}`\n🚨 **稍等-超时预警**\n👤 客服: {agent_name}\n⚠️ 状态: 已过 {WAIT_TIMEOUT // 60} 分钟 (无后续回复)\n🔗 [点击处理]({link})", link)
+        await send_alert(f"📩 消息: `{original_text.replace('`', '')}`\n🚨 **稍等-超时预警**\n👤 客服: {agent_name}\n⚠️ 状态: 已过 {WAIT_TIMEOUT // 60} 分钟 (无后续回复)\n🔗 [点击处理]({link})", link, ids_str)
     except asyncio.CancelledError: pass 
     finally:
         if key_id in wait_tasks: del wait_tasks[key_id]
         if key_id in wait_timers: del wait_timers[key_id]
         if my_msg_id in wait_msg_map: del wait_msg_map[my_msg_id]
-        for uid in user_ids_list:
-            remove_task_record(chat_id, uid, key_id, thread_id)
+        for uid in user_ids_list: remove_task_record(chat_id, uid, key_id, thread_id)
 
 async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, user_ids_list, thread_id=None):
     task_start_time = time.time()
     try:
-        log_tree(1, f"启动 [跟进] 倒计时 (15m) Msg={key_id} | Users={user_ids_list} | Thread={thread_id}")
+        ids_str = f"Msg={key_id}"
+        if user_ids_list: ids_str += " " + " ".join([f"User={u}" for u in user_ids_list])
+
+        log_tree(1, f"启动 [跟进] 倒计时 (15m) {ids_str} | Thread={thread_id}")
         end_time = task_start_time + FOLLOWUP_TIMEOUT
         followup_timers[key_id] = {'ts': end_time, 'user': agent_name, 'url': link}
-        for uid in user_ids_list:
-            register_task(chat_id, uid, key_id, thread_id)
+        for uid in user_ids_list: register_task(chat_id, uid, key_id, thread_id)
 
         await asyncio.sleep(FOLLOWUP_TIMEOUT)
         if not IS_WORKING: return
-
         if my_msg_id and not await check_msg_exists(chat_id, my_msg_id): return
 
         is_safe, safe_reason = check_recent_activity_safe(chat_id, task_start_time, user_ids_list, thread_id)
         if is_safe:
-            log_tree(2, f"🛡️ 拦截误报 [跟进] Msg={key_id} | 原因: {safe_reason}")
+            log_tree(2, f"🛡️ 拦截误报 [跟进] {ids_str} | 原因: {safe_reason}")
             return
 
         log_tree(2, f"触发 [跟进] 超时 Msg={key_id}")
-        await send_alert(f"📩 消息: `{original_text.replace('`', '')}`\n🚨 **跟进-超时预警**\n👤 客服: {agent_name}\n⚠️ 状态: **反馈核实内容超时未跟进回复** ({FOLLOWUP_TIMEOUT // 60} 分钟)\n🔗 [点击处理]({link})", link)
+        await send_alert(f"📩 消息: `{original_text.replace('`', '')}`\n🚨 **跟进-超时预警**\n👤 客服: {agent_name}\n⚠️ 状态: **反馈核实内容超时未跟进回复** ({FOLLOWUP_TIMEOUT // 60} 分钟)\n🔗 [点击处理]({link})", link, ids_str)
     except asyncio.CancelledError: pass
     finally:
         if key_id in followup_tasks: del followup_tasks[key_id]
         if key_id in followup_timers: del followup_timers[key_id]
         if my_msg_id in followup_msg_map: del followup_msg_map[my_msg_id]
-        for uid in user_ids_list:
-            remove_task_record(chat_id, uid, key_id, thread_id)
+        for uid in user_ids_list: remove_task_record(chat_id, uid, key_id, thread_id)
 
-async def task_reply_timeout(trigger_msg_id, sender_name, content, link, chat_id, user_id, thread_id=None):
+async def task_reply_timeout(trigger_msg_id, sender_name, content, link, chat_id, user_id, target_name, thread_id=None):
     try:
-        log_tree(1, f"启动 [漏回] 监控 (5m) Msg={trigger_msg_id} | User={user_id} | Thread={thread_id}")
+        ids_str = f"Msg={trigger_msg_id} User={user_id}"
+        log_tree(1, f"启动 [漏回] 监控 (5m) {ids_str} | Target={target_name} | Thread={thread_id}")
         end_time = time.time() + REPLY_TIMEOUT
-        reply_timers[trigger_msg_id] = {'ts': end_time, 'user': sender_name, 'url': link}
+        reply_timers[trigger_msg_id] = {'ts': end_time, 'user': sender_name, 'url': link, 'target': target_name}
         register_task(chat_id, user_id, trigger_msg_id, thread_id)
         
         await asyncio.sleep(REPLY_TIMEOUT)
         if not IS_WORKING: return
         
         log_tree(2, f"触发 [漏回] 报警 Msg={trigger_msg_id}")
-        await send_alert(f"📩 内容: `{content.replace('`', '')}`\n🔔 **漏回消息提醒**\n👤 用户: {sender_name} 回复了你\n⚠️ 状态: 已 {REPLY_TIMEOUT // 60} 分钟未回复\n🔗 [点击回复]({link})", link)
+        await send_alert(f"📩 内容: `{content.replace('`', '')}`\n🔔 **漏回消息提醒**\n👤 用户: {sender_name} 回复了客服 {target_name}\n⚠️ 状态: 已 {REPLY_TIMEOUT // 60} 分钟未回复\n🔗 [点击回复]({link})", link, ids_str)
     except asyncio.CancelledError: pass 
     finally:
         if trigger_msg_id in reply_tasks: del reply_tasks[trigger_msg_id]
@@ -870,17 +860,9 @@ async def handler(event):
             if not real_customer_id:
                 real_customer_id = await get_traceable_sender(chat_id, reply_to_msg_id)
 
-        # [Ver 28.3] 组关联增强: 如果回复目标通过ID找不到人，但目标有GroupedID，尝试通过相册组找人
-        # 这里的场景是：客户发了图A和图B（属于同一相册），之前图A已被缓存归属，现在客服回了图B（未直接缓存），
-        # 此时通过图B的GroupedID可以找到图A的GroupedID，从而找到人。
+        # [Ver 28.3] 组关联增强
         if not real_customer_id and reply_to_msg_id:
-             # 我们需要知道 reply_to_msg_id 的 grouped_id。
-             # 这需要 get_messages，但 get_traceable_sender 已经做过了并缓存了。
-             # 唯一漏掉的情况是 get_traceable_sender 刚把 ID 存进去，但我们还没用 GroupID 查。
-             # 实际上，update_msg_cache 已经处理了 GroupID -> UserID 的映射。
-             # 我们只需要再次确认 reply_to_msg 对应的 GroupID 即可。
-             # 但为了性能，只有在 real_customer_id 为 None 时才做深层检查。
-             pass # 逻辑已整合在 get_traceable_sender 的 update_msg_cache 中
+             pass 
 
         if is_sender_cs:
             record_cs_activity(chat_id, user_id=real_customer_id, thread_id=current_thread_id)
@@ -891,11 +873,9 @@ async def handler(event):
                 elif real_customer_id: source_info = "API实时查询"
                 else: source_info = "追踪失败" # [Ver 28.3] 明确失败状态
                 
-                # [Ver 29.1] 记录更详细的客服操作日志 (100字)
                 log_tree(1, f"⚡️ 客服操作捕获 | Msg: {reply_to_msg_id} | 客服: {sender_name} | 内容: [{text[:100]}] | 归属: {real_customer_id} | 流: {current_thread_id} | 状态: {source_info}")
 
             if real_customer_id or current_thread_id:
-                # [Ver 29.1] 记录更详细的销单日志
                 cancel_tasks(chat_id, real_customer_id, current_thread_id, reason=f"客服回复: [{text[:100]}...]")
             
             if reply_to_msg_id and reply_to_msg_id in reply_tasks:
@@ -924,23 +904,36 @@ async def handler(event):
 
         else:
             update_msg_cache(chat_id, event.id, sender_id, grouped_id)
-            # [Ver 29.1] 记录更详细的客户发言日志
             cancel_tasks(chat_id, sender_id, current_thread_id, reason=f"客户发言: [{text[:100]}...]")
             
+            # [Ver 29.6] 在客户发言日志中加上 MsgID 和 UserID 供前端漏报按钮使用
             log_tree(0, f"Msg={event.id} | User={sender_id} | [{chat_id}] {sender_name}: {text} [{msg_type}]")
+            
             if reply_to_msg_id:
-                target_id = None
-                replied_msg = await event.get_reply_message()
-                if replied_msg: target_id = replied_msg.sender_id
-                else: 
-                    msgs = await client.get_messages(chat_id, ids=[reply_to_msg_id])
-                    if msgs: target_id = msgs[0].sender_id
+                try:
+                    target_id = None
+                    target_name = "未知客服" # Default
+                    
+                    replied_msg = await event.get_reply_message()
+                    if replied_msg: 
+                        target_id = replied_msg.sender_id
+                        sender_obj = await replied_msg.get_sender()
+                        if sender_obj: target_name = getattr(sender_obj, 'first_name', 'Unknown')
+                    else: 
+                        msgs = await client.get_messages(chat_id, ids=[reply_to_msg_id])
+                        if msgs: 
+                            target_id = msgs[0].sender_id
+                            sender_obj = await msgs[0].get_sender()
+                            if sender_obj: target_name = getattr(sender_obj, 'first_name', 'Unknown')
 
-                if (target_id == MY_ID) or (target_id in OTHER_CS_IDS):
-                    if normalize(text.strip()) in IGNORE_SIGNATURES: return
-                    if event.id in reply_tasks: reply_tasks[event.id].cancel()
-                    task = asyncio.create_task(task_reply_timeout(event.id, sender_name, text[:50], msg_link, chat_id, sender_id, current_thread_id))
-                    reply_tasks[event.id] = task
+                    if (target_id == MY_ID) or (target_id in OTHER_CS_IDS):
+                        if normalize(text.strip()) in IGNORE_SIGNATURES: return
+                        if event.id in reply_tasks: reply_tasks[event.id].cancel()
+                        task = asyncio.create_task(task_reply_timeout(event.id, sender_name, text[:50], msg_link, chat_id, sender_id, target_name, current_thread_id))
+                        reply_tasks[event.id] = task
+                except Exception as e:
+                    log_tree(9, f"❌ Reply Check Error: {e}")
+
     except Exception as e:
         log_tree(9, f"❌ Handler 异常: {e}")
 
@@ -948,6 +941,6 @@ if __name__ == '__main__':
     bot_loop = asyncio.get_event_loop()
     bot_loop.create_task(maintenance_task())
     Thread(target=run_web).start()
-    log_tree(0, "✅ 系统启动 (Ver 30.2 Audit Fix)")
+    log_tree(0, "✅ 系统启动 (Ver 30.4 Debug Buttons)")
     client.start()
     client.run_until_disconnected()
