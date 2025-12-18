@@ -102,11 +102,9 @@ try:
 
     keep_keywords_env = os.environ.get("KEEP_KEYWORDS", "") 
     # [Ver 33.0] 严格分割并归一化
-    # 确保 | 分割生效
     keep_list = keep_keywords_env.split('|')
     KEEP_SIGNATURES = {normalize(x) for x in keep_list if x.strip()}
     
-    # 打印加载结果以便调试
     log_tree(0, f"🔍 已加载跟进词 (KEEP): {KEEP_SIGNATURES}")
 
     default_ignore = "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴"
@@ -561,7 +559,7 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 31.4] 严格巡检: 仅当客服回复并 *引用* 了客户消息时才算闭环
+# [Ver 30.7] 优化：下班巡检逻辑 (增加死单检查 + 图片回复检测)
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】...")
     await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近活跃的消息流，检查是否有遗漏...", "")
@@ -572,10 +570,11 @@ async def audit_pending_tasks():
     for chat_id in CS_GROUP_IDS:
         try:
             log_tree(4, f"正在扫描群组 {chat_id} ...")
+            # 1. 抓取历史 (List to ensure order)
             history = await client.get_messages(chat_id, limit=SCAN_LIMIT)
+            
+            # 2. 按 Thread ID 分组消息
             threads_map = defaultdict(list)
-            # MsgID -> SenderID Map for quick lookup in this batch
-            msg_sender_map = {m.id: m.sender_id for m in history}
             
             for m in history:
                 thread_id = None
@@ -585,6 +584,7 @@ async def audit_pending_tasks():
                 if not thread_id: thread_id = m.id
                 threads_map[thread_id].append(m)
             
+            # 3. 检查每个 Thread
             for t_id, msgs in threads_map.items():
                 last_wait_msg = None
                 last_wait_idx = -1
@@ -593,9 +593,9 @@ async def audit_pending_tasks():
                 for i, m in enumerate(msgs):
                     if await is_official_cs(m):
                         text = normalize(m.text or "")
-                        # [Ver 33.0] KEEP = EXACT MATCH, WAIT = CONTAINS
+                        # [Ver 33.1] Fix NameError: ids_str
                         is_wait = any(k in text for k in WAIT_SIGNATURES)
-                        is_keep = normalize(text) in KEEP_SIGNATURES # STRICT EXACT MATCH
+                        is_keep = normalize(text) in KEEP_SIGNATURES 
                         
                         if is_wait or is_keep:
                             last_wait_msg = m
@@ -831,6 +831,9 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
 async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, user_ids_list, thread_id=None):
     task_start_time = time.time()
     try:
+        ids_str = f"Msg={key_id}"
+        if user_ids_list: ids_str += " " + " ".join([f"User={u}" for u in user_ids_list])
+
         log_tree(1, f"启动 [跟进] 倒计时 (15m) {ids_str} | Thread={thread_id}")
         end_time = task_start_time + FOLLOWUP_TIMEOUT
         followup_timers[key_id] = {'ts': end_time, 'user': agent_name, 'url': link}
