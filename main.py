@@ -61,7 +61,8 @@ def log_tree(level, msg):
 # ==========================================
 def normalize(text):
     if not text: return ""
-    return text.lower().replace('～', '~')
+    # 统一标点和格式，确保匹配准确
+    return text.lower().replace('～', '~').replace('，', ',').replace('。', '.').strip()
 
 def extract_id_list(env_str):
     if not env_str: return []
@@ -95,7 +96,8 @@ try:
     WAIT_SIGNATURES = {normalize(x.strip()) for x in clean_env.split(',') if x.strip()}
 
     keep_keywords_env = os.environ.get("KEEP_KEYWORDS", "") 
-    KEEP_SIGNATURES = {x.strip() for x in keep_keywords_env.split('|') if x.strip()}
+    # [关键修复] 配置加载时做了 normalize，匹配时也必须做！
+    KEEP_SIGNATURES = {normalize(x.strip()) for x in keep_keywords_env.split('|') if x.strip()}
 
     default_ignore = "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴"
     ignore_env = os.environ.get("IGNORE_KEYWORDS", default_ignore)
@@ -264,25 +266,18 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 31.4 (Strict Audit Final)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 31.9 (Double Kill Fix)</div>
     
     <script>
-        // 1. 从 LocalStorage 读取状态，默认为 true (开启)
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
-        
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        
-        // 2. 初始化图标
         const audioBtn = document.querySelector('.audio-btn');
-        if (audioBtn) {
-            audioBtn.innerText = audioEnabled ? "🔊" : "🔇";
-        }
+        if (audioBtn) { audioBtn.innerText = audioEnabled ? "🔊" : "🔇"; }
         
         function playAlarm() {
             if (!audioEnabled) return;
             if (audioCtx.state === 'suspended') audioCtx.resume().catch(e => console.log(e));
-            
             const oscillator = audioCtx.createOscillator();
             const gainNode = audioCtx.createGain();
             oscillator.type = 'square';
@@ -298,14 +293,12 @@ DASHBOARD_HTML = """
 
         function toggleAudio() {
             audioEnabled = !audioEnabled;
-            // 3. 保存状态到 LocalStorage
             localStorage.setItem('tg_bot_audio_enabled', audioEnabled);
-            
             const btn = document.querySelector('.audio-btn');
             btn.innerText = audioEnabled ? "🔊" : "🔇";
             if(audioEnabled) {
                 if (audioCtx.state === 'suspended') audioCtx.resume();
-                playAlarm(); // Test sound
+                playAlarm(); 
             }
         }
 
@@ -328,7 +321,6 @@ DASHBOARD_HTML = """
                     el.innerText = `${m}:${s.toString().padStart(2, '0')}`;
                 }
             });
-            // 只有开启了且有超时才播放
             if (hasLate && audioEnabled) playAlarm();
         }, 1000);
     </script>
@@ -591,7 +583,11 @@ async def audit_pending_tasks():
                 for i, m in enumerate(msgs):
                     if await is_official_cs(m):
                         text = normalize(m.text or "")
-                        if any(k in text for k in WAIT_SIGNATURES) or (text.strip() in KEEP_SIGNATURES):
+                        # [Ver 31.7] KEEP normalized match
+                        is_wait = any(k in text for k in WAIT_SIGNATURES)
+                        is_keep = normalize(text) in KEEP_SIGNATURES # STRICT MATCH
+                        
+                        if is_wait or is_keep:
                             last_wait_msg = m
                             last_wait_idx = i
                             break 
@@ -615,20 +611,12 @@ async def audit_pending_tasks():
                                          has_strict_reply = True; break
                                          
                                      # 3. 引用了同一个 Thread 里的其他非客服消息 (泛化严格模式)
-                                     # 检查 target_id 是否属于非客服
                                      target_sender = msg_sender_map.get(target_id)
-                                     # 如果我们在 history 里找不到 target (太久远)，或者 target 是客户
-                                     # 这里为了保险，只要 target 不是 known CS，我们认为是在回复客户
                                      if target_sender:
                                          is_target_cs = (target_sender == MY_ID) or (target_sender in OTHER_CS_IDS)
-                                         # 还需要 check name prefix? 稍微耗时但为了准确
                                          if not is_target_cs:
-                                             # Double check name if ID not in list
-                                             # 这里简化：只要 ID 不在白名单，就当做客户。
-                                             # 只要回复了客户，就算闭环。
                                              has_strict_reply = True; break
                                      else:
-                                         # Target too old, assume valid reply to avoid false alarm
                                          has_strict_reply = True; break
 
                     if not has_strict_reply:
@@ -733,28 +721,30 @@ def remove_task_record(chat_id, user_id, msg_id, thread_id=None):
             chat_thread_active_msgs[t_key].discard(msg_id)
             if not chat_thread_active_msgs[t_key]: del chat_thread_active_msgs[t_key]
 
-def cancel_tasks(chat_id, user_id, thread_id=None, reason="未知"):
+def cancel_tasks(chat_id, user_id, thread_id=None, reason="未知", types=None):
+    if types is None: types = ['wait', 'followup', 'reply'] # Default to all
+    
     targets = set()
     if user_id:
         u_key = (chat_id, user_id)
         if u_key in chat_user_active_msgs:
             targets.update(chat_user_active_msgs[u_key])
-            del chat_user_active_msgs[u_key]
+            if len(types) == 3: del chat_user_active_msgs[u_key]
     if thread_id:
         t_key = (chat_id, thread_id)
         if t_key in chat_thread_active_msgs:
             targets.update(chat_thread_active_msgs[t_key])
-            del chat_thread_active_msgs[t_key]
+            if len(types) == 3: del chat_thread_active_msgs[t_key]
 
     if not targets: return
 
-    log_tree(1, f" ┣━━ 尝试销单 | 用户: {user_id} | 流: {thread_id} | 任务池: {list(targets)}")
+    log_tree(1, f" ┣━━ 尝试销单 | 用户: {user_id} | 流: {thread_id} | 类型: {types} | 任务池: {list(targets)}")
     count = 0
     cleared_ids = []
     for mid in targets:
-        if mid in wait_tasks: wait_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
-        if mid in followup_tasks: followup_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
-        if mid in reply_tasks: reply_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
+        if 'wait' in types and mid in wait_tasks: wait_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
+        if 'followup' in types and mid in followup_tasks: followup_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
+        if 'reply' in types and mid in reply_tasks: reply_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
     
     if count > 0:
         log_tree(2, f"销单成功 | {reason} | 流: {thread_id} | 任务: {cleared_ids}")
@@ -1014,7 +1004,8 @@ async def handler(event):
 
         norm_text = normalize(text)
         is_wait_cmd = any(k in norm_text for k in WAIT_SIGNATURES)
-        is_keep_cmd = text.strip() in KEEP_SIGNATURES
+        # [Ver 31.7] KEEP normalized match
+        is_keep_cmd = normalize(text) in KEEP_SIGNATURES
         is_sender_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS)
 
         current_thread_id, thread_type = get_thread_context(event)
@@ -1050,6 +1041,8 @@ async def handler(event):
                 log_tree(1, f"⚡️ 客服操作捕获 | Msg: {reply_to_msg_id} | 客服: {sender_name} | 内容: [{text[:100]}] | 归属: {real_customer_id} | 流: {current_thread_id} | 状态: {source_info}")
 
             if real_customer_id or current_thread_id:
+                # [Ver 31.9] 双杀修复：如果是客服编辑消息，算作更新，允许销单。如果是普通回复，当然也销单。
+                # 但这里是客服操作，所以一定有权限销单。
                 cancel_tasks(chat_id, real_customer_id, current_thread_id, reason=f"客服回复: [{text[:100]}...]")
             
             if reply_to_msg_id and reply_to_msg_id in reply_tasks:
@@ -1077,11 +1070,15 @@ async def handler(event):
                         wait_msg_map[event.id] = reply_to_msg_id
 
         else:
+            # [Ver 31.9] 双杀修复：忽略客户的编辑事件
+            if isinstance(event, events.MessageEdited):
+                return
+
             update_msg_cache(chat_id, event.id, sender_id, grouped_id)
-            # [Ver 29.1] 记录更详细的客户发言日志
-            cancel_tasks(chat_id, sender_id, current_thread_id, reason=f"客户发言: [{text[:100]}...]")
             
-            # [Ver 29.6] 在客户发言日志中加上 MsgID 和 UserID 供前端漏报按钮使用
+            # [Ver 31.8] 客户说话 -> 只取消【漏回监控】，绝不取消【稍等/跟进任务】
+            cancel_tasks(chat_id, sender_id, current_thread_id, reason=f"客户发言: [{text[:100]}...]", types=['reply'])
+            
             log_tree(0, f"Msg={event.id} | User={sender_id} | [{chat_id}] {sender_name}: {text} [{msg_type}]")
             
             if reply_to_msg_id:
@@ -1123,7 +1120,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 31.4 Audit Final)")
+        log_tree(0, "✅ 系统启动 (Ver 31.9 Double Kill Fix)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
