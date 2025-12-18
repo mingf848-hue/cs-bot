@@ -57,17 +57,17 @@ def log_tree(level, msg):
     else: logger.debug(full_msg)
 
 # ==========================================
-# 模块 1: 基础函数
+# 模块 1: 基础函数 (稳健版)
 # ==========================================
 def normalize(text):
     if not text: return ""
-    # [Ver 32.0] 终极清洗：移除不可见字符，统一标点，去除两端空白
-    # 替换全角标点
-    text = text.replace('～', '~').replace('，', ',').replace('。', '.').replace('！', '!')
-    # 移除不可见字符 (Zero Width Space 等)
-    text = re.sub(r'[\u200b\u200c\u200d\u200e\u200f\ufeff]', '', text)
-    # 统一换行符并去除首尾空格
-    return text.strip().lower()
+    # 1. 转小写
+    text = text.lower()
+    # 2. 标点归一化 (全角转半角，避免输入法差异)
+    text = text.replace('～', '~').replace('，', ',').replace('。', '.').replace('！', '!').replace('：', ':').replace('？', '?')
+    # 3. 去除首尾空格 (保留中间空格，因为是严格匹配)
+    text = text.strip()
+    return text
 
 def extract_id_list(env_str):
     if not env_str: return []
@@ -98,16 +98,21 @@ try:
     
     wait_keywords_env = os.environ["WAIT_KEYWORDS"]
     clean_env = wait_keywords_env.replace("，", ",") 
-    WAIT_SIGNATURES = {normalize(x.strip()) for x in clean_env.split(',') if x.strip()}
+    WAIT_SIGNATURES = {normalize(x) for x in clean_env.split(',') if x.strip()}
 
     keep_keywords_env = os.environ.get("KEEP_KEYWORDS", "") 
-    # [Ver 32.0] 使用增强版 normalize 处理配置
-    KEEP_SIGNATURES = {normalize(x.strip()) for x in keep_keywords_env.split('|') if x.strip()}
+    # [Ver 33.0] 严格分割并归一化
+    # 确保 | 分割生效
+    keep_list = keep_keywords_env.split('|')
+    KEEP_SIGNATURES = {normalize(x) for x in keep_list if x.strip()}
+    
+    # 打印加载结果以便调试
+    log_tree(0, f"🔍 已加载跟进词 (KEEP): {KEEP_SIGNATURES}")
 
     default_ignore = "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴"
     ignore_env = os.environ.get("IGNORE_KEYWORDS", default_ignore)
     clean_ignore = ignore_env.replace("，", ",")
-    IGNORE_SIGNATURES = {normalize(x.strip()) for x in clean_ignore.split(',') if x.strip()}
+    IGNORE_SIGNATURES = {normalize(x) for x in clean_ignore.split(',') if x.strip()}
 
     CS_NAME_PREFIXES = ["YY_6/9_值班号", "Y_YY"]
 
@@ -271,7 +276,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 32.0 (Strict Keep Debug)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 33.0 (Robust Keep Match)</div>
     
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
@@ -588,7 +593,7 @@ async def audit_pending_tasks():
                 for i, m in enumerate(msgs):
                     if await is_official_cs(m):
                         text = normalize(m.text or "")
-                        # [Ver 32.0] KEEP = EXACT MATCH, WAIT = CONTAINS
+                        # [Ver 33.0] KEEP = EXACT MATCH, WAIT = CONTAINS
                         is_wait = any(k in text for k in WAIT_SIGNATURES)
                         is_keep = normalize(text) in KEEP_SIGNATURES # STRICT EXACT MATCH
                         
@@ -1009,8 +1014,8 @@ async def handler(event):
 
         norm_text = normalize(text)
         is_wait_cmd = any(k in norm_text for k in WAIT_SIGNATURES)
-        # [Ver 31.7] KEEP normalized match
-        is_keep_cmd = normalize(text) in KEEP_SIGNATURES
+        # [Ver 33.0] KEEP normalized match
+        is_keep_cmd = normalize(text) in KEEP_SIGNATURES 
         is_sender_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS)
 
         current_thread_id, thread_type = get_thread_context(event)
@@ -1037,6 +1042,9 @@ async def handler(event):
         if is_sender_cs:
             record_cs_activity(chat_id, user_id=real_customer_id, thread_id=current_thread_id)
 
+            # [Ver 33.0] Runtime Diagnosis
+            log_tree(1, f"🔍 匹配调试 | Text='{normalize(text)}' | IsWait={is_wait_cmd} | IsKeep={is_keep_cmd}")
+
             if reply_to_msg_id:
                 source_info = "未知"
                 if (chat_id, reply_to_msg_id) in msg_to_user_cache: source_info = "缓存命中"
@@ -1046,6 +1054,7 @@ async def handler(event):
                 log_tree(1, f"⚡️ 客服操作捕获 | Msg: {reply_to_msg_id} | 客服: {sender_name} | 内容: [{text[:100]}] | 归属: {real_customer_id} | 流: {current_thread_id} | 状态: {source_info}")
 
             if real_customer_id or current_thread_id:
+                # [Ver 31.8] 客服说话 -> 全部任务取消
                 cancel_tasks(chat_id, real_customer_id, current_thread_id, reason=f"客服回复: [{text[:100]}...]")
             
             if reply_to_msg_id and reply_to_msg_id in reply_tasks:
@@ -1123,7 +1132,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 32.0 Strict Keep Debug)")
+        log_tree(0, "✅ 系统启动 (Ver 33.0 Robust Keep Match)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
