@@ -237,7 +237,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 30.1 (Audit Search)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 30.2 (Audit Fix)</div>
     <script>
         function ctrl(s) {
             fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => setTimeout(() => location.reload(), 500));
@@ -478,7 +478,7 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 30.1] 优化：下班巡检逻辑
+# [Ver 30.1] 优化：下班巡检逻辑 (修复了忽略非文本消息的 Bug)
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】...")
     await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近活跃的消息流，检查是否有遗漏...", "")
@@ -496,7 +496,8 @@ async def audit_pending_tasks():
             
             # 使用 iter_messages 获取历史 (高效获取时间线状态)
             async for message in client.iter_messages(chat_id, limit=SCAN_LIMIT):
-                if not message.text: continue
+                # [Ver 30.2] 移除文本过滤：图片/文件回复也是有效回复，不能忽略
+                # if not message.text: continue
                 
                 # 确定 Thread ID (根消息ID)
                 thread_root = message.reply_to.reply_to_top_id if (message.reply_to and message.reply_to.reply_to_top_id) else None
@@ -528,10 +529,11 @@ async def audit_pending_tasks():
                         # [Ver 30.1] 记录带ID的日志以便前端生成“误报”按钮
                         log_tree(4, f"❌ 发现遗漏 ({warning_type}) | Msg={last_msg.id} | Link={link}")
                         
+                        safe_text = (last_msg.text or "[媒体文件]")[:50]
                         await send_alert(
                             f"👮 **下班巡检-发现遗漏**\n"
                             f"⚠️ 类型: {warning_type}未闭环\n"
-                            f"💬 最后回复: {last_msg.text[:50]}\n"
+                            f"💬 最后回复: {safe_text}\n"
                             f"🔗 [点击跳转至对话源头]({link})", 
                             link
                         )
@@ -545,7 +547,6 @@ async def audit_pending_tasks():
 
 async def perform_stop_work():
     global IS_WORKING
-    # [Ver 30.1] 修复：确保 global 声明在引用 IS_WORKING 之前
     if IS_WORKING:
         await audit_pending_tasks()
         
@@ -869,8 +870,17 @@ async def handler(event):
             if not real_customer_id:
                 real_customer_id = await get_traceable_sender(chat_id, reply_to_msg_id)
 
+        # [Ver 28.3] 组关联增强: 如果回复目标通过ID找不到人，但目标有GroupedID，尝试通过相册组找人
+        # 这里的场景是：客户发了图A和图B（属于同一相册），之前图A已被缓存归属，现在客服回了图B（未直接缓存），
+        # 此时通过图B的GroupedID可以找到图A的GroupedID，从而找到人。
         if not real_customer_id and reply_to_msg_id:
-             pass 
+             # 我们需要知道 reply_to_msg_id 的 grouped_id。
+             # 这需要 get_messages，但 get_traceable_sender 已经做过了并缓存了。
+             # 唯一漏掉的情况是 get_traceable_sender 刚把 ID 存进去，但我们还没用 GroupID 查。
+             # 实际上，update_msg_cache 已经处理了 GroupID -> UserID 的映射。
+             # 我们只需要再次确认 reply_to_msg 对应的 GroupID 即可。
+             # 但为了性能，只有在 real_customer_id 为 None 时才做深层检查。
+             pass # 逻辑已整合在 get_traceable_sender 的 update_msg_cache 中
 
         if is_sender_cs:
             record_cs_activity(chat_id, user_id=real_customer_id, thread_id=current_thread_id)
@@ -938,6 +948,6 @@ if __name__ == '__main__':
     bot_loop = asyncio.get_event_loop()
     bot_loop.create_task(maintenance_task())
     Thread(target=run_web).start()
-    log_tree(0, "✅ 系统启动 (Ver 30.1 Audit Search)")
+    log_tree(0, "✅ 系统启动 (Ver 30.2 Audit Fix)")
     client.start()
     client.run_until_disconnected()
