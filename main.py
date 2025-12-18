@@ -544,10 +544,11 @@ async def audit_pending_tasks():
     await send_alert(f"🏁 **下班巡检结束**\n共发现 **{issues_found}** 个未闭环的对话。", "")
 
 async def perform_stop_work():
+    global IS_WORKING
+    # [Ver 30.1] 修复：确保 global 声明在引用 IS_WORKING 之前
     if IS_WORKING:
         await audit_pending_tasks()
         
-    global IS_WORKING
     IS_WORKING = False
     for t in list(wait_tasks.values()) + list(followup_tasks.values()) + list(reply_tasks.values()): t.cancel()
     wait_tasks.clear(); followup_tasks.clear(); reply_tasks.clear()
