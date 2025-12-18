@@ -228,7 +228,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 29.3 (Debug Tools)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 29.4 (Web Fix)</div>
     <script>
         function ctrl(s) {
             fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => setTimeout(() => location.reload(), 500));
@@ -287,6 +287,8 @@ LOG_VIEWER_HTML = """
         
         .btn-debug { cursor: pointer; opacity: 0.6; transition: opacity 0.2s; font-size: 1.1em; display: inline-flex; align-items: center; }
         .btn-debug:hover { opacity: 1; transform: scale(1.1); }
+        
+        .error-msg { color: #cf6679; text-align: center; padding: 20px; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -296,26 +298,46 @@ LOG_VIEWER_HTML = """
         <button onclick="window.location.reload()">🔄 刷新</button>
         <button onclick="scrollToBottom()">⬇️ 底部</button>
     </div>
-    <div id="log-container"></div>
+    <div id="log-container">Loading logs...</div>
     
     <script>
         const container = document.getElementById('log-container');
         let parsedLogs = [];
 
-        fetch('/log_raw').then(r => r.text()).then(text => {
-            parseLogs(text);
-            renderLogs();
-            scrollToBottom();
-        });
+        // Add timestamp to prevent caching
+        fetch('/log_raw?t=' + Date.now())
+            .then(r => {
+                if (!r.ok) throw new Error('Network response was not ok');
+                return r.text();
+            })
+            .then(text => {
+                if (!text.trim()) {
+                    container.innerHTML = '<div class="error-msg">暂无日志数据</div>';
+                    return;
+                }
+                try {
+                    parseLogs(text);
+                    renderLogs();
+                    scrollToBottom();
+                } catch (e) {
+                    console.error("Log parsing error:", e);
+                    container.innerHTML = `<div class="error-msg">日志解析错误: ${e.message}</div>`;
+                }
+            })
+            .catch(err => {
+                container.innerHTML = `<div class="error-msg">加载失败: ${err.message}</div>`;
+            });
 
         function parseLogs(text) {
-            const rawLines = text.split('\\n');
+            // Robust splitting for different newline types
+            const rawLines = text.split(/\\r?\\n/);
             parsedLogs = [];
             let currentEntry = null;
 
             rawLines.forEach(line => {
                 if(!line.trim()) return;
-                const timeMatch = line.match(/^(\\d{2}:\\d{2}:\\d{2})(.*)/);
+                // Use [0-9] for compatibility
+                const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2})(.*)/);
                 if (timeMatch) {
                     if (currentEntry) parsedLogs.push(currentEntry);
                     currentEntry = { time: timeMatch[1], raw: timeMatch[2], content: timeMatch[2].trim(), fullText: timeMatch[2] };
@@ -336,9 +358,9 @@ LOG_VIEWER_HTML = """
                 let content = entry.content;
                 let raw = entry.raw || "";
                 
-                // 提取所有ID用于调试按钮
+                // Extract IDs for debug button
                 let ids = [];
-                const idRegex = /(Msg|User|Thread|流|归属|用户)[:=]?\s?(\d+)/g;
+                const idRegex = /(Msg|User|Thread|流|归属|用户)[:=]?\\s?(\\d+)/g;
                 let match;
                 while ((match = idRegex.exec(content)) !== null) { ids.push(match[2]); }
                 let idsStr = ids.join(',');
@@ -348,8 +370,9 @@ LOG_VIEWER_HTML = """
                 else if (raw.includes('🚨') || raw.includes('[ALERT]')) { type = 'alert'; }
                 else if (raw.includes('┣━━') || raw.includes('┗━━')) { type = 'sys'; }
 
-                content = content.replace(/(Msg[:=]?\s?)(\d+)/g, '$1<span class="pill" onclick="searchId(\'$2\')">$2</span>');
-                content = content.replace(/(User|用户|归属)[:=]?\s?(\d+)/g, '$1<span class="pill" onclick="searchId(\'$2\')">$2</span>');
+                // Safe quote handling for onclick
+                content = content.replace(/(Msg[:=]?\\s?)(\\d+)/g, '$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
+                content = content.replace(/(User|用户|归属)[:=]?\\s?(\\d+)/g, '$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
                 
                 let debugBtn = ids.length > 0 ? `<span class="btn-debug" title="复制调试详情" onclick="copyDebugInfo('${idsStr}')">🐞</span>` : '';
                 let metaHtml = `<div class="msg-meta">${entry.time} #${idx} ${debugBtn}</div>`;
@@ -423,6 +446,12 @@ def log_raw():
     try:
         with open(LOG_FILE_PATH, 'r', encoding='utf-8') as f: return Response(f.read(), mimetype='text/plain')
     except: return ""
+
+# Add cache control headers
+@app.after_request
+def add_header(response):
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    return response
 
 @app.route('/api/ctrl')
 def api_ctrl():
@@ -796,8 +825,17 @@ async def handler(event):
             if not real_customer_id:
                 real_customer_id = await get_traceable_sender(chat_id, reply_to_msg_id)
 
+        # [Ver 28.3] 组关联增强: 如果回复目标通过ID找不到人，但目标有GroupedID，尝试通过相册组找人
+        # 这里的场景是：客户发了图A和图B（属于同一相册），之前图A已被缓存归属，现在客服回了图B（未直接缓存），
+        # 此时通过图B的GroupedID可以找到图A的GroupedID，从而找到人。
         if not real_customer_id and reply_to_msg_id:
-             pass 
+             # 我们需要知道 reply_to_msg_id 的 grouped_id。
+             # 这需要 get_messages，但 get_traceable_sender 已经做过了并缓存了。
+             # 唯一漏掉的情况是 get_traceable_sender 刚把 ID 存进去，但我们还没用 GroupID 查。
+             # 实际上，update_msg_cache 已经处理了 GroupID -> UserID 的映射。
+             # 我们只需要再次确认 reply_to_msg 对应的 GroupID 即可。
+             # 但为了性能，只有在 real_customer_id 为 None 时才做深层检查。
+             pass # 逻辑已整合在 get_traceable_sender 的 update_msg_cache 中
 
         if is_sender_cs:
             record_cs_activity(chat_id, user_id=real_customer_id, thread_id=current_thread_id)
@@ -806,11 +844,13 @@ async def handler(event):
                 source_info = "未知"
                 if (chat_id, reply_to_msg_id) in msg_to_user_cache: source_info = "缓存命中"
                 elif real_customer_id: source_info = "API实时查询"
-                else: source_info = "追踪失败"
+                else: source_info = "追踪失败" # [Ver 28.3] 明确失败状态
                 
+                # [Ver 29.1] 记录更详细的客服操作日志 (100字)
                 log_tree(1, f"⚡️ 客服操作捕获 | Msg: {reply_to_msg_id} | 客服: {sender_name} | 内容: [{text[:100]}] | 归属: {real_customer_id} | 流: {current_thread_id} | 状态: {source_info}")
 
             if real_customer_id or current_thread_id:
+                # [Ver 29.1] 记录更详细的销单日志
                 cancel_tasks(chat_id, real_customer_id, current_thread_id, reason=f"客服回复: [{text[:100]}...]")
             
             if reply_to_msg_id and reply_to_msg_id in reply_tasks:
@@ -839,6 +879,7 @@ async def handler(event):
 
         else:
             update_msg_cache(chat_id, event.id, sender_id, grouped_id)
+            # [Ver 29.1] 记录更详细的客户发言日志
             cancel_tasks(chat_id, sender_id, current_thread_id, reason=f"客户发言: [{text[:100]}...]")
             
             log_tree(0, f"[{chat_id}] {sender_name}: {text} [{msg_type}]")
@@ -861,6 +902,6 @@ async def handler(event):
 if __name__ == '__main__':
     bot_loop = asyncio.get_event_loop()
     Thread(target=run_web).start()
-    log_tree(0, "✅ 系统启动 (Ver 29.3 Debug Tools)")
+    log_tree(0, "✅ 系统启动 (Ver 29.4 Web Fix)")
     client.start()
     client.run_until_disconnected()
