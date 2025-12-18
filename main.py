@@ -101,6 +101,9 @@ try:
     clean_ignore = ignore_env.replace("，", ",")
     IGNORE_SIGNATURES = {normalize(x.strip()) for x in clean_ignore.split(',') if x.strip()}
 
+    # [Ver 30.6] 客服名称前缀
+    CS_NAME_PREFIX = "YY_6/9_值班号"
+
 except Exception as e:
     logger.error(f"❌ 配置错误: {e}")
     sys.exit(1)
@@ -174,6 +177,24 @@ def get_thread_context(event):
     if r.reply_to_msg_id: return r.reply_to_msg_id, "Reply"
     return None, None
 
+# [Ver 30.6] 增强版客服判定 (支持ID白名单 + 名称前缀)
+async def is_official_cs(message):
+    if not message: return False
+    sender_id = message.sender_id
+    # 1. 查 ID 白名单
+    if (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS): return True
+    
+    # 2. 查名字前缀
+    try:
+        sender = await message.get_sender()
+        if not sender: return False
+        name = getattr(sender, 'first_name', '') or ''
+        # 如果名字以特定前缀开头
+        if name.startswith(CS_NAME_PREFIX): return True
+    except: pass
+    
+    return False
+
 async def maintenance_task():
     while True:
         try:
@@ -244,7 +265,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 30.5 (Audit Logic Fix)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 30.6 (Audit Pro)</div>
     <script>
         function ctrl(s) {
             fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => setTimeout(() => location.reload(), 500));
@@ -485,7 +506,7 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 30.5] 优化：宽松判定下班巡检
+# [Ver 30.6] 优化：下班巡检逻辑
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】...")
     await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近活跃的消息流，检查是否有遗漏...", "")
@@ -503,11 +524,10 @@ async def audit_pending_tasks():
             threads_map = defaultdict(list)
             
             for m in history:
-                # 确定 Thread ID
                 thread_id = None
                 if m.reply_to:
-                    thread_id = m.reply_to.reply_to_top_id # Topic ID
-                    if not thread_id: thread_id = m.reply_to.reply_to_msg_id # Reply ID
+                    thread_id = m.reply_to.reply_to_top_id 
+                    if not thread_id: thread_id = m.reply_to.reply_to_msg_id
                 if not thread_id: thread_id = m.id
                 
                 threads_map[thread_id].append(m)
@@ -519,35 +539,41 @@ async def audit_pending_tasks():
                 
                 # 找到该 Thread 中最后一条客服发出的“稍等”
                 for i, m in enumerate(msgs):
-                    sender_id = m.sender_id
-                    is_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS)
-                    if is_cs:
+                    if await is_official_cs(m):
                         text = normalize(m.text or "")
                         if any(k in text for k in WAIT_SIGNATURES) or (text.strip() in KEEP_SIGNATURES):
                             last_wait_msg = m
                             last_wait_idx = i
-                            break # 找到了最新的稍等，停止
+                            break 
                 
                 if last_wait_msg:
-                    # 找到了“稍等”。检查在它之后有没有任何新回复 (宽松判定)
+                    # 找到了“稍等”。检查在它之后有没有任何新回复
                     has_newer_reply = False
                     if last_wait_idx > 0:
-                        # 只要有比它新的消息，且是客服发的，就算闭环
                         newer_msgs = msgs[:last_wait_idx]
                         for nm in newer_msgs:
-                             sender_id = nm.sender_id
-                             is_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS)
-                             if is_cs:
+                             if await is_official_cs(nm):
                                  has_newer_reply = True
                                  break
                     
                     if not has_newer_reply:
-                        # 真的没回复
                         issues_found += 1
-                        
                         m = last_wait_msg
+                        
+                        # [Ver 30.6] 获取客服名字
+                        cs_name = "未知客服"
+                        try:
+                            sender = await m.get_sender()
+                            if sender: cs_name = getattr(sender, 'first_name', 'Unknown')
+                        except: pass
+
+                        # [Ver 30.6] 尝试获取对话源头 (Thread Root) 的内容
+                        root_text = "无法获取源头"
+                        root_msg = msgs[-1] # msgs 是按时间倒序的，最后一个是最早的
+                        if root_msg:
+                            root_text = (root_msg.text or "[媒体文件]")[:50]
+
                         link = ""
-                        # [Ver 30.5] 修复 Topic 链接
                         if m.reply_to and m.reply_to.reply_to_top_id:
                              link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}?thread={m.reply_to.reply_to_top_id}"
                         else:
@@ -556,9 +582,15 @@ async def audit_pending_tasks():
                         debug_id_str = f"Msg={m.id}"
                         safe_text = (m.text or "[媒体]")[:50]
                         
-                        log_tree(4, f"❌ 发现遗漏 | Msg={m.id} | Link={link}")
+                        # [Ver 30.6] 详细巡检日志 (方便 DEBUG)
+                        log_tree(4, f"❌ 发现遗漏 | Msg={m.id} | CS={cs_name} | RootText={root_text} | Link={link}")
+                        
                         await send_alert(
-                            f"👮 **下班巡检-发现遗漏**\n💬 客服未闭环: {safe_text}\n🔗 [点击跳转对话]({link})", 
+                            f"👮 **下班巡检-发现遗漏**\n"
+                            f"👤 客服: {cs_name}\n"
+                            f"💬 最后的回复: {safe_text}\n"
+                            f"❓ 客户源头: {root_text}\n"
+                            f"🔗 [点击跳转对话]({link})", 
                             link,
                             debug_id_str
                         )
@@ -572,10 +604,8 @@ async def audit_pending_tasks():
 
 async def perform_stop_work():
     global IS_WORKING
-    # [Ver 30.1] 修复：确保 global 声明在引用 IS_WORKING 之前
     if IS_WORKING:
         await audit_pending_tasks()
-        
     IS_WORKING = False
     for t in list(wait_tasks.values()) + list(followup_tasks.values()) + list(reply_tasks.values()): t.cancel()
     wait_tasks.clear(); followup_tasks.clear(); reply_tasks.clear()
@@ -676,7 +706,7 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
 
         is_safe, safe_reason = check_recent_activity_safe(chat_id, task_start_time, user_ids_list, thread_id)
         if is_safe:
-            log_tree(2, f"🛡️ 拦截误报 [稍等] {ids_str} | 原因: {safe_reason}")
+            log_tree(2, f"🛡️ 拦截误报 [稍等] {ids_str} | 原因: {safe_reason} (客服已处理)")
             return
 
         log_tree(2, f"触发 [稍等] 超时 Msg={key_id}")
@@ -938,6 +968,7 @@ async def handler(event):
 
         else:
             update_msg_cache(chat_id, event.id, sender_id, grouped_id)
+            # [Ver 29.1] 记录更详细的客户发言日志
             cancel_tasks(chat_id, sender_id, current_thread_id, reason=f"客户发言: [{text[:100]}...]")
             
             # [Ver 29.6] 在客户发言日志中加上 MsgID 和 UserID 供前端漏报按钮使用
@@ -975,6 +1006,6 @@ if __name__ == '__main__':
     bot_loop = asyncio.get_event_loop()
     bot_loop.create_task(maintenance_task())
     Thread(target=run_web).start()
-    log_tree(0, "✅ 系统启动 (Ver 30.5 Audit Logic Fix)")
+    log_tree(0, "✅ 系统启动 (Ver 30.6 Audit Pro)")
     client.start()
     client.run_until_disconnected()
