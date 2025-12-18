@@ -43,7 +43,6 @@ _sys_opt = os.environ.get("OPTIMIZATION_LEVEL", "normal").lower() == "debug"
 
 def log_tree(level, msg):
     prefix = ""
-    # 这些前缀将被前端 JS 解析用于渲染 UI 结构
     if level == 0:   prefix = "📦 "
     elif level == 1: prefix = " ┣━━ "
     elif level == 2: prefix = " ┗━━ "
@@ -120,6 +119,7 @@ reply_tasks = {}
 wait_timers = {}
 followup_timers = {}
 reply_timers = {}
+# 记录映射: 客服回复ID -> 客户原始消息ID
 wait_msg_map = {}       
 followup_msg_map = {} 
 deleted_cache = set()
@@ -159,7 +159,7 @@ def update_content_cache(chat_id, msg_id, name, text):
         if key not in msg_content_cache: 
             try: msg_content_cache.pop(next(iter(msg_content_cache)))
             except StopIteration: pass
-    safe_text = text[:30].replace('\n', ' ') if text else "[非文本/空]"
+    safe_text = text[:100].replace('\n', ' ') if text else "[非文本/空]"
     msg_content_cache[key] = {'name': name, 'text': safe_text}
 
 def record_cs_activity(chat_id, user_id=None, thread_id=None):
@@ -175,155 +175,70 @@ def get_thread_context(event):
     return None, None
 
 # ==========================================
-# 模块 4: Web 控制台 (UI 重构版)
+# 模块 4: Web 控制台
 # ==========================================
 app = Flask(__name__)
 
 DASHBOARD_HTML = """
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <title>监控总控台</title>
+    <title>监控看板</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="refresh" content="5"> 
     <style>
-        :root { --bg: #121212; --card-bg: #1e1e1e; --text: #e0e0e0; --accent: #bb86fc; --success: #03dac6; --error: #cf6679; --border: #333; }
-        body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 20px; box-sizing: border-box; }
-        
-        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 20px; margin-bottom: 20px; }
-        .header h1 { margin: 0; font-size: 1.5rem; color: #fff; display: flex; align-items: center; gap: 10px; }
-        
-        .status-badge { padding: 6px 12px; border-radius: 20px; font-size: 0.85rem; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; }
-        .status-on { background: rgba(3, 218, 198, 0.2); color: var(--success); border: 1px solid var(--success); }
-        .status-off { background: rgba(207, 102, 121, 0.2); color: var(--error); border: 1px solid var(--error); }
-        
-        .controls { display: flex; gap: 10px; }
-        .btn { border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; transition: all 0.2s; text-decoration: none; display: inline-block; font-size: 0.9rem; }
-        .btn-start { background: var(--success); color: #000; }
-        .btn-stop { background: var(--error); color: #000; }
-        .btn-log { background: #3700b3; color: #fff; width: 100%; text-align: center; margin-top: 20px; padding: 12px; }
-        .btn:hover { opacity: 0.9; transform: translateY(-1px); }
-
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
-        .panel { background: var(--card-bg); border-radius: 12px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border: 1px solid var(--border); }
-        .panel-header { display: flex; justify-content: space-between; margin-bottom: 15px; border-left: 4px solid var(--accent); padding-left: 10px; align-items: center; }
-        .panel-title { font-weight: bold; font-size: 1.1rem; }
-        .count-badge { background: #333; padding: 2px 8px; border-radius: 10px; font-size: 0.8rem; }
-
-        .task-card { background: #2c2c2c; border-radius: 8px; padding: 12px; margin-bottom: 10px; border-left: 3px solid transparent; transition: background 0.2s; position: relative; overflow: hidden; }
-        .task-card:hover { background: #383838; }
-        .task-card.wait { border-left-color: #ffb74d; }
-        .task-card.followup { border-left-color: #64b5f6; }
-        .task-card.reply { border-left-color: #e57373; }
-        
-        .task-user { font-weight: bold; color: #fff; margin-bottom: 4px; display: block; }
-        .task-meta { font-size: 0.8rem; color: #aaa; display: flex; justify-content: space-between; align-items: center; }
-        .timer { font-family: monospace; font-size: 1.1rem; font-weight: bold; }
-        .timer.late { color: var(--error); animation: pulse 1s infinite; }
-        
-        .empty-state { text-align: center; color: #555; padding: 20px; font-style: italic; }
-        .footer { text-align: center; color: #555; margin-top: 40px; font-size: 0.8rem; }
-
-        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+        :root { --bg: #fff; --text: #333; --card: #f8f9fa; --border: #eee; --green: #28a745; --red: #dc3545; }
+        body { background: var(--bg); color: var(--text); font-family: sans-serif; padding: 20px; max-width: 600px; margin: 0 auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 20px; }
+        h1 { margin: 0; font-size: 1.4rem; }
+        .status-grp { display: flex; gap: 10px; align-items: center; }
+        .tag { padding: 4px 10px; border-radius: 4px; color: #fff; font-weight: bold; font-size: 0.9rem; }
+        .on { background: var(--green); } .off { background: var(--red); }
+        .ctrl-btn { padding: 4px 8px; border: 1px solid #ccc; background: #eee; cursor: pointer; border-radius: 4px; font-size: 0.8rem; text-decoration: none; color: #333; }
+        .ctrl-btn:hover { background: #ddd; }
+        .box { margin-bottom: 20px; }
+        .title { font-weight: bold; border-left: 4px solid #333; padding-left: 8px; margin-bottom: 8px; color: #555; display: flex; justify-content: space-between; }
+        .card { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
+        .t { font-family: monospace; font-weight: bold; font-size: 1.1rem; color: #d63384; }
+        .late { color: red; text-decoration: underline; }
+        .empty { color: #999; text-align: center; font-style: italic; padding: 10px; }
+        .btn { display: block; width: 100%; padding: 12px; background: #222; color: #fff; text-align: center; text-decoration: none; border-radius: 6px; font-weight: bold; margin-top: 20px; }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>⚡️ 监控中心 <span class="status-badge {{ 'status-on' if working else 'status-off' }}">{{ '运行中' if working else '已停止' }}</span></h1>
-        <div class="controls">
-            <button onclick="ctrl(1)" class="btn btn-start">上班</button>
-            <button onclick="ctrl(0)" class="btn btn-stop">下班</button>
+        <h1>⚡️ 实时监控</h1>
+        <div class="status-grp">
+            <a href="#" onclick="ctrl(1)" class="ctrl-btn">上班</a>
+            <a href="#" onclick="ctrl(0)" class="ctrl-btn">下班</a>
+            <div class="tag {{ 'on' if working else 'off' }}">{{ 'WORKING' if working else 'STOPPED' }}</div>
         </div>
     </div>
-
-    <div class="grid">
-        <div class="panel">
-            <div class="panel-header" style="border-color: #ffb74d;">
-                <span class="panel-title">⏳ 稍等 (12m)</span>
-                <span class="count-badge">{{ w|length }}</span>
+    {% for title, timers in [('⏳ 稍等 (12m)', w), ('🕵️ 跟进 (15m)', f), ('🔔 漏回 (5m)', r)] %}
+    <div class="box">
+        <div class="title"><span>{{ title }}</span><span>{{ timers|length }}</span></div>
+        {% if timers %}
+            {% for mid, info in timers.items() %}
+            <div class="card">
+                <div><b>{{ info.user }}</b><br><a href="{{ info.url }}" target="_blank" style="font-size:0.8rem">🔗跳转</a></div>
+                <span class="t" data-end="{{ info.ts }}">--:--</span>
             </div>
-            {% if w %}
-                {% for mid, info in w.items() %}
-                <div class="task-card wait">
-                    <span class="task-user">{{ info.user }}</span>
-                    <div class="task-meta">
-                        <a href="{{ info.url }}" target="_blank" style="color: #ffb74d;">🔗 查看消息</a>
-                        <span class="timer" data-end="{{ info.ts }}">--:--</span>
-                    </div>
-                </div>
-                {% endfor %}
-            {% else %}
-                <div class="empty-state">暂无等待任务</div>
-            {% endif %}
-        </div>
-
-        <div class="panel">
-            <div class="panel-header" style="border-color: #64b5f6;">
-                <span class="panel-title">🕵️ 跟进 (15m)</span>
-                <span class="count-badge">{{ f|length }}</span>
-            </div>
-            {% if f %}
-                {% for mid, info in f.items() %}
-                <div class="task-card followup">
-                    <span class="task-user">{{ info.user }}</span>
-                    <div class="task-meta">
-                        <a href="{{ info.url }}" target="_blank" style="color: #64b5f6;">🔗 查看消息</a>
-                        <span class="timer" data-end="{{ info.ts }}">--:--</span>
-                    </div>
-                </div>
-                {% endfor %}
-            {% else %}
-                <div class="empty-state">暂无跟进任务</div>
-            {% endif %}
-        </div>
-
-        <div class="panel">
-            <div class="panel-header" style="border-color: #e57373;">
-                <span class="panel-title">🔔 漏回 (5m)</span>
-                <span class="count-badge">{{ r|length }}</span>
-            </div>
-            {% if r %}
-                {% for mid, info in r.items() %}
-                <div class="task-card reply">
-                    <span class="task-user">{{ info.user }}</span>
-                    <div class="task-meta">
-                        <a href="{{ info.url }}" target="_blank" style="color: #e57373;">🔗 查看消息</a>
-                        <span class="timer" data-end="{{ info.ts }}">--:--</span>
-                    </div>
-                </div>
-                {% endfor %}
-            {% else %}
-                <div class="empty-state">暂无漏回监控</div>
-            {% endif %}
-        </div>
+            {% endfor %}
+        {% else %}<div class="empty">无任务</div>{% endif %}
     </div>
-
-    <a href="/log" target="_blank" class="btn btn-log">🔍 打开高级日志分析器</a>
-    <div class="footer">Ver 29.0 (UI Overhaul) • TG Bot Monitor</div>
-
+    {% endfor %}
+    <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 29.3 (Debug Tools)</div>
     <script>
         function ctrl(s) {
-            fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => {
-                // 简单的防抖动反馈
-                document.body.style.opacity = '0.5';
-                setTimeout(() => location.reload(), 800);
-            });
+            fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => setTimeout(() => location.reload(), 500));
         }
-        
         setInterval(() => {
             const now = Date.now() / 1000;
-            document.querySelectorAll('.timer').forEach(el => {
-                const end = parseFloat(el.dataset.end);
-                const diff = end - now;
-                
-                if (diff <= 0) {
-                    el.innerText = "已超时";
-                    el.classList.add('late');
-                } else {
-                    const m = Math.floor(diff / 60);
-                    const s = Math.floor(diff % 60);
-                    el.innerText = `${m}:${s.toString().padStart(2, '0')}`;
-                }
+            document.querySelectorAll('.t').forEach(el => {
+                const diff = parseFloat(el.dataset.end) - now;
+                el.innerText = diff <= 0 ? "超时" : `${Math.floor(diff/60)}:${Math.floor(diff%60).toString().padStart(2,'0')}`;
+                if(diff<=0) el.classList.add('late');
             });
         }, 1000);
     </script>
@@ -335,141 +250,160 @@ LOG_VIEWER_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>高级日志分析器</title>
+    <title>日志流</title>
     <style>
-        :root { --bg: #1e1e1e; --line: #444; --text: #d4d4d4; }
-        body { background: var(--bg); color: var(--text); font-family: 'Consolas', monospace; margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+        :root { --bg: #121212; --bg-card: #1e1e1e; --text-main: #e0e0e0; --text-sub: #a0a0a0; --accent: #bb86fc; --user-msg: #263238; --cs-msg: #1b5e20; --alert: #b00020; }
+        body { background: var(--bg); color: var(--text-main); font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
         
-        .toolbar { padding: 10px; background: #252526; border-bottom: 1px solid #000; display: flex; gap: 10px; }
-        .toolbar input { background: #3c3c3c; border: 1px solid #555; color: #fff; padding: 6px 10px; border-radius: 4px; flex-grow: 1; }
-        .toolbar button { background: #0e639c; color: white; border: none; padding: 6px 12px; cursor: pointer; border-radius: 4px; }
-        .toolbar button:hover { background: #1177bb; }
+        .toolbar { background: var(--bg-card); padding: 12px; display: flex; gap: 10px; border-bottom: 1px solid #333; box-shadow: 0 2px 4px rgba(0,0,0,0.5); z-index: 100; }
+        input { background: #2c2c2c; border: 1px solid #444; color: #fff; padding: 8px 12px; border-radius: 6px; flex-grow: 1; outline: none; font-size: 14px; }
+        input:focus { border-color: var(--accent); }
+        button { background: var(--accent); color: #000; border: none; padding: 8px 16px; cursor: pointer; border-radius: 6px; font-weight: bold; }
+        button:hover { opacity: 0.9; }
 
-        #log-container { flex-grow: 1; overflow-y: auto; padding: 20px 10px; position: relative; }
+        #log-container { flex-grow: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 8px; }
         
-        /* 日志条目布局 */
-        .entry { display: flex; margin-bottom: 0; position: relative; padding-left: 20px; transition: background 0.1s; }
-        .entry:hover { background: #2a2d2e; }
+        .msg-row { display: flex; flex-direction: column; width: 100%; position: relative; }
+        .msg-meta { font-size: 12px; color: #666; margin-bottom: 2px; margin-left: 10px; font-family: monospace; display: flex; align-items: center; gap: 8px; }
         
-        .time { width: 70px; color: #569cd6; font-size: 12px; padding-top: 4px; flex-shrink: 0; }
+        .bubble { max-width: 80%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.5; word-wrap: break-word; position: relative; white-space: pre-wrap; box-shadow: 0 1px 2px rgba(0,0,0,0.3); }
         
-        /* 树状连接线 */
-        .tree-guide { width: 30px; position: relative; flex-shrink: 0; }
-        .tree-line { position: absolute; left: 14px; top: 0; bottom: 0; border-left: 1px solid var(--line); }
-        .tree-node { position: absolute; left: 10px; top: 8px; width: 9px; height: 9px; border-radius: 50%; background: #555; z-index: 2; }
-        .tree-branch { position: absolute; left: 14px; top: 12px; width: 15px; height: 1px; background: var(--line); }
+        .msg-user .bubble { background-color: var(--user-msg); align-self: flex-start; border-bottom-left-radius: 2px; color: #eceff1; border-left: 3px solid #607d8b; }
+        .msg-user .msg-meta { justify-content: flex-start; }
         
-        /* 内容区域 */
-        .content { flex-grow: 1; padding: 2px 0 2px 10px; font-size: 13px; line-height: 1.5; word-break: break-all; }
+        .msg-cs .bubble { background-color: var(--cs-msg); align-self: flex-end; border-bottom-right-radius: 2px; color: #e8f5e9; border-right: 3px solid #66bb6a; }
+        .msg-cs .msg-meta { justify-content: flex-end; margin-right: 10px; }
+        .msg-cs { align-items: flex-end; }
+
+        .msg-sys { align-items: center; margin: 5px 0; }
+        .msg-sys .bubble { background: transparent; color: var(--text-sub); font-size: 12px; font-family: monospace; padding: 4px 10px; border: 1px solid #333; max-width: 90%; }
         
-        /* 层级特定样式 */
-        .lvl-0 .tree-node { background: #4ec9b0; border: 2px solid #1e1e1e; width: 8px; height: 8px; left: 11px; } /* 根消息 */
-        .lvl-0 .tree-line { top: 8px; } /* 根节点只向下连 */
+        .msg-alert .bubble { background-color: rgba(176, 0, 32, 0.2); border: 1px solid var(--alert); color: #ff8a80; width: 90%; text-align: center; }
+
+        .pill { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin: 0 2px; cursor: pointer; border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.3); }
+        .pill:hover { background: rgba(255,255,255,0.1); }
         
-        .lvl-1 .tree-branch { width: 10px; }
-        .lvl-1 .tree-node { display: none; } /* 1级节点用分支线表示 */
+        .highlight-row .bubble { box-shadow: 0 0 0 2px #ffd700, 0 0 15px rgba(255, 215, 0, 0.3); z-index: 2; }
         
-        .lvl-2 .tree-line { display: none; } /* 2级通常是结尾 */
-        .lvl-2 .tree-branch { width: 20px; border-left: 1px solid var(--line); height: 12px; top: 0; background: transparent; border-bottom: 1px solid var(--line); border-radius: 0 0 0 4px; }
-        
-        /* 消息胶囊 */
-        .pill { padding: 1px 6px; border-radius: 4px; font-size: 11px; margin-right: 5px; display: inline-block; border: 1px solid transparent; cursor: crosshair; }
-        .msg-id { background: #203e5a; color: #a5d6ff; border-color: #3c6f9e; }
-        .user-id { background: #3a3d41; color: #ce9178; border-color: #555; }
-        .thread-id { background: #4d2d52; color: #d7ba7d; border-color: #6e4e75; }
-        
-        /* 特殊高亮 */
-        .highlight-group .entry { background: #1e2a35; } 
-        .highlight-target { outline: 1px solid #ffd700; }
-        
-        .alert-row { background: rgba(163, 21, 21, 0.2); border-left: 3px solid #f44747; }
-        .error-row { background: rgba(255, 0, 0, 0.1); color: #f48771; }
-        .cs-row { color: #b5cea8; } /* 客服操作绿色 */
-        
+        .btn-debug { cursor: pointer; opacity: 0.6; transition: opacity 0.2s; font-size: 1.1em; display: inline-flex; align-items: center; }
+        .btn-debug:hover { opacity: 1; transform: scale(1.1); }
     </style>
 </head>
 <body>
     <div class="toolbar">
-        <input type="text" id="search" placeholder="输入 ID 或关键词回车过滤..." onkeyup="if(event.key==='Enter') doFilter()">
-        <button onclick="doFilter()">搜索</button>
-        <button onclick="window.location.reload()">刷新</button>
+        <input type="text" id="search" placeholder="🔍 输入 ID / 关键词 (回车跳转)..." onkeyup="if(event.key==='Enter') doSearch()">
+        <button onclick="doSearch()">查找</button>
+        <button onclick="window.location.reload()">🔄 刷新</button>
         <button onclick="scrollToBottom()">⬇️ 底部</button>
     </div>
     <div id="log-container"></div>
+    
     <script>
         const container = document.getElementById('log-container');
-        
+        let parsedLogs = [];
+
         fetch('/log_raw').then(r => r.text()).then(text => {
-            const lines = text.split('\\n');
-            let html = '';
-            
-            lines.forEach((line, index) => {
-                if(!line.trim()) return;
-                
-                // 提取时间
-                const tMatch = line.match(/^(\\d{2}:\\d{2}:\\d{2})/);
-                const time = tMatch ? tMatch[1] : '';
-                let rawContent = tMatch ? line.substring(8) : line;
-                
-                // 确定层级
-                let lvl = 'lvl-0';
-                let content = rawContent.trim();
-                
-                if(rawContent.includes('📦')) { lvl = 'lvl-0'; content = content.replace('📦', ''); }
-                else if(rawContent.includes('┣━━')) { lvl = 'lvl-1'; content = content.replace('┣━━', ''); }
-                else if(rawContent.includes('┗━━')) { lvl = 'lvl-2'; content = content.replace('┗━━', ''); }
-                else if(rawContent.includes('🚨')) { lvl = 'alert-row'; }
-                
-                // 样式处理
-                let rowClass = `entry ${lvl}`;
-                if(content.includes('[ALERT]')) rowClass += ' alert-row';
-                if(content.includes('[ERROR]')) rowClass += ' error-row';
-                if(content.includes('客服操作')) rowClass += ' cs-row';
-                
-                // 正则替换胶囊
-                content = content.replace(/(Msg[:=]\\s?)(\\d+)/g, '$1<span class="pill msg-id" onmouseenter="hl(\\'$2\\')" onmouseleave="unhl()">$2</span>');
-                content = content.replace(/(User|归属|用户)[:=]\\s?(\\d+)/g, '$1<span class="pill user-id" onmouseenter="hl(\\'$2\\')" onmouseleave="unhl()">$2</span>');
-                content = content.replace(/(Thread|流)[:=]\\s?(\\d+)/g, '$1<span class="pill thread-id" onmouseenter="hl(\\'$2\\')" onmouseleave="unhl()">$2</span>');
-                
-                html += `
-                <div class="${rowClass}">
-                    <div class="time">${time}</div>
-                    <div class="tree-guide">
-                        <div class="tree-line"></div>
-                        <div class="tree-branch"></div>
-                        <div class="tree-node"></div>
-                    </div>
-                    <div class="content">${content}</div>
-                </div>`;
-            });
-            container.innerHTML = html;
+            parseLogs(text);
+            renderLogs();
             scrollToBottom();
         });
 
-        function hl(id) {
-            document.querySelectorAll('.pill').forEach(el => {
-                if(el.innerText === id) {
-                    el.closest('.entry').style.background = '#2a3d55';
-                    el.style.border = '1px solid #ffd700';
-                }
-            });
-        }
-        function unhl() {
-            document.querySelectorAll('.entry').forEach(el => el.style.background = '');
-            document.querySelectorAll('.pill').forEach(el => el.style.border = '1px solid transparent');
-        }
-        
-        function doFilter() {
-            const term = document.getElementById('search').value.toLowerCase();
-            document.querySelectorAll('.entry').forEach(row => {
-                if(!term || row.innerText.toLowerCase().includes(term)) {
-                    row.style.display = 'flex';
+        function parseLogs(text) {
+            const rawLines = text.split('\\n');
+            parsedLogs = [];
+            let currentEntry = null;
+
+            rawLines.forEach(line => {
+                if(!line.trim()) return;
+                const timeMatch = line.match(/^(\\d{2}:\\d{2}:\\d{2})(.*)/);
+                if (timeMatch) {
+                    if (currentEntry) parsedLogs.push(currentEntry);
+                    currentEntry = { time: timeMatch[1], raw: timeMatch[2], content: timeMatch[2].trim(), fullText: timeMatch[2] };
                 } else {
-                    row.style.display = 'none';
+                    if (currentEntry) {
+                        currentEntry.fullText += '\\n' + line;
+                        currentEntry.content += '\\n' + line;
+                    }
                 }
             });
+            if (currentEntry) parsedLogs.push(currentEntry);
         }
-        
+
+        function renderLogs() {
+            let html = '';
+            parsedLogs.forEach((entry, idx) => {
+                let type = 'sys';
+                let content = entry.content;
+                let raw = entry.raw || "";
+                
+                // 提取所有ID用于调试按钮
+                let ids = [];
+                const idRegex = /(Msg|User|Thread|流|归属|用户)[:=]?\s?(\d+)/g;
+                let match;
+                while ((match = idRegex.exec(content)) !== null) { ids.push(match[2]); }
+                let idsStr = ids.join(',');
+
+                if (raw.includes('📦')) { type = 'user'; content = content.replace('📦', '').trim(); }
+                else if (raw.includes('客服操作') || (raw.includes('⚡️') && raw.includes('┣━━'))) { type = 'cs'; content = content.replace(/[┣┗]━━/, '').replace('⚡️', '⚡️ ').trim(); }
+                else if (raw.includes('🚨') || raw.includes('[ALERT]')) { type = 'alert'; }
+                else if (raw.includes('┣━━') || raw.includes('┗━━')) { type = 'sys'; }
+
+                content = content.replace(/(Msg[:=]?\s?)(\d+)/g, '$1<span class="pill" onclick="searchId(\'$2\')">$2</span>');
+                content = content.replace(/(User|用户|归属)[:=]?\s?(\d+)/g, '$1<span class="pill" onclick="searchId(\'$2\')">$2</span>');
+                
+                let debugBtn = ids.length > 0 ? `<span class="btn-debug" title="复制调试详情" onclick="copyDebugInfo('${idsStr}')">🐞</span>` : '';
+                let metaHtml = `<div class="msg-meta">${entry.time} #${idx} ${debugBtn}</div>`;
+                
+                let rowClass = `msg-row msg-${type}`;
+                if (type === 'user' || type === 'cs') {
+                    html += `<div class="${rowClass}" id="log-${idx}">${type === 'cs' ? metaHtml : ''}<div class="bubble">${content}</div>${type === 'user' ? metaHtml : ''}</div>`;
+                } else {
+                    html += `<div class="${rowClass}" id="log-${idx}"><div class="bubble">${debugBtn} ${entry.time} ${content}</div></div>`;
+                }
+            });
+            container.innerHTML = html;
+        }
+
+        function searchId(id) { document.getElementById('search').value = id; doSearch(); }
+
+        function doSearch() {
+            const term = document.getElementById('search').value.toLowerCase();
+            if (!term) return;
+            document.querySelectorAll('.highlight-row').forEach(el => el.classList.remove('highlight-row'));
+            let found = false;
+            const rows = Array.from(document.querySelectorAll('.msg-row')).reverse();
+            for (let row of rows) {
+                if (row.innerText.toLowerCase().includes(term)) {
+                    row.classList.add('highlight-row');
+                    if (!found) { row.scrollIntoView({behavior: "smooth", block: "center"}); found = true; }
+                }
+            }
+        }
+
+        function copyDebugInfo(idsStr) {
+            const ids = idsStr.split(',');
+            if (ids.length === 0) return;
+            
+            let report = "=== 调试详情报告 ===\\n";
+            report += `相关 ID: ${idsStr}\\n\\n-- 日志流 --\\n`;
+            
+            parsedLogs.forEach(entry => {
+                let hit = false;
+                for (let id of ids) {
+                    if (entry.raw.includes(id)) { hit = true; break; }
+                }
+                if (hit) {
+                    report += `[${entry.time}] ${entry.content}\\n`;
+                }
+            });
+            
+            navigator.clipboard.writeText(report).then(() => {
+                alert("✅ 已复制调试信息到剪贴板，请直接粘贴发给开发人员分析！");
+            }).catch(err => {
+                alert("❌ 复制失败: " + err);
+            });
+        }
+
         function scrollToBottom() { container.scrollTop = container.scrollHeight; }
     </script>
 </body>
@@ -517,7 +451,7 @@ def _post_request(url, payload):
 async def send_alert(text, link):
     if not BOT_TOKEN: return
     summary = text.splitlines()[1] if len(text.splitlines()) > 1 else '通知'
-    log_tree(3, f"发送报警 -> {summary}")
+    log_tree(3, f"发送报警 -> 全文:\n{text}")
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     loop = asyncio.get_event_loop()
     tasks = []
@@ -862,17 +796,8 @@ async def handler(event):
             if not real_customer_id:
                 real_customer_id = await get_traceable_sender(chat_id, reply_to_msg_id)
 
-        # [Ver 28.3] 组关联增强: 如果回复目标通过ID找不到人，但目标有GroupedID，尝试通过相册组找人
-        # 这里的场景是：客户发了图A和图B（属于同一相册），之前图A已被缓存归属，现在客服回了图B（未直接缓存），
-        # 此时通过图B的GroupedID可以找到图A的GroupedID，从而找到人。
         if not real_customer_id and reply_to_msg_id:
-             # 我们需要知道 reply_to_msg_id 的 grouped_id。
-             # 这需要 get_messages，但 get_traceable_sender 已经做过了并缓存了。
-             # 唯一漏掉的情况是 get_traceable_sender 刚把 ID 存进去，但我们还没用 GroupID 查。
-             # 实际上，update_msg_cache 已经处理了 GroupID -> UserID 的映射。
-             # 我们只需要再次确认 reply_to_msg 对应的 GroupID 即可。
-             # 但为了性能，只有在 real_customer_id 为 None 时才做深层检查。
-             pass # 逻辑已整合在 get_traceable_sender 的 update_msg_cache 中
+             pass 
 
         if is_sender_cs:
             record_cs_activity(chat_id, user_id=real_customer_id, thread_id=current_thread_id)
@@ -881,12 +806,12 @@ async def handler(event):
                 source_info = "未知"
                 if (chat_id, reply_to_msg_id) in msg_to_user_cache: source_info = "缓存命中"
                 elif real_customer_id: source_info = "API实时查询"
-                else: source_info = "追踪失败" # [Ver 28.3] 明确失败状态
+                else: source_info = "追踪失败"
                 
-                log_tree(1, f"⚡️ 客服操作捕获 | Msg: {reply_to_msg_id} | 类型: {msg_type} | 归属: {real_customer_id} | 流: {current_thread_id} | 状态: {source_info}")
+                log_tree(1, f"⚡️ 客服操作捕获 | Msg: {reply_to_msg_id} | 客服: {sender_name} | 内容: [{text[:100]}] | 归属: {real_customer_id} | 流: {current_thread_id} | 状态: {source_info}")
 
             if real_customer_id or current_thread_id:
-                cancel_tasks(chat_id, real_customer_id, current_thread_id, reason=f"客服回复: [{text[:10]}...]")
+                cancel_tasks(chat_id, real_customer_id, current_thread_id, reason=f"客服回复: [{text[:100]}...]")
             
             if reply_to_msg_id and reply_to_msg_id in reply_tasks:
                 reply_tasks[reply_to_msg_id].cancel()
@@ -914,7 +839,7 @@ async def handler(event):
 
         else:
             update_msg_cache(chat_id, event.id, sender_id, grouped_id)
-            cancel_tasks(chat_id, sender_id, current_thread_id, reason=f"客户发言: [{text[:10]}...]")
+            cancel_tasks(chat_id, sender_id, current_thread_id, reason=f"客户发言: [{text[:100]}...]")
             
             log_tree(0, f"[{chat_id}] {sender_name}: {text} [{msg_type}]")
             if reply_to_msg_id:
@@ -936,6 +861,6 @@ async def handler(event):
 if __name__ == '__main__':
     bot_loop = asyncio.get_event_loop()
     Thread(target=run_web).start()
-    log_tree(0, "✅ 系统启动 (Ver 29.0 UI Overhaul)")
+    log_tree(0, "✅ 系统启动 (Ver 29.3 Debug Tools)")
     client.start()
     client.run_until_disconnected()
