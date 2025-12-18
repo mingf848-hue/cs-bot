@@ -222,7 +222,7 @@ DASHBOARD_HTML = """
         .on { background: var(--green); } .off { background: var(--red); }
         .ctrl-btn { padding: 4px 8px; border: 1px solid #ccc; background: #eee; cursor: pointer; border-radius: 4px; font-size: 0.8rem; text-decoration: none; color: #333; }
         .ctrl-btn:hover { background: #ddd; }
-        .audio-btn { cursor: pointer; font-size: 1.2rem; }
+        .audio-btn { cursor: pointer; font-size: 1.2rem; user-select: none; }
         .box { margin-bottom: 20px; }
         .title { font-weight: bold; border-left: 4px solid #333; padding-left: 8px; margin-bottom: 8px; color: #555; display: flex; justify-content: space-between; }
         .card { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
@@ -267,12 +267,21 @@ DASHBOARD_HTML = """
     <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 31.4 (Strict Audit Final)</div>
     
     <script>
-        let audioEnabled = false;
+        // 1. 从 LocalStorage 读取状态，默认为 true (开启)
+        let savedState = localStorage.getItem('tg_bot_audio_enabled');
+        let audioEnabled = savedState === null ? true : (savedState === 'true');
+        
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        
+        // 2. 初始化图标
+        const audioBtn = document.querySelector('.audio-btn');
+        if (audioBtn) {
+            audioBtn.innerText = audioEnabled ? "🔊" : "🔇";
+        }
         
         function playAlarm() {
             if (!audioEnabled) return;
-            if (audioCtx.state === 'suspended') audioCtx.resume();
+            if (audioCtx.state === 'suspended') audioCtx.resume().catch(e => console.log(e));
             
             const oscillator = audioCtx.createOscillator();
             const gainNode = audioCtx.createGain();
@@ -289,11 +298,14 @@ DASHBOARD_HTML = """
 
         function toggleAudio() {
             audioEnabled = !audioEnabled;
+            // 3. 保存状态到 LocalStorage
+            localStorage.setItem('tg_bot_audio_enabled', audioEnabled);
+            
             const btn = document.querySelector('.audio-btn');
             btn.innerText = audioEnabled ? "🔊" : "🔇";
             if(audioEnabled) {
                 if (audioCtx.state === 'suspended') audioCtx.resume();
-                playAlarm();
+                playAlarm(); // Test sound
             }
         }
 
@@ -316,6 +328,7 @@ DASHBOARD_HTML = """
                     el.innerText = `${m}:${s.toString().padStart(2, '0')}`;
                 }
             });
+            // 只有开启了且有超时才播放
             if (hasLate && audioEnabled) playAlarm();
         }, 1000);
     </script>
