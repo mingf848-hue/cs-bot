@@ -97,7 +97,7 @@ try:
     keep_keywords_env = os.environ.get("KEEP_KEYWORDS", "") 
     KEEP_SIGNATURES = {x.strip() for x in keep_keywords_env.split('|') if x.strip()}
 
-    default_ignore = "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴,多谢,麻烦了,辛苦,感谢"
+    default_ignore = "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴"
     ignore_env = os.environ.get("IGNORE_KEYWORDS", default_ignore)
     clean_ignore = ignore_env.replace("，", ",")
     IGNORE_SIGNATURES = {normalize(x.strip()) for x in clean_ignore.split(',') if x.strip()}
@@ -222,19 +222,22 @@ DASHBOARD_HTML = """
         .on { background: var(--green); } .off { background: var(--red); }
         .ctrl-btn { padding: 4px 8px; border: 1px solid #ccc; background: #eee; cursor: pointer; border-radius: 4px; font-size: 0.8rem; text-decoration: none; color: #333; }
         .ctrl-btn:hover { background: #ddd; }
+        .audio-btn { cursor: pointer; font-size: 1.2rem; }
         .box { margin-bottom: 20px; }
         .title { font-weight: bold; border-left: 4px solid #333; padding-left: 8px; margin-bottom: 8px; color: #555; display: flex; justify-content: space-between; }
         .card { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
         .t { font-family: monospace; font-weight: bold; font-size: 1.1rem; color: #d63384; }
-        .late { color: red; text-decoration: underline; }
+        .late { color: red; text-decoration: underline; animation: flash 1s infinite; }
         .empty { color: #999; text-align: center; font-style: italic; padding: 10px; }
         .btn { display: block; width: 100%; padding: 12px; background: #222; color: #fff; text-align: center; text-decoration: none; border-radius: 6px; font-weight: bold; margin-top: 20px; }
+        @keyframes flash { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
     </style>
 </head>
 <body>
     <div class="header">
         <h1>⚡️ 实时监控</h1>
         <div class="status-grp">
+            <span class="audio-btn" onclick="toggleAudio()" title="开启/关闭报警音">🔇</span>
             <a href="#" onclick="ctrl(1)" class="ctrl-btn">上班</a>
             <a href="#" onclick="ctrl(0)" class="ctrl-btn">下班</a>
             <div class="tag {{ 'on' if working else 'off' }}">{{ 'WORKING' if working else 'STOPPED' }}</div>
@@ -261,18 +264,59 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 31.2 (Startup Delay)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 31.4 (Strict Audit Final)</div>
+    
     <script>
+        let audioEnabled = false;
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        
+        function playAlarm() {
+            if (!audioEnabled) return;
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            
+            const oscillator = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            oscillator.type = 'square';
+            oscillator.frequency.setValueAtTime(800, audioCtx.currentTime);
+            oscillator.frequency.exponentialRampToValueAtTime(400, audioCtx.currentTime + 0.1);
+            gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+            oscillator.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            oscillator.start();
+            oscillator.stop(audioCtx.currentTime + 0.2);
+        }
+
+        function toggleAudio() {
+            audioEnabled = !audioEnabled;
+            const btn = document.querySelector('.audio-btn');
+            btn.innerText = audioEnabled ? "🔊" : "🔇";
+            if(audioEnabled) {
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                playAlarm();
+            }
+        }
+
         function ctrl(s) {
             fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => setTimeout(() => location.reload(), 500));
         }
+        
         setInterval(() => {
             const now = Date.now() / 1000;
+            let hasLate = false;
             document.querySelectorAll('.t').forEach(el => {
                 const diff = parseFloat(el.dataset.end) - now;
-                el.innerText = diff <= 0 ? "超时" : `${Math.floor(diff/60)}:${Math.floor(diff%60).toString().padStart(2,'0')}`;
-                if(diff<=0) el.classList.add('late');
+                if(diff <= 0) {
+                    el.innerText = "已超时";
+                    el.classList.add('late');
+                    hasLate = true;
+                } else {
+                    const m = Math.floor(diff / 60);
+                    const s = Math.floor(diff % 60);
+                    el.innerText = `${m}:${s.toString().padStart(2, '0')}`;
+                }
             });
+            if (hasLate && audioEnabled) playAlarm();
         }, 1000);
     </script>
 </body>
@@ -502,7 +546,7 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 30.7] 优化：下班巡检逻辑 (增加死单检查 + 图片回复检测)
+# [Ver 31.4] 严格巡检: 仅当客服回复并 *引用* 了客户消息时才算闭环
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】...")
     await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近活跃的消息流，检查是否有遗漏...", "")
@@ -513,11 +557,10 @@ async def audit_pending_tasks():
     for chat_id in CS_GROUP_IDS:
         try:
             log_tree(4, f"正在扫描群组 {chat_id} ...")
-            # 1. 抓取历史 (List to ensure order)
             history = await client.get_messages(chat_id, limit=SCAN_LIMIT)
-            
-            # 2. 按 Thread ID 分组消息
             threads_map = defaultdict(list)
+            # MsgID -> SenderID Map for quick lookup in this batch
+            msg_sender_map = {m.id: m.sender_id for m in history}
             
             for m in history:
                 thread_id = None
@@ -527,7 +570,6 @@ async def audit_pending_tasks():
                 if not thread_id: thread_id = m.id
                 threads_map[thread_id].append(m)
             
-            # 3. 检查每个 Thread
             for t_id, msgs in threads_map.items():
                 last_wait_msg = None
                 last_wait_idx = -1
@@ -542,19 +584,44 @@ async def audit_pending_tasks():
                             break 
                 
                 if last_wait_msg:
-                    # 找到了“稍等”。检查在它之后有没有任何新回复 (宽松判定)
-                    has_newer_reply = False
+                    has_strict_reply = False
                     if last_wait_idx > 0:
                         newer_msgs = msgs[:last_wait_idx]
                         for nm in newer_msgs:
                              if await is_official_cs(nm):
-                                 has_newer_reply = True
-                                 break
-                    
-                    if not has_newer_reply:
+                                 # Strict Check: Must have reply_to
+                                 if nm.reply_to:
+                                     target_id = nm.reply_to.reply_to_msg_id
+                                     
+                                     # 1. 直接引用了这条“稍等”
+                                     if target_id == last_wait_msg.id:
+                                         has_strict_reply = True; break
+                                         
+                                     # 2. 引用了“稍等”所回复的那条（即客户原消息）
+                                     if last_wait_msg.reply_to and target_id == last_wait_msg.reply_to.reply_to_msg_id:
+                                         has_strict_reply = True; break
+                                         
+                                     # 3. 引用了同一个 Thread 里的其他非客服消息 (泛化严格模式)
+                                     # 检查 target_id 是否属于非客服
+                                     target_sender = msg_sender_map.get(target_id)
+                                     # 如果我们在 history 里找不到 target (太久远)，或者 target 是客户
+                                     # 这里为了保险，只要 target 不是 known CS，我们认为是在回复客户
+                                     if target_sender:
+                                         is_target_cs = (target_sender == MY_ID) or (target_sender in OTHER_CS_IDS)
+                                         # 还需要 check name prefix? 稍微耗时但为了准确
+                                         if not is_target_cs:
+                                             # Double check name if ID not in list
+                                             # 这里简化：只要 ID 不在白名单，就当做客户。
+                                             # 只要回复了客户，就算闭环。
+                                             has_strict_reply = True; break
+                                     else:
+                                         # Target too old, assume valid reply to avoid false alarm
+                                         has_strict_reply = True; break
+
+                    if not has_strict_reply:
                         m = last_wait_msg
                         
-                        # [Ver 30.7] 新增：检查原消息是否已删除
+                        # 死单检查
                         if m.reply_to and m.reply_to.reply_to_msg_id:
                             reply_id = m.reply_to.reply_to_msg_id
                             original_in_history = False
@@ -562,18 +629,15 @@ async def audit_pending_tasks():
                                 if hm.id == reply_id:
                                     original_in_history = True
                                     break
-                            
                             if not original_in_history:
                                 try:
                                     origin_msg = await client.get_messages(chat_id, ids=reply_id)
                                     if not origin_msg:
                                         log_tree(4, f"🛡️ 拦截误报 [巡检] | Msg={m.id} | 原因: 原消息已删除")
                                         continue
-                                except Exception:
-                                    continue
+                                except Exception: continue
 
                         issues_found += 1
-                        
                         cs_name = "未知客服"
                         try:
                             sender = await m.get_sender()
@@ -615,7 +679,6 @@ async def perform_stop_work():
     global IS_WORKING
     if IS_WORKING:
         await audit_pending_tasks()
-        
     IS_WORKING = False
     for t in list(wait_tasks.values()) + list(followup_tasks.values()) + list(reply_tasks.values()): t.cancel()
     wait_tasks.clear(); followup_tasks.clear(); reply_tasks.clear()
@@ -1039,7 +1102,7 @@ async def handler(event):
 if __name__ == '__main__':
     try:
         # [Ver 31.2] 启动延迟
-        delay = int(os.environ.get("STARTUP_DELAY", 50))
+        delay = int(os.environ.get("STARTUP_DELAY", 20))
         if delay > 0:
             logger.info(f"⏳ 启动延迟: 等待 {delay} 秒以确保旧连接断开...")
             time.sleep(delay)
@@ -1047,7 +1110,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 31.2 Startup Delay)")
+        log_tree(0, "✅ 系统启动 (Ver 31.4 Audit Final)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
