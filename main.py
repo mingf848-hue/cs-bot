@@ -11,6 +11,7 @@ from threading import Thread
 from flask import Flask, render_template_string, Response, request
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+from telethon.errors import AuthKeyDuplicatedError
 
 # ==========================================
 # 模块 0: 北京时间树状日志系统
@@ -96,7 +97,7 @@ try:
     keep_keywords_env = os.environ.get("KEEP_KEYWORDS", "") 
     KEEP_SIGNATURES = {x.strip() for x in keep_keywords_env.split('|') if x.strip()}
 
-    default_ignore = "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴"
+    default_ignore = "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴,多谢,麻烦了,辛苦,感谢"
     ignore_env = os.environ.get("IGNORE_KEYWORDS", default_ignore)
     clean_ignore = ignore_env.replace("，", ",")
     IGNORE_SIGNATURES = {normalize(x.strip()) for x in clean_ignore.split(',') if x.strip()}
@@ -260,7 +261,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 31.0 (Critical Alert)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 31.2 (Startup Delay)</div>
     <script>
         function ctrl(s) {
             fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => setTimeout(() => location.reload(), 500));
@@ -501,7 +502,7 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 30.9] 纯净回滚：移除无人回复检测，仅保留稍等闭环检查 + 客服模糊匹配 + 死单检查
+# [Ver 30.7] 优化：下班巡检逻辑 (增加死单检查 + 图片回复检测)
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】...")
     await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近活跃的消息流，检查是否有遗漏...", "")
@@ -512,7 +513,7 @@ async def audit_pending_tasks():
     for chat_id in CS_GROUP_IDS:
         try:
             log_tree(4, f"正在扫描群组 {chat_id} ...")
-            # 1. 抓取历史
+            # 1. 抓取历史 (List to ensure order)
             history = await client.get_messages(chat_id, limit=SCAN_LIMIT)
             
             # 2. 按 Thread ID 分组消息
@@ -553,7 +554,7 @@ async def audit_pending_tasks():
                     if not has_newer_reply:
                         m = last_wait_msg
                         
-                        # 死单检查
+                        # [Ver 30.7] 新增：检查原消息是否已删除
                         if m.reply_to and m.reply_to.reply_to_msg_id:
                             reply_id = m.reply_to.reply_to_msg_id
                             original_in_history = False
@@ -614,6 +615,7 @@ async def perform_stop_work():
     global IS_WORKING
     if IS_WORKING:
         await audit_pending_tasks()
+        
     IS_WORKING = False
     for t in list(wait_tasks.values()) + list(followup_tasks.values()) + list(reply_tasks.values()): t.cancel()
     wait_tasks.clear(); followup_tasks.clear(); reply_tasks.clear()
@@ -1035,9 +1037,22 @@ async def handler(event):
         log_tree(9, f"❌ Handler 异常: {e}")
 
 if __name__ == '__main__':
-    bot_loop = asyncio.get_event_loop()
-    bot_loop.create_task(maintenance_task())
-    Thread(target=run_web).start()
-    log_tree(0, "✅ 系统启动 (Ver 31.0 Critical Alert)")
-    client.start()
-    client.run_until_disconnected()
+    try:
+        # [Ver 31.2] 启动延迟
+        delay = int(os.environ.get("STARTUP_DELAY", 50))
+        if delay > 0:
+            logger.info(f"⏳ 启动延迟: 等待 {delay} 秒以确保旧连接断开...")
+            time.sleep(delay)
+            
+        bot_loop = asyncio.get_event_loop()
+        bot_loop.create_task(maintenance_task())
+        Thread(target=run_web).start()
+        log_tree(0, "✅ 系统启动 (Ver 31.2 Startup Delay)")
+        client.start()
+        client.run_until_disconnected()
+    except AuthKeyDuplicatedError:
+        logger.critical("🚨 严重错误: SESSION_STRING 已失效！检测到多地登录冲突。")
+        logger.critical("👉 请重新生成 SESSION_STRING 并更新环境变量。")
+        sys.exit(1)
+    except Exception as e:
+        log_tree(9, f"❌ 启动失败: {e}")
