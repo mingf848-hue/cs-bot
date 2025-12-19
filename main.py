@@ -564,7 +564,7 @@ async def audit_pending_tasks():
     
     issues_found = 0
     # 24小时前的时间戳
-    cutoff_date = datetime.now(timezone.utc) - timedelta(hours=24)
+    cutoff_date = datetime.now(timezone.utc) - timedelta(hours=32)
     
     for chat_id in CS_GROUP_IDS:
         try:
