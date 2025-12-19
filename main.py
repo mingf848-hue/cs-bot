@@ -63,9 +63,9 @@ def normalize(text):
     if not text: return ""
     # 1. 转小写
     text = text.lower()
-    # 2. 标点归一化 (全角转半角，避免输入法差异)
+    # 2. 标点归一化
     text = text.replace('～', '~').replace('，', ',').replace('。', '.').replace('！', '!').replace('：', ':').replace('？', '?')
-    # 3. 去除首尾空格 (保留中间空格，因为是严格匹配)
+    # 3. 去除首尾空格
     text = text.strip()
     return text
 
@@ -101,13 +101,12 @@ try:
     WAIT_SIGNATURES = {normalize(x) for x in clean_env.split(',') if x.strip()}
 
     keep_keywords_env = os.environ.get("KEEP_KEYWORDS", "") 
-    # [Ver 33.0] 严格分割并归一化
     keep_list = keep_keywords_env.split('|')
     KEEP_SIGNATURES = {normalize(x) for x in keep_list if x.strip()}
     
     log_tree(0, f"🔍 已加载跟进词 (KEEP): {KEEP_SIGNATURES}")
 
-    default_ignore = "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴"
+    default_ignore = "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴,好的 谢谢"
     ignore_env = os.environ.get("IGNORE_KEYWORDS", default_ignore)
     clean_ignore = ignore_env.replace("，", ",")
     IGNORE_SIGNATURES = {normalize(x) for x in clean_ignore.split(',') if x.strip()}
@@ -191,7 +190,6 @@ async def is_official_cs(message):
     if not message: return False
     sender_id = message.sender_id
     if (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS): return True
-    
     try:
         sender = await message.get_sender()
         if not sender: return False
@@ -274,8 +272,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 33.1 (Fix Crash)</div>
-    
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 33.2 (Audit Crash Fix)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -559,7 +556,7 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 30.7] 优化：下班巡检逻辑 (增加死单检查 + 图片回复检测)
+# [Ver 33.2] 修复：下班巡检变量未定义导致崩溃，增加 try-except 容错
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】...")
     await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近活跃的消息流，检查是否有遗漏...", "")
@@ -570,11 +567,17 @@ async def audit_pending_tasks():
     for chat_id in CS_GROUP_IDS:
         try:
             log_tree(4, f"正在扫描群组 {chat_id} ...")
-            # 1. 抓取历史 (List to ensure order)
-            history = await client.get_messages(chat_id, limit=SCAN_LIMIT)
             
-            # 2. 按 Thread ID 分组消息
+            try:
+                # 尝试获取历史消息，如果失败（如群组ID无效）则跳过该群
+                history = await client.get_messages(chat_id, limit=SCAN_LIMIT)
+            except Exception as e:
+                log_tree(9, f"获取群组 {chat_id} 历史消息失败: {e}")
+                continue
+                
             threads_map = defaultdict(list)
+            # [Ver 33.2] 立即定义映射，防止 NameError
+            msg_sender_map = {m.id: m.sender_id for m in history}
             
             for m in history:
                 thread_id = None
@@ -584,16 +587,13 @@ async def audit_pending_tasks():
                 if not thread_id: thread_id = m.id
                 threads_map[thread_id].append(m)
             
-            # 3. 检查每个 Thread
             for t_id, msgs in threads_map.items():
                 last_wait_msg = None
                 last_wait_idx = -1
                 
-                # 找到该 Thread 中最后一条客服发出的“稍等”
                 for i, m in enumerate(msgs):
                     if await is_official_cs(m):
                         text = normalize(m.text or "")
-                        # [Ver 33.1] Fix NameError: ids_str
                         is_wait = any(k in text for k in WAIT_SIGNATURES)
                         is_keep = normalize(text) in KEEP_SIGNATURES 
                         
@@ -608,19 +608,12 @@ async def audit_pending_tasks():
                         newer_msgs = msgs[:last_wait_idx]
                         for nm in newer_msgs:
                              if await is_official_cs(nm):
-                                 # Strict Check: Must have reply_to
                                  if nm.reply_to:
                                      target_id = nm.reply_to.reply_to_msg_id
-                                     
-                                     # 1. 直接引用了这条“稍等”
                                      if target_id == last_wait_msg.id:
                                          has_strict_reply = True; break
-                                         
-                                     # 2. 引用了“稍等”所回复的那条（即客户原消息）
                                      if last_wait_msg.reply_to and target_id == last_wait_msg.reply_to.reply_to_msg_id:
                                          has_strict_reply = True; break
-                                         
-                                     # 3. 引用了同一个 Thread 里的其他非客服消息 (泛化严格模式)
                                      target_sender = msg_sender_map.get(target_id)
                                      if target_sender:
                                          is_target_cs = (target_sender == MY_ID) or (target_sender in OTHER_CS_IDS)
@@ -631,8 +624,6 @@ async def audit_pending_tasks():
 
                     if not has_strict_reply:
                         m = last_wait_msg
-                        
-                        # 死单检查
                         if m.reply_to and m.reply_to.reply_to_msg_id:
                             reply_id = m.reply_to.reply_to_msg_id
                             original_in_history = False
@@ -831,6 +822,7 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
 async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, user_ids_list, thread_id=None):
     task_start_time = time.time()
     try:
+        # [Ver 33.2] Fix NameError
         ids_str = f"Msg={key_id}"
         if user_ids_list: ids_str += " " + " ".join([f"User={u}" for u in user_ids_list])
 
@@ -1018,7 +1010,7 @@ async def handler(event):
         norm_text = normalize(text)
         is_wait_cmd = any(k in norm_text for k in WAIT_SIGNATURES)
         # [Ver 33.0] KEEP normalized match
-        is_keep_cmd = normalize(text) in KEEP_SIGNATURES 
+        is_keep_cmd = normalize(text) in KEEP_SIGNATURES
         is_sender_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS)
 
         current_thread_id, thread_type = get_thread_context(event)
@@ -1135,7 +1127,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 33.1 Fix Crash)")
+        log_tree(0, "✅ 系统启动 (Ver 33.2 Audit Crash Fix)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
