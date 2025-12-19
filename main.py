@@ -62,6 +62,8 @@ def log_tree(level, msg):
 def normalize(text):
     if not text: return ""
     text = text.lower()
+    # 移除所有非单词字符（标点、空格、特殊符号），只保留汉字字母数字
+    # 这样能保证 "处理中。" 和 "处理中" 以及 "处理 中" 都能匹配
     text = re.sub(r'[^\w]', '', text) 
     return text
 
@@ -268,7 +270,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 34.2 (Audit 30h Force)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 34.3 (Audit Sequence Fix)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -507,7 +509,7 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 34.2] 优化：强制执行下班巡检 (忽略状态位) & 30小时
+# [Ver 34.3] 下班巡检 - 时序闭环检查 (不强制引用)
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】...")
     await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近30小时活跃的消息流...", "")
@@ -532,6 +534,7 @@ async def audit_pending_tasks():
                 continue
                 
             threads_map = defaultdict(list)
+            # MsgID -> SenderID Map for quick lookup in this batch
             msg_sender_map = {m.id: m.sender_id for m in history}
             
             for m in history:
@@ -546,6 +549,7 @@ async def audit_pending_tasks():
                 last_wait_msg = None
                 last_wait_idx = -1
                 
+                # 找到该 Thread 中最后一条客服发出的“稍等”
                 for i, m in enumerate(msgs):
                     if await is_official_cs(m):
                         text = normalize(m.text or "")
@@ -559,29 +563,19 @@ async def audit_pending_tasks():
                             break 
                 
                 if last_wait_msg:
-                    has_strict_reply = False
+                    # [Ver 34.3] 宽松检查：只要后续有客服发言，就算闭环 (无需引用)
+                    has_any_cs_reply = False
                     if last_wait_idx > 0:
                         newer_msgs = msgs[:last_wait_idx]
                         for nm in newer_msgs:
                              if await is_official_cs(nm):
-                                 # Strict Check: Must have reply_to
-                                 if nm.reply_to:
-                                     target_id = nm.reply_to.reply_to_msg_id
-                                     
-                                     if target_id == last_wait_msg.id:
-                                         has_strict_reply = True; break
-                                     if last_wait_msg.reply_to and target_id == last_wait_msg.reply_to.reply_to_msg_id:
-                                         has_strict_reply = True; break
-                                     target_sender = msg_sender_map.get(target_id)
-                                     if target_sender:
-                                         is_target_cs = (target_sender == MY_ID) or (target_sender in OTHER_CS_IDS)
-                                         if not is_target_cs:
-                                             has_strict_reply = True; break
-                                     else:
-                                         has_strict_reply = True; break
+                                 has_any_cs_reply = True
+                                 break
 
-                    if not has_strict_reply:
+                    if not has_any_cs_reply:
                         m = last_wait_msg
+                        
+                        # 死单检查
                         if m.reply_to and m.reply_to.reply_to_msg_id:
                             reply_id = m.reply_to.reply_to_msg_id
                             original_in_history = False
@@ -636,10 +630,10 @@ async def audit_pending_tasks():
     await send_alert(f"🏁 **下班巡检结束**\n共发现 **{issues_found}** 个未闭环的对话。", "")
 
 async def perform_stop_work():
+    global IS_WORKING
     # [Ver 34.2] 强制执行巡检，不论当前状态
     await audit_pending_tasks()
         
-    global IS_WORKING
     IS_WORKING = False
     for t in list(wait_tasks.values()) + list(followup_tasks.values()) + list(reply_tasks.values()): t.cancel()
     wait_tasks.clear(); followup_tasks.clear(); reply_tasks.clear()
@@ -1097,7 +1091,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 34.2 Audit 30h Force)")
+        log_tree(0, "✅ 系统启动 (Ver 34.3 Audit Seq Fix)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
