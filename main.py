@@ -24,9 +24,9 @@ class BeijingFormatter(logging.Formatter):
     def converter(self, timestamp):
         return datetime.fromtimestamp(timestamp, timezone.utc).astimezone(timezone(timedelta(hours=8)))
     def formatTime(self, record, datefmt=None):
-        return self.converter(record.created).strftime('%H:%M:%S')
+        return self.converter(record.created).strftime('%Y-%m-%d %H:%M:%S')
 
-file_fmt = BeijingFormatter('%(asctime)s %(message)s', datefmt='%H:%M:%S')
+file_fmt = BeijingFormatter('%(asctime)s %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 file_handler = logging.FileHandler(LOG_FILE_PATH, mode='a', encoding='utf-8')
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(file_fmt)
@@ -57,16 +57,12 @@ def log_tree(level, msg):
     else: logger.debug(full_msg)
 
 # ==========================================
-# 模块 1: 基础函数 (稳健版)
+# 模块 1: 基础函数 (强力清洗版)
 # ==========================================
 def normalize(text):
     if not text: return ""
-    # 1. 转小写
     text = text.lower()
-    # 2. 标点归一化
-    text = text.replace('～', '~').replace('，', ',').replace('。', '.').replace('！', '!').replace('：', ':').replace('？', '?')
-    # 3. 去除首尾空格
-    text = text.strip()
+    text = re.sub(r'[^\w]', '', text) 
     return text
 
 def extract_id_list(env_str):
@@ -104,7 +100,7 @@ try:
     keep_list = keep_keywords_env.split('|')
     KEEP_SIGNATURES = {normalize(x) for x in keep_list if x.strip()}
     
-    log_tree(0, f"🔍 已加载跟进词 (KEEP): {KEEP_SIGNATURES}")
+    log_tree(0, f"🔍 关键词配置 (Normalized): WAIT={WAIT_SIGNATURES} | KEEP={KEEP_SIGNATURES}")
 
     default_ignore = "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴"
     ignore_env = os.environ.get("IGNORE_KEYWORDS", default_ignore)
@@ -209,7 +205,7 @@ async def maintenance_task():
         except Exception as e: logger.error(f"维护任务出错: {e}")
 
 # ==========================================
-# 模块 4: Web 控制台
+# 模块 4: Web 控制台 (UI 修复版)
 # ==========================================
 app = Flask(__name__)
 
@@ -272,63 +268,17 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 33.3 (Audit 24h)</div>
-    
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 34.1 (Stale Edit Guard)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         const audioBtn = document.querySelector('.audio-btn');
         if (audioBtn) { audioBtn.innerText = audioEnabled ? "🔊" : "🔇"; }
-        
-        function playAlarm() {
-            if (!audioEnabled) return;
-            if (audioCtx.state === 'suspended') audioCtx.resume().catch(e => console.log(e));
-            const oscillator = audioCtx.createOscillator();
-            const gainNode = audioCtx.createGain();
-            oscillator.type = 'square';
-            oscillator.frequency.setValueAtTime(800, audioCtx.currentTime);
-            oscillator.frequency.exponentialRampToValueAtTime(400, audioCtx.currentTime + 0.1);
-            gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
-            gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
-            oscillator.connect(gainNode);
-            gainNode.connect(audioCtx.destination);
-            oscillator.start();
-            oscillator.stop(audioCtx.currentTime + 0.2);
-        }
-
-        function toggleAudio() {
-            audioEnabled = !audioEnabled;
-            localStorage.setItem('tg_bot_audio_enabled', audioEnabled);
-            const btn = document.querySelector('.audio-btn');
-            btn.innerText = audioEnabled ? "🔊" : "🔇";
-            if(audioEnabled) {
-                if (audioCtx.state === 'suspended') audioCtx.resume();
-                playAlarm(); 
-            }
-        }
-
-        function ctrl(s) {
-            fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => setTimeout(() => location.reload(), 500));
-        }
-        
-        setInterval(() => {
-            const now = Date.now() / 1000;
-            let hasLate = false;
-            document.querySelectorAll('.t').forEach(el => {
-                const diff = parseFloat(el.dataset.end) - now;
-                if(diff <= 0) {
-                    el.innerText = "已超时";
-                    el.classList.add('late');
-                    hasLate = true;
-                } else {
-                    const m = Math.floor(diff / 60);
-                    const s = Math.floor(diff % 60);
-                    el.innerText = `${m}:${s.toString().padStart(2, '0')}`;
-                }
-            });
-            if (hasLate && audioEnabled) playAlarm();
-        }, 1000);
+        function playAlarm() { if (!audioEnabled) return; if (audioCtx.state === 'suspended') audioCtx.resume().catch(e => console.log(e)); const oscillator = audioCtx.createOscillator(); const gainNode = audioCtx.createGain(); oscillator.type = 'square'; oscillator.frequency.setValueAtTime(800, audioCtx.currentTime); oscillator.frequency.exponentialRampToValueAtTime(400, audioCtx.currentTime + 0.1); gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime); gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1); oscillator.connect(gainNode); gainNode.connect(audioCtx.destination); oscillator.start(); oscillator.stop(audioCtx.currentTime + 0.2); }
+        function toggleAudio() { audioEnabled = !audioEnabled; localStorage.setItem('tg_bot_audio_enabled', audioEnabled); const btn = document.querySelector('.audio-btn'); btn.innerText = audioEnabled ? "🔊" : "🔇"; if(audioEnabled) { if (audioCtx.state === 'suspended') audioCtx.resume(); playAlarm(); } }
+        function ctrl(s) { fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => setTimeout(() => location.reload(), 500)); }
+        setInterval(() => { const now = Date.now() / 1000; let hasLate = false; document.querySelectorAll('.t').forEach(el => { const diff = parseFloat(el.dataset.end) - now; if(diff <= 0) { el.innerText = "已超时"; el.classList.add('late'); hasLate = true; } else { const m = Math.floor(diff / 60); const s = Math.floor(diff % 60); el.innerText = `${m}:${s.toString().padStart(2, '0')}`; } }); if (hasLate && audioEnabled) playAlarm(); }, 1000);
     </script>
 </body>
 </html>
@@ -360,7 +310,6 @@ LOG_VIEWER_HTML = """
         .msg-sys .bubble { background: transparent; color: var(--text-sub); font-size: 12px; font-family: monospace; padding: 4px 10px; border: 1px solid #333; max-width: 90%; }
         .msg-alert .bubble { background-color: rgba(176, 0, 32, 0.2); border: 1px solid var(--alert); color: #ff8a80; width: 90%; text-align: center; }
         .msg-audit .bubble { background-color: rgba(255, 111, 0, 0.15); border: 1px solid var(--audit); color: #ffb74d; width: 90%; text-align: center; font-weight: bold; }
-        
         .pill { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin: 0 2px; cursor: pointer; border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.3); }
         .pill:hover { background: rgba(255,255,255,0.1); }
         .highlight-row .bubble { box-shadow: 0 0 0 2px #ffd700, 0 0 15px rgba(255, 215, 0, 0.3); z-index: 2; }
@@ -395,12 +344,13 @@ LOG_VIEWER_HTML = """
             const rawLines = text.split(/\\r?\\n/);
             parsedLogs = [];
             let currentEntry = null;
+            const timeRegex = /^(\\d{4}-\\d{2}-\\d{2}\\s+)?(\\d{2}:\\d{2}:\\d{2})(.*)/;
             rawLines.forEach(line => {
                 if(!line.trim()) return;
-                const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2})(.*)/);
-                if (timeMatch) {
+                const match = line.match(timeRegex);
+                if (match) {
                     if (currentEntry) parsedLogs.push(currentEntry);
-                    currentEntry = { time: timeMatch[1], raw: timeMatch[2], content: timeMatch[2].trim(), fullText: timeMatch[2] };
+                    currentEntry = { time: match[2], raw: match[3], content: match[3].trim(), fullText: match[3] };
                 } else {
                     if (currentEntry) { currentEntry.fullText += '\\n' + line; currentEntry.content += '\\n' + line; }
                 }
@@ -557,136 +507,8 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 33.3] 优化：下班巡检逻辑 (基于时间24h)
-async def audit_pending_tasks():
-    log_tree(4, "开始执行【下班巡检】...")
-    await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近24小时活跃的消息流...", "")
-    
-    issues_found = 0
-    # 24小时前的时间戳
-    cutoff_date = datetime.now(timezone.utc) - timedelta(hours=32)
-    
-    for chat_id in CS_GROUP_IDS:
-        try:
-            log_tree(4, f"正在扫描群组 {chat_id} (24h) ...")
-            
-            history = []
-            try:
-                # 使用 iter_messages 获取消息，直到时间超过24小时
-                async for message in client.iter_messages(chat_id):
-                    if message.date < cutoff_date:
-                        break
-                    history.append(message)
-            except Exception as e:
-                log_tree(9, f"获取群组 {chat_id} 历史消息失败: {e}")
-                continue
-                
-            threads_map = defaultdict(list)
-            # [Ver 33.2] 立即定义映射，防止 NameError
-            msg_sender_map = {m.id: m.sender_id for m in history}
-            
-            for m in history:
-                thread_id = None
-                if m.reply_to:
-                    thread_id = m.reply_to.reply_to_top_id 
-                    if not thread_id: thread_id = m.reply_to.reply_to_msg_id
-                if not thread_id: thread_id = m.id
-                threads_map[thread_id].append(m)
-            
-            for t_id, msgs in threads_map.items():
-                last_wait_msg = None
-                last_wait_idx = -1
-                
-                for i, m in enumerate(msgs):
-                    if await is_official_cs(m):
-                        text = normalize(m.text or "")
-                        is_wait = any(k in text for k in WAIT_SIGNATURES)
-                        is_keep = normalize(text) in KEEP_SIGNATURES 
-                        
-                        if is_wait or is_keep:
-                            last_wait_msg = m
-                            last_wait_idx = i
-                            break 
-                
-                if last_wait_msg:
-                    has_strict_reply = False
-                    if last_wait_idx > 0:
-                        newer_msgs = msgs[:last_wait_idx]
-                        for nm in newer_msgs:
-                             if await is_official_cs(nm):
-                                 if nm.reply_to:
-                                     target_id = nm.reply_to.reply_to_msg_id
-                                     if target_id == last_wait_msg.id:
-                                         has_strict_reply = True; break
-                                     if last_wait_msg.reply_to and target_id == last_wait_msg.reply_to.reply_to_msg_id:
-                                         has_strict_reply = True; break
-                                     target_sender = msg_sender_map.get(target_id)
-                                     if target_sender:
-                                         is_target_cs = (target_sender == MY_ID) or (target_sender in OTHER_CS_IDS)
-                                         if not is_target_cs:
-                                             has_strict_reply = True; break
-                                     else:
-                                         has_strict_reply = True; break
-
-                    if not has_strict_reply:
-                        m = last_wait_msg
-                        if m.reply_to and m.reply_to.reply_to_msg_id:
-                            reply_id = m.reply_to.reply_to_msg_id
-                            original_in_history = False
-                            for hm in history:
-                                if hm.id == reply_id:
-                                    original_in_history = True
-                                    break
-                            if not original_in_history:
-                                try:
-                                    origin_msg = await client.get_messages(chat_id, ids=reply_id)
-                                    if not origin_msg:
-                                        log_tree(4, f"🛡️ 拦截误报 [巡检] | Msg={m.id} | 原因: 原消息已删除")
-                                        continue
-                                except Exception: continue
-
-                        issues_found += 1
-                        cs_name = "未知客服"
-                        try:
-                            sender = await m.get_sender()
-                            if sender: cs_name = getattr(sender, 'first_name', 'Unknown')
-                        except: pass
-
-                        root_text = "无法获取源头"
-                        root_msg = msgs[-1]
-                        if root_msg: root_text = (root_msg.text or "[媒体文件]")[:50]
-
-                        link = ""
-                        if m.reply_to and m.reply_to.reply_to_top_id:
-                             link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}?thread={m.reply_to.reply_to_top_id}"
-                        else:
-                             link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}"
-
-                        debug_id_str = f"Msg={m.id}"
-                        safe_text = (m.text or "[媒体]")[:50]
-                        
-                        log_tree(4, f"❌ 发现遗漏 | Msg={m.id} | CS={cs_name} | RootText={root_text} | Link={link}")
-                        await send_alert(
-                            f"👮 **下班巡检-发现遗漏**\n"
-                            f"👤 客服: {cs_name}\n"
-                            f"💬 最后的回复: {safe_text}\n"
-                            f"❓ 客户源头: {root_text}\n"
-                            f"🔗 [点击跳转对话]({link})", 
-                            link,
-                            debug_id_str
-                        )
-                        await asyncio.sleep(1)
-
-        except Exception as e:
-            log_tree(9, f"群组 {chat_id} 巡检失败: {e}")
-
-    log_tree(4, f"巡检结束，共发现 {issues_found} 个问题。")
-    await send_alert(f"🏁 **下班巡检结束**\n共发现 **{issues_found}** 个未闭环的对话。", "")
-
 async def perform_stop_work():
     global IS_WORKING
-    if IS_WORKING:
-        await audit_pending_tasks()
     IS_WORKING = False
     for t in list(wait_tasks.values()) + list(followup_tasks.values()) + list(reply_tasks.values()): t.cancel()
     wait_tasks.clear(); followup_tasks.clear(); reply_tasks.clear()
@@ -729,19 +551,19 @@ def remove_task_record(chat_id, user_id, msg_id, thread_id=None):
             if not chat_thread_active_msgs[t_key]: del chat_thread_active_msgs[t_key]
 
 def cancel_tasks(chat_id, user_id, thread_id=None, reason="未知", types=None):
-    if types is None: types = ['wait', 'followup', 'reply'] # Default to all
-    
     targets = set()
     if user_id:
         u_key = (chat_id, user_id)
         if u_key in chat_user_active_msgs:
             targets.update(chat_user_active_msgs[u_key])
-            if len(types) == 3: del chat_user_active_msgs[u_key]
+            if types and len(types) == 3: del chat_user_active_msgs[u_key]
+            elif types is None: del chat_user_active_msgs[u_key]
     if thread_id:
         t_key = (chat_id, thread_id)
         if t_key in chat_thread_active_msgs:
             targets.update(chat_thread_active_msgs[t_key])
-            if len(types) == 3: del chat_thread_active_msgs[t_key]
+            if types and len(types) == 3: del chat_thread_active_msgs[t_key]
+            elif types is None: del chat_thread_active_msgs[t_key]
 
     if not targets: return
 
@@ -749,9 +571,12 @@ def cancel_tasks(chat_id, user_id, thread_id=None, reason="未知", types=None):
     count = 0
     cleared_ids = []
     for mid in targets:
-        if 'wait' in types and mid in wait_tasks: wait_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
-        if 'followup' in types and mid in followup_tasks: followup_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
-        if 'reply' in types and mid in reply_tasks: reply_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
+        if types is None or 'wait' in types:
+             if mid in wait_tasks: wait_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
+        if types is None or 'followup' in types:
+             if mid in followup_tasks: followup_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
+        if types is None or 'reply' in types:
+             if mid in reply_tasks: reply_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
     
     if count > 0:
         log_tree(2, f"销单成功 | {reason} | 流: {thread_id} | 任务: {cleared_ids}")
@@ -828,7 +653,6 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
 async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, user_ids_list, thread_id=None):
     task_start_time = time.time()
     try:
-        # [Ver 33.2] Fix NameError
         ids_str = f"Msg={key_id}"
         if user_ids_list: ids_str += " " + " ".join([f"User={u}" for u in user_ids_list])
 
@@ -1015,7 +839,7 @@ async def handler(event):
 
         norm_text = normalize(text)
         is_wait_cmd = any(k in norm_text for k in WAIT_SIGNATURES)
-        # [Ver 33.0] KEEP normalized match
+        # [Ver 34.0] KEEP = EXACT MATCH (Normalized), WAIT = CONTAINS
         is_keep_cmd = normalize(text) in KEEP_SIGNATURES 
         is_sender_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS)
 
@@ -1036,15 +860,25 @@ async def handler(event):
             if not real_customer_id:
                 real_customer_id = await get_traceable_sender(chat_id, reply_to_msg_id)
 
-        # [Ver 28.3] 组关联增强
         if not real_customer_id and reply_to_msg_id:
              pass 
 
         if is_sender_cs:
             record_cs_activity(chat_id, user_id=real_customer_id, thread_id=current_thread_id)
-
-            # [Ver 33.0] Runtime Diagnosis
-            log_tree(1, f"🔍 匹配调试 | Text='{normalize(text)}' | IsWait={is_wait_cmd} | IsKeep={is_keep_cmd}")
+            
+            # [Ver 34.1] Stale Edit Guard: Ignore old edits
+            if isinstance(event, events.MessageEdited):
+                 # Get latest message ID
+                 try:
+                     last_msgs = await client.get_messages(chat_id, limit=1)
+                     if last_msgs and last_msgs[0].id > event.id:
+                         # This is an edit to an old message, but chat has moved on.
+                         # Treat as "Past Update" -> Ignore for new timers.
+                         # BUT, allow cancellation if it changed status.
+                         if real_customer_id or current_thread_id:
+                             cancel_tasks(chat_id, real_customer_id, current_thread_id, reason=f"过期编辑: [{text[:100]}...]")
+                         return 
+                 except: pass
 
             if reply_to_msg_id:
                 source_info = "未知"
@@ -1055,7 +889,6 @@ async def handler(event):
                 log_tree(1, f"⚡️ 客服操作捕获 | Msg: {reply_to_msg_id} | 客服: {sender_name} | 内容: [{text[:100]}] | 归属: {real_customer_id} | 流: {current_thread_id} | 状态: {source_info}")
 
             if real_customer_id or current_thread_id:
-                # [Ver 31.8] 客服说话 -> 全部任务取消
                 cancel_tasks(chat_id, real_customer_id, current_thread_id, reason=f"客服回复: [{text[:100]}...]")
             
             if reply_to_msg_id and reply_to_msg_id in reply_tasks:
@@ -1083,13 +916,8 @@ async def handler(event):
                         wait_msg_map[event.id] = reply_to_msg_id
 
         else:
-            # [Ver 31.9] 双杀修复：忽略客户的编辑事件
-            if isinstance(event, events.MessageEdited):
-                return
-
             update_msg_cache(chat_id, event.id, sender_id, grouped_id)
-            
-            # [Ver 31.8] 客户说话 -> 只取消【漏回监控】，绝不取消【稍等/跟进任务】
+            # [Ver 29.1] 记录更详细的客户发言日志
             cancel_tasks(chat_id, sender_id, current_thread_id, reason=f"客户发言: [{text[:100]}...]", types=['reply'])
             
             log_tree(0, f"Msg={event.id} | User={sender_id} | [{chat_id}] {sender_name}: {text} [{msg_type}]")
@@ -1133,7 +961,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 33.3 Audit 24h)")
+        log_tree(0, "✅ 系统启动 (Ver 34.1 Stale Edit Guard)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
