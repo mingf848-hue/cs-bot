@@ -24,7 +24,7 @@ class BeijingFormatter(logging.Formatter):
     def converter(self, timestamp):
         return datetime.fromtimestamp(timestamp, timezone.utc).astimezone(timezone(timedelta(hours=8)))
     def formatTime(self, record, datefmt=None):
-        return self.converter(record.created).strftime('%Y-%m-%d %H:%M:%S') # 完整时间格式
+        return self.converter(record.created).strftime('%Y-%m-%d %H:%M:%S')
 
 file_fmt = BeijingFormatter('%(asctime)s %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 file_handler = logging.FileHandler(LOG_FILE_PATH, mode='a', encoding='utf-8')
@@ -63,9 +63,6 @@ def normalize(text):
     if not text: return ""
     text = text.lower()
     # [Ver 34.0] 移除所有标点符号和空白，只保留纯文本
-    # 过滤掉所有非单词字符 (标点、空格、特殊符号)
-    # \w 匹配字母数字下划线和汉字
-    # [^\w] 就是匹配所有非单词字符
     text = re.sub(r'[^\w]', '', text) 
     return text
 
@@ -98,12 +95,14 @@ try:
     
     wait_keywords_env = os.environ["WAIT_KEYWORDS"]
     clean_env = wait_keywords_env.replace("，", ",") 
-    # [Ver 34.0] 使用强力清洗加载关键词
-    WAIT_SIGNATURES = {normalize(x) for x in clean_env.split(',') if x.strip()}
+    # [Ver 35.0 Fix] 确保不包含空字符串，防止图片/无文字消息被误判
+    raw_wait = {normalize(x) for x in clean_env.split(',') if x.strip()}
+    WAIT_SIGNATURES = {x for x in raw_wait if x} 
 
     keep_keywords_env = os.environ.get("KEEP_KEYWORDS", "") 
     keep_list = keep_keywords_env.split('|')
-    KEEP_SIGNATURES = {normalize(x) for x in keep_list if x.strip()}
+    raw_keep = {normalize(x) for x in keep_list if x.strip()}
+    KEEP_SIGNATURES = {x for x in raw_keep if x}
     
     log_tree(0, f"🔍 关键词配置 (Normalized): WAIT={WAIT_SIGNATURES} | KEEP={KEEP_SIGNATURES}")
 
@@ -134,7 +133,7 @@ reply_tasks = {}
 wait_timers = {}
 followup_timers = {}
 reply_timers = {}
-wait_msg_map = {}       
+wait_msg_map = {}        
 followup_msg_map = {} 
 deleted_cache = deque(maxlen=10000)
 
@@ -273,7 +272,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 34.0 (Robust Match & UI Fix)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 35.0 (Closed Loop Logic Fix)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -402,9 +401,9 @@ LOG_VIEWER_HTML = """
                     html += `<div class="${rowClass}" id="log-${idx}">${type === 'cs' ? metaHtml : ''}<div class="bubble">${content}</div>${type === 'user' ? metaHtml : ''}</div>`;
                 } else {
                     if (type === 'alert' || type === 'audit') {
-                         html += `<div class="${rowClass}" id="log-${idx}"><div class="bubble">${actionBtn} <b>${content}</b></div></div>`;
+                          html += `<div class="${rowClass}" id="log-${idx}"><div class="bubble">${actionBtn} <b>${content}</b></div></div>`;
                     } else {
-                         html += `<div class="${rowClass}" id="log-${idx}"><div class="bubble">${entry.time} ${content}</div></div>`;
+                          html += `<div class="${rowClass}" id="log-${idx}"><div class="bubble">${entry.time} ${content}</div></div>`;
                     }
                 }
             });
@@ -516,13 +515,13 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 31.4] 严格巡检: 仅当客服回复并 *引用* 了客户消息时才算闭环
+# [Ver 35.0] 严格巡检: 仅当客服回复并 *引用* 了客户消息时才算闭环
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】...")
     await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近活跃的消息流，检查是否有遗漏...", "")
     
     issues_found = 0
-    SCAN_LIMIT = 600 
+    SCAN_LIMIT = 1500 
     
     for chat_id in CS_GROUP_IDS:
         try:
@@ -548,7 +547,9 @@ async def audit_pending_tasks():
                 for i, m in enumerate(msgs):
                     if await is_official_cs(m):
                         text = normalize(m.text or "")
-                        # [Ver 34.0] KEEP = EXACT MATCH (Normalized), WAIT = CONTAINS
+                        # [Ver 35.0 Fix] Skip empty string matches to avoid image false positives
+                        if not text: continue
+                        
                         is_wait = any(k in text for k in WAIT_SIGNATURES)
                         is_keep = normalize(text) in KEEP_SIGNATURES 
                         
@@ -558,33 +559,39 @@ async def audit_pending_tasks():
                             break 
                 
                 if last_wait_msg:
-                    has_strict_reply = False
+                    has_closed = False
                     if last_wait_idx > 0:
                         newer_msgs = msgs[:last_wait_idx]
                         for nm in newer_msgs:
                              if await is_official_cs(nm):
-                                 # Strict Check: Must have reply_to
+                                 # 检查是否为闭环消息
+                                 # 注意：如果 nm 本身也是 Wait/Keep，外层循环会先找到它，所以这里的 nm 通常是回复/图片
+                                 
                                  if nm.reply_to:
                                      target_id = nm.reply_to.reply_to_msg_id
+                                     target_sender = msg_sender_map.get(target_id)
                                      
                                      # 1. 直接引用了这条“稍等”
                                      if target_id == last_wait_msg.id:
-                                         has_strict_reply = True; break
-                                         
+                                         has_closed = True; break
+                                     
                                      # 2. 引用了“稍等”所回复的那条（即客户原消息）
                                      if last_wait_msg.reply_to and target_id == last_wait_msg.reply_to.reply_to_msg_id:
-                                         has_strict_reply = True; break
-                                         
-                                     # 3. 引用了同一个 Thread 里的其他非客服消息 (泛化严格模式)
-                                     target_sender = msg_sender_map.get(target_id)
+                                         has_closed = True; break
+                                     
+                                     # 3. [Ver 35.0] 引用了任意客户消息 (泛化严格模式)
+                                     # 只要回复的目标不是客服，就算处理了
                                      if target_sender:
                                          is_target_cs = (target_sender == MY_ID) or (target_sender in OTHER_CS_IDS)
                                          if not is_target_cs:
-                                             has_strict_reply = True; break
+                                             has_closed = True; break
                                      else:
-                                         has_strict_reply = True; break
+                                         # 如果找不到目标消息（可能在缓存外），但它确实是一条回复
+                                         # 为了防止像图片回复这种场景被误报，我们倾向于认为它是有效的回复
+                                         # 只要不是回复自己（已知ID），就认为是回复客户
+                                         has_closed = True; break
 
-                    if not has_strict_reply:
+                    if not has_closed:
                         m = last_wait_msg
                         
                         # 死单检查
@@ -1092,7 +1099,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 34.0 Robust Match & UI Fix)")
+        log_tree(0, "✅ 系统启动 (Ver 35.0 Closed Loop Fix)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
