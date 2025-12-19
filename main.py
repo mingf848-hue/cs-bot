@@ -106,7 +106,7 @@ try:
     
     log_tree(0, f"🔍 已加载跟进词 (KEEP): {KEEP_SIGNATURES}")
 
-    default_ignore = "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴,好的 谢谢"
+    default_ignore = "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴"
     ignore_env = os.environ.get("IGNORE_KEYWORDS", default_ignore)
     clean_ignore = ignore_env.replace("，", ",")
     IGNORE_SIGNATURES = {normalize(x) for x in clean_ignore.split(',') if x.strip()}
@@ -272,7 +272,8 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 33.2 (Audit Crash Fix)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 33.3 (Audit 24h)</div>
+    
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -556,21 +557,26 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 33.2] 修复：下班巡检变量未定义导致崩溃，增加 try-except 容错
+# [Ver 33.3] 优化：下班巡检逻辑 (基于时间24h)
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】...")
-    await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近活跃的消息流，检查是否有遗漏...", "")
+    await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近24小时活跃的消息流...", "")
     
     issues_found = 0
-    SCAN_LIMIT = 3000
+    # 24小时前的时间戳
+    cutoff_date = datetime.now(timezone.utc) - timedelta(hours=24)
     
     for chat_id in CS_GROUP_IDS:
         try:
-            log_tree(4, f"正在扫描群组 {chat_id} ...")
+            log_tree(4, f"正在扫描群组 {chat_id} (24h) ...")
             
+            history = []
             try:
-                # 尝试获取历史消息，如果失败（如群组ID无效）则跳过该群
-                history = await client.get_messages(chat_id, limit=SCAN_LIMIT)
+                # 使用 iter_messages 获取消息，直到时间超过24小时
+                async for message in client.iter_messages(chat_id):
+                    if message.date < cutoff_date:
+                        break
+                    history.append(message)
             except Exception as e:
                 log_tree(9, f"获取群组 {chat_id} 历史消息失败: {e}")
                 continue
@@ -1010,7 +1016,7 @@ async def handler(event):
         norm_text = normalize(text)
         is_wait_cmd = any(k in norm_text for k in WAIT_SIGNATURES)
         # [Ver 33.0] KEEP normalized match
-        is_keep_cmd = normalize(text) in KEEP_SIGNATURES
+        is_keep_cmd = normalize(text) in KEEP_SIGNATURES 
         is_sender_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS)
 
         current_thread_id, thread_type = get_thread_context(event)
@@ -1127,7 +1133,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 33.2 Audit Crash Fix)")
+        log_tree(0, "✅ 系统启动 (Ver 33.3 Audit 24h)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
