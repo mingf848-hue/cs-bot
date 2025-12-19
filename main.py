@@ -272,7 +272,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 35.0 (Closed Loop Logic Fix)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 36.0 (30h Scan Window)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -515,18 +515,30 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 35.0] 严格巡检: 仅当客服回复并 *引用* 了客户消息时才算闭环
+# [Ver 36.0] 增强巡检: 扫描过去 30 小时的消息
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】...")
     await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近活跃的消息流，检查是否有遗漏...", "")
     
     issues_found = 0
-    SCAN_LIMIT = 1500 
+    # SCAN_LIMIT = 600 # 废弃固定 Limit
+    
+    # 计算 30 小时前的时间戳
+    cutoff_time = datetime.now(timezone.utc) - timedelta(hours=30)
     
     for chat_id in CS_GROUP_IDS:
         try:
-            log_tree(4, f"正在扫描群组 {chat_id} ...")
-            history = await client.get_messages(chat_id, limit=SCAN_LIMIT)
+            log_tree(4, f"正在扫描群组 {chat_id} (最近 30 小时)...")
+            history = []
+            
+            # 使用 iter_messages 按时间回溯
+            # 设定 limit=5000 作为极端活跃群组的兜底，防止无限扫描
+            async for m in client.iter_messages(chat_id, limit=5000):
+                # 检查消息时间，如果早于 cutoff_time 则停止
+                if m.date and m.date < cutoff_time:
+                    break
+                history.append(m)
+            
             threads_map = defaultdict(list)
             # MsgID -> SenderID Map for quick lookup in this batch
             msg_sender_map = {m.id: m.sender_id for m in history}
@@ -1099,7 +1111,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 35.0 Closed Loop Fix)")
+        log_tree(0, "✅ 系统启动 (Ver 36.0 30h Scan Window)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
