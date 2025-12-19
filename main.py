@@ -63,7 +63,7 @@ def normalize(text):
     if not text: return ""
     text = text.lower()
     # [Ver 34.0] 移除所有标点符号和空白，只保留纯文本
-    text = re.sub(r'[^\w]', '', text) 
+    text = re.sub(r'[^\w=]', '', text) 
     return text
 
 def extract_id_list(env_str):
