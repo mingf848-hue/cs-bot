@@ -562,7 +562,7 @@ async def audit_pending_tasks():
     await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近活跃的消息流，检查是否有遗漏...", "")
     
     issues_found = 0
-    SCAN_LIMIT = 600 
+    SCAN_LIMIT = 3000
     
     for chat_id in CS_GROUP_IDS:
         try:
