@@ -268,7 +268,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 34.1 (Stale Edit Guard)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 34.2 (Audit 30h Force)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -507,7 +507,138 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
+# [Ver 34.2] 优化：强制执行下班巡检 (忽略状态位) & 30小时
+async def audit_pending_tasks():
+    log_tree(4, "开始执行【下班巡检】...")
+    await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近30小时活跃的消息流...", "")
+    
+    issues_found = 0
+    # [Ver 34.2] 30小时前的时间戳
+    cutoff_date = datetime.now(timezone.utc) - timedelta(hours=30)
+    
+    for chat_id in CS_GROUP_IDS:
+        try:
+            log_tree(4, f"正在扫描群组 {chat_id} (30h) ...")
+            
+            history = []
+            try:
+                # 使用 iter_messages 获取消息，直到时间超过30小时
+                async for message in client.iter_messages(chat_id):
+                    if message.date < cutoff_date:
+                        break
+                    history.append(message)
+            except Exception as e:
+                log_tree(9, f"获取群组 {chat_id} 历史消息失败: {e}")
+                continue
+                
+            threads_map = defaultdict(list)
+            msg_sender_map = {m.id: m.sender_id for m in history}
+            
+            for m in history:
+                thread_id = None
+                if m.reply_to:
+                    thread_id = m.reply_to.reply_to_top_id 
+                    if not thread_id: thread_id = m.reply_to.reply_to_msg_id
+                if not thread_id: thread_id = m.id
+                threads_map[thread_id].append(m)
+            
+            for t_id, msgs in threads_map.items():
+                last_wait_msg = None
+                last_wait_idx = -1
+                
+                for i, m in enumerate(msgs):
+                    if await is_official_cs(m):
+                        text = normalize(m.text or "")
+                        # [Ver 34.0] KEEP = EXACT MATCH (Normalized), WAIT = CONTAINS
+                        is_wait = any(k in text for k in WAIT_SIGNATURES)
+                        is_keep = normalize(text) in KEEP_SIGNATURES 
+                        
+                        if is_wait or is_keep:
+                            last_wait_msg = m
+                            last_wait_idx = i
+                            break 
+                
+                if last_wait_msg:
+                    has_strict_reply = False
+                    if last_wait_idx > 0:
+                        newer_msgs = msgs[:last_wait_idx]
+                        for nm in newer_msgs:
+                             if await is_official_cs(nm):
+                                 # Strict Check: Must have reply_to
+                                 if nm.reply_to:
+                                     target_id = nm.reply_to.reply_to_msg_id
+                                     
+                                     if target_id == last_wait_msg.id:
+                                         has_strict_reply = True; break
+                                     if last_wait_msg.reply_to and target_id == last_wait_msg.reply_to.reply_to_msg_id:
+                                         has_strict_reply = True; break
+                                     target_sender = msg_sender_map.get(target_id)
+                                     if target_sender:
+                                         is_target_cs = (target_sender == MY_ID) or (target_sender in OTHER_CS_IDS)
+                                         if not is_target_cs:
+                                             has_strict_reply = True; break
+                                     else:
+                                         has_strict_reply = True; break
+
+                    if not has_strict_reply:
+                        m = last_wait_msg
+                        if m.reply_to and m.reply_to.reply_to_msg_id:
+                            reply_id = m.reply_to.reply_to_msg_id
+                            original_in_history = False
+                            for hm in history:
+                                if hm.id == reply_id:
+                                    original_in_history = True
+                                    break
+                            if not original_in_history:
+                                try:
+                                    origin_msg = await client.get_messages(chat_id, ids=reply_id)
+                                    if not origin_msg:
+                                        log_tree(4, f"🛡️ 拦截误报 [巡检] | Msg={m.id} | 原因: 原消息已删除")
+                                        continue
+                                except Exception: continue
+
+                        issues_found += 1
+                        cs_name = "未知客服"
+                        try:
+                            sender = await m.get_sender()
+                            if sender: cs_name = getattr(sender, 'first_name', 'Unknown')
+                        except: pass
+
+                        root_text = "无法获取源头"
+                        root_msg = msgs[-1]
+                        if root_msg: root_text = (root_msg.text or "[媒体文件]")[:50]
+
+                        link = ""
+                        if m.reply_to and m.reply_to.reply_to_top_id:
+                             link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}?thread={m.reply_to.reply_to_top_id}"
+                        else:
+                             link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}"
+
+                        debug_id_str = f"Msg={m.id}"
+                        safe_text = (m.text or "[媒体]")[:50]
+                        
+                        log_tree(4, f"❌ 发现遗漏 | Msg={m.id} | CS={cs_name} | RootText={root_text} | Link={link}")
+                        await send_alert(
+                            f"👮 **下班巡检-发现遗漏**\n"
+                            f"👤 客服: {cs_name}\n"
+                            f"💬 最后的回复: {safe_text}\n"
+                            f"❓ 客户源头: {root_text}\n"
+                            f"🔗 [点击跳转对话]({link})", 
+                            link,
+                            debug_id_str
+                        )
+                        await asyncio.sleep(1)
+
+        except Exception as e:
+            log_tree(9, f"群组 {chat_id} 巡检失败: {e}")
+
+    log_tree(4, f"巡检结束，共发现 {issues_found} 个问题。")
+    await send_alert(f"🏁 **下班巡检结束**\n共发现 **{issues_found}** 个未闭环的对话。", "")
+
 async def perform_stop_work():
+    # [Ver 34.2] 强制执行巡检，不论当前状态
+    await audit_pending_tasks()
+        
     global IS_WORKING
     IS_WORKING = False
     for t in list(wait_tasks.values()) + list(followup_tasks.values()) + list(reply_tasks.values()): t.cancel()
@@ -860,6 +991,7 @@ async def handler(event):
             if not real_customer_id:
                 real_customer_id = await get_traceable_sender(chat_id, reply_to_msg_id)
 
+        # [Ver 28.3] 组关联增强
         if not real_customer_id and reply_to_msg_id:
              pass 
 
@@ -916,8 +1048,12 @@ async def handler(event):
                         wait_msg_map[event.id] = reply_to_msg_id
 
         else:
+            # [Ver 31.9] 双杀修复：忽略客户的编辑事件
+            if isinstance(event, events.MessageEdited):
+                return
+
             update_msg_cache(chat_id, event.id, sender_id, grouped_id)
-            # [Ver 29.1] 记录更详细的客户发言日志
+            # [Ver 31.8] 客户说话 -> 只取消【漏回监控】，绝不取消【稍等/跟进任务】
             cancel_tasks(chat_id, sender_id, current_thread_id, reason=f"客户发言: [{text[:100]}...]", types=['reply'])
             
             log_tree(0, f"Msg={event.id} | User={sender_id} | [{chat_id}] {sender_name}: {text} [{msg_type}]")
@@ -961,7 +1097,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 34.1 Stale Edit Guard)")
+        log_tree(0, "✅ 系统启动 (Ver 34.2 Audit 30h Force)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
