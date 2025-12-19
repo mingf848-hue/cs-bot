@@ -24,7 +24,7 @@ class BeijingFormatter(logging.Formatter):
     def converter(self, timestamp):
         return datetime.fromtimestamp(timestamp, timezone.utc).astimezone(timezone(timedelta(hours=8)))
     def formatTime(self, record, datefmt=None):
-        return self.converter(record.created).strftime('%Y-%m-%d %H:%M:%S')
+        return self.converter(record.created).strftime('%Y-%m-%d %H:%M:%S') # 完整时间格式
 
 file_fmt = BeijingFormatter('%(asctime)s %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 file_handler = logging.FileHandler(LOG_FILE_PATH, mode='a', encoding='utf-8')
@@ -62,8 +62,10 @@ def log_tree(level, msg):
 def normalize(text):
     if not text: return ""
     text = text.lower()
-    # 移除所有非单词字符（标点、空格、特殊符号），只保留汉字字母数字
-    # 这样能保证 "处理中。" 和 "处理中" 以及 "处理 中" 都能匹配
+    # [Ver 34.0] 移除所有标点符号和空白，只保留纯文本
+    # 过滤掉所有非单词字符 (标点、空格、特殊符号)
+    # \w 匹配字母数字下划线和汉字
+    # [^\w] 就是匹配所有非单词字符
     text = re.sub(r'[^\w]', '', text) 
     return text
 
@@ -96,6 +98,7 @@ try:
     
     wait_keywords_env = os.environ["WAIT_KEYWORDS"]
     clean_env = wait_keywords_env.replace("，", ",") 
+    # [Ver 34.0] 使用强力清洗加载关键词
     WAIT_SIGNATURES = {normalize(x) for x in clean_env.split(',') if x.strip()}
 
     keep_keywords_env = os.environ.get("KEEP_KEYWORDS", "") 
@@ -270,7 +273,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 34.3 (Audit Sequence Fix)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 34.0 (Robust Match & UI Fix)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -333,6 +336,7 @@ LOG_VIEWER_HTML = """
     <script>
         const container = document.getElementById('log-container');
         let parsedLogs = [];
+        // [Ver 34.0] UI Fix: Handle date format
         fetch('/log_raw?t=' + Date.now())
             .then(r => { if (!r.ok) throw new Error('Network response was not ok'); return r.text(); })
             .then(text => {
@@ -346,12 +350,15 @@ LOG_VIEWER_HTML = """
             const rawLines = text.split(/\\r?\\n/);
             parsedLogs = [];
             let currentEntry = null;
+            // [Ver 34.0] Regex to support both full date and time-only
             const timeRegex = /^(\\d{4}-\\d{2}-\\d{2}\\s+)?(\\d{2}:\\d{2}:\\d{2})(.*)/;
+            
             rawLines.forEach(line => {
                 if(!line.trim()) return;
                 const match = line.match(timeRegex);
                 if (match) {
                     if (currentEntry) parsedLogs.push(currentEntry);
+                    // match[2] is time, match[3] is content
                     currentEntry = { time: match[2], raw: match[3], content: match[3].trim(), fullText: match[3] };
                 } else {
                     if (currentEntry) { currentEntry.fullText += '\\n' + line; currentEntry.content += '\\n' + line; }
@@ -509,30 +516,18 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 34.3] 下班巡检 - 时序闭环检查 (不强制引用)
+# [Ver 31.4] 严格巡检: 仅当客服回复并 *引用* 了客户消息时才算闭环
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】...")
-    await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近30小时活跃的消息流...", "")
+    await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近活跃的消息流，检查是否有遗漏...", "")
     
     issues_found = 0
-    # [Ver 34.2] 30小时前的时间戳
-    cutoff_date = datetime.now(timezone.utc) - timedelta(hours=30)
+    SCAN_LIMIT = 600 
     
     for chat_id in CS_GROUP_IDS:
         try:
-            log_tree(4, f"正在扫描群组 {chat_id} (30h) ...")
-            
-            history = []
-            try:
-                # 使用 iter_messages 获取消息，直到时间超过30小时
-                async for message in client.iter_messages(chat_id):
-                    if message.date < cutoff_date:
-                        break
-                    history.append(message)
-            except Exception as e:
-                log_tree(9, f"获取群组 {chat_id} 历史消息失败: {e}")
-                continue
-                
+            log_tree(4, f"正在扫描群组 {chat_id} ...")
+            history = await client.get_messages(chat_id, limit=SCAN_LIMIT)
             threads_map = defaultdict(list)
             # MsgID -> SenderID Map for quick lookup in this batch
             msg_sender_map = {m.id: m.sender_id for m in history}
@@ -563,16 +558,33 @@ async def audit_pending_tasks():
                             break 
                 
                 if last_wait_msg:
-                    # [Ver 34.3] 宽松检查：只要后续有客服发言，就算闭环 (无需引用)
-                    has_any_cs_reply = False
+                    has_strict_reply = False
                     if last_wait_idx > 0:
                         newer_msgs = msgs[:last_wait_idx]
                         for nm in newer_msgs:
                              if await is_official_cs(nm):
-                                 has_any_cs_reply = True
-                                 break
+                                 # Strict Check: Must have reply_to
+                                 if nm.reply_to:
+                                     target_id = nm.reply_to.reply_to_msg_id
+                                     
+                                     # 1. 直接引用了这条“稍等”
+                                     if target_id == last_wait_msg.id:
+                                         has_strict_reply = True; break
+                                         
+                                     # 2. 引用了“稍等”所回复的那条（即客户原消息）
+                                     if last_wait_msg.reply_to and target_id == last_wait_msg.reply_to.reply_to_msg_id:
+                                         has_strict_reply = True; break
+                                         
+                                     # 3. 引用了同一个 Thread 里的其他非客服消息 (泛化严格模式)
+                                     target_sender = msg_sender_map.get(target_id)
+                                     if target_sender:
+                                         is_target_cs = (target_sender == MY_ID) or (target_sender in OTHER_CS_IDS)
+                                         if not is_target_cs:
+                                             has_strict_reply = True; break
+                                     else:
+                                         has_strict_reply = True; break
 
-                    if not has_any_cs_reply:
+                    if not has_strict_reply:
                         m = last_wait_msg
                         
                         # 死单检查
@@ -631,9 +643,8 @@ async def audit_pending_tasks():
 
 async def perform_stop_work():
     global IS_WORKING
-    # [Ver 34.2] 强制执行巡检，不论当前状态
-    await audit_pending_tasks()
-        
+    if IS_WORKING:
+        await audit_pending_tasks()
     IS_WORKING = False
     for t in list(wait_tasks.values()) + list(followup_tasks.values()) + list(reply_tasks.values()): t.cancel()
     wait_tasks.clear(); followup_tasks.clear(); reply_tasks.clear()
@@ -676,19 +687,19 @@ def remove_task_record(chat_id, user_id, msg_id, thread_id=None):
             if not chat_thread_active_msgs[t_key]: del chat_thread_active_msgs[t_key]
 
 def cancel_tasks(chat_id, user_id, thread_id=None, reason="未知", types=None):
+    if types is None: types = ['wait', 'followup', 'reply'] # Default to all
+    
     targets = set()
     if user_id:
         u_key = (chat_id, user_id)
         if u_key in chat_user_active_msgs:
             targets.update(chat_user_active_msgs[u_key])
-            if types and len(types) == 3: del chat_user_active_msgs[u_key]
-            elif types is None: del chat_user_active_msgs[u_key]
+            if len(types) == 3: del chat_user_active_msgs[u_key]
     if thread_id:
         t_key = (chat_id, thread_id)
         if t_key in chat_thread_active_msgs:
             targets.update(chat_thread_active_msgs[t_key])
-            if types and len(types) == 3: del chat_thread_active_msgs[t_key]
-            elif types is None: del chat_thread_active_msgs[t_key]
+            if len(types) == 3: del chat_thread_active_msgs[t_key]
 
     if not targets: return
 
@@ -696,12 +707,9 @@ def cancel_tasks(chat_id, user_id, thread_id=None, reason="未知", types=None):
     count = 0
     cleared_ids = []
     for mid in targets:
-        if types is None or 'wait' in types:
-             if mid in wait_tasks: wait_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
-        if types is None or 'followup' in types:
-             if mid in followup_tasks: followup_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
-        if types is None or 'reply' in types:
-             if mid in reply_tasks: reply_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
+        if 'wait' in types and mid in wait_tasks: wait_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
+        if 'followup' in types and mid in followup_tasks: followup_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
+        if 'reply' in types and mid in reply_tasks: reply_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
     
     if count > 0:
         log_tree(2, f"销单成功 | {reason} | 流: {thread_id} | 任务: {cleared_ids}")
@@ -992,19 +1000,12 @@ async def handler(event):
         if is_sender_cs:
             record_cs_activity(chat_id, user_id=real_customer_id, thread_id=current_thread_id)
             
-            # [Ver 34.1] Stale Edit Guard: Ignore old edits
+            # [Ver 34.0] Edit Re-trigger Fix
             if isinstance(event, events.MessageEdited):
-                 # Get latest message ID
-                 try:
-                     last_msgs = await client.get_messages(chat_id, limit=1)
-                     if last_msgs and last_msgs[0].id > event.id:
-                         # This is an edit to an old message, but chat has moved on.
-                         # Treat as "Past Update" -> Ignore for new timers.
-                         # BUT, allow cancellation if it changed status.
-                         if real_customer_id or current_thread_id:
-                             cancel_tasks(chat_id, real_customer_id, current_thread_id, reason=f"过期编辑: [{text[:100]}...]")
-                         return 
-                 except: pass
+                 # Only cancel if editing to "Done" status
+                 if real_customer_id or current_thread_id:
+                     cancel_tasks(chat_id, real_customer_id, current_thread_id, reason=f"客服编辑: [{text[:100]}...]")
+                 return
 
             if reply_to_msg_id:
                 source_info = "未知"
@@ -1091,7 +1092,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 34.3 Audit Seq Fix)")
+        log_tree(0, "✅ 系统启动 (Ver 34.0 Robust Match & UI Fix)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
