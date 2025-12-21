@@ -278,7 +278,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 36.5 (Smart Junk Filter)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 36.6 (Log Links & Blacklist)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -538,7 +538,7 @@ async def audit_pending_tasks():
     
     # [Ver 36.2] 定义不参与巡检的黑名单群组
     # 在此处填写无需下班巡检的群ID，多个ID用逗号分隔，例如: [-1002169616907, -1001234567890]
-    EXCLUDED_GROUPS = [-1002169616907]
+    EXCLUDED_GROUPS = [-1002807120955, -1002169616907]
 
     # [Ver 36.5] 垃圾消息过滤器
     def is_junk_message(text):
@@ -749,7 +749,9 @@ async def audit_pending_tasks():
                         
                         if target_customer_id and target_customer_id in replied_users_in_window:
                             has_closed = True
-                            log_tree(4, f"🛡️ 豁免 [稍等-用户已回复] | User={target_customer_id} | Msg={last_wait_msg.id}")
+                            # Generate link for logging
+                            chk_link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{last_wait_msg.id}"
+                            log_tree(4, f"🛡️ 豁免 [稍等-用户已回复] | User={target_customer_id} | Msg={last_wait_msg.id} | Link={chk_link}")
 
                     if not has_closed:
                         # 再次检查：该 Thread 的用户是否已经在 User Check 中报过了？
