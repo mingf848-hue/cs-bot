@@ -110,8 +110,8 @@ try:
     # normalized 会去除标点，所以 "好的，感谢" 会匹配 "好的感谢"
     default_ignore = (
         "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴,"
-        "好的呢,嗯,嗯嗯,谢了,okk,k,行,妥,了解,已收,没问题,好的收到,ok了,麻烦了,"
-        "好的感谢,哦"
+        "好的呢,嗯,嗯嗯,谢了,okk,k,行,妥,了解,收到,没问题,好的收到,ok了,麻烦了,"
+        "好的感谢,哦,好哦,行,好吧,知道了,没事了,算了,不用,正常,"
     )
     ignore_env = os.environ.get("IGNORE_KEYWORDS", default_ignore)
     clean_ignore = ignore_env.replace("，", ",")
@@ -278,7 +278,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 36.9 (Clean Log)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 37.1 (Silent Audit)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -525,7 +525,7 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 36.8] 增强巡检: 扫描过去 30 小时的消息
+# [Ver 37.1] 增强巡检: 扫描过去 30 小时的消息
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】...")
     await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近活跃的消息流，检查是否有遗漏...", "")
@@ -666,21 +666,22 @@ async def audit_pending_tasks():
                     log_tree(4, f"🛡️ 豁免 [任务中] | User={sender_id} | Msg={m.id}")
                     continue
 
-                # [Ver 36.7] 豁免 2: 在该消息 *之后* (时间轴更新) 客服已经回复过该用户
-                # Check if max_reply_id > current_msg_id
-                # [Ver 36.8] 增加 Burst 容错: 如果客服回复时间与客户消息时间非常接近 (e.g. 10s内)，视为并发消息，也豁免
-                # m.date.timestamp() vs user_max_reply_time[sender_id]
+                # [Ver 37.0] 智能豁免逻辑升级 (ID优先，时间次之)
+                # 1. ID Check: 如果客服最新的回复ID > 当前消息ID，说明【肯定是】回复了该用户，直接静默豁免。
+                if user_max_reply_id[sender_id] > m.id:
+                    # 这是一个正常的已回复状态，不打印日志，避免刷屏
+                    continue
+
+                # 2. Time/Burst Check: 只有当ID检查失败时（即看起来像是客户最后发消息），才检查时间差。
+                # 如果时间差极小（例如10秒内），说明是秒回或者并发撞车，给予“并发容错”豁免。
                 latest_reply_ts = user_max_reply_time.get(sender_id, 0)
                 msg_ts = m.date.timestamp()
                 
-                is_replied_later = user_max_reply_id[sender_id] > m.id
-                is_burst_concurrent = abs(latest_reply_ts - msg_ts) < 10 and latest_reply_ts > 0
-
-                if is_replied_later or is_burst_concurrent:
-                    # [Ver 36.9] Only log concurrent (special) exemptions, silence standard replies
-                    if is_burst_concurrent:
-                        chk_link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}"
-                        log_tree(4, f"🛡️ 豁免 [并发容错] | User={sender_id} | Msg={m.id} | Link={chk_link}")
+                # 只有在 latest_reply_ts 存在时才比较
+                # [Ver 37.1] Silenced concurrent logs to avoid confusion for users
+                if latest_reply_ts > 0 and abs(msg_ts - latest_reply_ts) < 10:
+                    # chk_link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}"
+                    # log_tree(4, f"🛡️ 豁免 [并发容错] | User={sender_id} | Msg={m.id} | Link={chk_link}")
                     continue
 
                 # 豁免 3: 图组已被回复
@@ -1299,7 +1300,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 36.8 Cache Backup & Burst)")
+        log_tree(0, "✅ 系统启动 (Ver 37.1 Silent Audit)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
