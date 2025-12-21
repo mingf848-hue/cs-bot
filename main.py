@@ -278,7 +278,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 36.8 (Cache Backup & Burst)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 36.9 (Clean Log)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -677,9 +677,10 @@ async def audit_pending_tasks():
                 is_burst_concurrent = abs(latest_reply_ts - msg_ts) < 10 and latest_reply_ts > 0
 
                 if is_replied_later or is_burst_concurrent:
-                    reason = "已回复" if is_replied_later else "并发容错"
-                    chk_link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}"
-                    log_tree(4, f"🛡️ 豁免 [{reason}] | User={sender_id} | Msg={m.id} | Link={chk_link}")
+                    # [Ver 36.9] Only log concurrent (special) exemptions, silence standard replies
+                    if is_burst_concurrent:
+                        chk_link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}"
+                        log_tree(4, f"🛡️ 豁免 [并发容错] | User={sender_id} | Msg={m.id} | Link={chk_link}")
                     continue
 
                 # 豁免 3: 图组已被回复
@@ -778,8 +779,9 @@ async def audit_pending_tasks():
                             latest_reply_id = user_max_reply_id.get(target_customer_id, 0)
                             if latest_reply_id > last_wait_msg.id:
                                 has_closed = True
-                                chk_link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{last_wait_msg.id}"
-                                log_tree(4, f"🛡️ 豁免 [稍等-用户已回复] | User={target_customer_id} | Msg={last_wait_msg.id} | Link={chk_link}")
+                                # [Ver 36.9] Silenced normal 'Replied Later' exemption for Wait msgs too
+                                # chk_link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{last_wait_msg.id}"
+                                # log_tree(4, f"🛡️ 豁免 [稍等-用户已回复] | User={target_customer_id} | Msg={last_wait_msg.id} | Link={chk_link}")
 
                     if not has_closed:
                         # 再次检查：该 Thread 的用户是否已经在 User Check 中报过了？
