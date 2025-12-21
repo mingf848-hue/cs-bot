@@ -278,7 +278,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 36.6 (Log Links & Blacklist)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 36.7 (ID-Based Exempt)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -525,7 +525,7 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 36.5] 增强巡检: 扫描过去 30 小时的消息
+# [Ver 36.7] 增强巡检: 扫描过去 30 小时的消息
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】...")
     await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近活跃的消息流，检查是否有遗漏...", "")
@@ -574,15 +574,13 @@ async def audit_pending_tasks():
             msg_map = {m.id: m for m in history}
             msg_sender_map = {m.id: m.sender_id for m in history}
             
-            # [Ver 36.4] 用户维度：识别最近已回复的用户 (Recent Replied Users)
-            # 扫描逻辑：遍历所有消息，找出客服回复了谁。如果回复了User A，
-            # 则 User A 在该回复 *之前* 发送的所有分段消息都视为被“覆盖”。
-            # 由于 history 是 Newest -> Oldest，我们只需要简单地记录 "replied_users" 即可。
-            # 如果我们先遇到 CS Reply to A，后遇到 Msg from A，说明 Msg from A 是旧的，被回复了。
-            # 如果我们先遇到 Msg from A，后遇到 CS Reply to A，说明 Msg from A 是新的，可能未回复。
+            # [Ver 36.7] 用户维度：记录用户最新的回复消息ID
+            # 逻辑：User A 的 Max Reply ID = 100。
+            # 如果 Wait Msg ID = 90，且 100 > 90，则说明 Wait 之后还有回复，视为闭环。
+            # 如果 Wait Msg ID = 100 (Wait 本身就是最新回复)，且 100 == 100，则未闭环。
             
             replied_grouped_ids = set() # 图组ID (旧逻辑保留)
-            replied_users_in_window = set() # [Ver 36.4] 在此扫描窗口内，已被客服回复过的用户ID
+            user_max_reply_id = defaultdict(int) # UserID -> Max MsgID of CS Reply
             
             # 线程归类 (用于 Wait/Close 检查)
             threads_map = defaultdict(list)
@@ -615,7 +613,16 @@ async def audit_pending_tasks():
                             target_user_id = msg_sender_map[reply_id]
                         
                         if target_user_id:
-                            replied_users_in_window.add(target_user_id)
+                            # [Ver 36.7] 记录该用户被回复的最新消息ID
+                            # 注意: history 是倒序 (New -> Old) 还是顺序？
+                            # client.iter_messages 默认是 Newest to Oldest.
+                            # 所以我们遇到的第一个就是最新的。
+                            if user_max_reply_id[target_user_id] == 0:
+                                user_max_reply_id[target_user_id] = m.id
+                            else:
+                                # Keep max (just in case history order is different or threaded)
+                                if m.id > user_max_reply_id[target_user_id]:
+                                    user_max_reply_id[target_user_id] = m.id
 
             # 获取当前正在进行的任务列表 (用于全局豁免)
             # chat_user_active_msgs: {(chat_id, user_id): set(msg_ids)}
@@ -653,10 +660,9 @@ async def audit_pending_tasks():
                     log_tree(4, f"🛡️ 豁免 [任务中] | User={sender_id} | Msg={m.id}")
                     continue
 
-                # 豁免 2: 在该消息 *之后* (时间轴更新) 客服已经回复过该用户
-                # 由于我们是 Newest -> Oldest 遍历，如果 sender_id 已经在 replied_users_in_window 中，
-                # 说明我们在更“新”的地方看到了 CS 的回复。
-                if sender_id in replied_users_in_window:
+                # [Ver 36.7] 豁免 2: 在该消息 *之后* (时间轴更新) 客服已经回复过该用户
+                # Check if max_reply_id > current_msg_id
+                if user_max_reply_id[sender_id] > m.id:
                     log_tree(4, f"🛡️ 豁免 [已回复] | User={sender_id} | Msg={m.id}")
                     continue
 
@@ -736,8 +742,10 @@ async def audit_pending_tasks():
                                          tsid = msg_sender_map[nm.reply_to.reply_to_msg_id]
                                          if tsid not in ([MY_ID] + OTHER_CS_IDS): has_closed = True; break
 
-                    # [Ver 36.5] 增强闭环检查：如果客服已经回复了该用户（在扫描窗口内的任意位置），也视为闭环
-                    # 这解决 "Wait" -> "Result (Reply to user)" 场景
+                    # [Ver 36.7] 增强闭环检查：
+                    # 只有当客服的【最新回复时间】晚于这条【稍等】消息时，才视为已闭环。
+                    # 如果 Wait Msg ID = 100, Max Reply ID = 100 -> 说明稍等是最后一条，未闭环。
+                    # 如果 Wait Msg ID = 100, Max Reply ID = 101 -> 说明之后有新回复，已闭环。
                     if not has_closed and last_wait_msg.reply_to:
                         reply_id = last_wait_msg.reply_to.reply_to_msg_id
                         # 尝试找到该 Wait 消息回复的客户ID
@@ -747,11 +755,12 @@ async def audit_pending_tasks():
                         elif reply_id in msg_sender_map:
                             target_customer_id = msg_sender_map[reply_id]
                         
-                        if target_customer_id and target_customer_id in replied_users_in_window:
-                            has_closed = True
-                            # Generate link for logging
-                            chk_link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{last_wait_msg.id}"
-                            log_tree(4, f"🛡️ 豁免 [稍等-用户已回复] | User={target_customer_id} | Msg={last_wait_msg.id} | Link={chk_link}")
+                        if target_customer_id:
+                            latest_reply_id = user_max_reply_id.get(target_customer_id, 0)
+                            if latest_reply_id > last_wait_msg.id:
+                                has_closed = True
+                                chk_link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{last_wait_msg.id}"
+                                log_tree(4, f"🛡️ 豁免 [稍等-用户已回复] | User={target_customer_id} | Msg={last_wait_msg.id} | Link={chk_link}")
 
                     if not has_closed:
                         # 再次检查：该 Thread 的用户是否已经在 User Check 中报过了？
@@ -1269,7 +1278,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 36.5 Smart Junk Filter)")
+        log_tree(0, "✅ 系统启动 (Ver 36.7 ID-Based Exempt)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
