@@ -106,10 +106,12 @@ try:
     
     log_tree(0, f"🔍 关键词配置 (Normalized): WAIT={WAIT_SIGNATURES} | KEEP={KEEP_SIGNATURES}")
 
-    # [Ver 36.2] 扩展忽略关键词库 (包含用户请求的新增词汇)
+    # [Ver 36.3] 扩展忽略关键词库 (包含用户请求的新增词汇)
+    # normalized 会去除标点，所以 "好的，感谢" 会匹配 "好的感谢"
     default_ignore = (
         "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴,"
-        "好的呢,嗯,嗯嗯,谢了,okk,k,行,妥,了解,已收,没问题,好的收到,ok了,麻烦了"
+        "好的呢,嗯,嗯嗯,谢了,okk,k,行,妥,了解,已收,没问题,好的收到,ok了,麻烦了,"
+        "好的感谢,哦"
     )
     ignore_env = os.environ.get("IGNORE_KEYWORDS", default_ignore)
     clean_ignore = ignore_env.replace("，", ",")
@@ -276,7 +278,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 36.2 (Last Msg Audit)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 36.4 (Smart Loose Audit)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -523,7 +525,7 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 36.2] 增强巡检: 扫描过去 30 小时的消息
+# [Ver 36.4] 增强巡检: 扫描过去 30 小时的消息
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】...")
     await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近活跃的消息流，检查是否有遗漏...", "")
@@ -535,6 +537,7 @@ async def audit_pending_tasks():
     cutoff_time = datetime.now(timezone.utc) - timedelta(hours=30)
     
     # [Ver 36.2] 定义不参与巡检的黑名单群组
+    # 在此处填写无需下班巡检的群ID，多个ID用逗号分隔，例如: [-1002169616907, -1001234567890]
     EXCLUDED_GROUPS = [-1002169616907]
 
     for chat_id in CS_GROUP_IDS:
@@ -555,63 +558,135 @@ async def audit_pending_tasks():
                     break
                 history.append(m)
             
-            threads_map = defaultdict(list)
-            # MsgID -> SenderID Map for quick lookup in this batch
+            # 基础数据准备 (MsgID -> Msg / MsgID -> SenderID)
+            msg_map = {m.id: m for m in history}
             msg_sender_map = {m.id: m.sender_id for m in history}
             
+            # [Ver 36.4] 用户维度：识别最近已回复的用户 (Recent Replied Users)
+            # 扫描逻辑：遍历所有消息，找出客服回复了谁。如果回复了User A，
+            # 则 User A 在该回复 *之前* 发送的所有分段消息都视为被“覆盖”。
+            # 由于 history 是 Newest -> Oldest，我们只需要简单地记录 "replied_users" 即可。
+            # 如果我们先遇到 CS Reply to A，后遇到 Msg from A，说明 Msg from A 是旧的，被回复了。
+            # 如果我们先遇到 Msg from A，后遇到 CS Reply to A，说明 Msg from A 是新的，可能未回复。
+            
+            replied_grouped_ids = set() # 图组ID (旧逻辑保留)
+            replied_users_in_window = set() # [Ver 36.4] 在此扫描窗口内，已被客服回复过的用户ID
+            
+            # 线程归类 (用于 Wait/Close 检查)
+            threads_map = defaultdict(list)
+
             for m in history:
+                # 1. 填充线程Map
                 thread_id = None
                 if m.reply_to:
                     thread_id = m.reply_to.reply_to_top_id 
                     if not thread_id: thread_id = m.reply_to.reply_to_msg_id
                 if not thread_id: thread_id = m.id
                 threads_map[thread_id].append(m)
-            
-            for t_id, msgs in threads_map.items():
-                if not msgs: continue
+
+                # 2. 识别客服行为
+                if await is_official_cs(m):
+                    if m.reply_to:
+                        reply_id = m.reply_to.reply_to_msg_id
+                        target_msg = msg_map.get(reply_id)
+                        
+                        # 记录被回复的图组ID
+                        if target_msg and target_msg.grouped_id:
+                            replied_grouped_ids.add(target_msg.grouped_id)
+                        
+                        # [Ver 36.4] 记录被回复的用户ID
+                        # 尝试从缓存或历史中获取被回复消息的发送者
+                        target_user_id = None
+                        if target_msg: 
+                            target_user_id = target_msg.sender_id
+                        elif reply_id in msg_sender_map:
+                            target_user_id = msg_sender_map[reply_id]
+                        
+                        if target_user_id:
+                            replied_users_in_window.add(target_user_id)
+
+            # 获取当前正在进行的任务列表 (用于全局豁免)
+            # chat_user_active_msgs: {(chat_id, user_id): set(msg_ids)}
+            active_task_users = set()
+            for (cid, uid) in chat_user_active_msgs.keys():
+                if cid == chat_id:
+                    active_task_users.add(uid)
+
+            # [Ver 36.4] 辅助集合：防止重复处理同一用户的多条分段消息
+            processed_user_latest = set()
+
+            # 开始审计逻辑
+            # 使用 History (Newest -> Oldest) 直接扫描最新状态
+            for m in history:
+                # 只关注客户消息
+                if await is_official_cs(m):
+                    continue
+                
+                sender_id = m.sender_id
+                if not sender_id: continue
+
+                # 如果这个用户已经检查过最新状态，跳过旧消息 (解决分段发送问题)
+                if sender_id in processed_user_latest:
+                    continue
+                
+                # 标记该用户已检查
+                processed_user_latest.add(sender_id)
 
                 # ==========================================
-                # [Ver 36.2] 新增检测: 客户最后一条消息未回复
+                # [Ver 36.4] 核心过滤逻辑
                 # ==========================================
-                latest_msg = msgs[0] # history 中 index 0 是最新的
-                is_latest_cs = await is_official_cs(latest_msg)
                 
-                # 如果最新的一条消息不是客服发的（即客户发的），并且内容不是"谢谢"之类
-                # 则认为有遗漏回复
-                found_customer_no_reply = False
-                
-                if not is_latest_cs:
-                    text_norm = normalize(latest_msg.text or "")
-                    if text_norm and text_norm not in IGNORE_SIGNATURES:
-                         found_customer_no_reply = True
-                         
-                         issues_found += 1
-                         
-                         root_text = (latest_msg.text or "[媒体文件]")[:50]
-                         link = ""
-                         if latest_msg.reply_to and latest_msg.reply_to.reply_to_top_id:
-                              link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{latest_msg.id}?thread={latest_msg.reply_to.reply_to_top_id}"
-                         else:
-                              link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{latest_msg.id}"
-                         
-                         log_tree(4, f"❌ 发现遗漏(客户未回) | Msg={latest_msg.id} | Text={root_text} | Link={link}")
-                         await send_alert(
-                            f"👮 **下班巡检-发现遗漏**\n"
-                            f"⚠️ 类型: **客户最后发言未回复**\n"
-                            f"💬 客户消息: {root_text}\n"
-                            f"🔗 [点击跳转对话]({link})", 
-                            link,
-                            f"Msg={latest_msg.id}"
-                         )
-                         await asyncio.sleep(1)
-                
-                # 如果已经发现了客户未回复的问题，跳过后续的"稍等"闭环检查，避免重复报警
-                if found_customer_no_reply:
+                # 豁免 1: Bot正在对该用户执行任务 (Wait/Followup) -> 视为接待中
+                if sender_id in active_task_users:
+                    log_tree(4, f"🛡️ 豁免 [任务中] | User={sender_id} | Msg={m.id}")
                     continue
 
-                # ==========================================
-                # 原有检测: 稍等未闭环
-                # ==========================================
+                # 豁免 2: 在该消息 *之后* (时间轴更新) 客服已经回复过该用户
+                # 由于我们是 Newest -> Oldest 遍历，如果 sender_id 已经在 replied_users_in_window 中，
+                # 说明我们在更“新”的地方看到了 CS 的回复。
+                if sender_id in replied_users_in_window:
+                    log_tree(4, f"🛡️ 豁免 [已回复] | User={sender_id} | Msg={m.id}")
+                    continue
+
+                # 豁免 3: 图组已被回复
+                if m.grouped_id and m.grouped_id in replied_grouped_ids:
+                    continue
+
+                # 豁免 4: 内容是“谢谢”等忽略词
+                text_norm = normalize(m.text or "")
+                if text_norm and text_norm in IGNORE_SIGNATURES:
+                    continue
+
+                # 如果以上豁免都没命中，说明这是一条悬空的、未处理的最新客户消息
+                issues_found += 1
+                root_text = (m.text or "[媒体文件]")[:50]
+                link = ""
+                if m.reply_to and m.reply_to.reply_to_top_id:
+                     link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}?thread={m.reply_to.reply_to_top_id}"
+                else:
+                     link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}"
+                
+                log_tree(4, f"❌ 发现遗漏(客户未回) | Msg={m.id} | Text={root_text} | Link={link}")
+                await send_alert(
+                   f"👮 **下班巡检-发现遗漏**\n"
+                   f"⚠️ 类型: **客户最后发言未回复**\n"
+                   f"💬 客户消息: {root_text}\n"
+                   f"🔗 [点击跳转对话]({link})", 
+                   link,
+                   f"Msg={m.id}"
+                )
+                await asyncio.sleep(1)
+
+            # ==========================================
+            # 原有检测: 稍等未闭环 (保留以防万一，但减少权重)
+            # ==========================================
+            # 只有当 threads_map 逻辑发现明确的 "Wait" 关键字悬空时才报
+            # 为避免双重报警，这里可以加上 id 检查，或者仅仅 relying on 上面的 User Check 即可？
+            # 鉴于上面的 User Check 已经覆盖了“客户有新消息未回”，
+            # 这里的 Thread Check 主要负责：“客户没说话，但客服说了稍等，然后就没下文了” (Timeout)
+            # 这种情况 User Check 查不到 (因为最新消息是客服的 Wait)。
+            
+            for t_id, msgs in threads_map.items():
                 last_wait_msg = None
                 last_wait_idx = -1
                 
@@ -619,68 +694,42 @@ async def audit_pending_tasks():
                 for i, m in enumerate(msgs):
                     if await is_official_cs(m):
                         text = normalize(m.text or "")
-                        # [Ver 35.0 Fix] Skip empty string matches to avoid image false positives
                         if not text: continue
-                        
                         is_wait = any(k in text for k in WAIT_SIGNATURES)
                         is_keep = normalize(text) in KEEP_SIGNATURES 
-                        
                         if is_wait or is_keep:
                             last_wait_msg = m
                             last_wait_idx = i
                             break 
                 
                 if last_wait_msg:
+                    # 检查是否闭环
                     has_closed = False
                     if last_wait_idx > 0:
                         newer_msgs = msgs[:last_wait_idx]
                         for nm in newer_msgs:
                              if await is_official_cs(nm):
-                                 # 检查是否为闭环消息
-                                 # 注意：如果 nm 本身也是 Wait/Keep，外层循环会先找到它，所以这里的 nm 通常是回复/图片
-                                 
                                  if nm.reply_to:
                                      target_id = nm.reply_to.reply_to_msg_id
-                                     target_sender = msg_sender_map.get(target_id)
-                                     
-                                     # 1. 直接引用了这条“稍等”
-                                     if target_id == last_wait_msg.id:
-                                         has_closed = True; break
-                                     
-                                     # 2. 引用了“稍等”所回复的那条（即客户原消息）
-                                     if last_wait_msg.reply_to and target_id == last_wait_msg.reply_to.reply_to_msg_id:
-                                         has_closed = True; break
-                                     
-                                     # 3. [Ver 35.0] 引用了任意客户消息 (泛化严格模式)
-                                     # 只要回复的目标不是客服，就算处理了
-                                     if target_sender:
-                                         is_target_cs = (target_sender == MY_ID) or (target_sender in OTHER_CS_IDS)
-                                         if not is_target_cs:
-                                             has_closed = True; break
-                                     else:
-                                         # 如果找不到目标消息（可能在缓存外），但它确实是一条回复
-                                         # 为了防止像图片回复这种场景被误报，我们倾向于认为它是有效的回复
-                                         # 只要不是回复自己（已知ID），就认为是回复客户
-                                         has_closed = True; break
+                                     # 各种引用检查...
+                                     if target_id == last_wait_msg.id: has_closed = True; break
+                                     if last_wait_msg.reply_to and target_id == last_wait_msg.reply_to.reply_to_msg_id: has_closed = True; break
+                                     # 泛化检查：只要回复了客户
+                                     if nm.reply_to.reply_to_msg_id in msg_sender_map:
+                                         tsid = msg_sender_map[nm.reply_to.reply_to_msg_id]
+                                         if tsid not in ([MY_ID] + OTHER_CS_IDS): has_closed = True; break
 
                     if not has_closed:
-                        m = last_wait_msg
+                        # 再次检查：该 Thread 的用户是否已经在 User Check 中报过了？
+                        # 如果没有，说明客户没说话，是客服单方面忘回复
+                        # 这里我们只报“稍等未闭环”
                         
-                        # 死单检查
+                        # 为了避免复杂的去重，我们简单发送。
+                        # 但要检查原消息是否存在
+                        m = last_wait_msg
                         if m.reply_to and m.reply_to.reply_to_msg_id:
                             reply_id = m.reply_to.reply_to_msg_id
-                            original_in_history = False
-                            for hm in history:
-                                if hm.id == reply_id:
-                                    original_in_history = True
-                                    break
-                            if not original_in_history:
-                                try:
-                                    origin_msg = await client.get_messages(chat_id, ids=reply_id)
-                                    if not origin_msg:
-                                        log_tree(4, f"🛡️ 拦截误报 [巡检] | Msg={m.id} | 原因: 原消息已删除")
-                                        continue
-                                except Exception: continue
+                            if reply_id not in msg_map: continue # 原消息不在历史中（太久远），忽略
 
                         issues_found += 1
                         cs_name = "未知客服"
@@ -689,29 +738,18 @@ async def audit_pending_tasks():
                             if sender: cs_name = getattr(sender, 'first_name', 'Unknown')
                         except: pass
 
-                        root_text = "无法获取源头"
-                        root_msg = msgs[-1]
-                        if root_msg: root_text = (root_msg.text or "[媒体文件]")[:50]
-
-                        link = ""
-                        if m.reply_to and m.reply_to.reply_to_top_id:
-                             link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}?thread={m.reply_to.reply_to_top_id}"
-                        else:
-                             link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}"
-
-                        debug_id_str = f"Msg={m.id}"
                         safe_text = (m.text or "[媒体]")[:50]
+                        link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}"
                         
-                        log_tree(4, f"❌ 发现遗漏(稍等未闭环) | Msg={m.id} | CS={cs_name} | RootText={root_text} | Link={link}")
+                        log_tree(4, f"❌ 发现遗漏(稍等未闭环) | Msg={m.id} | CS={cs_name}")
                         await send_alert(
                             f"👮 **下班巡检-发现遗漏**\n"
                             f"⚠️ 类型: **反馈核实未回复**\n"
                             f"👤 客服: {cs_name}\n"
                             f"💬 最后的回复: {safe_text}\n"
-                            f"❓ 客户源头: {root_text}\n"
                             f"🔗 [点击跳转对话]({link})", 
                             link,
-                            debug_id_str
+                            f"Msg={m.id}"
                         )
                         await asyncio.sleep(1)
 
@@ -1197,7 +1235,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 36.1 Fix Concurrency)")
+        log_tree(0, "✅ 系统启动 (Ver 36.4 Smart Loose Audit)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
