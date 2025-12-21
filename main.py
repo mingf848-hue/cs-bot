@@ -278,7 +278,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 36.7 (ID-Based Exempt)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 36.8 (Cache Backup & Burst)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -525,7 +525,7 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 36.7] 增强巡检: 扫描过去 30 小时的消息
+# [Ver 36.8] 增强巡检: 扫描过去 30 小时的消息
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】...")
     await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近活跃的消息流，检查是否有遗漏...", "")
@@ -581,6 +581,7 @@ async def audit_pending_tasks():
             
             replied_grouped_ids = set() # 图组ID (旧逻辑保留)
             user_max_reply_id = defaultdict(int) # UserID -> Max MsgID of CS Reply
+            user_max_reply_time = defaultdict(float) # [Ver 36.8] 记录回复时间戳 (用于Burst容错)
             
             # 线程归类 (用于 Wait/Close 检查)
             threads_map = defaultdict(list)
@@ -611,6 +612,9 @@ async def audit_pending_tasks():
                             target_user_id = target_msg.sender_id
                         elif reply_id in msg_sender_map:
                             target_user_id = msg_sender_map[reply_id]
+                        # [Ver 36.8] 如果在历史记录里找不到原消息，尝试去全局缓存里找
+                        elif (chat_id, reply_id) in msg_to_user_cache:
+                            target_user_id = msg_to_user_cache[(chat_id, reply_id)]
                         
                         if target_user_id:
                             # [Ver 36.7] 记录该用户被回复的最新消息ID
@@ -619,10 +623,12 @@ async def audit_pending_tasks():
                             # 所以我们遇到的第一个就是最新的。
                             if user_max_reply_id[target_user_id] == 0:
                                 user_max_reply_id[target_user_id] = m.id
+                                user_max_reply_time[target_user_id] = m.date.timestamp()
                             else:
                                 # Keep max (just in case history order is different or threaded)
                                 if m.id > user_max_reply_id[target_user_id]:
                                     user_max_reply_id[target_user_id] = m.id
+                                    user_max_reply_time[target_user_id] = m.date.timestamp()
 
             # 获取当前正在进行的任务列表 (用于全局豁免)
             # chat_user_active_msgs: {(chat_id, user_id): set(msg_ids)}
@@ -662,8 +668,18 @@ async def audit_pending_tasks():
 
                 # [Ver 36.7] 豁免 2: 在该消息 *之后* (时间轴更新) 客服已经回复过该用户
                 # Check if max_reply_id > current_msg_id
-                if user_max_reply_id[sender_id] > m.id:
-                    log_tree(4, f"🛡️ 豁免 [已回复] | User={sender_id} | Msg={m.id}")
+                # [Ver 36.8] 增加 Burst 容错: 如果客服回复时间与客户消息时间非常接近 (e.g. 10s内)，视为并发消息，也豁免
+                # m.date.timestamp() vs user_max_reply_time[sender_id]
+                latest_reply_ts = user_max_reply_time.get(sender_id, 0)
+                msg_ts = m.date.timestamp()
+                
+                is_replied_later = user_max_reply_id[sender_id] > m.id
+                is_burst_concurrent = abs(latest_reply_ts - msg_ts) < 10 and latest_reply_ts > 0
+
+                if is_replied_later or is_burst_concurrent:
+                    reason = "已回复" if is_replied_later else "并发容错"
+                    chk_link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}"
+                    log_tree(4, f"🛡️ 豁免 [{reason}] | User={sender_id} | Msg={m.id} | Link={chk_link}")
                     continue
 
                 # 豁免 3: 图组已被回复
@@ -754,6 +770,9 @@ async def audit_pending_tasks():
                             target_customer_id = msg_map[reply_id].sender_id
                         elif reply_id in msg_sender_map:
                             target_customer_id = msg_sender_map[reply_id]
+                        # [Ver 36.8] 全局缓存兜底查找
+                        elif (chat_id, reply_id) in msg_to_user_cache:
+                            target_customer_id = msg_to_user_cache[(chat_id, reply_id)]
                         
                         if target_customer_id:
                             latest_reply_id = user_max_reply_id.get(target_customer_id, 0)
@@ -1278,7 +1297,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 36.7 ID-Based Exempt)")
+        log_tree(0, "✅ 系统启动 (Ver 36.8 Cache Backup & Burst)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
