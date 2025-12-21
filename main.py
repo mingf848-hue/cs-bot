@@ -278,7 +278,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 36.4 (Smart Loose Audit)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 36.5 (Smart Junk Filter)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -525,7 +525,7 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 36.4] 增强巡检: 扫描过去 30 小时的消息
+# [Ver 36.5] 增强巡检: 扫描过去 30 小时的消息
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】...")
     await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近活跃的消息流，检查是否有遗漏...", "")
@@ -539,6 +539,18 @@ async def audit_pending_tasks():
     # [Ver 36.2] 定义不参与巡检的黑名单群组
     # 在此处填写无需下班巡检的群ID，多个ID用逗号分隔，例如: [-1002169616907, -1001234567890]
     EXCLUDED_GROUPS = [-1002169616907]
+
+    # [Ver 36.5] 垃圾消息过滤器
+    def is_junk_message(text):
+        if not text: return True
+        # 移除所有空白、数字、标点符号、特定字符
+        # 允许的字符会被移除，如果剩下来的长度为0，说明全是垃圾字符
+        # \s: 空白
+        # \d: 数字
+        # \.,;!?。，；！？、=: 标点和符号
+        clean = re.sub(r'[\s\d\.,;!?。，；！？、=]+', '', text)
+        # 如果清洗后为空，且原长度较短（小于10字符），视为垃圾消息
+        return len(clean) == 0 and len(text) < 10
 
     for chat_id in CS_GROUP_IDS:
         # [Ver 36.2] 群组黑名单过滤
@@ -657,6 +669,11 @@ async def audit_pending_tasks():
                 if text_norm and text_norm in IGNORE_SIGNATURES:
                     continue
 
+                # [Ver 36.5] 豁免 5: 垃圾消息过滤器 (数字/标点符号)
+                if is_junk_message(m.text):
+                    log_tree(4, f"🛡️ 豁免 [垃圾消息] | User={sender_id} | Msg={m.id} | Text={m.text}")
+                    continue
+
                 # 如果以上豁免都没命中，说明这是一条悬空的、未处理的最新客户消息
                 issues_found += 1
                 root_text = (m.text or "[媒体文件]")[:50]
@@ -718,6 +735,21 @@ async def audit_pending_tasks():
                                      if nm.reply_to.reply_to_msg_id in msg_sender_map:
                                          tsid = msg_sender_map[nm.reply_to.reply_to_msg_id]
                                          if tsid not in ([MY_ID] + OTHER_CS_IDS): has_closed = True; break
+
+                    # [Ver 36.5] 增强闭环检查：如果客服已经回复了该用户（在扫描窗口内的任意位置），也视为闭环
+                    # 这解决 "Wait" -> "Result (Reply to user)" 场景
+                    if not has_closed and last_wait_msg.reply_to:
+                        reply_id = last_wait_msg.reply_to.reply_to_msg_id
+                        # 尝试找到该 Wait 消息回复的客户ID
+                        target_customer_id = None
+                        if reply_id in msg_map:
+                            target_customer_id = msg_map[reply_id].sender_id
+                        elif reply_id in msg_sender_map:
+                            target_customer_id = msg_sender_map[reply_id]
+                        
+                        if target_customer_id and target_customer_id in replied_users_in_window:
+                            has_closed = True
+                            log_tree(4, f"🛡️ 豁免 [稍等-用户已回复] | User={target_customer_id} | Msg={last_wait_msg.id}")
 
                     if not has_closed:
                         # 再次检查：该 Thread 的用户是否已经在 User Check 中报过了？
@@ -1235,7 +1267,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 36.4 Smart Loose Audit)")
+        log_tree(0, "✅ 系统启动 (Ver 36.5 Smart Junk Filter)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
