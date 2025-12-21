@@ -106,18 +106,22 @@ try:
     
     log_tree(0, f"🔍 关键词配置 (Normalized): WAIT={WAIT_SIGNATURES} | KEEP={KEEP_SIGNATURES}")
 
-    default_ignore = "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴"
+    # [Ver 36.2] 扩展忽略关键词库 (包含用户请求的新增词汇)
+    default_ignore = (
+        "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴,"
+        "好的呢,嗯,嗯嗯,谢了,okk,k,行,妥,了解,已收,没问题,好的收到,ok了,麻烦了"
+    )
     ignore_env = os.environ.get("IGNORE_KEYWORDS", default_ignore)
     clean_ignore = ignore_env.replace("，", ",")
     IGNORE_SIGNATURES = {normalize(x) for x in clean_ignore.split(',') if x.strip()}
-
+    
     CS_NAME_PREFIXES = ["YY_6/9_值班号", "Y_YY"]
 
 except Exception as e:
     logger.error(f"❌ 配置错误: {e}")
     sys.exit(1)
 
-log_tree(0, f"系统启动 | 稍等词: {len(WAIT_SIGNATURES)} | 跟进词: {len(KEEP_SIGNATURES)}")
+log_tree(0, f"系统启动 | 稍等词: {len(WAIT_SIGNATURES)} | 跟进词: {len(KEEP_SIGNATURES)} | 忽略词: {len(IGNORE_SIGNATURES)}")
 
 # ==========================================
 # 模块 3: 全局状态
@@ -272,7 +276,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 36.1 (Fix Concurrency)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 36.2 (Last Msg Audit)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -346,11 +350,12 @@ LOG_VIEWER_HTML = """
             .catch(err => { container.innerHTML = `<div class="error-msg">加载失败: ${err.message}</div>`; });
 
         function parseLogs(text) {
-            const rawLines = text.split(/\r?\n/);
+            // [Fix JS Escaping] Use double backslash for python string
+            const rawLines = text.split(/\\r?\\n/);
             parsedLogs = [];
             let currentEntry = null;
-            // [Ver 34.0] Regex to support both full date and time-only
-            const timeRegex = /^(\d{4}-\d{2}-\d{2}\s+)?(\d{2}:\d{2}:\d{2})(.*)/;
+            // [Fix JS Escaping] Escape \d and \s for JS regex
+            const timeRegex = /^(\\d{4}-\\d{2}-\\d{2}\\s+)?(\\d{2}:\\d{2}:\\d{2})(.*)/;
             
             rawLines.forEach(line => {
                 if(!line.trim()) return;
@@ -360,7 +365,8 @@ LOG_VIEWER_HTML = """
                     // match[2] is time, match[3] is content
                     currentEntry = { time: match[2], raw: match[3], content: match[3].trim(), fullText: match[3] };
                 } else {
-                    if (currentEntry) { currentEntry.fullText += '\n' + line; currentEntry.content += '\n' + line; }
+                    // [Fix JS Escaping] Use \\n for literal newline char in JS string
+                    if (currentEntry) { currentEntry.fullText += '\\n' + line; currentEntry.content += '\\n' + line; }
                 }
             });
             if (currentEntry) parsedLogs.push(currentEntry);
@@ -373,7 +379,8 @@ LOG_VIEWER_HTML = """
                 let content = entry.content;
                 let raw = entry.raw || "";
                 let ids = [];
-                const idRegex = /(Msg|User|Thread|流|归属|用户)[:=]?\s?(\d+)/g;
+                // [Fix JS Escaping] Escape \d and \s for JS regex
+                const idRegex = /(Msg|User|Thread|流|归属|用户)[:=]?\\s?(\\d+)/g;
                 let match;
                 while ((match = idRegex.exec(content)) !== null) { ids.push(match[2]); }
                 let idsStr = ids.join(',');
@@ -384,8 +391,9 @@ LOG_VIEWER_HTML = """
                 else if (raw.includes('👮') || raw.includes('[AUDIT]')) { type = 'audit'; }
                 else if (raw.includes('┣━━') || raw.includes('┗━━')) { type = 'sys'; }
 
-                content = content.replace(/(Msg[:=]?\s?)(\d+)/g, '$1<span class="pill" onclick="searchId(\'$2\')">$2</span>');
-                content = content.replace(/(User|用户|归属)[:=]?\s?(\d+)/g, '$1<span class="pill" onclick="searchId(\'$2\')">$2</span>');
+                // [Fix JS Escaping] Escape \d, \s and quotes inside replacement string
+                content = content.replace(/(Msg[:=]?\\s?)(\\d+)/g, '$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
+                content = content.replace(/(User|用户|归属)[:=]?\\s?(\\d+)/g, '$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
                 
                 let actionBtn = '';
                 if (type === 'user') {
@@ -426,12 +434,12 @@ LOG_VIEWER_HTML = """
         function reportBug(type, idsStr) {
             const ids = idsStr.split(',');
             if (ids.length === 0) return;
-            let report = `=== ${type}反馈报告 ===\n`;
-            report += `类型: ${type}\n涉及 ID: ${idsStr}\n\n-- 关键日志流 --\n`;
+            let report = `=== ${type}反馈报告 ===\\n`;
+            report += `类型: ${type}\\n涉及 ID: ${idsStr}\\n\\n-- 关键日志流 --\\n`;
             parsedLogs.forEach(entry => {
                 let hit = false;
                 for (let id of ids) { if (entry.raw.includes(id)) { hit = true; break; } }
-                if (hit) { report += `[${entry.time}] ${entry.content}\n`; }
+                if (hit) { report += `[${entry.time}] ${entry.content}\\n`; }
             });
             navigator.clipboard.writeText(report).then(() => { alert(`✅ [${type}] 详情已复制！请直接粘贴发送。`); });
         }
@@ -515,7 +523,7 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 36.0] 增强巡检: 扫描过去 30 小时的消息
+# [Ver 36.2] 增强巡检: 扫描过去 30 小时的消息
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】...")
     await send_alert("👮 **开始执行下班自动巡检...**\n正在扫描最近活跃的消息流，检查是否有遗漏...", "")
@@ -526,7 +534,15 @@ async def audit_pending_tasks():
     # 计算 30 小时前的时间戳
     cutoff_time = datetime.now(timezone.utc) - timedelta(hours=30)
     
+    # [Ver 36.2] 定义不参与巡检的黑名单群组
+    EXCLUDED_GROUPS = [-1002169616907]
+
     for chat_id in CS_GROUP_IDS:
+        # [Ver 36.2] 群组黑名单过滤
+        if chat_id in EXCLUDED_GROUPS:
+             log_tree(4, f"🚫 跳过群组 {chat_id} (黑名单)")
+             continue
+
         try:
             log_tree(4, f"正在扫描群组 {chat_id} (最近 30 小时)...")
             history = []
@@ -552,6 +568,50 @@ async def audit_pending_tasks():
                 threads_map[thread_id].append(m)
             
             for t_id, msgs in threads_map.items():
+                if not msgs: continue
+
+                # ==========================================
+                # [Ver 36.2] 新增检测: 客户最后一条消息未回复
+                # ==========================================
+                latest_msg = msgs[0] # history 中 index 0 是最新的
+                is_latest_cs = await is_official_cs(latest_msg)
+                
+                # 如果最新的一条消息不是客服发的（即客户发的），并且内容不是"谢谢"之类
+                # 则认为有遗漏回复
+                found_customer_no_reply = False
+                
+                if not is_latest_cs:
+                    text_norm = normalize(latest_msg.text or "")
+                    if text_norm and text_norm not in IGNORE_SIGNATURES:
+                         found_customer_no_reply = True
+                         
+                         issues_found += 1
+                         
+                         root_text = (latest_msg.text or "[媒体文件]")[:50]
+                         link = ""
+                         if latest_msg.reply_to and latest_msg.reply_to.reply_to_top_id:
+                              link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{latest_msg.id}?thread={latest_msg.reply_to.reply_to_top_id}"
+                         else:
+                              link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{latest_msg.id}"
+                         
+                         log_tree(4, f"❌ 发现遗漏(客户未回) | Msg={latest_msg.id} | Text={root_text} | Link={link}")
+                         await send_alert(
+                            f"👮 **下班巡检-发现遗漏**\n"
+                            f"⚠️ 类型: **客户最后发言未回复**\n"
+                            f"💬 客户消息: {root_text}\n"
+                            f"🔗 [点击跳转对话]({link})", 
+                            link,
+                            f"Msg={latest_msg.id}"
+                         )
+                         await asyncio.sleep(1)
+                
+                # 如果已经发现了客户未回复的问题，跳过后续的"稍等"闭环检查，避免重复报警
+                if found_customer_no_reply:
+                    continue
+
+                # ==========================================
+                # 原有检测: 稍等未闭环
+                # ==========================================
                 last_wait_msg = None
                 last_wait_idx = -1
                 
@@ -642,9 +702,10 @@ async def audit_pending_tasks():
                         debug_id_str = f"Msg={m.id}"
                         safe_text = (m.text or "[媒体]")[:50]
                         
-                        log_tree(4, f"❌ 发现遗漏 | Msg={m.id} | CS={cs_name} | RootText={root_text} | Link={link}")
+                        log_tree(4, f"❌ 发现遗漏(稍等未闭环) | Msg={m.id} | CS={cs_name} | RootText={root_text} | Link={link}")
                         await send_alert(
                             f"👮 **下班巡检-发现遗漏**\n"
+                            f"⚠️ 类型: **反馈核实未回复**\n"
                             f"👤 客服: {cs_name}\n"
                             f"💬 最后的回复: {safe_text}\n"
                             f"❓ 客户源头: {root_text}\n"
