@@ -110,8 +110,8 @@ try:
     # normalized 会去除标点，所以 "好的，感谢" 会匹配 "好的感谢"
     default_ignore = (
         "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴,"
-        "好的呢,嗯,嗯嗯,谢了,okk,k,行,妥,了解,收到,没问题,好的收到,ok了,麻烦了,"
-        "好的感谢,哦,好哦,行,好吧,知道了,没事了,算了,不用,正常,"
+        "好的呢,嗯,嗯嗯,谢了,okk,k,行,妥,了解,已收,没问题,好的收到,ok了,麻烦了,"
+        "好的感谢,哦"
     )
     ignore_env = os.environ.get("IGNORE_KEYWORDS", default_ignore)
     clean_ignore = ignore_env.replace("，", ",")
@@ -278,7 +278,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 37.1 (Silent Audit)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 37.2 (Modern UI)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -296,38 +296,210 @@ DASHBOARD_HTML = """
 
 LOG_VIEWER_HTML = """
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
-    <title>日志流</title>
+    <meta charset="UTF-8">
+    <title>系统日志流 | Log Viewer</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        :root { --bg: #121212; --bg-card: #1e1e1e; --text-main: #e0e0e0; --text-sub: #a0a0a0; --accent: #bb86fc; --user-msg: #263238; --cs-msg: #1b5e20; --alert: #b00020; --audit: #ff6f00; }
-        body { background: var(--bg); color: var(--text-main); font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-        .toolbar { background: var(--bg-card); padding: 12px; display: flex; gap: 10px; border-bottom: 1px solid #333; box-shadow: 0 2px 4px rgba(0,0,0,0.5); z-index: 100; }
-        input { background: #2c2c2c; border: 1px solid #444; color: #fff; padding: 8px 12px; border-radius: 6px; flex-grow: 1; outline: none; font-size: 14px; }
-        input:focus { border-color: var(--accent); }
-        button { background: var(--accent); color: #000; border: none; padding: 8px 16px; cursor: pointer; border-radius: 6px; font-weight: bold; }
-        button:hover { opacity: 0.9; }
-        #log-container { flex-grow: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
-        .msg-row { display: flex; flex-direction: column; width: 100%; position: relative; }
-        .msg-meta { font-size: 12px; color: #666; margin-bottom: 4px; margin-left: 10px; font-family: monospace; display: flex; align-items: center; gap: 8px; }
-        .bubble { max-width: 80%; padding: 12px 16px; border-radius: 12px; font-size: 14px; line-height: 1.5; word-wrap: break-word; position: relative; white-space: pre-wrap; box-shadow: 0 1px 2px rgba(0,0,0,0.3); }
-        .msg-user .bubble { background-color: var(--user-msg); align-self: flex-start; border-bottom-left-radius: 2px; color: #eceff1; border-left: 3px solid #607d8b; }
-        .msg-user .msg-meta { justify-content: flex-start; }
-        .msg-cs .bubble { background-color: var(--cs-msg); align-self: flex-end; border-bottom-right-radius: 2px; color: #e8f5e9; border-right: 3px solid #66bb6a; }
-        .msg-cs .msg-meta { justify-content: flex-end; margin-right: 10px; }
+        :root {
+            --bg-body: #0f172a;
+            --bg-panel: #1e293b;
+            --bg-input: #334155;
+            --text-main: #f1f5f9;
+            --text-muted: #94a3b8;
+            --primary: #3b82f6;
+            --user-bubble: #334155;
+            --cs-bubble: #0f766e;
+            --alert-bg: rgba(239, 68, 68, 0.15);
+            --alert-border: #ef4444;
+            --audit-bg: rgba(245, 158, 11, 0.15);
+            --audit-border: #f59e0b;
+            --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+        }
+        * { box-sizing: border-box; }
+        body {
+            background-color: var(--bg-body);
+            color: var(--text-main);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg-body); }
+        ::-webkit-scrollbar-thumb { background: var(--bg-input); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+        /* Toolbar */
+        .toolbar {
+            background: rgba(15, 23, 42, 0.85);
+            backdrop-filter: blur(12px);
+            padding: 16px 24px;
+            border-bottom: 1px solid var(--bg-input);
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            z-index: 10;
+            box-shadow: var(--shadow);
+        }
+        input {
+            flex-grow: 1;
+            background: var(--bg-panel);
+            border: 1px solid var(--bg-input);
+            color: var(--text-main);
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+        }
+        button {
+            background: var(--bg-panel);
+            color: var(--text-main);
+            border: 1px solid var(--bg-input);
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 14px;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+        button:hover { background: var(--bg-input); transform: translateY(-1px); }
+        
+        /* Log Container */
+        #log-container {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            scroll-behavior: smooth;
+        }
+
+        /* Message Rows */
+        .msg-row {
+            display: flex;
+            flex-direction: column;
+            max-width: 100%;
+            animation: fadeIn 0.3s ease;
+        }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+        .msg-meta {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+            font-family: "Menlo", "Consolas", monospace;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 0 4px;
+        }
+
+        .bubble {
+            padding: 12px 18px;
+            border-radius: 16px;
+            font-size: 14px;
+            line-height: 1.6;
+            position: relative;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+            box-shadow: var(--shadow);
+            max-width: 85%;
+        }
+
+        /* User Message (Left) */
+        .msg-user { align-items: flex-start; }
+        .msg-user .bubble {
+            background-color: var(--user-bubble);
+            border-top-left-radius: 2px;
+            color: #e2e8f0;
+        }
+
+        /* CS Message (Right) */
         .msg-cs { align-items: flex-end; }
-        .msg-sys { align-items: center; margin: 5px 0; }
-        .msg-sys .bubble { background: transparent; color: var(--text-sub); font-size: 12px; font-family: monospace; padding: 4px 10px; border: 1px solid #333; max-width: 90%; }
-        .msg-alert .bubble { background-color: rgba(176, 0, 32, 0.2); border: 1px solid var(--alert); color: #ff8a80; width: 90%; text-align: center; }
-        .msg-audit .bubble { background-color: rgba(255, 111, 0, 0.15); border: 1px solid var(--audit); color: #ffb74d; width: 90%; text-align: center; font-weight: bold; }
-        .pill { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin: 0 2px; cursor: pointer; border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.3); }
-        .pill:hover { background: rgba(255,255,255,0.1); }
-        .highlight-row .bubble { box-shadow: 0 0 0 2px #ffd700, 0 0 15px rgba(255, 215, 0, 0.3); z-index: 2; }
-        .btn-report { font-size: 11px; padding: 2px 8px; border-radius: 4px; cursor: pointer; border: 1px solid transparent; font-weight: bold; transition: all 0.2s; opacity: 0.7; }
-        .btn-report:hover { opacity: 1; transform: scale(1.05); }
-        .btn-missed { background: #ff9800; color: #000; border-color: #f57c00; }
-        .btn-false { background: #f44336; color: #fff; border-color: #d32f2f; }
-        .error-msg { color: #cf6679; text-align: center; padding: 20px; font-weight: bold; }
+        .msg-cs .bubble {
+            background-color: var(--cs-bubble);
+            border-top-right-radius: 2px;
+            color: #f0fdfa;
+        }
+        .msg-cs .msg-meta { flex-direction: row-reverse; }
+
+        /* System/Audit/Alert Messages */
+        .msg-sys, .msg-alert, .msg-audit {
+            align-items: center;
+            width: 100%;
+        }
+        .msg-sys .bubble, .msg-alert .bubble, .msg-audit .bubble {
+            max-width: 95%;
+            background: transparent;
+            box-shadow: none;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-family: "Menlo", "Consolas", monospace;
+            font-size: 12px;
+            border-left: 3px solid;
+        }
+
+        .msg-sys .bubble {
+            border-color: var(--text-muted);
+            background: rgba(148, 163, 184, 0.05);
+            color: var(--text-muted);
+        }
+
+        .msg-alert .bubble {
+            border-color: var(--alert-border);
+            background: var(--alert-bg);
+            color: #fca5a5;
+        }
+
+        .msg-audit .bubble {
+            border-color: var(--audit-border);
+            background: var(--audit-bg);
+            color: #fdba74;
+        }
+
+        /* Interactive Elements */
+        .pill {
+            display: inline-block;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 2px 6px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.2s;
+            user-select: all;
+        }
+        .pill:hover { background: rgba(255, 255, 255, 0.2); color: #fff; }
+
+        .highlight-row .bubble {
+            box-shadow: 0 0 0 2px #fbbf24, 0 0 20px rgba(251, 191, 36, 0.2);
+            z-index: 10;
+        }
+
+        .btn-report {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            text-transform: uppercase;
+            font-weight: bold;
+            cursor: pointer;
+            letter-spacing: 0.5px;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+        .btn-missed { background: #f59e0b; color: black; }
+        .btn-false { background: #ef4444; color: white; }
+
+        .error-msg { text-align: center; padding: 40px; color: var(--text-muted); font-style: italic; }
     </style>
 </head>
 <body>
@@ -1300,7 +1472,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 37.1 Silent Audit)")
+        log_tree(0, "✅ 系统启动 (Ver 37.2 Modern UI)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
