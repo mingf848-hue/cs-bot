@@ -5,10 +5,12 @@ import logging
 import requests
 import re
 import time
+import json
+import queue
 from collections import deque, defaultdict
 from datetime import datetime, timedelta, timezone
 from threading import Thread
-from flask import Flask, render_template_string, Response, request
+from flask import Flask, render_template_string, Response, request, stream_with_context
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import AuthKeyDuplicatedError
@@ -284,6 +286,7 @@ DASHBOARD_HTML = """
     </div>
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
+    <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
     <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 38.0 (Self-Reply Guard)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
@@ -629,6 +632,155 @@ LOG_VIEWER_HTML = """
 </html>
 """
 
+WAIT_CHECK_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>稍等关键词闭环检测工具</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: -apple-system, sans-serif; background: #f0f2f5; padding: 20px; max-width: 800px; margin: 0 auto; color: #333; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        h1 { margin-top: 0; color: #1a1a1a; font-size: 1.5rem; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input[type="text"] { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; font-size: 16px; }
+        button { background: #0088cc; color: white; border: none; padding: 12px 20px; border-radius: 6px; cursor: pointer; font-size: 16px; width: 100%; font-weight: bold; transition: background 0.2s; }
+        button:hover { background: #006699; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        
+        #progress-container { margin-top: 20px; display: none; background: #f8f9fa; padding: 15px; border-radius: 6px; border: 1px solid #eee; }
+        #progress-bar { width: 100%; height: 10px; background: #ddd; border-radius: 5px; overflow: hidden; margin-bottom: 8px; }
+        #progress-fill { height: 100%; background: #4caf50; width: 0%; transition: width 0.3s; }
+        #status-text { font-size: 14px; color: #666; text-align: center; }
+
+        .result-list { margin-top: 20px; }
+        .result-item { padding: 15px; border-bottom: 1px solid #eee; display: flex; align-items: flex-start; gap: 15px; background: #fff; transition: background 0.2s; }
+        .result-item:hover { background: #fafafa; }
+        .result-item:last-child { border-bottom: none; }
+        
+        .status-badge { padding: 6px 10px; border-radius: 6px; font-size: 13px; font-weight: bold; white-space: nowrap; display: flex; align-items: center; justify-content: center; min-width: 80px; }
+        .status-closed { background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
+        .status-open { background: #ffebee; color: #c62828; border: 1px solid #ffcdd2; }
+        
+        .msg-content { flex-grow: 1; min-width: 0; }
+        .msg-meta { font-size: 12px; color: #888; margin-bottom: 4px; display: flex; gap: 10px; }
+        .msg-text { font-size: 14px; line-height: 1.5; color: #333; word-wrap: break-word; background: #f5f5f5; padding: 8px; border-radius: 4px; margin: 5px 0; border-left: 3px solid #ccc; }
+        .reason-text { color: #d32f2f; font-size: 13px; margin-top: 4px; font-style: italic; }
+        .msg-link { text-decoration: none; color: #0088cc; font-size: 13px; display: inline-block; margin-top: 5px; font-weight: 500; }
+        .msg-link:hover { text-decoration: underline; }
+        
+        .summary { font-weight: bold; margin-bottom: 20px; padding: 15px; background: #e3f2fd; border-radius: 6px; border: 1px solid #bbdefb; color: #0d47a1; display: none; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>🔍 稍等关键词闭环检测</h1>
+        <div class="form-group">
+            <label>输入关键词 (例如: 请稍等ART)</label>
+            <input type="text" id="keyword" placeholder="输入要搜索的关键词..." value="请稍等ART">
+        </div>
+        <button onclick="startCheck()" id="btn-search">开始检测 (过去 10 小时)</button>
+        
+        <div id="progress-container">
+            <div id="progress-bar"><div id="progress-fill"></div></div>
+            <div id="status-text">准备就绪...</div>
+        </div>
+    </div>
+
+    <div class="card" id="result-card" style="display:none">
+        <div class="summary" id="summary-box"></div>
+        <div class="result-list" id="result-list"></div>
+    </div>
+
+    <script>
+        async function startCheck() {
+            const keyword = document.getElementById('keyword').value.trim();
+            if (!keyword) return alert("请输入关键词");
+            
+            const btn = document.getElementById('btn-search');
+            const pContainer = document.getElementById('progress-container');
+            const pFill = document.getElementById('progress-fill');
+            const pText = document.getElementById('status-text');
+            const resCard = document.getElementById('result-card');
+            const resList = document.getElementById('result-list');
+            const summaryBox = document.getElementById('summary-box');
+
+            btn.disabled = true;
+            pContainer.style.display = 'block';
+            resCard.style.display = 'block';
+            resList.innerHTML = '';
+            summaryBox.style.display = 'none';
+            pFill.style.width = '1%';
+            pText.innerText = "正在初始化...";
+
+            let totalFound = 0;
+            let totalClosed = 0;
+
+            try {
+                // 使用流式 API
+                const response = await fetch(`/api/wait_check_stream?keyword=${encodeURIComponent(keyword)}`);
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value, {stream: true});
+                    const lines = chunk.split('\\n');
+                    
+                    for (const line of lines) {
+                        if (!line.trim()) continue;
+                        try {
+                            const data = JSON.parse(line);
+                            
+                            if (data.type === 'progress') {
+                                pFill.style.width = data.percent + '%';
+                                pText.innerText = data.msg;
+                            } else if (data.type === 'result') {
+                                totalFound++;
+                                if (data.is_closed) totalClosed++;
+                                
+                                const div = document.createElement('div');
+                                div.className = 'result-item';
+                                div.innerHTML = `
+                                    <div class="status-badge ${data.is_closed ? 'status-closed' : 'status-open'}">
+                                        ${data.is_closed ? '✅ 已闭环' : '❌ 未闭环'}
+                                    </div>
+                                    <div class="msg-content">
+                                        <div class="msg-meta">
+                                            <span>📅 ${data.time}</span>
+                                            <span>📂 ${data.group_name}</span>
+                                        </div>
+                                        <div class="msg-text">${data.found_text}</div>
+                                        ${!data.is_closed ? `<div class="reason-text">⚠️ ${data.reason}</div>` : ''}
+                                        <a href="${data.link}" target="_blank" class="msg-link">🔗 跳转消息</a>
+                                    </div>
+                                `;
+                                resList.appendChild(div);
+                            } else if (data.type === 'done') {
+                                pFill.style.width = '100%';
+                                pText.innerText = '检测完成';
+                                summaryBox.style.display = 'block';
+                                summaryBox.innerText = `检测完成: 共找到 ${data.total} 条 "${keyword}" 消息，其中 ${data.closed} 条已闭环，${data.open} 条未闭环。`;
+                            }
+                        } catch (e) {
+                            console.error("Parse error", e);
+                        }
+                    }
+                }
+            } catch (e) {
+                pText.innerText = "发生错误: " + e.message;
+            } finally {
+                btn.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>
+"""
+
 @app.route('/')
 def status_page():
     now = datetime.now(timezone(timedelta(hours=8))).strftime('%H:%M:%S')
@@ -636,6 +788,9 @@ def status_page():
 
 @app.route('/log')
 def log_ui(): return render_template_string(LOG_VIEWER_HTML)
+
+@app.route('/tool/wait_check')
+def wait_check_ui(): return render_template_string(WAIT_CHECK_HTML)
 
 @app.route('/log_raw')
 def log_raw():
@@ -667,6 +822,173 @@ def api_ctrl():
     try: asyncio.run_coroutine_threadsafe(coro, bot_loop)
     except Exception as e: return str(e), 500
     return "OK"
+
+# ==========================================
+# 模块 4.5: 稍等闭环检测 API (Async Generator)
+# ==========================================
+async def check_wait_keyword_logic(keyword, result_queue):
+    """
+    搜索过去10小时内包含 `keyword` 的消息，并检查闭环。
+    将结果推送到 result_queue。
+    """
+    try:
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=10)
+        total_groups = len(CS_GROUP_IDS)
+        
+        # 定义不参与检查的黑名单群组
+        EXCLUDED_GROUPS = [-1002807120955, -1002169616907]
+        
+        found_count = 0
+        closed_count = 0
+
+        for idx, chat_id in enumerate(CS_GROUP_IDS):
+            if chat_id in EXCLUDED_GROUPS: continue
+            
+            # 推送进度
+            percent = int((idx / total_groups) * 100)
+            result_queue.put(json.dumps({
+                "type": "progress", "percent": percent, 
+                "msg": f"正在扫描群组 {chat_id} ({idx+1}/{total_groups})..."
+            }))
+
+            try:
+                # 1. 抓取该群组最近10小时的消息
+                history = []
+                # 限制5000条或时间截止
+                async for m in client.iter_messages(chat_id, limit=3000):
+                    if m.date and m.date < cutoff_time: break
+                    history.append(m)
+                
+                # 2. 建立 Thread 状态表：记录每个 Thread (Topic/ReplyChain) 的“最新消息”
+                # Key: ThreadID, Value: Message Object (最新的一条)
+                thread_latest_msg = {}
+                
+                # 因为 iter_messages 是从新到旧，所以第一次遇到的 ThreadID 就是该 Thread 的最新消息
+                for m in history:
+                    t_id = None
+                    if m.reply_to:
+                        t_id = m.reply_to.reply_to_top_id 
+                        if not t_id: t_id = m.reply_to.reply_to_msg_id
+                    if not t_id: t_id = m.id
+                    
+                    if t_id not in thread_latest_msg:
+                        thread_latest_msg[t_id] = m
+
+                # 3. 在历史中查找包含 keyword 的消息
+                for m in history:
+                    if not m.text: continue
+                    if keyword in m.text: # 只要包含关键词
+                        found_count += 1
+                        
+                        # 找到该消息所属 Thread 的最新消息
+                        t_id = None
+                        if m.reply_to:
+                            t_id = m.reply_to.reply_to_top_id 
+                            if not t_id: t_id = m.reply_to.reply_to_msg_id
+                        if not t_id: t_id = m.id
+                        
+                        latest_msg = thread_latest_msg.get(t_id, m)
+                        
+                        # 判断闭环
+                        is_closed = False
+                        reason = ""
+                        
+                        # 获取最后发言者身份
+                        last_sender_id = latest_msg.sender_id
+                        last_sender_is_cs = False
+                        if last_sender_id in ([MY_ID] + OTHER_CS_IDS):
+                             last_sender_is_cs = True
+                        else:
+                             # 尝试通过名字前缀辅助判断
+                             try:
+                                 s = await latest_msg.get_sender()
+                                 if s and getattr(s, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)):
+                                     last_sender_is_cs = True
+                             except: pass
+
+                        # 闭环逻辑核心：
+                        # 1. 如果最后发言是客户 -> 未闭环 (Open)
+                        # 2. 如果最后发言是客服，但内容是 WAIT/KEEP -> 未闭环 (Open)
+                        # 3. 否则 -> 闭环 (Closed)
+                        
+                        if not last_sender_is_cs:
+                            is_closed = False
+                            reason = "最后发言是客户 (等待回复)"
+                        else:
+                            # 检查最后一条消息的内容
+                            last_text_norm = normalize(latest_msg.text or "")
+                            is_wait = any(k in last_text_norm for k in WAIT_SIGNATURES)
+                            is_keep = last_text_norm in KEEP_SIGNATURES
+                            
+                            if is_wait or is_keep:
+                                is_closed = False
+                                reason = f"客服最后回复仍为 {('稍等' if is_wait else '跟进')} 关键词"
+                            else:
+                                is_closed = True
+                        
+                        if is_closed: closed_count += 1
+
+                        # 构建结果并推送
+                        group_name = str(chat_id)
+                        try:
+                            g = await client.get_entity(chat_id)
+                            group_name = g.title
+                        except: pass
+                        
+                        safe_text = (m.text or "")[:100].replace('\n', ' ')
+                        beijing_time = m.date.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
+                        
+                        link = ""
+                        if m.reply_to and m.reply_to.reply_to_top_id:
+                             link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}?thread={m.reply_to.reply_to_top_id}"
+                        else:
+                             link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}"
+
+                        result_queue.put(json.dumps({
+                            "type": "result",
+                            "is_closed": is_closed,
+                            "reason": reason,
+                            "time": beijing_time,
+                            "group_name": group_name,
+                            "found_text": safe_text,
+                            "link": link
+                        }))
+
+            except Exception as e:
+                logger.error(f"Group {chat_id} check failed: {e}")
+
+        result_queue.put(json.dumps({
+            "type": "done", 
+            "total": found_count, 
+            "closed": closed_count, 
+            "open": found_count - closed_count
+        }))
+        result_queue.put(None) # Sentinel
+
+    except Exception as e:
+        logger.error(f"Check Task Logic Error: {e}")
+        result_queue.put(None)
+
+@app.route('/api/wait_check_stream')
+def wait_check_stream():
+    keyword = request.args.get('keyword', '').strip()
+    if not keyword: return "Missing keyword", 400
+    
+    result_queue = queue.Queue()
+    
+    # 在 Bot 的事件循环中运行搜索任务
+    if bot_loop:
+        asyncio.run_coroutine_threadsafe(check_wait_keyword_logic(keyword, result_queue), bot_loop)
+    else:
+        return "Bot Loop Not Ready", 500
+
+    def generate():
+        while True:
+            item = result_queue.get()
+            if item is None: break
+            yield item + '\n'
+    
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
