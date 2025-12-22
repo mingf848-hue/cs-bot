@@ -671,6 +671,9 @@ WAIT_CHECK_HTML = """
         .msg-link:hover { text-decoration: underline; }
         
         .summary { font-weight: bold; margin-bottom: 20px; padding: 15px; background: #e3f2fd; border-radius: 6px; border: 1px solid #bbdefb; color: #0d47a1; display: none; }
+        .filter-btn { cursor: pointer; color: #0056b3; text-decoration: underline; margin: 0 5px; }
+        .filter-btn:hover { color: #003d80; }
+        .filter-active { font-weight: 900; color: #d32f2f; text-decoration: none; }
     </style>
 </head>
 <body>
@@ -694,6 +697,9 @@ WAIT_CHECK_HTML = """
     </div>
 
     <script>
+        let allResults = [];
+        let currentFilter = 'all';
+
         async function startCheck() {
             const keyword = document.getElementById('keyword').value.trim();
             if (!keyword) return alert("请输入关键词");
@@ -713,9 +719,8 @@ WAIT_CHECK_HTML = """
             summaryBox.style.display = 'none';
             pFill.style.width = '1%';
             pText.innerText = "正在初始化...";
-
-            let totalFound = 0;
-            let totalClosed = 0;
+            
+            allResults = [];
 
             try {
                 // 使用流式 API
@@ -739,31 +744,12 @@ WAIT_CHECK_HTML = """
                                 pFill.style.width = data.percent + '%';
                                 pText.innerText = data.msg;
                             } else if (data.type === 'result') {
-                                totalFound++;
-                                if (data.is_closed) totalClosed++;
-                                
-                                const div = document.createElement('div');
-                                div.className = 'result-item';
-                                div.innerHTML = `
-                                    <div class="status-badge ${data.is_closed ? 'status-closed' : 'status-open'}">
-                                        ${data.is_closed ? '✅ 已闭环' : '❌ 未闭环'}
-                                    </div>
-                                    <div class="msg-content">
-                                        <div class="msg-meta">
-                                            <span>📅 ${data.time}</span>
-                                            <span>📂 ${data.group_name}</span>
-                                        </div>
-                                        <div class="msg-text">${data.found_text}</div>
-                                        ${!data.is_closed ? `<div class="reason-text">⚠️ ${data.reason}</div>` : ''}
-                                        <a href="${data.link}" target="_blank" class="msg-link">🔗 跳转消息</a>
-                                    </div>
-                                `;
-                                resList.appendChild(div);
+                                allResults.push(data);
+                                renderItem(data);
                             } else if (data.type === 'done') {
                                 pFill.style.width = '100%';
                                 pText.innerText = '检测完成';
-                                summaryBox.style.display = 'block';
-                                summaryBox.innerText = `检测完成: 共找到 ${data.total} 条 "${keyword}" 消息，其中 ${data.closed} 条已闭环，${data.open} 条未闭环。`;
+                                renderSummary(data.total, data.closed, data.open);
                             }
                         } catch (e) {
                             console.error("Parse error", e);
@@ -775,6 +761,59 @@ WAIT_CHECK_HTML = """
             } finally {
                 btn.disabled = false;
             }
+        }
+
+        function renderSummary(total, closed, open) {
+            const summaryBox = document.getElementById('summary-box');
+            summaryBox.style.display = 'block';
+            summaryBox.innerHTML = `
+                检测完成: 共找到 ${total} 条消息。
+                <span class="filter-btn" onclick="filterResults('closed')">✅ 已闭环: ${closed}</span>
+                <span class="filter-btn" onclick="filterResults('open')">❌ 未闭环: ${open}</span>
+                <span class="filter-btn" onclick="filterResults('all')">📝 显示全部</span>
+            `;
+        }
+
+        function filterResults(type) {
+            const resList = document.getElementById('result-list');
+            resList.innerHTML = '';
+            currentFilter = type;
+            
+            allResults.forEach(data => {
+                if (type === 'all') {
+                    renderItem(data);
+                } else if (type === 'closed' && data.is_closed) {
+                    renderItem(data);
+                } else if (type === 'open' && !data.is_closed) {
+                    renderItem(data);
+                }
+            });
+            
+            // Highlight active filter (Visual feedback)
+            document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('filter-active'));
+            // Simple mapping for demo
+            if(type === 'all') event.target.classList.add('filter-active');
+        }
+
+        function renderItem(data) {
+            const resList = document.getElementById('result-list');
+            const div = document.createElement('div');
+            div.className = 'result-item';
+            div.innerHTML = `
+                <div class="status-badge ${data.is_closed ? 'status-closed' : 'status-open'}">
+                    ${data.is_closed ? '✅ 已闭环' : '❌ 未闭环'}
+                </div>
+                <div class="msg-content">
+                    <div class="msg-meta">
+                        <span>📅 ${data.time}</span>
+                        <span>📂 ${data.group_name}</span>
+                    </div>
+                    <div class="msg-text">${data.found_text}</div>
+                    ${!data.is_closed ? `<div class="reason-text">⚠️ ${data.reason}</div>` : ''}
+                    <a href="${data.link}" target="_blank" class="msg-link">🔗 跳转消息</a>
+                </div>
+            `;
+            resList.appendChild(div);
         }
     </script>
 </body>
@@ -854,7 +893,7 @@ async def check_wait_keyword_logic(keyword, result_queue):
             try:
                 # 1. 抓取该群组最近10小时的消息
                 history = []
-                # 限制5000条或时间截止
+                # 限制3000条或时间截止
                 async for m in client.iter_messages(chat_id, limit=3000):
                     if m.date and m.date < cutoff_time: break
                     history.append(m)
@@ -923,6 +962,19 @@ async def check_wait_keyword_logic(keyword, result_queue):
                             if is_wait or is_keep:
                                 is_closed = False
                                 reason = f"客服最后回复仍为 {('稍等' if is_wait else '跟进')} 关键词"
+                                
+                                # [New Logic] 检查是否因为客户删除消息导致无法回复
+                                # 只有当未闭环，且最后一条是客服的 Wait/Keep 时，才检查 Reply 对象
+                                if latest_msg.reply_to:
+                                    try:
+                                        # 尝试获取被回复的消息
+                                        # 如果获取失败（None），说明原消息已不存在
+                                        replied_obj = await latest_msg.get_reply_message()
+                                        if not replied_obj:
+                                            reason += " (客户已删除原消息)"
+                                    except:
+                                        # API 异常也视为获取失败
+                                        pass
                             else:
                                 is_closed = True
                         
@@ -938,11 +990,26 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         safe_text = (m.text or "")[:100].replace('\n', ' ')
                         beijing_time = m.date.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
                         
+                        # [Link Fix] 链接逻辑优化：
+                        # 如果未闭环，链接跳转到 Thread 的【最新消息】(方便回复)
+                        # 如果已闭环，链接跳转到【关键词消息】(方便查看上下文)
+                        target_msg_for_link = latest_msg if not is_closed else m
+                        
                         link = ""
-                        if m.reply_to and m.reply_to.reply_to_top_id:
-                             link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}?thread={m.reply_to.reply_to_top_id}"
+                        real_chat_id = str(chat_id).replace('-100', '')
+                        
+                        # 确定 Thread ID 用于 URL
+                        url_thread_id = None
+                        if target_msg_for_link.reply_to:
+                            url_thread_id = target_msg_for_link.reply_to.reply_to_top_id
+                            if not url_thread_id:
+                                url_thread_id = target_msg_for_link.reply_to.reply_to_msg_id
+                        
+                        if url_thread_id:
+                             link = f"https://t.me/c/{real_chat_id}/{target_msg_for_link.id}?thread={url_thread_id}"
                         else:
-                             link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{m.id}"
+                             # 如果没有 Thread ID，可能是根消息，直接跳 MsgID
+                             link = f"https://t.me/c/{real_chat_id}/{target_msg_for_link.id}"
 
                         result_queue.put(json.dumps({
                             "type": "result",
