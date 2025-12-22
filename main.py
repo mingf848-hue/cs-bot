@@ -113,13 +113,18 @@ try:
     default_ignore = (
         "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴,"
         "好的呢,嗯,嗯嗯,谢了,okk,k,行,妥,了解,已收,没问题,好的收到,ok了,麻烦了,"
-        "好的感谢,哦"
+        "好的感谢,哦,知道了,好的知道了"
     )
     ignore_env = os.environ.get("IGNORE_KEYWORDS", default_ignore)
     clean_ignore = ignore_env.replace("，", ",")
     IGNORE_SIGNATURES = {normalize(x) for x in clean_ignore.split(',') if x.strip()}
     
     CS_NAME_PREFIXES = ["YY_6/9_值班号", "Y_YY"]
+
+    # [Ver 39.0] AI 配置
+    AI_PROXY_URL = os.environ.get("AI_PROXY_URL", "https://geminiproxy-black-one.vercel.app")
+    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+    AI_MODEL_NAME = "gemini-3-flash-preview"
 
 except Exception as e:
     logger.error(f"❌ 配置错误: {e}")
@@ -287,7 +292,7 @@ DASHBOARD_HTML = """
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 38.0 (Self-Reply Guard)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 39.0 (AI Judgment Integrated)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -865,6 +870,48 @@ def api_ctrl():
 # ==========================================
 # 模块 4.5: 稍等闭环检测 API (Async Generator)
 # ==========================================
+def _ai_check_reply_needed(text):
+    """
+    [Sync Function] 使用 Gemini AI 判断是否需要回复
+    返回 True (需要回复) 或 False (无需回复)
+    """
+    # 1. 基础鉴权检查
+    if not GEMINI_API_KEY:
+        # 如果没有 Key，为了安全起见默认返回需要回复（不漏报）
+        return True 
+    
+    # 2. 构造请求
+    url = f"{AI_PROXY_URL}/v1beta/models/{AI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
+    headers = {'Content-Type': 'application/json'}
+    prompt = f"""
+    判断客户的这条最后回复是否需要客服继续跟进回复。
+    客户消息："{text}"
+    如果这只是礼貌性的回复（如“好的”、“谢谢”、“收到”、“知道了”、“ok”、“辛苦了”等）、单纯的情绪表达或无需继续对话，请回答 FALSE。
+    如果这包含问题、投诉、或者需要客服确认的内容，请回答 TRUE。
+    只回答 TRUE 或 FALSE。
+    """
+    data = {
+        "contents": [{"parts": [{"text": prompt}]}]
+    }
+    
+    # 3. 发送请求
+    try:
+        resp = requests.post(url, json=data, headers=headers, timeout=5)
+        if resp.status_code == 200:
+            res_json = resp.json()
+            try:
+                ans = res_json.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip().upper()
+                return "TRUE" in ans
+            except:
+                logger.error(f"AI Parse Error: {res_json}")
+                return True
+        else:
+            logger.error(f"AI Check Failed: {resp.status_code} {resp.text}")
+            return True # 失败则默认需要回复
+    except Exception as e:
+        logger.error(f"AI Network Error: {e}")
+        return True # 异常则默认需要回复
+
 async def check_wait_keyword_logic(keyword, result_queue):
     """
     搜索过去10小时内包含 `keyword` 的消息，并检查闭环。
@@ -951,8 +998,27 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         # 3. 否则 -> 闭环 (Closed)
                         
                         if not last_sender_is_cs:
-                            is_closed = False
-                            reason = "最后发言是客户 (等待回复)"
+                            # [Ver 39.0] 智能判定逻辑
+                            
+                            # 1. 极速过滤 (本地词库) - 节省 AI 额度
+                            last_text_norm = normalize(latest_msg.text or "")
+                            if last_text_norm in IGNORE_SIGNATURES:
+                                is_closed = True # 视为已闭环
+                            else:
+                                # 2. AI 深度过滤
+                                # 在 executor 中运行同步 request 以避免阻塞 Bot 主循环
+                                if not latest_msg.text or not latest_msg.text.strip():
+                                    # 如果是纯图片/文件，默认为需要回复 (保守策略)
+                                    is_closed = False
+                                    reason = "最后发言是客户 [媒体] (等待回复)"
+                                else:
+                                    need_reply = await asyncio.get_event_loop().run_in_executor(None, lambda: _ai_check_reply_needed(latest_msg.text))
+                                    if not need_reply:
+                                        is_closed = True
+                                        reason = "AI判定无需回复 (客户已结束)"
+                                    else:
+                                        is_closed = False
+                                        reason = "最后发言是客户 (等待回复)"
                         else:
                             # 检查最后一条消息的内容
                             last_text_norm = normalize(latest_msg.text or "")
@@ -1000,10 +1066,13 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         
                         # 确定 Thread ID 用于 URL
                         url_thread_id = None
-                        if target_msg_for_link.reply_to:
-                            url_thread_id = target_msg_for_link.reply_to.reply_to_top_id
-                            if not url_thread_id:
-                                url_thread_id = target_msg_for_link.reply_to.reply_to_msg_id
+                        
+                        # [Ver 38.2] 如果标记为客户已删除，则不生成 Thread 链接（因为跳不过去）
+                        if "(客户已删除原消息)" not in reason:
+                            if target_msg_for_link.reply_to:
+                                url_thread_id = target_msg_for_link.reply_to.reply_to_top_id
+                                if not url_thread_id:
+                                    url_thread_id = target_msg_for_link.reply_to.reply_to_msg_id
                         
                         if url_thread_id:
                              link = f"https://t.me/c/{real_chat_id}/{target_msg_for_link.id}?thread={url_thread_id}"
