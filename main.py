@@ -531,11 +531,11 @@ LOG_VIEWER_HTML = """
 
         function parseLogs(text) {
             // [Fix JS Escaping] Use double backslash for python string
-            const rawLines = text.split(/\r?\n/);
+            const rawLines = text.split(/\\r?\\n/);
             parsedLogs = [];
             let currentEntry = null;
-            // [Fix JS Escaping] Escape \d and \s for JS regex
-            const timeRegex = /^(\d{4}-\d{2}-\d{2}\s+)?(\d{2}:\d{2}:\d{2})(.*)/;
+            // [Fix JS Escaping] Escape \\d and \\s for JS regex
+            const timeRegex = /^(\\d{4}-\\d{2}-\\d{2}\\s+)?(\\d{2}:\\d{2}:\\d{2})(.*)/;
             
             rawLines.forEach(line => {
                 if(!line.trim()) return;
@@ -545,8 +545,8 @@ LOG_VIEWER_HTML = """
                     // match[2] is time, match[3] is content
                     currentEntry = { time: match[2], raw: match[3], content: match[3].trim(), fullText: match[3] };
                 } else {
-                    // [Fix JS Escaping] Use \n for literal newline char in JS string
-                    if (currentEntry) { currentEntry.fullText += '\n' + line; currentEntry.content += '\n' + line; }
+                    // [Fix JS Escaping] Use \\n for literal newline char in JS string
+                    if (currentEntry) { currentEntry.fullText += '\\n' + line; currentEntry.content += '\\n' + line; }
                 }
             });
             if (currentEntry) parsedLogs.push(currentEntry);
@@ -559,8 +559,8 @@ LOG_VIEWER_HTML = """
                 let content = entry.content;
                 let raw = entry.raw || "";
                 let ids = [];
-                // [Fix JS Escaping] Escape \d and \s for JS regex
-                const idRegex = /(Msg|User|Thread|流|归属|用户)[:=]?\s?(\d+)/g;
+                // [Fix JS Escaping] Escape \\d and \\s for JS regex
+                const idRegex = /(Msg|User|Thread|流|归属|用户)[:=]?\\s?(\\d+)/g;
                 let match;
                 while ((match = idRegex.exec(content)) !== null) { ids.push(match[2]); }
                 let idsStr = ids.join(',');
@@ -571,15 +571,15 @@ LOG_VIEWER_HTML = """
                 else if (raw.includes('👮') || raw.includes('[AUDIT]')) { type = 'audit'; }
                 else if (raw.includes('┣━━') || raw.includes('┗━━')) { type = 'sys'; }
 
-                // [Fix JS Escaping] Escape \d, \s and quotes inside replacement string
-                content = content.replace(/(Msg[:=]?\s?)(\d+)/g, '$1<span class="pill" onclick="searchId(\'$2\')">$2</span>');
-                content = content.replace(/(User|用户|归属)[:=]?\s?(\d+)/g, '$1<span class="pill" onclick="searchId(\'$2\')">$2</span>');
+                // [Fix JS Escaping] Escape \\d, \\s and quotes inside replacement string
+                content = content.replace(/(Msg[:=]?\\s?)(\\d+)/g, '$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
+                content = content.replace(/(User|用户|归属)[:=]?\\s?(\\d+)/g, '$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
                 
                 let actionBtn = '';
                 if (type === 'user') {
-                    actionBtn = ids.length > 0 ? `<span class="btn-report btn-missed" onclick="reportBug('漏报', '${idsStr}')">🐞 漏报</span>` : '';
+                    actionBtn = ids.length > 0 ? `<span class="btn-report btn-missed" onclick="reportBug('漏报', '\\${idsStr}')">🐞 漏报</span>` : '';
                 } else if (type === 'alert' || type === 'audit') {
-                    actionBtn = ids.length > 0 ? `<span class="btn-report btn-false" onclick="reportBug('误报', '${idsStr}')">🐞 误报</span>` : '';
+                    actionBtn = ids.length > 0 ? `<span class="btn-report btn-false" onclick="reportBug('误报', '\\${idsStr}')">🐞 误报</span>` : '';
                 }
                 
                 let metaHtml = `<div class="msg-meta">${entry.time} #${idx} ${actionBtn}</div>`;
@@ -614,12 +614,12 @@ LOG_VIEWER_HTML = """
         function reportBug(type, idsStr) {
             const ids = idsStr.split(',');
             if (ids.length === 0) return;
-            let report = `=== ${type}反馈报告 ===\n`;
-            report += `类型: ${type}\n涉及 ID: ${idsStr}\n\n-- 关键日志流 --\n`;
+            let report = `=== ${type}反馈报告 ===\\n`;
+            report += `类型: ${type}\\n涉及 ID: ${idsStr}\\n\\n-- 关键日志流 --\\n`;
             parsedLogs.forEach(entry => {
                 let hit = false;
                 for (let id of ids) { if (entry.raw.includes(id)) { hit = true; break; } }
-                if (hit) { report += `[${entry.time}] ${entry.content}\n`; }
+                if (hit) { report += `[${entry.time}] ${entry.content}\\n`; }
             });
             navigator.clipboard.writeText(report).then(() => { alert(`✅ [${type}] 详情已复制！请直接粘贴发送。`); });
         }
@@ -640,6 +640,10 @@ def log_ui(): return render_template_string(LOG_VIEWER_HTML)
 @app.route('/log_raw')
 def log_raw():
     try:
+        # [Ver 38.1] Check file exists first
+        if not os.path.exists(LOG_FILE_PATH):
+            return "Log file not created yet.", 200
+            
         file_size = os.path.getsize(LOG_FILE_PATH)
         read_size = 200 * 1024 
         with open(LOG_FILE_PATH, 'rb') as f:
