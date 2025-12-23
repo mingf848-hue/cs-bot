@@ -302,7 +302,7 @@ DASHBOARD_HTML = """
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 39.9 (Proxy + Telegram Time)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 41.2 (Log Time Fix)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -1937,7 +1937,8 @@ async def handler(event):
                 elif real_customer_id: source_info = "API实时查询"
                 else: source_info = "追踪失败" # [Ver 28.3] 明确失败状态
                 
-                log_tree(1, f"⚡️ 客服操作捕获 | Msg: {reply_to_msg_id} | 客服: {sender_name} | 内容: [{text[:100]}] | 归属: {real_customer_id} | 流: {current_thread_id} | 状态: {source_info}")
+                # [Ver 41.2] 日志增加 [T=...] 真实时间显示，证明逻辑使用的是 Telegram 时间而非服务器时间
+                log_tree(1, f"⚡️ 客服操作捕获 | Msg: {reply_to_msg_id} [T={msg_time_str}] | 客服: {sender_name} | 内容: [{text[:100]}] | 归属: {real_customer_id} | 流: {current_thread_id} | 状态: {source_info}")
 
             if real_customer_id or current_thread_id:
                 cancel_tasks(chat_id, real_customer_id, current_thread_id, reason=f"客服回复: [{text[:100]}...]")
@@ -2095,7 +2096,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 41.1 AI Reason + Time Fix)")
+        log_tree(0, "✅ 系统启动 (Ver 41.2 Log Time Fix)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
