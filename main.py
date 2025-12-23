@@ -1128,34 +1128,6 @@ async def check_wait_keyword_logic(keyword, result_queue):
         logger.error(f"Check Task Logic Error: {e}")
         result_queue.put(None)
 
-@app.route('/api/wait_check_stream')
-def wait_check_stream():
-    """
-    [Added to fix 404] 流式 API 路由，对接 Telethon 逻辑
-    """
-    keyword = request.args.get('keyword', '').strip()
-    if not keyword: return "Keyword required", 400
-    
-    def generate():
-        result_queue = queue.Queue()
-        # 将异步任务提交到全局 Bot Loop 中执行，并把结果放入 queue
-        if not bot_loop: 
-             yield "Error: Bot loop not ready\n"
-             return
-
-        asyncio.run_coroutine_threadsafe(
-            check_wait_keyword_logic(keyword, result_queue), 
-            bot_loop
-        )
-        
-        while True:
-            # 阻塞等待结果
-            data = result_queue.get()
-            if data is None: break
-            yield data + "\n"
-            
-    return Response(stream_with_context(generate()), mimetype='text/plain')
-
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port, threaded=True)
@@ -1195,7 +1167,7 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 41.9] 增强巡检: 分批按关键词扫描 (WAIT Only) + 详情优化
+# [Ver 42.2] 增强巡检: 修复大小写匹配问题 + 详细统计报告
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】(关键词分批扫描)...")
     await send_alert("👮 **开始执行下班自动巡检...**\n正在分批扫描专属关键词...", "")
@@ -1233,6 +1205,8 @@ async def audit_pending_tasks():
         if not keyword.strip(): continue
         
         kw_issues = []
+        found_count = 0
+        closed_count = 0
         
         for chat_id, history in history_cache.items():
             # 建立线程上下文 (最新消息)
@@ -1250,8 +1224,9 @@ async def audit_pending_tasks():
             for m in history:
                 if not m.text: continue
                 
-                # 命中关键词
-                if keyword in m.text:
+                # [Ver 42.2 Fix] 必须 normalize 后再匹配，因为 keyword 已经是小写了
+                # 修复: "请稍等art" in "请稍等ART" (False) 的问题
+                if keyword in normalize(m.text):
                     # 检查发送者是否为客服 (ID匹配 或 名字前缀匹配)
                     is_cs_sender = False
                     if m.sender_id in ([MY_ID] + OTHER_CS_IDS): is_cs_sender = True
@@ -1262,6 +1237,8 @@ async def audit_pending_tasks():
                     
                     # 只有客服发的关键词才算任务起点
                     if not is_cs_sender: continue
+
+                    found_count += 1
 
                     # 找到该消息所属 Thread 的最新消息
                     t_id = None
@@ -1274,7 +1251,9 @@ async def audit_pending_tasks():
                     # [Ver 41.8] 调用统一闭环判断逻辑
                     is_closed, reason = await _check_is_closed_logic(latest_msg)
                     
-                    if not is_closed:
+                    if is_closed:
+                        closed_count += 1
+                    else:
                         # 发现未闭环问题
                         # 获取客服名字
                         cs_name_display = "未知客服"
@@ -1304,7 +1283,7 @@ async def audit_pending_tasks():
                              link = f"https://t.me/c/{real_chat_id}/{latest_msg.id}"
                         
                         # CS 回复的关键词消息内容
-                        cs_reply_text = (m.text or "")[:15]
+                        cs_reply_text = (latest_msg.text or "[媒体]")[:15]
 
                         kw_issues.append({
                             'cs_name': cs_name_display,
@@ -1314,16 +1293,21 @@ async def audit_pending_tasks():
                             'link': link
                         })
 
-        # 为每个有问题的关键词发送一次汇总报警
+        # [Ver 42.2] 只有当发现问题时才发送报警，并带上统计信息
         if kw_issues:
             total_issues += len(kw_issues)
-            report_text = f"👮 **巡检报告: {keyword}**\n发现 {len(kw_issues)} 个未闭环任务:\n"
+            open_count = found_count - closed_count
+            report_text = (
+                f"👮 **下班巡检报告**\n"
+                f"🔑 关键词: `{keyword}`\n"
+                f"📊 命中: {found_count} | ✅ 闭环: {closed_count} | ❌ 未闭环: {open_count}\n\n"
+            )
             
             for i, iss in enumerate(kw_issues[:8]): # 限制单条消息长度
                 report_text += (
                     f"{i+1}. 👤 {iss['cs_name']}\n"
                     f"   💬 客户: {iss['customer_text']}\n"
-                    f"   👉 客服: {iss['cs_reply']} ({iss['reason']})\n"
+                    f"   👉 结果: {iss['cs_reply']} ({iss['reason']})\n"
                     f"   🔗 [点击跳转]({iss['link']})\n\n"
                 )
             
@@ -1332,6 +1316,9 @@ async def audit_pending_tasks():
             
             await send_alert(report_text, "", f"Audit-{keyword}")
             await asyncio.sleep(2) # 避免刷屏过快
+        else:
+            # 可选：如果该关键词完全干净，只在后台记录日志
+            log_tree(4, f"关键词 '{keyword}' 巡检完成，无异常 (总数: {found_count})")
 
     await send_alert(f"🏁 **下班巡检结束**\n总计发现 **{total_issues}** 个未闭环问题。", "")
 
@@ -1416,8 +1403,6 @@ def check_recent_activity_safe(chat_id, task_start_time, user_ids=None, thread_i
     if user_ids:
         for uid in user_ids:
             last_act = cs_activity_log.get((chat_id, uid), 0)
-            # last_act 已经是消息的真实时间，task_start_time 也是触发消息的真实时间
-            # 直接比较即可，不受服务器延迟影响
             if last_act > task_start_time + buffer_seconds:
                 return True, f"用户 {uid} 下有新回复"
     if thread_id:
@@ -1930,8 +1915,8 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        # [Ver 42.1] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 42.1 KEEP Parsing Fix)")
+        # [Ver 42.2] 启动日志更新
+        log_tree(0, "✅ 系统启动 (Ver 42.2 Detail Stats)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
