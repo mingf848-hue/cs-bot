@@ -310,7 +310,7 @@ DASHBOARD_HTML = """
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 42.5 (Surgical Cancel Fix)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 42.7 (Zero Tolerance Fix)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -1560,10 +1560,11 @@ async def task_self_reply_timeout(trigger_msg_id, user_name, content, link, chat
         if not IS_WORKING: return
         
         # [Ver 39.1] 报警前二次检查：如果期间客服活跃过，则视为已处理
-        is_safe, safe_reason = check_recent_activity_safe(chat_id, trigger_timestamp, [user_id], thread_id)
-        if is_safe:
-            log_tree(2, f"🛡️ 拦截误报 [自回] {ids_str} | 原因: {safe_reason}")
-            return
+        # [Ver 42.6] Removed CS Active Exemption
+        # is_safe, safe_reason = check_recent_activity_safe(chat_id, trigger_timestamp, [user_id], thread_id)
+        # if is_safe:
+        #     log_tree(2, f"🛡️ 拦截误报 [自回] {ids_str} | 原因: {safe_reason}")
+        #     return
 
         log_tree(2, f"触发 [自回] 报警 Msg={trigger_msg_id}")
         await send_alert(f"📩 内容: `{content.replace('`', '')}`\n🔔 **自回防漏监测**\n👤 用户: {user_name} (自行追加消息)\n⚠️ 状态: 已 {SELF_REPLY_TIMEOUT // 60} 分钟未处理\n🔗 [点击回复]({link})", link, ids_str)
@@ -1773,10 +1774,8 @@ async def handler(event):
                 # [Ver 41.2] 日志增加 [T=...] 真实时间显示，证明逻辑使用的是 Telegram 时间而非服务器时间
                 log_tree(1, f"⚡️ 客服操作捕获 | Msg: {reply_to_msg_id} [T={msg_time_str}] | 客服: {sender_name} | 内容: [{text[:100]}] | 归属: {real_customer_id} | 流: {current_thread_id} | 状态: {source_info}")
 
-            # [Ver 42.4] 智能销单逻辑升级：精确打击
-            # 如果客服回复的是某条特定消息，只取消该消息的任务。
-            # 如果没有特定回复（如在话题中发言），才按话题取消。
-            # 仅当完全没有上下文时，才兜底取消用户所有任务。
+            # [Ver 42.6] Removed CS Active Exemption
+            # "宁可错杀不可放过"：只要是客户追加消息，且不是忽略词，必须开启监控
             
             cancel_types = None # Default: Cancel All types
             if is_wait_cmd or is_keep_cmd:
@@ -1785,7 +1784,7 @@ async def handler(event):
             if real_customer_id or current_thread_id:
                 cancel_tasks(chat_id, real_customer_id, 
                              thread_id=current_thread_id, 
-                             target_msg_id=reply_to_msg_id, # [Ver 42.4] Pass exact target
+                             target_msg_id=reply_to_msg_id, 
                              reason=f"客服回复: [{text[:100]}...]", 
                              types=cancel_types)
             
@@ -1870,30 +1869,28 @@ async def handler(event):
                                  self_reply_dedup.append(grouped_id)
                          
                          if should_monitor:
-                             # [Ver 41.0] 这里也从 time.time() 改为基于消息时间判断
-                             last_act = cs_activity_log.get((chat_id, real_customer_id), 0)
-                             if msg_timestamp - last_act < 60:
-                                 log_tree(1, f"🛡️ 豁免 [自回-客服在线] | User={sender_id} | Msg={event.id}")
-                             else:
-                                 cancel_tasks(chat_id, sender_id, current_thread_id, reason="新自回覆盖旧自回", types=['self_reply'])
-                                 
-                                 register_task(chat_id, sender_id, event.id, current_thread_id)
+                             # [Ver 42.6] Removed CS Active Exemption
+                             # "宁可错杀不可放过"：只要是客户追加消息，且不是忽略词，必须开启监控
+                             
+                             cancel_tasks(chat_id, sender_id, current_thread_id, reason="新自回覆盖旧自回", types=['self_reply'])
+                             
+                             register_task(chat_id, sender_id, event.id, current_thread_id)
 
-                                 log_tree(1, f"🔥 侦测到自回行为 | User={sender_name} | Msg={event.id} -> {reply_to_msg_id}")
+                             log_tree(1, f"🔥 侦测到自回行为 | User={sender_name} | Msg={event.id} -> {reply_to_msg_id}")
+                             
+                             task = asyncio.create_task(task_self_reply_timeout(
+                                 event.id, sender_name, text[:50], msg_link, chat_id, sender_id, 
+                                 trigger_timestamp=msg_timestamp,
+                                 thread_id=current_thread_id
+                             ))
+                             
+                             def cleanup_self_reply(_):
+                                 if event.id in self_reply_tasks: del self_reply_tasks[event.id]
+                                 if event.id in self_reply_timers: del self_reply_timers[event.id]
+                                 remove_task_record(chat_id, sender_id, event.id, current_thread_id)
                                  
-                                 task = asyncio.create_task(task_self_reply_timeout(
-                                     event.id, sender_name, text[:50], msg_link, chat_id, sender_id, 
-                                     trigger_timestamp=msg_timestamp,
-                                     thread_id=current_thread_id
-                                 ))
-                                 
-                                 def cleanup_self_reply(_):
-                                     if event.id in self_reply_tasks: del self_reply_tasks[event.id]
-                                     if event.id in self_reply_timers: del self_reply_timers[event.id]
-                                     remove_task_record(chat_id, sender_id, event.id, current_thread_id)
-                                     
-                                 task.add_done_callback(cleanup_self_reply)
-                                 self_reply_tasks[event.id] = task
+                             task.add_done_callback(cleanup_self_reply)
+                             self_reply_tasks[event.id] = task
 
             if reply_to_msg_id:
                 try:
@@ -1939,7 +1936,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 42.5 Precise Cancel Fix)")
+        log_tree(0, "✅ 系统启动 (Ver 42.6 Strict Self-Reply Fix)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
