@@ -1973,9 +1973,11 @@ async def handler(event):
                             followup_tasks[reply_to_msg_id].cancel()
                             del followup_tasks[reply_to_msg_id]
 
+                        # [Ver 41.3 Fix Argument Error]
                         task = asyncio.create_task(task_followup_timeout(
-                            reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users, current_thread_id, 
-                            trigger_timestamp=msg_timestamp # [Ver 41.0]
+                            reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users, 
+                            trigger_timestamp=msg_timestamp,
+                            thread_id=current_thread_id
                         ))
                         followup_tasks[reply_to_msg_id] = task
                         followup_msg_map[event.id] = reply_to_msg_id
@@ -1992,9 +1994,11 @@ async def handler(event):
                             wait_tasks[reply_to_msg_id].cancel()
                             del wait_tasks[reply_to_msg_id]
 
+                        # [Ver 41.3 Fix Argument Error]
                         task = asyncio.create_task(task_wait_timeout(
-                            reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users, current_thread_id,
-                            trigger_timestamp=msg_timestamp # [Ver 41.0]
+                            reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users,
+                            trigger_timestamp=msg_timestamp,
+                            thread_id=current_thread_id
                         ))
                         wait_tasks[reply_to_msg_id] = task
                         wait_msg_map[event.id] = reply_to_msg_id
@@ -2041,9 +2045,11 @@ async def handler(event):
 
                                  log_tree(1, f"🔥 侦测到自回行为 | User={sender_name} | Msg={event.id} -> {reply_to_msg_id}")
                                  
+                                 # [Ver 41.3 Fix Argument Error]
                                  task = asyncio.create_task(task_self_reply_timeout(
-                                     event.id, sender_name, text[:50], msg_link, chat_id, sender_id, current_thread_id,
-                                     trigger_timestamp=msg_timestamp # [Ver 41.0]
+                                     event.id, sender_name, text[:50], msg_link, chat_id, sender_id, 
+                                     trigger_timestamp=msg_timestamp,
+                                     thread_id=current_thread_id
                                  ))
                                  
                                  def cleanup_self_reply(_):
@@ -2074,9 +2080,11 @@ async def handler(event):
                     if (target_id == MY_ID) or (target_id in OTHER_CS_IDS):
                         if normalize(text.strip()) in IGNORE_SIGNATURES: return
                         if event.id in reply_tasks: reply_tasks[event.id].cancel()
+                        # [Ver 41.3 Fix Argument Error]
                         task = asyncio.create_task(task_reply_timeout(
-                            event.id, sender_name, text[:50], msg_link, chat_id, sender_id, target_name, current_thread_id,
-                            trigger_timestamp=msg_timestamp # [Ver 41.0]
+                            event.id, sender_name, text[:50], msg_link, chat_id, sender_id, target_name, 
+                            trigger_timestamp=msg_timestamp,
+                            thread_id=current_thread_id
                         ))
                         reply_tasks[event.id] = task
                 except Exception as e:
@@ -2096,7 +2104,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 41.2 Log Time Fix)")
+        log_tree(0, "✅ 系统启动 (Ver 41.3 Argument Error Fix)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
