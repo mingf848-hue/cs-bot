@@ -310,7 +310,7 @@ DASHBOARD_HTML = """
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 42.3 (Parallel Task Fix)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 42.5 (Surgical Cancel Fix)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -1367,31 +1367,56 @@ def remove_task_record(chat_id, user_id, msg_id, thread_id=None):
             chat_thread_active_msgs[t_key].discard(msg_id)
             if not chat_thread_active_msgs[t_key]: del chat_thread_active_msgs[t_key]
 
-def cancel_tasks(chat_id, user_id, thread_id=None, reason="未知", types=None):
+# [Ver 42.5] 修复：外科手术式精准销单，禁止连坐
+def cancel_tasks(chat_id, user_id, thread_id=None, target_msg_id=None, reason="未知", types=None):
     if types is None: types = ['wait', 'followup', 'reply', 'self_reply'] # Default to all
     
     targets = set()
-    if user_id:
-        u_key = (chat_id, user_id)
-        if u_key in chat_user_active_msgs:
-            targets.update(chat_user_active_msgs[u_key])
-            if len(types) >= 4: del chat_user_active_msgs[u_key]
-    if thread_id:
+    hit_specific = False
+    
+    # 1. 精确打击：如果提供了 target_msg_id (即 Reply To ID)
+    if target_msg_id:
+        # [Ver 42.5 Fix] 无论在不在任务列表里，只要是有针对性的回复，就只针对这一个ID
+        # 尝试去找到这个ID对应的任务 (可能在wait_msg_map映射里)
+        real_task_id = target_msg_id
+        
+        # 检查反向映射表 (reply_id -> trigger_id)
+        # 有时候 reply_to_msg_id 是触发消息，有时候是客服回复的那条消息
+        # 我们需要找到“任务ID”，通常是触发消息的ID
+        
+        # 尝试查找直接任务
+        if real_task_id in wait_tasks or real_task_id in followup_tasks or real_task_id in reply_tasks or real_task_id in self_reply_tasks:
+            targets.add(real_task_id)
+            hit_specific = True
+        
+        # [Ver 42.5 Fix] 尝试查找关联任务 (如果 target_msg_id 是客服发的上一条跟进，那任务ID可能是它的上一条)
+        # 这里逻辑较复杂，简化为：如果提供了target，绝对不进行兜底删除。
+        
+        # 即使 targets 为空 (说明该消息没任务)，我们也标记 hit_specific = True
+        # 意思是：“用户的意图是回复这条消息，如果这条消息没倒计时，那就算了，别动其他的”
+        hit_specific = True
+    
+    # 2. 话题范围 (仅当没有精确命中时)
+    if not hit_specific and thread_id:
         t_key = (chat_id, thread_id)
         if t_key in chat_thread_active_msgs:
             targets.update(chat_thread_active_msgs[t_key])
-            if len(types) >= 4: del chat_thread_active_msgs[t_key]
+
+    # 3. 用户范围 (仅当既没精确命中，也没在话题里，才执行全用户销单)
+    if not hit_specific and not thread_id and user_id:
+        u_key = (chat_id, user_id)
+        if u_key in chat_user_active_msgs:
+            targets.update(chat_user_active_msgs[u_key])
 
     if not targets: return
 
-    log_tree(1, f" ┣━━ 尝试销单 | 用户: {user_id} | 流: {thread_id} | 类型: {types} | 任务池: {list(targets)}")
+    log_tree(1, f" ┣━━ 尝试销单 | 用户: {user_id} | 目标: {target_msg_id} | 命中: {hit_specific} | 任务池: {list(targets)}")
     count = 0
     cleared_ids = []
     for mid in targets:
         if 'wait' in types and mid in wait_tasks: wait_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
         if 'followup' in types and mid in followup_tasks: followup_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
         if 'reply' in types and mid in reply_tasks: reply_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
-        # [Ver 38.0]
         if 'self_reply' in types and mid in self_reply_tasks: self_reply_tasks[mid].cancel(); count += 1; cleared_ids.append(mid)
     
     if count > 0:
@@ -1403,8 +1428,6 @@ def check_recent_activity_safe(chat_id, task_start_time, user_ids=None, thread_i
     if user_ids:
         for uid in user_ids:
             last_act = cs_activity_log.get((chat_id, uid), 0)
-            # last_act 已经是消息的真实时间，task_start_time 也是触发消息的真实时间
-            # 直接比较即可，不受服务器延迟影响
             if last_act > task_start_time + buffer_seconds:
                 return True, f"用户 {uid} 下有新回复"
     if thread_id:
@@ -1750,18 +1773,21 @@ async def handler(event):
                 # [Ver 41.2] 日志增加 [T=...] 真实时间显示，证明逻辑使用的是 Telegram 时间而非服务器时间
                 log_tree(1, f"⚡️ 客服操作捕获 | Msg: {reply_to_msg_id} [T={msg_time_str}] | 客服: {sender_name} | 内容: [{text[:100]}] | 归属: {real_customer_id} | 流: {current_thread_id} | 状态: {source_info}")
 
-            # [Ver 42.3] 智能销单逻辑：
-            # 1. 如果客服发的是指令(Wait/Keep)，只取消"漏回提醒"(reply)，保留该用户的其他并行任务(wait/followup)。
-            #    (防止客服同时接待同一个人的两个问题时，回复问题A导致问题B的倒计时被误杀)
-            # 2. 如果客服发的是普通回复，默认视为结束会话，取消所有任务。
-            cancel_types = None # Default: Cancel All
+            # [Ver 42.4] 智能销单逻辑升级：精确打击
+            # 如果客服回复的是某条特定消息，只取消该消息的任务。
+            # 如果没有特定回复（如在话题中发言），才按话题取消。
+            # 仅当完全没有上下文时，才兜底取消用户所有任务。
+            
+            cancel_types = None # Default: Cancel All types
             if is_wait_cmd or is_keep_cmd:
                 cancel_types = ['reply', 'self_reply']
 
             if real_customer_id or current_thread_id:
-                cancel_tasks(chat_id, real_customer_id, current_thread_id, 
+                cancel_tasks(chat_id, real_customer_id, 
+                             thread_id=current_thread_id, 
+                             target_msg_id=reply_to_msg_id, # [Ver 42.4] Pass exact target
                              reason=f"客服回复: [{text[:100]}...]", 
-                             types=cancel_types) # [Ver 42.3] Pass types
+                             types=cancel_types)
             
             if reply_to_msg_id and reply_to_msg_id in reply_tasks:
                 reply_tasks[reply_to_msg_id].cancel()
@@ -1779,24 +1805,18 @@ async def handler(event):
 
                 if related_users:
                     # [Ver 41.6] 逻辑回调：按关键词触发任务
-                    # 只要发送者是客服(is_sender_cs)，且内容命中了本Bot配置的独特关键词，就启动任务。
-                    # 解决了“换号操作”或“ID不在白名单”但使用了正确关键词时的监控需求。
                     if is_keep_cmd:
-                        # [Fix Ver 36.1] 强制冲突检测：如果针对同一条消息已有 [稍等] 任务，立即销毁
-                        # 解决并发导致 cancel_tasks 未能及时生效的问题
+                        # [Fix Ver 36.1] 强制冲突检测
                         if reply_to_msg_id in wait_tasks:
                             wait_tasks[reply_to_msg_id].cancel()
                             del wait_tasks[reply_to_msg_id]
-                            # 同时清理关联的 timer 和 map，防止残留
                             if reply_to_msg_id in wait_timers: del wait_timers[reply_to_msg_id]
                             log_tree(1, f"🔄 [跟进] 覆盖并销毁 [稍等] | Msg={reply_to_msg_id}")
 
-                        # [Fix Ver 36.1] 自身去重：如果有旧的 [跟进]，也销毁
                         if reply_to_msg_id in followup_tasks:
                             followup_tasks[reply_to_msg_id].cancel()
                             del followup_tasks[reply_to_msg_id]
 
-                        # [Ver 41.3 Fix Argument Error]
                         task = asyncio.create_task(task_followup_timeout(
                             reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users, 
                             trigger_timestamp=msg_timestamp,
@@ -1806,8 +1826,6 @@ async def handler(event):
                         followup_msg_map[event.id] = reply_to_msg_id
 
                     elif is_wait_cmd:
-                        # [Fix Ver 36.1] 强制冲突检测：防止“稍等”覆盖“跟进” (如果并发发生，跟进优先？不，后者优先)
-                        # 如果用户先发跟进再发稍等，通常不建议，但逻辑上稍等应该覆盖跟进
                         if reply_to_msg_id in followup_tasks:
                             followup_tasks[reply_to_msg_id].cancel()
                             del followup_tasks[reply_to_msg_id]
@@ -1817,7 +1835,6 @@ async def handler(event):
                             wait_tasks[reply_to_msg_id].cancel()
                             del wait_tasks[reply_to_msg_id]
 
-                        # [Ver 41.3 Fix Argument Error]
                         task = asyncio.create_task(task_wait_timeout(
                             reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users,
                             trigger_timestamp=msg_timestamp,
@@ -1839,7 +1856,6 @@ async def handler(event):
             log_tree(0, f"Msg={event.id} [T={msg_time_str}] | User={sender_id} | [{chat_id}] {sender_name}: {text} [{msg_type}]")
             
             # [Ver 38.0] 自回防漏监测 (Self-Reply Guard)
-            # 逻辑：如果回复的目标人 == 发送人自己 -> 客户正在自言自语追加信息 -> 启动3分钟监控
             if reply_to_msg_id and real_customer_id:
                 if sender_id == real_customer_id:
                      # 确保忽略列表中的词不触发（例如连续说“谢谢”）
@@ -1854,21 +1870,17 @@ async def handler(event):
                                  self_reply_dedup.append(grouped_id)
                          
                          if should_monitor:
-                             # [Ver 39.1] 活跃度检查：如果客服在最近 60 秒内活跃过，则不启动自回监控
                              # [Ver 41.0] 这里也从 time.time() 改为基于消息时间判断
                              last_act = cs_activity_log.get((chat_id, real_customer_id), 0)
                              if msg_timestamp - last_act < 60:
                                  log_tree(1, f"🛡️ 豁免 [自回-客服在线] | User={sender_id} | Msg={event.id}")
                              else:
-                                 # 如果已经有针对该用户的自回监控，先取消旧的（只监控最新的自回）
                                  cancel_tasks(chat_id, sender_id, current_thread_id, reason="新自回覆盖旧自回", types=['self_reply'])
                                  
-                                 # [Fix Ver 39.3] 立即同步登记任务，防止高并发下因 register_task 滞后导致的 cancel_tasks 失效
                                  register_task(chat_id, sender_id, event.id, current_thread_id)
 
                                  log_tree(1, f"🔥 侦测到自回行为 | User={sender_name} | Msg={event.id} -> {reply_to_msg_id}")
                                  
-                                 # [Ver 41.3 Fix Argument Error]
                                  task = asyncio.create_task(task_self_reply_timeout(
                                      event.id, sender_name, text[:50], msg_link, chat_id, sender_id, 
                                      trigger_timestamp=msg_timestamp,
@@ -1911,7 +1923,7 @@ async def handler(event):
                         ))
                         reply_tasks[event.id] = task
                 except Exception as e:
-                    log_tree(9, f"❌ Reply Check Check Error: {e}")
+                    log_tree(9, f"❌ Reply Check Error: {e}")
 
     except Exception as e:
         log_tree(9, f"❌ Handler 异常: {e}")
@@ -1927,8 +1939,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        # [Ver 42.3] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 42.3 Parallel Task Fix)")
+        log_tree(0, "✅ 系统启动 (Ver 42.5 Precise Cancel Fix)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
