@@ -194,10 +194,18 @@ def update_content_cache(chat_id, msg_id, name, text):
     safe_text = text[:100].replace('\n', ' ') if text else "[非文本/空]"
     msg_content_cache[key] = {'name': name, 'text': safe_text}
 
-def record_cs_activity(chat_id, user_id=None, thread_id=None):
-    now = time.time()
-    if user_id: cs_activity_log[(chat_id, user_id)] = now
-    if thread_id: cs_activity_log[(chat_id, thread_id)] = now
+# [Ver 41.0] 时间源优化：强制使用传入的 timestamp (来自消息 event.date)
+def record_cs_activity(chat_id, user_id=None, thread_id=None, timestamp=None):
+    if timestamp is None: 
+        timestamp = time.time() # 兜底，理论上不应触发
+    
+    if user_id: 
+        # 只记录最新的时间（防止乱序）
+        # old = cs_activity_log.get((chat_id, user_id), 0)
+        cs_activity_log[(chat_id, user_id)] = timestamp
+        
+    if thread_id: 
+        cs_activity_log[(chat_id, thread_id)] = timestamp
 
 def get_thread_context(event):
     if not event.message.reply_to: return None, None
@@ -224,6 +232,7 @@ async def maintenance_task():
         try:
             await asyncio.sleep(600)
             now = time.time()
+            # 这里的 expired_keys 可能会因为 now 是服务器时间而稍有偏差，但 3600s 的 buffer 足够大，不影响
             expired_keys = [k for k, v in cs_activity_log.items() if now - v > 3600]
             for k in expired_keys: del cs_activity_log[k]
         except Exception as e: logger.error(f"维护任务出错: {e}")
@@ -293,7 +302,7 @@ DASHBOARD_HTML = """
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 39.9 (Proxy Mode)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 39.9 (Proxy + Telegram Time)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -673,6 +682,7 @@ WAIT_CHECK_HTML = """
         .msg-meta { font-size: 12px; color: #888; margin-bottom: 4px; display: flex; gap: 10px; }
         .msg-text { font-size: 14px; line-height: 1.5; color: #333; word-wrap: break-word; background: #f5f5f5; padding: 8px; border-radius: 4px; margin: 5px 0; border-left: 3px solid #ccc; }
         .reason-text { color: #d32f2f; font-size: 13px; margin-top: 4px; font-style: italic; }
+        .reason-success { color: #2e7d32; font-size: 13px; margin-top: 4px; font-style: italic; }
         .msg-link { text-decoration: none; color: #0088cc; font-size: 13px; display: inline-block; margin-top: 5px; font-weight: 500; }
         .msg-link:hover { text-decoration: underline; }
         
@@ -815,7 +825,7 @@ WAIT_CHECK_HTML = """
                         <span>📂 ${data.group_name}</span>
                     </div>
                     <div class="msg-text">${data.found_text}</div>
-                    ${!data.is_closed ? `<div class="reason-text">⚠️ ${data.reason}</div>` : ''}
+                    ${data.reason ? `<div class="${data.is_closed ? 'reason-success' : 'reason-text'}">${data.is_closed ? '🤖 ' : '⚠️ '}${data.reason}</div>` : ''}
                     <a href="${data.link}" target="_blank" class="msg-link">🔗 跳转消息</a>
                 </div>
             `;
@@ -1035,10 +1045,10 @@ async def check_wait_keyword_logic(keyword, result_queue):
                                 need_reply, ai_reason = await asyncio.get_event_loop().run_in_executor(None, lambda: _ai_check_reply_needed(latest_msg.text))
                                 if not need_reply:
                                     is_closed = True
-                                    reason = f"AI判定无需回复" # (理由在Log)
+                                    reason = f"AI检测判定已闭环：{ai_reason}" 
                                 else:
                                     is_closed = False
-                                    reason = f"AI判定需回复: {ai_reason[:20]}..."
+                                    reason = f"AI检测判定需回复：{ai_reason}"
                         else:
                             # 检查最后一条消息的内容
                             last_text_norm = normalize(latest_msg.text or "")
@@ -1577,11 +1587,14 @@ def cancel_tasks(chat_id, user_id, thread_id=None, reason="未知", types=None):
     if count > 0:
         log_tree(2, f"销单成功 | {reason} | 流: {thread_id} | 任务: {cleared_ids}")
 
+# [Ver 41.0] 时间源优化：这里的时间全是基于 Message Timestamp
 def check_recent_activity_safe(chat_id, task_start_time, user_ids=None, thread_id=None):
     buffer_seconds = 10
     if user_ids:
         for uid in user_ids:
             last_act = cs_activity_log.get((chat_id, uid), 0)
+            # last_act 已经是消息的真实时间，task_start_time 也是触发消息的真实时间
+            # 直接比较即可，不受服务器延迟影响
             if last_act > task_start_time + buffer_seconds:
                 return True, f"用户 {uid} 下有新回复"
     if thread_id:
@@ -1593,22 +1606,27 @@ def check_recent_activity_safe(chat_id, task_start_time, user_ids=None, thread_i
 # ==========================================
 # 模块 7: 倒计时任务
 # ==========================================
-async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, user_ids_list, thread_id=None):
-    task_start_time = time.time()
+# [Ver 41.0] 所有倒计时任务增加 trigger_timestamp 参数
+async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, user_ids_list, trigger_timestamp, thread_id=None):
     try:
         ids_str = f"Msg={key_id}"
         if user_ids_list: ids_str += " " + " ".join([f"User={u}" for u in user_ids_list])
         
         log_tree(1, f"启动 [稍等] 倒计时 (12m) {ids_str} | Thread={thread_id}")
-        end_time = task_start_time + WAIT_TIMEOUT
+        
+        # 这里的 end_time 用于 Web 展示，使用消息时间计算更准确
+        end_time = trigger_timestamp + WAIT_TIMEOUT
         wait_timers[key_id] = {'ts': end_time, 'user': agent_name, 'url': link}
         for uid in user_ids_list: register_task(chat_id, uid, key_id, thread_id)
 
+        # 物理睡眠时间仍然需要等待这么久，这是服务器的职责
         await asyncio.sleep(WAIT_TIMEOUT)
+        
         if not IS_WORKING: return
         if my_msg_id and not await check_msg_exists(chat_id, my_msg_id): return
 
-        is_safe, safe_reason = check_recent_activity_safe(chat_id, task_start_time, user_ids_list, thread_id)
+        # 醒来后，使用触发时的消息时间戳去对比活动日志
+        is_safe, safe_reason = check_recent_activity_safe(chat_id, trigger_timestamp, user_ids_list, thread_id)
         if is_safe:
             log_tree(2, f"🛡️ 拦截误报 [稍等] {ids_str} | 原因: {safe_reason} (客服已处理)")
             return
@@ -1623,7 +1641,7 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
         if not IS_WORKING: return
         if my_msg_id and not await check_msg_exists(chat_id, my_msg_id): return
 
-        is_safe_2, safe_reason_2 = check_recent_activity_safe(chat_id, task_start_time, user_ids_list, thread_id)
+        is_safe_2, safe_reason_2 = check_recent_activity_safe(chat_id, trigger_timestamp, user_ids_list, thread_id)
         if is_safe_2:
              log_tree(2, f"🛡️ 拦截严重误报 [稍等] {ids_str} | 原因: {safe_reason_2}")
              return
@@ -1646,14 +1664,13 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
         if my_msg_id in wait_msg_map: del wait_msg_map[my_msg_id]
         for uid in user_ids_list: remove_task_record(chat_id, uid, key_id, thread_id)
 
-async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, user_ids_list, thread_id=None):
-    task_start_time = time.time()
+async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, user_ids_list, trigger_timestamp, thread_id=None):
     try:
         ids_str = f"Msg={key_id}"
         if user_ids_list: ids_str += " " + " ".join([f"User={u}" for u in user_ids_list])
 
         log_tree(1, f"启动 [跟进] 倒计时 (15m) {ids_str} | Thread={thread_id}")
-        end_time = task_start_time + FOLLOWUP_TIMEOUT
+        end_time = trigger_timestamp + FOLLOWUP_TIMEOUT
         followup_timers[key_id] = {'ts': end_time, 'user': agent_name, 'url': link}
         for uid in user_ids_list: register_task(chat_id, uid, key_id, thread_id)
 
@@ -1661,7 +1678,7 @@ async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_
         if not IS_WORKING: return
         if my_msg_id and not await check_msg_exists(chat_id, my_msg_id): return
 
-        is_safe, safe_reason = check_recent_activity_safe(chat_id, task_start_time, user_ids_list, thread_id)
+        is_safe, safe_reason = check_recent_activity_safe(chat_id, trigger_timestamp, user_ids_list, thread_id)
         if is_safe:
             log_tree(2, f"🛡️ 拦截误报 [跟进] {ids_str} | 原因: {safe_reason}")
             return
@@ -1675,11 +1692,12 @@ async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_
         if my_msg_id in followup_msg_map: del followup_msg_map[my_msg_id]
         for uid in user_ids_list: remove_task_record(chat_id, uid, key_id, thread_id)
 
-async def task_reply_timeout(trigger_msg_id, sender_name, content, link, chat_id, user_id, target_name, thread_id=None):
+async def task_reply_timeout(trigger_msg_id, sender_name, content, link, chat_id, user_id, target_name, trigger_timestamp, thread_id=None):
     try:
         ids_str = f"Msg={trigger_msg_id} User={user_id}"
         log_tree(1, f"启动 [漏回] 监控 (5m) {ids_str} | Target={target_name} | Thread={thread_id}")
-        end_time = time.time() + REPLY_TIMEOUT
+        
+        end_time = trigger_timestamp + REPLY_TIMEOUT
         reply_timers[trigger_msg_id] = {'ts': end_time, 'user': sender_name, 'url': link, 'target': target_name}
         register_task(chat_id, user_id, trigger_msg_id, thread_id)
         
@@ -1695,22 +1713,21 @@ async def task_reply_timeout(trigger_msg_id, sender_name, content, link, chat_id
         remove_task_record(chat_id, user_id, trigger_msg_id, thread_id)
 
 # [Ver 39.3] 自回检测任务 - 竞态条件修复
-async def task_self_reply_timeout(trigger_msg_id, user_name, content, link, chat_id, user_id, thread_id=None):
+async def task_self_reply_timeout(trigger_msg_id, user_name, content, link, chat_id, user_id, trigger_timestamp, thread_id=None):
     try:
-        task_start_time = time.time() # 记录任务开始时间用于校验
         ids_str = f"Msg={trigger_msg_id} User={user_id}"
         log_tree(1, f"启动 [自回] 监控 (3m) {ids_str} | Thread={thread_id}")
-        end_time = time.time() + SELF_REPLY_TIMEOUT
+        
+        end_time = trigger_timestamp + SELF_REPLY_TIMEOUT
         self_reply_timers[trigger_msg_id] = {'ts': end_time, 'user': user_name, 'url': link}
         
         # [Fix Ver 39.3] register_task 已在 handler 中同步执行，这里不再重复调用，避免状态冲突。
-        # 依赖 handler 的同步调用来确保并发下的任务去重。
         
         await asyncio.sleep(SELF_REPLY_TIMEOUT)
         if not IS_WORKING: return
         
         # [Ver 39.1] 报警前二次检查：如果期间客服活跃过，则视为已处理
-        is_safe, safe_reason = check_recent_activity_safe(chat_id, task_start_time, [user_id], thread_id)
+        is_safe, safe_reason = check_recent_activity_safe(chat_id, trigger_timestamp, [user_id], thread_id)
         if is_safe:
             log_tree(2, f"🛡️ 拦截误报 [自回] {ids_str} | 原因: {safe_reason}")
             return
@@ -1845,6 +1862,11 @@ async def handler(event):
         if not MY_ID: MY_ID = (await client.get_me()).id
         if not IS_WORKING: return
 
+        # [Ver 41.0] 获取消息的确切物理时间戳（UTC -> Timestamp）
+        msg_timestamp = event.date.timestamp()
+        # 日志格式优化，显示消息时间 T=...
+        msg_time_str = event.date.astimezone(timezone(timedelta(hours=8))).strftime('%H:%M:%S')
+
         text = event.text or ""
         msg_type = "文本"
         if event.message.file:
@@ -1899,7 +1921,8 @@ async def handler(event):
              pass 
 
         if is_sender_cs:
-            record_cs_activity(chat_id, user_id=real_customer_id, thread_id=current_thread_id)
+            # [Ver 41.0] 传入 msg_timestamp
+            record_cs_activity(chat_id, user_id=real_customer_id, thread_id=current_thread_id, timestamp=msg_timestamp)
             
             # [Ver 34.0] Edit Re-trigger Fix
             if isinstance(event, events.MessageEdited):
@@ -1950,7 +1973,8 @@ async def handler(event):
                             del followup_tasks[reply_to_msg_id]
 
                         task = asyncio.create_task(task_followup_timeout(
-                            reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users, current_thread_id
+                            reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users, current_thread_id, 
+                            trigger_timestamp=msg_timestamp # [Ver 41.0]
                         ))
                         followup_tasks[reply_to_msg_id] = task
                         followup_msg_map[event.id] = reply_to_msg_id
@@ -1968,7 +1992,8 @@ async def handler(event):
                             del wait_tasks[reply_to_msg_id]
 
                         task = asyncio.create_task(task_wait_timeout(
-                            reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users, current_thread_id
+                            reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users, current_thread_id,
+                            trigger_timestamp=msg_timestamp # [Ver 41.0]
                         ))
                         wait_tasks[reply_to_msg_id] = task
                         wait_msg_map[event.id] = reply_to_msg_id
@@ -1982,7 +2007,8 @@ async def handler(event):
             # [Ver 31.8] 客户说话 -> 只取消【漏回监控】，绝不取消【稍等/跟进任务】
             cancel_tasks(chat_id, sender_id, current_thread_id, reason=f"客户发言: [{text[:100]}...]", types=['reply'])
             
-            log_tree(0, f"Msg={event.id} | User={sender_id} | [{chat_id}] {sender_name}: {text} [{msg_type}]")
+            # [Ver 41.0] 日志中增加时间显示
+            log_tree(0, f"Msg={event.id} [T={msg_time_str}] | User={sender_id} | [{chat_id}] {sender_name}: {text} [{msg_type}]")
             
             # [Ver 38.0] 自回防漏监测 (Self-Reply Guard)
             # 逻辑：如果回复的目标人 == 发送人自己 -> 客户正在自言自语追加信息 -> 启动3分钟监控
@@ -2001,8 +2027,9 @@ async def handler(event):
                          
                          if should_monitor:
                              # [Ver 39.1] 活跃度检查：如果客服在最近 60 秒内活跃过，则不启动自回监控
+                             # [Ver 41.0] 这里也从 time.time() 改为基于消息时间判断
                              last_act = cs_activity_log.get((chat_id, real_customer_id), 0)
-                             if time.time() - last_act < 60:
+                             if msg_timestamp - last_act < 60:
                                  log_tree(1, f"🛡️ 豁免 [自回-客服在线] | User={sender_id} | Msg={event.id}")
                              else:
                                  # 如果已经有针对该用户的自回监控，先取消旧的（只监控最新的自回）
@@ -2014,7 +2041,8 @@ async def handler(event):
                                  log_tree(1, f"🔥 侦测到自回行为 | User={sender_name} | Msg={event.id} -> {reply_to_msg_id}")
                                  
                                  task = asyncio.create_task(task_self_reply_timeout(
-                                     event.id, sender_name, text[:50], msg_link, chat_id, sender_id, current_thread_id
+                                     event.id, sender_name, text[:50], msg_link, chat_id, sender_id, current_thread_id,
+                                     trigger_timestamp=msg_timestamp # [Ver 41.0]
                                  ))
                                  
                                  def cleanup_self_reply(_):
@@ -2045,7 +2073,10 @@ async def handler(event):
                     if (target_id == MY_ID) or (target_id in OTHER_CS_IDS):
                         if normalize(text.strip()) in IGNORE_SIGNATURES: return
                         if event.id in reply_tasks: reply_tasks[event.id].cancel()
-                        task = asyncio.create_task(task_reply_timeout(event.id, sender_name, text[:50], msg_link, chat_id, sender_id, target_name, current_thread_id))
+                        task = asyncio.create_task(task_reply_timeout(
+                            event.id, sender_name, text[:50], msg_link, chat_id, sender_id, target_name, current_thread_id,
+                            trigger_timestamp=msg_timestamp # [Ver 41.0]
+                        ))
                         reply_tasks[event.id] = task
                 except Exception as e:
                     log_tree(9, f"❌ Reply Check Error: {e}")
@@ -2064,7 +2095,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 38.0 Self-Reply Guard)")
+        log_tree(0, "✅ 系统启动 (Ver 41.1 AI Reason + Time Fix)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
