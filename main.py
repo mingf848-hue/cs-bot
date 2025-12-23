@@ -101,10 +101,17 @@ try:
     raw_wait = {normalize(x) for x in clean_env.split(',') if x.strip()}
     WAIT_SIGNATURES = {x for x in raw_wait if x} 
 
-    # [Ver 41.9] 优化 Keep 关键词加载，支持 | 和 , 分隔
+    # [Ver 42.1] 修复 Keep 关键词解析逻辑：优先使用 | 分隔，防止句子中的逗号把关键词截断
     keep_keywords_env = os.environ.get("KEEP_KEYWORDS", "") 
-    keep_clean = keep_keywords_env.replace("，", ",").replace("|", ",")
-    raw_keep = {normalize(x) for x in keep_clean.split(',') if x.strip()}
+    if '|' in keep_keywords_env:
+        # 如果包含竖线，仅使用竖线分隔（允许关键词内包含逗号）
+        keep_list = keep_keywords_env.split('|')
+    else:
+        # 兼容旧格式：如果没有竖线，则同时支持中文逗号和英文逗号
+        keep_clean = keep_keywords_env.replace("，", ",")
+        keep_list = keep_clean.split(',')
+        
+    raw_keep = {normalize(x) for x in keep_list if x.strip()}
     KEEP_SIGNATURES = {x for x in raw_keep if x}
     
     log_tree(0, f"🔍 关键词配置 (Normalized): WAIT={WAIT_SIGNATURES} | KEEP={KEEP_SIGNATURES}")
@@ -1923,8 +1930,8 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        # [Ver 42.0] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 42.0 HTML Response Fix)")
+        # [Ver 42.1] 启动日志更新
+        log_tree(0, "✅ 系统启动 (Ver 42.1 KEEP Parsing Fix)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
