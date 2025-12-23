@@ -123,7 +123,7 @@ try:
 
     # [Ver 39.0] AI 配置
     AI_PROXY_URL = os.environ.get("AI_PROXY_URL", "https://geminiproxy-black-one.vercel.app")
-    # GEMINI_API_KEY 不再需要
+    # GEMINI_API_KEY 已移除
     AI_MODEL_NAME = "gemini-3-flash-preview"
 
 except Exception as e:
@@ -878,10 +878,13 @@ def _ai_check_reply_needed(text):
     """
     log_prefix = f"🤖 [AI-Audit] Text='{text[:20]}...' | "
     
-    # 1. 基础鉴权检查 (已移除，由代理托管)
+    # 1. 基础鉴权检查 (已移除，直接使用 Proxy URL)
     
     # 2. 构造请求
-    url = f"{AI_PROXY_URL}/v1beta/models/{AI_MODEL_NAME}:generateContent"
+    # [Ver 40.0] URL 优化：移除末尾斜杠并直接请求，不带 API KEY 参数
+    proxy_url = AI_PROXY_URL.rstrip('/')
+    url = f"{proxy_url}/v1beta/models/{AI_MODEL_NAME}:generateContent"
+    
     headers = {'Content-Type': 'application/json'}
     prompt = f"""
     判断客户的这条最后回复是否需要客服继续跟进回复。
@@ -1121,6 +1124,34 @@ async def check_wait_keyword_logic(keyword, result_queue):
     except Exception as e:
         logger.error(f"Check Task Logic Error: {e}")
         result_queue.put(None)
+
+@app.route('/api/wait_check_stream')
+def wait_check_stream():
+    """
+    [Added to fix 404] 流式 API 路由，对接 Telethon 逻辑
+    """
+    keyword = request.args.get('keyword', '').strip()
+    if not keyword: return "Keyword required", 400
+    
+    def generate():
+        result_queue = queue.Queue()
+        # 将异步任务提交到全局 Bot Loop 中执行，并把结果放入 queue
+        if not bot_loop: 
+             yield "Error: Bot loop not ready\n"
+             return
+
+        asyncio.run_coroutine_threadsafe(
+            check_wait_keyword_logic(keyword, result_queue), 
+            bot_loop
+        )
+        
+        while True:
+            # 阻塞等待结果
+            data = result_queue.get()
+            if data is None: break
+            yield data + "\n"
+            
+    return Response(stream_with_context(generate()), mimetype='text/plain')
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
