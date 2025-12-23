@@ -302,7 +302,7 @@ DASHBOARD_HTML = """
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 41.7 (Audit Batch Logic)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 41.8 (Logic Fix & Detail)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -948,6 +948,60 @@ def _ai_check_reply_needed(text):
         log_tree(9, log_prefix + f"❌ 网络异常: {e}")
         return (True, f"网络异常: {str(e)}") 
 
+# [Ver 41.8] 抽取公共闭环判断逻辑
+async def _check_is_closed_logic(latest_msg):
+    is_closed = False
+    reason = ""
+    
+    # 检查最新消息的发送者
+    last_sender_id = latest_msg.sender_id
+    last_sender_is_cs = False
+    if last_sender_id in ([MY_ID] + OTHER_CS_IDS):
+         last_sender_is_cs = True
+    else:
+         try:
+             s = await latest_msg.get_sender()
+             if s and getattr(s, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)):
+                 last_sender_is_cs = True
+         except: pass
+    
+    if not last_sender_is_cs:
+        # 最后是客户发言 -> AI 检测
+        if not latest_msg.text or not latest_msg.text.strip():
+            is_closed = False
+            reason = "最后是客户[媒体/贴纸]"
+        else:
+            # 使用同步执行器调用 AI
+            need_reply, ai_reason = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: _ai_check_reply_needed(latest_msg.text)
+            )
+            if not need_reply:
+                is_closed = True
+                reason = f"AI判定已闭环：{ai_reason}"
+            else:
+                is_closed = False
+                reason = f"AI判定需回复：{ai_reason}"
+    else:
+        # 最后是客服发言 -> 检查内容是否仍包含等待词/跟进词
+        # [Ver 41.8] 统一逻辑：Wait和Keep都使用“包含匹配”(in)，解决Keep词因标点或连词导致的漏判
+        last_text_norm = normalize(latest_msg.text or "")
+        is_wait = any(k in last_text_norm for k in WAIT_SIGNATURES)
+        is_keep = any(k in last_text_norm for k in KEEP_SIGNATURES)
+        
+        if is_wait or is_keep:
+            is_closed = False
+            reason = f"客服最后仍回复{'稍等' if is_wait else '跟进'}词"
+            # 检查是否因客户删消息导致
+            if latest_msg.reply_to:
+                try:
+                    replied_obj = await latest_msg.get_reply_message()
+                    if not replied_obj: reason += "(客户删消息)"
+                except: pass
+        else:
+            is_closed = True
+            
+    return is_closed, reason
+
 async def check_wait_keyword_logic(keyword, result_queue):
     """
     搜索过去10小时内包含 `keyword` 的消息，并检查闭环。
@@ -981,18 +1035,14 @@ async def check_wait_keyword_logic(keyword, result_queue):
                     if m.date and m.date < cutoff_time: break
                     history.append(m)
                 
-                # 2. 建立 Thread 状态表：记录每个 Thread (Topic/ReplyChain) 的“最新消息”
-                # Key: ThreadID, Value: Message Object (最新的一条)
+                # 2. 建立 Thread 状态表
                 thread_latest_msg = {}
-                
-                # 因为 iter_messages 是从新到旧，所以第一次遇到的 ThreadID 就是该 Thread 的最新消息
                 for m in history:
                     t_id = None
                     if m.reply_to:
                         t_id = m.reply_to.reply_to_top_id 
                         if not t_id: t_id = m.reply_to.reply_to_msg_id
                     if not t_id: t_id = m.id
-                    
                     if t_id not in thread_latest_msg:
                         thread_latest_msg[t_id] = m
 
@@ -1002,7 +1052,6 @@ async def check_wait_keyword_logic(keyword, result_queue):
                     if keyword in m.text: # 只要包含关键词
                         found_count += 1
                         
-                        # 找到该消息所属 Thread 的最新消息
                         t_id = None
                         if m.reply_to:
                             t_id = m.reply_to.reply_to_top_id 
@@ -1011,68 +1060,8 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         
                         latest_msg = thread_latest_msg.get(t_id, m)
                         
-                        # 判断闭环
-                        is_closed = False
-                        reason = ""
-                        
-                        # 获取最后发言者身份
-                        last_sender_id = latest_msg.sender_id
-                        last_sender_is_cs = False
-                        if last_sender_id in ([MY_ID] + OTHER_CS_IDS):
-                             last_sender_is_cs = True
-                        else:
-                             # 尝试通过名字前缀辅助判断
-                             try:
-                                 s = await latest_msg.get_sender()
-                                 if s and getattr(s, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)):
-                                     last_sender_is_cs = True
-                             except: pass
-
-                        # 闭环逻辑核心：
-                        # 1. 如果最后发言是客户 -> 未闭环 (Open)
-                        # 2. 如果最后发言是客服，但内容是 WAIT/KEEP -> 未闭环 (Open)
-                        # 3. 否则 -> 闭环 (Closed)
-                        
-                        if not last_sender_is_cs:
-                            # [Ver 39.7] 强制使用 AI 判定逻辑 (移除本地词库过滤)
-                            
-                            # 在 executor 中运行同步 request 以避免阻塞 Bot 主循环
-                            if not latest_msg.text or not latest_msg.text.strip():
-                                # 如果是纯图片/文件，默认为需要回复 (保守策略)
-                                is_closed = False
-                                reason = "最后发言是客户 [媒体] (等待回复)"
-                            else:
-                                need_reply, ai_reason = await asyncio.get_event_loop().run_in_executor(None, lambda: _ai_check_reply_needed(latest_msg.text))
-                                if not need_reply:
-                                    is_closed = True
-                                    reason = f"AI检测判定已闭环：{ai_reason}" 
-                                else:
-                                    is_closed = False
-                                    reason = f"AI检测判定需回复：{ai_reason}"
-                        else:
-                            # 检查最后一条消息的内容
-                            last_text_norm = normalize(latest_msg.text or "")
-                            is_wait = any(k in last_text_norm for k in WAIT_SIGNATURES)
-                            is_keep = last_text_norm in KEEP_SIGNATURES
-                            
-                            if is_wait or is_keep:
-                                is_closed = False
-                                reason = f"客服最后回复仍为 {('稍等' if is_wait else '跟进')} 关键词"
-                                
-                                # [New Logic] 检查是否因为客户删除消息导致无法回复
-                                # 只有当未闭环，且最后一条是客服的 Wait/Keep 时，才检查 Reply 对象
-                                if latest_msg.reply_to:
-                                    try:
-                                        # 尝试获取被回复的消息
-                                        # 如果获取失败（None），说明原消息已不存在
-                                        replied_obj = await latest_msg.get_reply_message()
-                                        if not replied_obj:
-                                            reason += " (客户已删除原消息)"
-                                    except:
-                                        # API 异常也视为获取失败
-                                        pass
-                            else:
-                                is_closed = True
+                        # [Ver 41.8] 调用统一闭环判断逻辑
+                        is_closed, reason = await _check_is_closed_logic(latest_msg)
                         
                         if is_closed: closed_count += 1
 
@@ -1086,19 +1075,14 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         safe_text = (m.text or "")[:100].replace('\n', ' ')
                         beijing_time = m.date.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
                         
-                        # [Link Fix] 链接逻辑优化：
-                        # 如果未闭环，链接跳转到 Thread 的【最新消息】(方便回复)
-                        # 如果已闭环，链接跳转到【关键词消息】(方便查看上下文)
+                        # [Link Fix] 链接逻辑优化
                         target_msg_for_link = latest_msg if not is_closed else m
                         
                         link = ""
                         real_chat_id = str(chat_id).replace('-100', '')
-                        
-                        # 确定 Thread ID 用于 URL
                         url_thread_id = None
                         
-                        # [Ver 38.2] 如果标记为客户已删除，则不生成 Thread 链接（因为跳不过去）
-                        if "(客户已删除原消息)" not in reason:
+                        if "(客户删消息)" not in reason:
                             if target_msg_for_link.reply_to:
                                 url_thread_id = target_msg_for_link.reply_to.reply_to_top_id
                                 if not url_thread_id:
@@ -1107,7 +1091,6 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         if url_thread_id:
                              link = f"https://t.me/c/{real_chat_id}/{target_msg_for_link.id}?thread={url_thread_id}"
                         else:
-                             # 如果没有 Thread ID，可能是根消息，直接跳 MsgID
                              link = f"https://t.me/c/{real_chat_id}/{target_msg_for_link.id}"
 
                         result_queue.put(json.dumps({
@@ -1202,7 +1185,7 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 41.7] 增强巡检: 分批按关键词扫描 (Wait -> Keep)
+# [Ver 41.8] 增强巡检: 分批按关键词扫描 (Wait -> Keep) + 详情优化
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】(关键词分批扫描)...")
     await send_alert("👮 **开始执行下班自动巡检...**\n正在分批扫描专属关键词...", "")
@@ -1238,8 +1221,6 @@ async def audit_pending_tasks():
     # 3. 分批扫描关键词
     for keyword in all_keywords:
         if not keyword.strip(): continue
-        
-        # log_tree(4, f"正在扫描关键词: {keyword}")
         
         kw_issues = []
         
@@ -1280,58 +1261,26 @@ async def audit_pending_tasks():
                     
                     latest_msg = thread_latest_msg.get(t_id, m)
                     
-                    # === 闭环判断逻辑 (复用 check_wait_keyword_logic) ===
-                    is_closed = False
-                    reason = ""
-                    
-                    # 检查最新消息的发送者
-                    last_sender_id = latest_msg.sender_id
-                    last_sender_is_cs = False
-                    if last_sender_id in ([MY_ID] + OTHER_CS_IDS):
-                         last_sender_is_cs = True
-                    else:
-                         try:
-                             s = await latest_msg.get_sender()
-                             if s and getattr(s, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)):
-                                 last_sender_is_cs = True
-                         except: pass
-                    
-                    if not last_sender_is_cs:
-                        # 最后是客户发言 -> AI 检测
-                        if not latest_msg.text or not latest_msg.text.strip():
-                            is_closed = False
-                            reason = "最后是客户[媒体]"
-                        else:
-                            # 使用同步执行器调用 AI
-                            need_reply, ai_reason = await asyncio.get_event_loop().run_in_executor(
-                                None, lambda: _ai_check_reply_needed(latest_msg.text)
-                            )
-                            if not need_reply:
-                                is_closed = True
-                            else:
-                                is_closed = False
-                                reason = f"AI判定需回: {ai_reason[:10]}.."
-                    else:
-                        # 最后是客服发言 -> 检查内容是否仍包含等待词
-                        last_text_norm = normalize(latest_msg.text or "")
-                        # 使用全局签名库进行判断 (因为客服最后回复的可能是另一个“稍等”)
-                        is_wait = any(k in last_text_norm for k in WAIT_SIGNATURES)
-                        is_keep = last_text_norm in KEEP_SIGNATURES
-                        
-                        if is_wait or is_keep:
-                            is_closed = False
-                            reason = "客服最后仍回复等待词"
-                            # 检查是否因客户删消息导致
-                            if latest_msg.reply_to:
-                                try:
-                                    replied_obj = await latest_msg.get_reply_message()
-                                    if not replied_obj: reason += "(客户删消息)"
-                                except: pass
-                        else:
-                            is_closed = True
+                    # [Ver 41.8] 调用统一闭环判断逻辑
+                    is_closed, reason = await _check_is_closed_logic(latest_msg)
                     
                     if not is_closed:
                         # 发现未闭环问题
+                        # 获取客服名字
+                        cs_name_display = "未知客服"
+                        try:
+                            s = await m.get_sender()
+                            if s: cs_name_display = getattr(s, 'first_name', 'Unknown')
+                        except: pass
+
+                        # 获取客户问题内容 (Reply To)
+                        customer_text = "[无法获取原问题]"
+                        if m.reply_to:
+                            try:
+                                r_msg = await m.get_reply_message()
+                                if r_msg: customer_text = (r_msg.text or "[媒体]")[:20] + "..."
+                            except: pass
+
                         link = ""
                         real_chat_id = str(chat_id).replace('-100', '')
                         url_thread_id = None
@@ -1344,21 +1293,32 @@ async def audit_pending_tasks():
                         else:
                              link = f"https://t.me/c/{real_chat_id}/{latest_msg.id}"
                         
+                        # CS 回复的关键词消息内容
+                        cs_reply_text = (m.text or "")[:15]
+
                         kw_issues.append({
-                            'text': (m.text or "")[:50],
+                            'cs_name': cs_name_display,
+                            'customer_text': customer_text,
+                            'cs_reply': cs_reply_text,
                             'reason': reason,
-                            'link': link,
-                            'msg_id': m.id
+                            'link': link
                         })
 
         # 为每个有问题的关键词发送一次汇总报警
         if kw_issues:
             total_issues += len(kw_issues)
             report_text = f"👮 **巡检报告: {keyword}**\n发现 {len(kw_issues)} 个未闭环任务:\n"
-            for iss in kw_issues[:10]: # 限制单条消息长度
-                report_text += f"- [{iss['reason']}] {iss['text']} [🔗]({iss['link']})\n"
-            if len(kw_issues) > 10:
-                report_text += f"... 等共 {len(kw_issues)} 条"
+            
+            for i, iss in enumerate(kw_issues[:8]): # 限制单条消息长度
+                report_text += (
+                    f"{i+1}. 👤 {iss['cs_name']}\n"
+                    f"   💬 客户: {iss['customer_text']}\n"
+                    f"   👉 客服: {iss['cs_reply']} ({iss['reason']})\n"
+                    f"   🔗 [点击跳转]({iss['link']})\n\n"
+                )
+            
+            if len(kw_issues) > 8:
+                report_text += f"... (还有 {len(kw_issues)-8} 条未显示)"
             
             await send_alert(report_text, "", f"Audit-{keyword}")
             await asyncio.sleep(2) # 避免刷屏过快
@@ -1960,8 +1920,8 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        # [Ver 41.7] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 41.7 Audit Batch Logic)")
+        # [Ver 41.8] 启动日志更新
+        log_tree(0, "✅ 系统启动 (Ver 41.8 Logic & Detail Fix)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
