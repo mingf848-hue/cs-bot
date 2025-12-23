@@ -123,7 +123,7 @@ try:
 
     # [Ver 39.0] AI 配置
     AI_PROXY_URL = os.environ.get("AI_PROXY_URL", "https://geminiproxy-black-one.vercel.app")
-    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+    # GEMINI_API_KEY 不再需要
     AI_MODEL_NAME = "gemini-3-flash-preview"
 
 except Exception as e:
@@ -293,7 +293,7 @@ DASHBOARD_HTML = """
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 39.6 (Fix 404 Route)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 39.9 (Proxy Mode)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -874,44 +874,66 @@ def api_ctrl():
 def _ai_check_reply_needed(text):
     """
     [Sync Function] 使用 Gemini AI 判断是否需要回复
-    返回 True (需要回复) 或 False (无需回复)
+    返回 (bool, reason_str)
     """
-    # 1. 基础鉴权检查
-    if not GEMINI_API_KEY:
-        # 如果没有 Key，为了安全起见默认返回需要回复（不漏报）
-        return True 
+    log_prefix = f"🤖 [AI-Audit] Text='{text[:20]}...' | "
+    
+    # 1. 基础鉴权检查 (已移除，由代理托管)
     
     # 2. 构造请求
-    url = f"{AI_PROXY_URL}/v1beta/models/{AI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
+    url = f"{AI_PROXY_URL}/v1beta/models/{AI_MODEL_NAME}:generateContent"
     headers = {'Content-Type': 'application/json'}
     prompt = f"""
     判断客户的这条最后回复是否需要客服继续跟进回复。
     客户消息："{text}"
-    如果这只是礼貌性的回复（如“好的”、“谢谢”、“收到”、“知道了”、“ok”、“辛苦了”等）、单纯的情绪表达或无需继续对话，请回答 FALSE。
-    如果这包含问题、投诉、或者需要客服确认的内容，请回答 TRUE。
-    只回答 TRUE 或 FALSE。
+    
+    规则：
+    1. 如果包含明确的问题、投诉、未解决的诉求、需要确认的操作，返回 TRUE。
+    2. 如果只是礼貌性的结束语（如“好的”、“谢谢”、“收到”、“明白了”、“ok”、“辛苦了”）、单纯的情绪表达（如“哈哈”）、或者表示话题已结束，返回 FALSE。
+    3. 仅仅是“好的谢谢”这种组合，绝对是 FALSE。
+    
+    请输出 JSON 格式: {{"reason": "思考过程...", "need_reply": true/false}}
     """
     data = {
-        "contents": [{"parts": [{"text": prompt}]}]
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"response_mime_type": "application/json"}
     }
     
     # 3. 发送请求
     try:
-        resp = requests.post(url, json=data, headers=headers, timeout=5)
+        start_t = time.time()
+        resp = requests.post(url, json=data, headers=headers, timeout=10)
+        cost_t = time.time() - start_t
+        
         if resp.status_code == 200:
             res_json = resp.json()
             try:
-                ans = res_json.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip().upper()
-                return "TRUE" in ans
-            except:
-                logger.error(f"AI Parse Error: {res_json}")
-                return True
+                # 解析 Gemini 的 JSON 响应
+                candidates = res_json.get('candidates', [])
+                if not candidates:
+                    log_tree(9, log_prefix + "❌ AI返回空候选")
+                    return (True, "AI返回空结果")
+                
+                raw_content = candidates[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
+                
+                # 尝试解析 JSON
+                ai_decision = json.loads(raw_content)
+                reason = ai_decision.get("reason", "No reason")
+                need_reply = ai_decision.get("need_reply", True)
+                
+                log_tree(2, log_prefix + f"✅ AI响应({cost_t:.2f}s): [{str(need_reply).upper()}] 理由: {reason}")
+                return (need_reply, reason)
+                
+            except Exception as parse_e:
+                log_tree(9, log_prefix + f"⚠️ 解析失败: {parse_e} | Raw: {raw_content}")
+                # Fallback
+                return (True, f"解析失败: {str(parse_e)}")
         else:
-            logger.error(f"AI Check Failed: {resp.status_code} {resp.text}")
-            return True # 失败则默认需要回复
+            log_tree(9, log_prefix + f"❌ 请求失败: {resp.status_code} {resp.text}")
+            return (True, f"API请求失败: {resp.status_code}") 
     except Exception as e:
-        logger.error(f"AI Network Error: {e}")
-        return True # 异常则默认需要回复
+        log_tree(9, log_prefix + f"❌ 网络异常: {e}")
+        return (True, f"网络异常: {str(e)}") 
 
 async def check_wait_keyword_logic(keyword, result_queue):
     """
@@ -999,27 +1021,21 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         # 3. 否则 -> 闭环 (Closed)
                         
                         if not last_sender_is_cs:
-                            # [Ver 39.0] 智能判定逻辑
+                            # [Ver 39.7] 强制使用 AI 判定逻辑 (移除本地词库过滤)
                             
-                            # 1. 极速过滤 (本地词库) - 节省 AI 额度
-                            last_text_norm = normalize(latest_msg.text or "")
-                            if last_text_norm in IGNORE_SIGNATURES:
-                                is_closed = True # 视为已闭环
+                            # 在 executor 中运行同步 request 以避免阻塞 Bot 主循环
+                            if not latest_msg.text or not latest_msg.text.strip():
+                                # 如果是纯图片/文件，默认为需要回复 (保守策略)
+                                is_closed = False
+                                reason = "最后发言是客户 [媒体] (等待回复)"
                             else:
-                                # 2. AI 深度过滤
-                                # 在 executor 中运行同步 request 以避免阻塞 Bot 主循环
-                                if not latest_msg.text or not latest_msg.text.strip():
-                                    # 如果是纯图片/文件，默认为需要回复 (保守策略)
-                                    is_closed = False
-                                    reason = "最后发言是客户 [媒体] (等待回复)"
+                                need_reply, ai_reason = await asyncio.get_event_loop().run_in_executor(None, lambda: _ai_check_reply_needed(latest_msg.text))
+                                if not need_reply:
+                                    is_closed = True
+                                    reason = f"AI判定无需回复" # (理由在Log)
                                 else:
-                                    need_reply = await asyncio.get_event_loop().run_in_executor(None, lambda: _ai_check_reply_needed(latest_msg.text))
-                                    if not need_reply:
-                                        is_closed = True
-                                        reason = "AI判定无需回复 (客户已结束)"
-                                    else:
-                                        is_closed = False
-                                        reason = "最后发言是客户 (等待回复)"
+                                    is_closed = False
+                                    reason = f"AI判定需回复: {ai_reason[:20]}..."
                         else:
                             # 检查最后一条消息的内容
                             last_text_norm = normalize(latest_msg.text or "")
@@ -1105,27 +1121,6 @@ async def check_wait_keyword_logic(keyword, result_queue):
     except Exception as e:
         logger.error(f"Check Task Logic Error: {e}")
         result_queue.put(None)
-
-@app.route('/api/wait_check_stream')
-def wait_check_stream():
-    keyword = request.args.get('keyword', '').strip()
-    if not keyword: return "Missing keyword", 400
-    
-    result_queue = queue.Queue()
-    
-    # 在 Bot 的事件循环中运行搜索任务
-    if bot_loop:
-        asyncio.run_coroutine_threadsafe(check_wait_keyword_logic(keyword, result_queue), bot_loop)
-    else:
-        return "Bot Loop Not Ready", 500
-
-    def generate():
-        while True:
-            item = result_queue.get()
-            if item is None: break
-            yield item + '\n'
-    
-    return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
