@@ -155,6 +155,7 @@ self_reply_timers = {} # [Ver 38.0]
 wait_msg_map = {}        
 followup_msg_map = {} 
 deleted_cache = deque(maxlen=10000)
+self_reply_dedup = deque(maxlen=1000) # [Ver 39.4] 自回图集去重缓存
 
 chat_user_active_msgs = {}
 chat_thread_active_msgs = {}
@@ -292,7 +293,7 @@ DASHBOARD_HTML = """
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 39.0 (AI Judgment Integrated)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 39.5 (Full Restore)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -1105,27 +1106,6 @@ async def check_wait_keyword_logic(keyword, result_queue):
         logger.error(f"Check Task Logic Error: {e}")
         result_queue.put(None)
 
-@app.route('/api/wait_check_stream')
-def wait_check_stream():
-    keyword = request.args.get('keyword', '').strip()
-    if not keyword: return "Missing keyword", 400
-    
-    result_queue = queue.Queue()
-    
-    # 在 Bot 的事件循环中运行搜索任务
-    if bot_loop:
-        asyncio.run_coroutine_threadsafe(check_wait_keyword_logic(keyword, result_queue), bot_loop)
-    else:
-        return "Bot Loop Not Ready", 500
-
-    def generate():
-        while True:
-            item = result_queue.get()
-            if item is None: break
-            yield item + '\n'
-    
-    return Response(stream_with_context(generate()), mimetype='text/event-stream')
-
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port, threaded=True)
@@ -1667,25 +1647,31 @@ async def task_reply_timeout(trigger_msg_id, sender_name, content, link, chat_id
         if trigger_msg_id in reply_timers: del reply_timers[trigger_msg_id]
         remove_task_record(chat_id, user_id, trigger_msg_id, thread_id)
 
-# [Ver 38.0] 自回检测任务
+# [Ver 39.3] 自回检测任务 - 竞态条件修复
 async def task_self_reply_timeout(trigger_msg_id, user_name, content, link, chat_id, user_id, thread_id=None):
     try:
+        task_start_time = time.time() # 记录任务开始时间用于校验
         ids_str = f"Msg={trigger_msg_id} User={user_id}"
         log_tree(1, f"启动 [自回] 监控 (3m) {ids_str} | Thread={thread_id}")
         end_time = time.time() + SELF_REPLY_TIMEOUT
         self_reply_timers[trigger_msg_id] = {'ts': end_time, 'user': user_name, 'url': link}
-        register_task(chat_id, user_id, trigger_msg_id, thread_id)
+        
+        # [Fix Ver 39.3] register_task 已在 handler 中同步执行，这里不再重复调用，避免状态冲突。
+        # 依赖 handler 的同步调用来确保并发下的任务去重。
         
         await asyncio.sleep(SELF_REPLY_TIMEOUT)
         if not IS_WORKING: return
         
+        # [Ver 39.1] 报警前二次检查：如果期间客服活跃过，则视为已处理
+        is_safe, safe_reason = check_recent_activity_safe(chat_id, task_start_time, [user_id], thread_id)
+        if is_safe:
+            log_tree(2, f"🛡️ 拦截误报 [自回] {ids_str} | 原因: {safe_reason}")
+            return
+
         log_tree(2, f"触发 [自回] 报警 Msg={trigger_msg_id}")
         await send_alert(f"📩 内容: `{content.replace('`', '')}`\n🔔 **自回防漏监测**\n👤 用户: {user_name} (自行追加消息)\n⚠️ 状态: 已 {SELF_REPLY_TIMEOUT // 60} 分钟未处理\n🔗 [点击回复]({link})", link, ids_str)
     except asyncio.CancelledError: pass 
-    finally:
-        if trigger_msg_id in self_reply_tasks: del self_reply_tasks[trigger_msg_id]
-        if trigger_msg_id in self_reply_timers: del self_reply_timers[trigger_msg_id]
-        remove_task_record(chat_id, user_id, trigger_msg_id, thread_id)
+    # 资源清理工作由 handler 中的 done_callback 负责，这里无需 finally
 
 # ==========================================
 # 模块 8: 客户端与逻辑增强
@@ -1835,7 +1821,14 @@ async def handler(event):
         is_wait_cmd = any(k in norm_text for k in WAIT_SIGNATURES)
         # [Ver 34.0] KEEP = EXACT MATCH (Normalized), WAIT = CONTAINS
         is_keep_cmd = normalize(text) in KEEP_SIGNATURES 
-        is_sender_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS)
+        
+        # [Ver 39.2] 增强客服身份识别: ID匹配 或 名字前缀匹配
+        is_name_cs = False
+        if sender_name:
+             for prefix in CS_NAME_PREFIXES:
+                 if sender_name.startswith(prefix): is_name_cs = True; break
+        
+        is_sender_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS) or is_name_cs
 
         current_thread_id, thread_type = get_thread_context(event)
 
@@ -1950,14 +1943,40 @@ async def handler(event):
                 if sender_id == real_customer_id:
                      # 确保忽略列表中的词不触发（例如连续说“谢谢”）
                      if normalize(text.strip()) not in IGNORE_SIGNATURES:
-                         # 如果已经有针对该用户的自回监控，先取消旧的（只监控最新的自回）
-                         cancel_tasks(chat_id, sender_id, current_thread_id, reason="新自回覆盖旧自回", types=['self_reply'])
+                         # [Ver 39.4] 图集去重: 如果属于同一个 Media Group，只监控第一条
+                         should_monitor = True
+                         if grouped_id:
+                             if grouped_id in self_reply_dedup:
+                                 log_tree(1, f"🛡️ 豁免 [自回-图集去重] | GroupID={grouped_id}")
+                                 should_monitor = False
+                             else:
+                                 self_reply_dedup.append(grouped_id)
                          
-                         log_tree(1, f"🔥 侦测到自回行为 | User={sender_name} | Msg={event.id} -> {reply_to_msg_id}")
-                         task = asyncio.create_task(task_self_reply_timeout(
-                             event.id, sender_name, text[:50], msg_link, chat_id, sender_id, current_thread_id
-                         ))
-                         self_reply_tasks[event.id] = task
+                         if should_monitor:
+                             # [Ver 39.1] 活跃度检查：如果客服在最近 60 秒内活跃过，则不启动自回监控
+                             last_act = cs_activity_log.get((chat_id, real_customer_id), 0)
+                             if time.time() - last_act < 60:
+                                 log_tree(1, f"🛡️ 豁免 [自回-客服在线] | User={sender_id} | Msg={event.id}")
+                             else:
+                                 # 如果已经有针对该用户的自回监控，先取消旧的（只监控最新的自回）
+                                 cancel_tasks(chat_id, sender_id, current_thread_id, reason="新自回覆盖旧自回", types=['self_reply'])
+                                 
+                                 # [Fix Ver 39.3] 立即同步登记任务，防止高并发下因 register_task 滞后导致的 cancel_tasks 失效
+                                 register_task(chat_id, sender_id, event.id, current_thread_id)
+
+                                 log_tree(1, f"🔥 侦测到自回行为 | User={sender_name} | Msg={event.id} -> {reply_to_msg_id}")
+                                 
+                                 task = asyncio.create_task(task_self_reply_timeout(
+                                     event.id, sender_name, text[:50], msg_link, chat_id, sender_id, current_thread_id
+                                 ))
+                                 
+                                 def cleanup_self_reply(_):
+                                     if event.id in self_reply_tasks: del self_reply_tasks[event.id]
+                                     if event.id in self_reply_timers: del self_reply_timers[event.id]
+                                     remove_task_record(chat_id, sender_id, event.id, current_thread_id)
+                                     
+                                 task.add_done_callback(cleanup_self_reply)
+                                 self_reply_tasks[event.id] = task
 
             if reply_to_msg_id:
                 try:
