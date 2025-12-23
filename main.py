@@ -310,7 +310,7 @@ DASHBOARD_HTML = """
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 42.0 (HTML Response Fix)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 42.3 (Parallel Task Fix)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -1403,6 +1403,8 @@ def check_recent_activity_safe(chat_id, task_start_time, user_ids=None, thread_i
     if user_ids:
         for uid in user_ids:
             last_act = cs_activity_log.get((chat_id, uid), 0)
+            # last_act 已经是消息的真实时间，task_start_time 也是触发消息的真实时间
+            # 直接比较即可，不受服务器延迟影响
             if last_act > task_start_time + buffer_seconds:
                 return True, f"用户 {uid} 下有新回复"
     if thread_id:
@@ -1696,8 +1698,8 @@ async def handler(event):
 
         norm_text = normalize(text)
         is_wait_cmd = any(k in norm_text for k in WAIT_SIGNATURES)
-        # [Ver 34.0] KEEP = EXACT MATCH (Normalized), WAIT = CONTAINS
-        is_keep_cmd = normalize(text) in KEEP_SIGNATURES 
+        # [Ver 42.3] 统一 Keep 判定逻辑为包含匹配，与 Audit 保持一致，防止"处理中..."被精确匹配漏掉
+        is_keep_cmd = any(k in norm_text for k in KEEP_SIGNATURES)
         
         # [Ver 39.2] 增强客服身份识别: ID匹配 或 名字前缀匹配
         is_name_cs = False
@@ -1748,8 +1750,18 @@ async def handler(event):
                 # [Ver 41.2] 日志增加 [T=...] 真实时间显示，证明逻辑使用的是 Telegram 时间而非服务器时间
                 log_tree(1, f"⚡️ 客服操作捕获 | Msg: {reply_to_msg_id} [T={msg_time_str}] | 客服: {sender_name} | 内容: [{text[:100]}] | 归属: {real_customer_id} | 流: {current_thread_id} | 状态: {source_info}")
 
+            # [Ver 42.3] 智能销单逻辑：
+            # 1. 如果客服发的是指令(Wait/Keep)，只取消"漏回提醒"(reply)，保留该用户的其他并行任务(wait/followup)。
+            #    (防止客服同时接待同一个人的两个问题时，回复问题A导致问题B的倒计时被误杀)
+            # 2. 如果客服发的是普通回复，默认视为结束会话，取消所有任务。
+            cancel_types = None # Default: Cancel All
+            if is_wait_cmd or is_keep_cmd:
+                cancel_types = ['reply', 'self_reply']
+
             if real_customer_id or current_thread_id:
-                cancel_tasks(chat_id, real_customer_id, current_thread_id, reason=f"客服回复: [{text[:100]}...]")
+                cancel_tasks(chat_id, real_customer_id, current_thread_id, 
+                             reason=f"客服回复: [{text[:100]}...]", 
+                             types=cancel_types) # [Ver 42.3] Pass types
             
             if reply_to_msg_id and reply_to_msg_id in reply_tasks:
                 reply_tasks[reply_to_msg_id].cancel()
@@ -1899,7 +1911,7 @@ async def handler(event):
                         ))
                         reply_tasks[event.id] = task
                 except Exception as e:
-                    log_tree(9, f"❌ Reply Check Error: {e}")
+                    log_tree(9, f"❌ Reply Check Check Error: {e}")
 
     except Exception as e:
         log_tree(9, f"❌ Handler 异常: {e}")
@@ -1915,8 +1927,8 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        # [Ver 42.2] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 42.2 Detail Stats)")
+        # [Ver 42.3] 启动日志更新
+        log_tree(0, "✅ 系统启动 (Ver 42.3 Parallel Task Fix)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
