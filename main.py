@@ -303,7 +303,7 @@ DASHBOARD_HTML = """
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 41.9 (Audit Wait Only)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 42.0 (HTML Response Fix)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -648,6 +648,195 @@ LOG_VIEWER_HTML = """
 </html>
 """
 
+WAIT_CHECK_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>稍等关键词闭环检测工具</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: -apple-system, sans-serif; background: #f0f2f5; padding: 20px; max-width: 800px; margin: 0 auto; color: #333; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        h1 { margin-top: 0; color: #1a1a1a; font-size: 1.5rem; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input[type="text"] { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; font-size: 16px; }
+        button { background: #0088cc; color: white; border: none; padding: 12px 20px; border-radius: 6px; cursor: pointer; font-size: 16px; width: 100%; font-weight: bold; transition: background 0.2s; }
+        button:hover { background: #006699; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        
+        #progress-container { margin-top: 20px; display: none; background: #f8f9fa; padding: 15px; border-radius: 6px; border: 1px solid #eee; }
+        #progress-bar { width: 100%; height: 10px; background: #ddd; border-radius: 5px; overflow: hidden; margin-bottom: 8px; }
+        #progress-fill { height: 100%; background: #4caf50; width: 0%; transition: width 0.3s; }
+        #status-text { font-size: 14px; color: #666; text-align: center; }
+
+        .result-list { margin-top: 20px; }
+        .result-item { padding: 15px; border-bottom: 1px solid #eee; display: flex; align-items: flex-start; gap: 15px; background: #fff; transition: background 0.2s; }
+        .result-item:hover { background: #fafafa; }
+        .result-item:last-child { border-bottom: none; }
+        
+        .status-badge { padding: 6px 10px; border-radius: 6px; font-size: 13px; font-weight: bold; white-space: nowrap; display: flex; align-items: center; justify-content: center; min-width: 80px; }
+        .status-closed { background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
+        .status-open { background: #ffebee; color: #c62828; border: 1px solid #ffcdd2; }
+        
+        .msg-content { flex-grow: 1; min-width: 0; }
+        .msg-meta { font-size: 12px; color: #888; margin-bottom: 4px; display: flex; gap: 10px; }
+        .msg-text { font-size: 14px; line-height: 1.5; color: #333; word-wrap: break-word; background: #f5f5f5; padding: 8px; border-radius: 4px; margin: 5px 0; border-left: 3px solid #ccc; }
+        .reason-text { color: #d32f2f; font-size: 13px; margin-top: 4px; font-style: italic; }
+        .reason-success { color: #2e7d32; font-size: 13px; margin-top: 4px; font-style: italic; }
+        .msg-link { text-decoration: none; color: #0088cc; font-size: 13px; display: inline-block; margin-top: 5px; font-weight: 500; }
+        .msg-link:hover { text-decoration: underline; }
+        
+        .summary { font-weight: bold; margin-bottom: 20px; padding: 15px; background: #e3f2fd; border-radius: 6px; border: 1px solid #bbdefb; color: #0d47a1; display: none; }
+        .filter-btn { cursor: pointer; color: #0056b3; text-decoration: underline; margin: 0 5px; }
+        .filter-btn:hover { color: #003d80; }
+        .filter-active { font-weight: 900; color: #d32f2f; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>🔍 稍等关键词闭环检测</h1>
+        <div class="form-group">
+            <label>输入关键词 (例如: 请稍等ART)</label>
+            <input type="text" id="keyword" placeholder="输入要搜索的关键词..." value="请稍等ART">
+        </div>
+        <button onclick="startCheck()" id="btn-search">开始检测 (过去 10 小时)</button>
+        
+        <div id="progress-container">
+            <div id="progress-bar"><div id="progress-fill"></div></div>
+            <div id="status-text">准备就绪...</div>
+        </div>
+    </div>
+
+    <div class="card" id="result-card" style="display:none">
+        <div class="summary" id="summary-box"></div>
+        <div class="result-list" id="result-list"></div>
+    </div>
+
+    <script>
+        let allResults = [];
+        let currentFilter = 'all';
+
+        async function startCheck() {
+            const keyword = document.getElementById('keyword').value.trim();
+            if (!keyword) return alert("请输入关键词");
+            
+            const btn = document.getElementById('btn-search');
+            const pContainer = document.getElementById('progress-container');
+            const pFill = document.getElementById('progress-fill');
+            const pText = document.getElementById('status-text');
+            const resCard = document.getElementById('result-card');
+            const resList = document.getElementById('result-list');
+            const summaryBox = document.getElementById('summary-box');
+
+            btn.disabled = true;
+            pContainer.style.display = 'block';
+            resCard.style.display = 'block';
+            resList.innerHTML = '';
+            summaryBox.style.display = 'none';
+            pFill.style.width = '1%';
+            pText.innerText = "正在初始化...";
+            
+            allResults = [];
+
+            try {
+                // 使用流式 API
+                const response = await fetch(`/api/wait_check_stream?keyword=${encodeURIComponent(keyword)}`);
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value, {stream: true});
+                    const lines = chunk.split('\\n');
+                    
+                    for (const line of lines) {
+                        if (!line.trim()) continue;
+                        try {
+                            const data = JSON.parse(line);
+                            
+                            if (data.type === 'progress') {
+                                pFill.style.width = data.percent + '%';
+                                pText.innerText = data.msg;
+                            } else if (data.type === 'result') {
+                                allResults.push(data);
+                                renderItem(data);
+                            } else if (data.type === 'done') {
+                                pFill.style.width = '100%';
+                                pText.innerText = '检测完成';
+                                renderSummary(data.total, data.closed, data.open);
+                            }
+                        } catch (e) {
+                            console.error("Parse error", e);
+                        }
+                    }
+                }
+            } catch (e) {
+                pText.innerText = "发生错误: " + e.message;
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        function renderSummary(total, closed, open) {
+            const summaryBox = document.getElementById('summary-box');
+            summaryBox.style.display = 'block';
+            summaryBox.innerHTML = `
+                检测完成: 共找到 ${total} 条消息。
+                <span class="filter-btn" onclick="filterResults('closed')">✅ 已闭环: ${closed}</span>
+                <span class="filter-btn" onclick="filterResults('open')">❌ 未闭环: ${open}</span>
+                <span class="filter-btn" onclick="filterResults('all')">📝 显示全部</span>
+            `;
+        }
+
+        function filterResults(type) {
+            const resList = document.getElementById('result-list');
+            resList.innerHTML = '';
+            currentFilter = type;
+            
+            allResults.forEach(data => {
+                if (type === 'all') {
+                    renderItem(data);
+                } else if (type === 'closed' && data.is_closed) {
+                    renderItem(data);
+                } else if (type === 'open' && !data.is_closed) {
+                    renderItem(data);
+                }
+            });
+            
+            // Highlight active filter (Visual feedback)
+            document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('filter-active'));
+            // Simple mapping for demo
+            if(type === 'all') event.target.classList.add('filter-active');
+        }
+
+        function renderItem(data) {
+            const resList = document.getElementById('result-list');
+            const div = document.createElement('div');
+            div.className = 'result-item';
+            div.innerHTML = `
+                <div class="status-badge ${data.is_closed ? 'status-closed' : 'status-open'}">
+                    ${data.is_closed ? '✅ 已闭环' : '❌ 未闭环'}
+                </div>
+                <div class="msg-content">
+                    <div class="msg-meta">
+                        <span>📅 ${data.time}</span>
+                        <span>📂 ${data.group_name}</span>
+                    </div>
+                    <div class="msg-text">${data.found_text}</div>
+                    ${data.reason ? `<div class="${data.is_closed ? 'reason-success' : 'reason-text'}">${data.is_closed ? '🤖 ' : '⚠️ '}${data.reason}</div>` : ''}
+                    <a href="${data.link}" target="_blank" class="msg-link">🔗 跳转消息</a>
+                </div>
+            `;
+            resList.appendChild(div);
+        }
+    </script>
+</body>
+</html>
+"""
+
 @app.route('/')
 def status_page():
     now = datetime.now(timezone(timedelta(hours=8))).strftime('%H:%M:%S')
@@ -656,8 +845,10 @@ def status_page():
 @app.route('/log')
 def log_ui(): return render_template_string(LOG_VIEWER_HTML)
 
+# [Ver 42.0] Fix 500 error by using raw Response instead of render_template_string for JS-heavy templates
 @app.route('/tool/wait_check')
-def wait_check_ui(): return render_template_string(WAIT_CHECK_HTML)
+def wait_check_ui(): 
+    return Response(WAIT_CHECK_HTML, mimetype='text/html')
 
 @app.route('/log_raw')
 def log_raw():
@@ -872,7 +1063,7 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         
                         latest_msg = thread_latest_msg.get(t_id, m)
                         
-                        # [Ver 41.8] 调用统一闭环判断逻辑
+                        # [Ver 42.0] 调用统一闭环判断逻辑 (Consistency Fix)
                         is_closed, reason = await _check_is_closed_logic(latest_msg)
                         
                         if is_closed: closed_count += 1
@@ -1732,8 +1923,8 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        # [Ver 41.9] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 41.9 Audit Wait Only)")
+        # [Ver 42.0] 启动日志更新
+        log_tree(0, "✅ 系统启动 (Ver 42.0 HTML Response Fix)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
