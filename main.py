@@ -293,7 +293,7 @@ DASHBOARD_HTML = """
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 39.5 (Full Restore)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 39.6 (Fix 404 Route)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -1105,6 +1105,27 @@ async def check_wait_keyword_logic(keyword, result_queue):
     except Exception as e:
         logger.error(f"Check Task Logic Error: {e}")
         result_queue.put(None)
+
+@app.route('/api/wait_check_stream')
+def wait_check_stream():
+    keyword = request.args.get('keyword', '').strip()
+    if not keyword: return "Missing keyword", 400
+    
+    result_queue = queue.Queue()
+    
+    # 在 Bot 的事件循环中运行搜索任务
+    if bot_loop:
+        asyncio.run_coroutine_threadsafe(check_wait_keyword_logic(keyword, result_queue), bot_loop)
+    else:
+        return "Bot Loop Not Ready", 500
+
+    def generate():
+        while True:
+            item = result_queue.get()
+            if item is None: break
+            yield item + '\n'
+    
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
