@@ -302,7 +302,7 @@ DASHBOARD_HTML = """
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 41.2 (Log Time Fix)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 41.5 (Task Isolation)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -1958,6 +1958,9 @@ async def handler(event):
                     related_users = [real_customer_id]
 
                 if related_users:
+                    # [Ver 41.6] 逻辑回调：按关键词触发任务
+                    # 只要发送者是客服(is_sender_cs)，且内容命中了本Bot配置的独特关键词，就启动任务。
+                    # 解决了“换号操作”或“ID不在白名单”但使用了正确关键词时的监控需求。
                     if is_keep_cmd:
                         # [Fix Ver 36.1] 强制冲突检测：如果针对同一条消息已有 [稍等] 任务，立即销毁
                         # 解决并发导致 cancel_tasks 未能及时生效的问题
@@ -2104,7 +2107,8 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 41.3 Argument Error Fix)")
+        # [Ver 41.6] 启动日志更新
+        log_tree(0, "✅ 系统启动 (Ver 41.6 Keywords Trigger)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
