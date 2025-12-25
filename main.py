@@ -14,6 +14,11 @@ from flask import Flask, render_template_string, Response, request, stream_with_
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import AuthKeyDuplicatedError
+# [Ver 43.7] 确保引入统计模块 (如果文件不存在，请确保移除此行或创建文件)
+try:
+    from work_stats import init_stats_blueprint
+except ImportError:
+    init_stats_blueprint = None
 
 # ==========================================
 # 模块 0: 北京时间树状日志系统
@@ -354,7 +359,8 @@ DASHBOARD_HTML = """
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 43.5 (Fix Edit Logic & UI)</div>
+    <a href="/tool/work_stats" target="_blank" class="btn" style="margin-top:10px;background:#6a1b9a">📊 工作量统计</a>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 43.7 (Fix Edit Logic Fallback)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -1852,17 +1858,39 @@ async def handler(event):
                  if real_customer_id or current_thread_id:
                      cancel_tasks(chat_id, real_customer_id, current_thread_id, reason=f"客服编辑: [{text[:100]}...]")
                  
-                 # [Ver 43.6] 防止历史消息编辑触发任务 (Anti-Glitch) & 智能修正
+                 # [Ver 43.7] 防止历史消息编辑触发任务 (Anti-Glitch) & 智能修正
+                 # Fix: 修复 Supergroup 中 reply_to 参数无法获取后续回复的问题
                  try:
-                     # 必须检查当前上下文（话题/主群）的最新消息
+                     latest_msg = None
+                     
+                     # 1. 尝试通过 reply_to 参数精确获取 (适用于话题/评论区)
+                     # 注意：在普通群聊中，reply_to 参数可能无法过滤出单纯回复的消息，导致返回空
                      check_kwargs = {'limit': 1}
                      if current_thread_id:
                          check_kwargs['reply_to'] = current_thread_id
                      
                      latest_batch = await client.get_messages(chat_id, **check_kwargs)
-                     
                      if latest_batch:
                          latest_msg = latest_batch[0]
+                     
+                     # 2. [Fix] 兜底策略：如果精准获取失败，且存在流ID，则扫描全局历史
+                     # 在普通群聊中，我们手动查找属于该流的最新消息
+                     if not latest_msg and current_thread_id:
+                         # 扫描最近 30 条消息 (通常足够覆盖最近的对话上下文)
+                         recent_msgs = await client.get_messages(chat_id, limit=30)
+                         for m in recent_msgs:
+                             # 检查消息 m 是否回复了 current_thread_id
+                             t_id = None
+                             if m.reply_to:
+                                 t_id = m.reply_to.reply_to_top_id or m.reply_to.reply_to_msg_id
+                             
+                             # 只有找到属于同一流的消息，才认为是潜在的最新消息
+                             if t_id == current_thread_id:
+                                 latest_msg = m
+                                 break # recent_msgs 是按时间倒序的，找到的第一个就是最新的
+                     
+                     # 3. 执行判定
+                     if latest_msg:
                          if latest_msg.id != event.id:
                              # 编辑的不是最新消息
                              # 检查最新消息是否包含稍等关键词
@@ -1876,6 +1904,13 @@ async def handler(event):
                              else:
                                  # 如果最后一条也是稍等，说明对话流确实处于稍等状态，允许修正旧消息触发（或刷新）任务
                                  log_tree(1, f"⚠️ 编辑生效 | Msg={event.id} 非最新 但 Top={latest_msg.id} 仍为稍等 -> 允许更新")
+                         else:
+                             # 编辑的就是最新消息 -> 正常放行
+                             pass
+                     else:
+                         # 无法获取最新消息 (极罕见)，保守放行
+                         log_tree(1, f"⚠️ 编辑检测跳过 (无法获取上下文) | Msg={event.id}")
+                         
                  except Exception as e:
                      log_tree(9, f"❌ 编辑检测失败: {e}")
 
@@ -2065,9 +2100,14 @@ if __name__ == '__main__':
             
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
+        
+        # [Ver 43.5] 功能挂载
+        if init_stats_blueprint:
+            init_stats_blueprint(app, client, bot_loop, CS_GROUP_IDS)
+            
         Thread(target=run_web).start()
         # [Ver 43.5] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 43.5 Fix Edit Logic & UI)")
+        log_tree(0, "✅ 系统启动 (Ver 43.7 Fix Edit Logic Fallback)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
