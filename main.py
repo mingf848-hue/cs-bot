@@ -235,6 +235,50 @@ async def is_official_cs(message):
     except: pass
     return False
 
+# [Ver 43.3] Helper: Check history for WAIT keywords
+async def check_wait_in_history(chat_id, thread_id=None, limit=30):
+    try:
+        # [Ver 43.3 Logic]
+        # Use reply_to parameter to scan ONLY the specific message thread/topic.
+        # This is precise: it fetches messages belonging to the conversation flow.
+        
+        # If thread_id is None, it means the message is in the main chat (no reply context),
+        # so we scan the main chat history.
+        # If thread_id is present, we scan that thread.
+        
+        kwargs = {'limit': limit}
+        if thread_id:
+             kwargs['reply_to'] = thread_id
+             
+        async for m in client.iter_messages(chat_id, **kwargs):
+            if not m.text: continue
+            
+            # 1. Check if CS
+            is_cs = False
+            # Check ID
+            if m.sender_id in ([MY_ID] + OTHER_CS_IDS): is_cs = True
+            else:
+                # Check Name Prefix
+                try:
+                    s = await m.get_sender()
+                    if s and getattr(s, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)):
+                        is_cs = True
+                except: pass
+            
+            if is_cs:
+                # 2. Check Keyword
+                # Use normalize to match configured WAIT_KEYWORDS (which are normalized)
+                text_norm = normalize(m.text)
+                if any(k in text_norm for k in WAIT_SIGNATURES):
+                    log_tree(2, f"✅ 自回判定: 历史流(Thread={thread_id})中找到稍等词: [{m.text[:10]}]")
+                    return True # Found a WAIT instruction in this thread
+                    
+    except Exception as e:
+        logger.error(f"History check failed: {e}")
+        return False # Fail safe: don't alert if we can't check
+    
+    return False
+
 async def maintenance_task():
     while True:
         try:
@@ -310,7 +354,7 @@ DASHBOARD_HTML = """
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 43.0 (Indent Fix & Sort)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 43.3 (Thread-Aware Wait Check)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -1914,30 +1958,35 @@ async def handler(event):
                                  self_reply_dedup.append(grouped_id)
                          
                          if should_monitor:
-                             # [Ver 42.6] Removed CS Active Exemption due to user feedback - STRICT MODE
-                             # "宁可错杀不可放过"：只要是客户追加消息，且不是忽略词，必须开启监控
+                             # [Ver 43.3] Context Check: Only monitor if WAIT keyword exists in recent history (Thread-Aware)
+                             has_wait = await check_wait_in_history(chat_id, current_thread_id)
                              
-                             cancel_tasks(chat_id, sender_id, current_thread_id, reason="新自回覆盖旧自回", types=['self_reply'])
-                             
-                             register_task(chat_id, sender_id, event.id, current_thread_id)
-
-                             log_tree(1, f"🔥 侦测到自回行为 | User={sender_name} | Msg={event.id} -> {reply_to_msg_id}")
-                             
-                             # [Ver 42.8] Fix: Restore wait_check_stream route by adding it back
-                             
-                             task = asyncio.create_task(task_self_reply_timeout(
-                                 event.id, sender_name, text[:50], msg_link, chat_id, sender_id, 
-                                 trigger_timestamp=msg_timestamp,
-                                 thread_id=current_thread_id
-                             ))
-                             
-                             def cleanup_self_reply(_):
-                                 if event.id in self_reply_tasks: del self_reply_tasks[event.id]
-                                 if event.id in self_reply_timers: del self_reply_timers[event.id]
-                                 remove_task_record(chat_id, sender_id, event.id, current_thread_id)
+                             if not has_wait:
+                                 log_tree(1, f"🛡️ 豁免 [自回-无稍等历史] | User={sender_id} | Msg={event.id}")
+                             else:
+                                 # [Ver 42.6] Removed CS Active Exemption - Strict Mode
                                  
-                             task.add_done_callback(cleanup_self_reply)
-                             self_reply_tasks[event.id] = task
+                                 cancel_tasks(chat_id, sender_id, current_thread_id, reason="新自回覆盖旧自回", types=['self_reply'])
+                                 
+                                 register_task(chat_id, sender_id, event.id, current_thread_id)
+
+                                 log_tree(1, f"🔥 侦测到自回行为 | User={sender_name} | Msg={event.id} -> {reply_to_msg_id}")
+                                 
+                                 # [Ver 42.8] Fix: Restore wait_check_stream route by adding it back
+                                 
+                                 task = asyncio.create_task(task_self_reply_timeout(
+                                     event.id, sender_name, text[:50], msg_link, chat_id, sender_id, 
+                                     trigger_timestamp=msg_timestamp,
+                                     thread_id=current_thread_id
+                                 ))
+                                 
+                                 def cleanup_self_reply(_):
+                                     if event.id in self_reply_tasks: del self_reply_tasks[event.id]
+                                     if event.id in self_reply_timers: del self_reply_timers[event.id]
+                                     remove_task_record(chat_id, sender_id, event.id, current_thread_id)
+                                     
+                                 task.add_done_callback(cleanup_self_reply)
+                                 self_reply_tasks[event.id] = task
 
             if reply_to_msg_id:
                 try:
@@ -1983,8 +2032,8 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        # [Ver 43.0] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 43.0 Indent Fix & Sort)")
+        # [Ver 43.3] 启动日志更新
+        log_tree(0, "✅ 系统启动 (Ver 43.3 Thread-Aware Wait Check)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
