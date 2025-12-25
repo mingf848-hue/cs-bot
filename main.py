@@ -1894,24 +1894,31 @@ async def handler(event):
                 if related_users:
                     # [Ver 41.6] 逻辑回调：按关键词触发任务
                     if is_keep_cmd:
-                        # [Fix Ver 36.1] 强制冲突检测
-                        if reply_to_msg_id in wait_tasks:
-                            wait_tasks[reply_to_msg_id].cancel()
-                            del wait_tasks[reply_to_msg_id]
-                            if reply_to_msg_id in wait_timers: del wait_timers[reply_to_msg_id]
-                            log_tree(1, f"🔄 [跟进] 覆盖并销毁 [稍等] | Msg={reply_to_msg_id}")
+                        # [Fix] 前置检查：只有历史中有明确的 WAIT 关键词（属于我的任务），才开启跟进监控
+                        # 这避免了监控其他客服的“处理中”消息
+                        should_monitor_keep = await check_wait_in_history(chat_id, current_thread_id)
+                        
+                        if not should_monitor_keep:
+                             log_tree(1, f"🛡️ 豁免 [跟进] | Msg={event.id} | 原因: 历史流无本号[稍等]关键词")
+                        else:
+                            # [Fix Ver 36.1] 强制冲突检测
+                            if reply_to_msg_id in wait_tasks:
+                                wait_tasks[reply_to_msg_id].cancel()
+                                del wait_tasks[reply_to_msg_id]
+                                if reply_to_msg_id in wait_timers: del wait_timers[reply_to_msg_id]
+                                log_tree(1, f"🔄 [跟进] 覆盖并销毁 [稍等] | Msg={reply_to_msg_id}")
 
-                        if reply_to_msg_id in followup_tasks:
-                            followup_tasks[reply_to_msg_id].cancel()
-                            del followup_tasks[reply_to_msg_id]
+                            if reply_to_msg_id in followup_tasks:
+                                followup_tasks[reply_to_msg_id].cancel()
+                                del followup_tasks[reply_to_msg_id]
 
-                        task = asyncio.create_task(task_followup_timeout(
-                            reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users, 
-                            trigger_timestamp=msg_timestamp,
-                            thread_id=current_thread_id
-                        ))
-                        followup_tasks[reply_to_msg_id] = task
-                        followup_msg_map[event.id] = reply_to_msg_id
+                            task = asyncio.create_task(task_followup_timeout(
+                                reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users, 
+                                trigger_timestamp=msg_timestamp,
+                                thread_id=current_thread_id
+                            ))
+                            followup_tasks[reply_to_msg_id] = task
+                            followup_msg_map[event.id] = reply_to_msg_id
 
                     elif is_wait_cmd:
                         if reply_to_msg_id in followup_tasks:
