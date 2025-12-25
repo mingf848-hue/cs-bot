@@ -2031,7 +2031,7 @@ async def handler(event):
 if __name__ == '__main__':
     try:
         # [Ver 31.2] 启动延迟
-        delay = int(os.environ.get("STARTUP_DELAY", 20))
+        delay = int(os.environ.get("STARTUP_DELAY", 120))
         if delay > 0:
             logger.info(f"⏳ 启动延迟: 等待 {delay} 秒以确保旧连接断开...")
             time.sleep(delay)
