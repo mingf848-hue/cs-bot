@@ -14,7 +14,7 @@ from flask import Flask, render_template_string, Response, request, stream_with_
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import AuthKeyDuplicatedError
-# [Ver 43.7] 确保引入统计模块 (如果文件不存在，请确保移除此行或创建文件)
+# [Ver 43.7] 确保引入统计模块
 try:
     from work_stats import init_stats_blueprint
 except ImportError:
@@ -360,7 +360,7 @@ DASHBOARD_HTML = """
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
     <a href="/tool/work_stats" target="_blank" class="btn" style="margin-top:10px;background:#6a1b9a">📊 工作量统计</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 43.7 (Fix Edit Logic Fallback)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 43.8 (Strict Edit Check)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -1858,59 +1858,47 @@ async def handler(event):
                  if real_customer_id or current_thread_id:
                      cancel_tasks(chat_id, real_customer_id, current_thread_id, reason=f"客服编辑: [{text[:100]}...]")
                  
-                 # [Ver 43.7] 防止历史消息编辑触发任务 (Anti-Glitch) & 智能修正
-                 # Fix: 修复 Supergroup 中 reply_to 参数无法获取后续回复的问题
+                 # [Ver 43.8] 编辑检测最终修正版 - Strict Manual Scan
                  try:
-                     latest_msg = None
+                     latest_msg_in_thread = None
                      
-                     # 1. 尝试通过 reply_to 参数精确获取 (适用于话题/评论区)
-                     # 注意：在普通群聊中，reply_to 参数可能无法过滤出单纯回复的消息，导致返回空
-                     check_kwargs = {'limit': 1}
+                     # 当发生编辑时，我们必须通过手动扫描来找到该 Thread 的真实最后一条消息
+                     # 1. 扫描该群最近 50 条消息 (通常足够)
+                     # 2. 找到属于 current_thread_id 的第一条消息 (因为 iter_messages 是倒序的，第一条就是最新的)
+                     # 3. 如果没找到 current_thread_id (比如是主群无回复)，则第一条就是最新
+                     
                      if current_thread_id:
-                         check_kwargs['reply_to'] = current_thread_id
-                     
-                     latest_batch = await client.get_messages(chat_id, **check_kwargs)
-                     if latest_batch:
-                         latest_msg = latest_batch[0]
-                     
-                     # 2. [Fix] 兜底策略：如果精准获取失败，且存在流ID，则扫描全局历史
-                     # 在普通群聊中，我们手动查找属于该流的最新消息
-                     if not latest_msg and current_thread_id:
-                         # 扫描最近 30 条消息 (通常足够覆盖最近的对话上下文)
-                         recent_msgs = await client.get_messages(chat_id, limit=30)
-                         for m in recent_msgs:
-                             # 检查消息 m 是否回复了 current_thread_id
-                             t_id = None
+                         async for m in client.iter_messages(chat_id, limit=50):
+                             m_thread_id = None
                              if m.reply_to:
-                                 t_id = m.reply_to.reply_to_top_id or m.reply_to.reply_to_msg_id
+                                 m_thread_id = m.reply_to.reply_to_top_id or m.reply_to.reply_to_msg_id
                              
-                             # 只有找到属于同一流的消息，才认为是潜在的最新消息
-                             if t_id == current_thread_id:
-                                 latest_msg = m
-                                 break # recent_msgs 是按时间倒序的，找到的第一个就是最新的
+                             if m_thread_id == current_thread_id:
+                                 latest_msg_in_thread = m
+                                 break # Found the newest one in this thread
+                     else:
+                          # 主群模式，直接取最新
+                          latest_batch = await client.get_messages(chat_id, limit=1)
+                          if latest_batch: latest_msg_in_thread = latest_batch[0]
                      
-                     # 3. 执行判定
-                     if latest_msg:
-                         if latest_msg.id != event.id:
-                             # 编辑的不是最新消息
-                             # 检查最新消息是否包含稍等关键词
-                             latest_norm = normalize(latest_msg.text or "")
-                             is_latest_wait = any(k in latest_norm for k in WAIT_SIGNATURES)
+                     if latest_msg_in_thread:
+                         # Case 1: 正在编辑的消息就是最新消息 (无后续回复) -> 允许触发
+                         if latest_msg_in_thread.id == event.id:
+                             # Proceed normally
+                             pass
+                         
+                         # Case 2: 后面还有新消息
+                         else:
+                             # 检查最新那条消息的内容
+                             latest_text = normalize(latest_msg_in_thread.text or "")
+                             is_latest_wait = any(k in latest_text for k in WAIT_SIGNATURES)
                              
                              if not is_latest_wait:
-                                 # 如果最后一条不是稍等（例如是“已处理”），则忽略此次对旧消息的“稍等”编辑
-                                 log_tree(1, f"🛡️ 编辑忽略 | Msg={event.id} 非最新 (Top={latest_msg.id}) 且 Top非稍等 -> 终止触发")
-                                 return
+                                 log_tree(1, f"🛡️ 编辑忽略 | Msg={event.id} 非最新 (Top={latest_msg_in_thread.id}) 且 Top非稍等 -> 终止触发")
+                                 return # ABORT
                              else:
-                                 # 如果最后一条也是稍等，说明对话流确实处于稍等状态，允许修正旧消息触发（或刷新）任务
-                                 log_tree(1, f"⚠️ 编辑生效 | Msg={event.id} 非最新 但 Top={latest_msg.id} 仍为稍等 -> 允许更新")
-                         else:
-                             # 编辑的就是最新消息 -> 正常放行
-                             pass
-                     else:
-                         # 无法获取最新消息 (极罕见)，保守放行
-                         log_tree(1, f"⚠️ 编辑检测跳过 (无法获取上下文) | Msg={event.id}")
-                         
+                                 log_tree(1, f"⚠️ 编辑生效 | Msg={event.id} 非最新 但 Top={latest_msg_in_thread.id} 仍为稍等 -> 允许更新")
+                                 
                  except Exception as e:
                      log_tree(9, f"❌ 编辑检测失败: {e}")
 
@@ -2107,7 +2095,7 @@ if __name__ == '__main__':
             
         Thread(target=run_web).start()
         # [Ver 43.5] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 43.7 Fix Edit Logic Fallback)")
+        log_tree(0, "✅ 系统启动 (Ver 43.8 Strict Edit Check)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
