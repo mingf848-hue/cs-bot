@@ -310,7 +310,7 @@ DASHBOARD_HTML = """
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 42.9 (Ultimate Fix)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 43.0 (Indent Fix & Sort)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -769,8 +769,7 @@ WAIT_CHECK_HTML = """
                                 pText.innerText = data.msg;
                             } else if (data.type === 'result') {
                                 allResults.push(data);
-                                // [Ver 43.0] 暂不立即渲染，等全部收集完排序后再渲染
-                                // renderItem(data); 
+                                // [Ver 43.0] Collect all first for sorting
                                 pText.innerText = `已找到 ${allResults.length} 条结果...`;
                             } else if (data.type === 'done') {
                                 pFill.style.width = '100%';
@@ -778,11 +777,10 @@ WAIT_CHECK_HTML = """
                                 
                                 // [Ver 43.0] Sort by time descending (Newest first)
                                 allResults.sort((a, b) => {
-                                    // time format: "2025-12-24 04:04:30"
                                     return new Date(b.time) - new Date(a.time);
                                 });
                                 
-                                renderResults(allResults); // 批量渲染
+                                renderResults(allResults); // Batch render
                                 renderSummary(data.total, data.closed, data.open);
                             }
                         } catch (e) {
@@ -810,20 +808,17 @@ WAIT_CHECK_HTML = """
 
         function filterResults(type) {
             currentFilter = type;
-            const resList = document.getElementById('result-list');
-            resList.innerHTML = ''; // Clear current list
-            
             let filtered = [];
             if (type === 'all') filtered = allResults;
             else if (type === 'closed') filtered = allResults.filter(d => d.is_closed);
             else if (type === 'open') filtered = allResults.filter(d => !d.is_closed);
             
-            // [Ver 43.0] Reuse sorting just in case
+            // [Ver 43.0] Ensure sorted
             filtered.sort((a, b) => new Date(b.time) - new Date(a.time));
             
             renderResults(filtered);
             
-            // Update active state visual (Simple implementation)
+            // Update active state visual
             document.querySelectorAll('.filter-btn').forEach(btn => {
                  if(btn.innerText.includes(type === 'all' ? '全部' : (type === 'closed' ? '已闭环' : '未闭环'))) {
                      btn.classList.add('filter-active');
@@ -862,10 +857,29 @@ WAIT_CHECK_HTML = """
 </html>
 """
 
-# ... rest of the file ...
-# [Ver 43.0] Update startup log
-# log_tree(0, "✅ 系统启动 (Ver 43.0 Global Sort)")
+@app.route('/')
+def status_page():
+    now = datetime.now(timezone(timedelta(hours=8))).strftime('%H:%M:%S')
+    return render_template_string(DASHBOARD_HTML, working=IS_WORKING, w=wait_timers, f=followup_timers, r=reply_timers, s=self_reply_timers, current_time=now)
+
+@app.route('/log')
+def log_ui(): return render_template_string(LOG_VIEWER_HTML)
+
+# [Ver 42.0] Fix 500 error by using raw Response instead of render_template_string for JS-heavy templates
+@app.route('/tool/wait_check')
+def wait_check_ui(): 
+    return Response(WAIT_CHECK_HTML, mimetype='text/html')
+
+@app.route('/log_raw')
+def log_raw():
+    try:
+        # [Ver 38.1] Check file exists first
+        if not os.path.exists(LOG_FILE_PATH):
+            return "Log file not created yet.", 200
+            
+        file_size = os.path.getsize(LOG_FILE_PATH)
         read_size = 200 * 1024 
+        # [Ver 43.0] Fix IndentationError from previous version
         with open(LOG_FILE_PATH, 'rb') as f:
             if file_size > read_size: f.seek(file_size - read_size)
             content = f.read().decode('utf-8', errors='ignore')
@@ -1969,8 +1983,8 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        # [Ver 42.9] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 42.9 Ultimate Logic)")
+        # [Ver 43.0] 启动日志更新
+        log_tree(0, "✅ 系统启动 (Ver 43.0 Indent Fix & Sort)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
