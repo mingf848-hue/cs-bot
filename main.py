@@ -1852,10 +1852,9 @@ async def handler(event):
                  if real_customer_id or current_thread_id:
                      cancel_tasks(chat_id, real_customer_id, current_thread_id, reason=f"客服编辑: [{text[:100]}...]")
                  
-                 # [Ver 43.5] 防止历史消息编辑触发任务 (Anti-Glitch)
+                 # [Ver 43.6] 防止历史消息编辑触发任务 (Anti-Glitch) & 智能修正
                  try:
                      # 必须检查当前上下文（话题/主群）的最新消息
-                     # 如果编辑的不是最新一条，说明已有后续对话，忽略此次编辑的“稍等”指令
                      check_kwargs = {'limit': 1}
                      if current_thread_id:
                          check_kwargs['reply_to'] = current_thread_id
@@ -1863,10 +1862,20 @@ async def handler(event):
                      latest_batch = await client.get_messages(chat_id, **check_kwargs)
                      
                      if latest_batch:
-                         top_id = latest_batch[0].id
-                         if top_id != event.id:
-                             log_tree(1, f"🛡️ 编辑忽略 | Msg={event.id} 非最新 (Top={top_id}) -> 终止触发")
-                             return
+                         latest_msg = latest_batch[0]
+                         if latest_msg.id != event.id:
+                             # 编辑的不是最新消息
+                             # 检查最新消息是否包含稍等关键词
+                             latest_norm = normalize(latest_msg.text or "")
+                             is_latest_wait = any(k in latest_norm for k in WAIT_SIGNATURES)
+                             
+                             if not is_latest_wait:
+                                 # 如果最后一条不是稍等（例如是“已处理”），则忽略此次对旧消息的“稍等”编辑
+                                 log_tree(1, f"🛡️ 编辑忽略 | Msg={event.id} 非最新 (Top={latest_msg.id}) 且 Top非稍等 -> 终止触发")
+                                 return
+                             else:
+                                 # 如果最后一条也是稍等，说明对话流确实处于稍等状态，允许修正旧消息触发（或刷新）任务
+                                 log_tree(1, f"⚠️ 编辑生效 | Msg={event.id} 非最新 但 Top={latest_msg.id} 仍为稍等 -> 允许更新")
                  except Exception as e:
                      log_tree(9, f"❌ 编辑检测失败: {e}")
 
