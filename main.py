@@ -360,7 +360,7 @@ DASHBOARD_HTML = """
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
     <a href="/tool/work_stats" target="_blank" class="btn" style="margin-top:10px;background:#6a1b9a">📊 工作量统计</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 43.9 (Robust Edit Check)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 44.0 (Exempt Deleted Msgs)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -1067,11 +1067,14 @@ async def _check_is_closed_logic(latest_msg):
         if is_wait or is_keep:
             is_closed = False
             reason = f"客服最后仍回复{'稍等' if is_wait else '跟进'}词"
-            # 检查是否因客户删消息导致
+            
+            # [Ver 44.0] 豁免逻辑：如果客户删除了原消息，视为已闭环（无法回复）
             if latest_msg.reply_to:
                 try:
                     replied_obj = await latest_msg.get_reply_message()
-                    if not replied_obj: reason += "(客户删消息)"
+                    if not replied_obj: 
+                        is_closed = True
+                        reason = "客户已删消息 (自动豁免)"
                 except: pass
         else:
             is_closed = True
@@ -2105,7 +2108,7 @@ if __name__ == '__main__':
             
         Thread(target=run_web).start()
         # [Ver 43.5] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 43.9 Robust Edit Check)")
+        log_tree(0, "✅ 系统启动 (Ver 44.0 Exempt Deleted Msgs)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
