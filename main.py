@@ -235,10 +235,10 @@ async def is_official_cs(message):
     except: pass
     return False
 
-# [Ver 43.3] Helper: Check history for WAIT keywords
+# [Ver 43.5] Helper: Check history in SPECIFIC THREAD using Telegram API
 async def check_wait_in_history(chat_id, thread_id=None, limit=30):
     try:
-        # [Ver 43.3 Logic]
+        # [Ver 43.5 Logic]
         # Use reply_to parameter to scan ONLY the specific message thread/topic.
         # This is precise: it fetches messages belonging to the conversation flow.
         
@@ -354,7 +354,7 @@ DASHBOARD_HTML = """
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 43.3 (Thread-Aware Wait Check)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 43.5 (Thread-Aware Self-Reply)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -923,7 +923,7 @@ def log_raw():
             
         file_size = os.path.getsize(LOG_FILE_PATH)
         read_size = 200 * 1024 
-        # [Ver 43.0] Fix IndentationError from previous version
+        # [Ver 43.4] Fix IndentationError from previous version by rewriting function cleanly
         with open(LOG_FILE_PATH, 'rb') as f:
             if file_size > read_size: f.seek(file_size - read_size)
             content = f.read().decode('utf-8', errors='ignore')
@@ -1958,7 +1958,7 @@ async def handler(event):
                                  self_reply_dedup.append(grouped_id)
                          
                          if should_monitor:
-                             # [Ver 43.3] Context Check: Only monitor if WAIT keyword exists in recent history (Thread-Aware)
+                             # [Ver 43.5] Context Check: Only monitor if WAIT keyword exists in recent history (Thread-Aware)
                              has_wait = await check_wait_in_history(chat_id, current_thread_id)
                              
                              if not has_wait:
@@ -2032,8 +2032,8 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        # [Ver 43.3] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 43.3 Thread-Aware Wait Check)")
+        # [Ver 43.5] 启动日志更新
+        log_tree(0, "✅ 系统启动 (Ver 43.5 Helper+Check)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
