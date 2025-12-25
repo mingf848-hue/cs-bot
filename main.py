@@ -354,7 +354,7 @@ DASHBOARD_HTML = """
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 43.4 (Fix Edit Logic & UI)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 43.5 (Fix Edit Logic & UI)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -907,8 +907,9 @@ def status_page():
     now = datetime.now(timezone(timedelta(hours=8))).strftime('%H:%M:%S')
     return render_template_string(DASHBOARD_HTML, working=IS_WORKING, w=wait_timers, f=followup_timers, r=reply_timers, s=self_reply_timers, current_time=now)
 
+# [Ver 43.5] Fix UI Template Literals issue by bypassing Jinja2 with Response
 @app.route('/log')
-def log_ui(): return render_template_string(LOG_VIEWER_HTML)
+def log_ui(): return Response(LOG_VIEWER_HTML, mimetype='text/html')
 
 # [Ver 42.0] Fix 500 error by using raw Response instead of render_template_string for JS-heavy templates
 @app.route('/tool/wait_check')
@@ -1846,20 +1847,28 @@ async def handler(event):
             # [Ver 41.0] 传入 msg_timestamp
             record_cs_activity(chat_id, user_id=real_customer_id, thread_id=current_thread_id, timestamp=msg_timestamp)
             
-            # [Ver 43.4] Edit Re-trigger Fix & Logic Update
             if isinstance(event, events.MessageEdited):
                  # Only cancel if editing to "Done" status
                  if real_customer_id or current_thread_id:
                      cancel_tasks(chat_id, real_customer_id, current_thread_id, reason=f"客服编辑: [{text[:100]}...]")
                  
-                 # [Ver 43.4] 防止历史消息编辑触发任务 (Anti-Glitch)
-                 # 如果编辑的不是最新一条消息，说明是修正历史记录，不应重新开启任务
+                 # [Ver 43.5] 防止历史消息编辑触发任务 (Anti-Glitch)
                  try:
-                     last_msgs = await client.get_messages(chat_id, limit=1)
-                     if last_msgs and last_msgs[0].id != event.id:
-                         log_tree(1, f"🛡️ 编辑忽略 | Msg={event.id} 非最新 (Top={last_msgs[0].id}) -> 终止触发")
-                         return
-                 except: pass
+                     # 必须检查当前上下文（话题/主群）的最新消息
+                     # 如果编辑的不是最新一条，说明已有后续对话，忽略此次编辑的“稍等”指令
+                     check_kwargs = {'limit': 1}
+                     if current_thread_id:
+                         check_kwargs['reply_to'] = current_thread_id
+                     
+                     latest_batch = await client.get_messages(chat_id, **check_kwargs)
+                     
+                     if latest_batch:
+                         top_id = latest_batch[0].id
+                         if top_id != event.id:
+                             log_tree(1, f"🛡️ 编辑忽略 | Msg={event.id} 非最新 (Top={top_id}) -> 终止触发")
+                             return
+                 except Exception as e:
+                     log_tree(9, f"❌ 编辑检测失败: {e}")
 
             if reply_to_msg_id:
                 source_info = "未知"
@@ -2048,8 +2057,8 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        # [Ver 43.4] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 43.4 Fix Edit Logic & UI)")
+        # [Ver 43.5] 启动日志更新
+        log_tree(0, "✅ 系统启动 (Ver 43.5 Fix Edit Logic & UI)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
