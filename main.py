@@ -354,7 +354,7 @@ DASHBOARD_HTML = """
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 43.3 (Thread-Aware Wait Check)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 43.4 (Fix Edit Logic & UI)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -646,10 +646,11 @@ LOG_VIEWER_HTML = """
                 content = content.replace(/(User|用户|归属)[:=]?\\s?(\\d+)/g, '$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
                 
                 let actionBtn = '';
+                // [Ver 43.4 Fix] Fixed string interpolation for reportBug by removing extra escaping
                 if (type === 'user') {
-                    actionBtn = ids.length > 0 ? `<span class="btn-report btn-missed" onclick="reportBug('漏报', '\\${idsStr}')">🐞 漏报</span>` : '';
+                    actionBtn = ids.length > 0 ? `<span class="btn-report btn-missed" onclick="reportBug('漏报', '${idsStr}')">🐞 漏报</span>` : '';
                 } else if (type === 'alert' || type === 'audit') {
-                    actionBtn = ids.length > 0 ? `<span class="btn-report btn-false" onclick="reportBug('误报', '\\${idsStr}')">🐞 误报</span>` : '';
+                    actionBtn = ids.length > 0 ? `<span class="btn-report btn-false" onclick="reportBug('误报', '${idsStr}')">🐞 误报</span>` : '';
                 }
                 
                 let metaHtml = `<div class="msg-meta">${entry.time} #${idx} ${actionBtn}</div>`;
@@ -1845,12 +1846,20 @@ async def handler(event):
             # [Ver 41.0] 传入 msg_timestamp
             record_cs_activity(chat_id, user_id=real_customer_id, thread_id=current_thread_id, timestamp=msg_timestamp)
             
-            # [Ver 34.0] Edit Re-trigger Fix
+            # [Ver 43.4] Edit Re-trigger Fix & Logic Update
             if isinstance(event, events.MessageEdited):
                  # Only cancel if editing to "Done" status
                  if real_customer_id or current_thread_id:
                      cancel_tasks(chat_id, real_customer_id, current_thread_id, reason=f"客服编辑: [{text[:100]}...]")
-                 return
+                 
+                 # [Ver 43.4] 防止历史消息编辑触发任务 (Anti-Glitch)
+                 # 如果编辑的不是最新一条消息，说明是修正历史记录，不应重新开启任务
+                 try:
+                     last_msgs = await client.get_messages(chat_id, limit=1)
+                     if last_msgs and last_msgs[0].id != event.id:
+                         log_tree(1, f"🛡️ 编辑忽略 | Msg={event.id} 非最新 (Top={last_msgs[0].id}) -> 终止触发")
+                         return
+                 except: pass
 
             if reply_to_msg_id:
                 source_info = "未知"
@@ -2039,8 +2048,8 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         Thread(target=run_web).start()
-        # [Ver 43.3] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 43.3 Thread-Aware Wait Check)")
+        # [Ver 43.4] 启动日志更新
+        log_tree(0, "✅ 系统启动 (Ver 43.4 Fix Edit Logic & UI)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
