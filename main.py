@@ -769,10 +769,20 @@ WAIT_CHECK_HTML = """
                                 pText.innerText = data.msg;
                             } else if (data.type === 'result') {
                                 allResults.push(data);
-                                renderItem(data);
+                                // [Ver 43.0] 暂不立即渲染，等全部收集完排序后再渲染
+                                // renderItem(data); 
+                                pText.innerText = `已找到 ${allResults.length} 条结果...`;
                             } else if (data.type === 'done') {
                                 pFill.style.width = '100%';
-                                pText.innerText = '检测完成';
+                                pText.innerText = '检测完成，正在排序...';
+                                
+                                // [Ver 43.0] Sort by time descending (Newest first)
+                                allResults.sort((a, b) => {
+                                    // time format: "2025-12-24 04:04:30"
+                                    return new Date(b.time) - new Date(a.time);
+                                });
+                                
+                                renderResults(allResults); // 批量渲染
                                 renderSummary(data.total, data.closed, data.open);
                             }
                         } catch (e) {
@@ -799,72 +809,62 @@ WAIT_CHECK_HTML = """
         }
 
         function filterResults(type) {
+            currentFilter = type;
+            const resList = document.getElementById('result-list');
+            resList.innerHTML = ''; // Clear current list
+            
+            let filtered = [];
+            if (type === 'all') filtered = allResults;
+            else if (type === 'closed') filtered = allResults.filter(d => d.is_closed);
+            else if (type === 'open') filtered = allResults.filter(d => !d.is_closed);
+            
+            // [Ver 43.0] Reuse sorting just in case
+            filtered.sort((a, b) => new Date(b.time) - new Date(a.time));
+            
+            renderResults(filtered);
+            
+            // Update active state visual (Simple implementation)
+            document.querySelectorAll('.filter-btn').forEach(btn => {
+                 if(btn.innerText.includes(type === 'all' ? '全部' : (type === 'closed' ? '已闭环' : '未闭环'))) {
+                     btn.classList.add('filter-active');
+                 } else {
+                     btn.classList.remove('filter-active');
+                 }
+            });
+        }
+        
+        // [Ver 43.0] New function to render a list of items
+        function renderResults(list) {
             const resList = document.getElementById('result-list');
             resList.innerHTML = '';
-            currentFilter = type;
-            
-            allResults.forEach(data => {
-                if (type === 'all') {
-                    renderItem(data);
-                } else if (type === 'closed' && data.is_closed) {
-                    renderItem(data);
-                } else if (type === 'open' && !data.is_closed) {
-                    renderItem(data);
-                }
-            });
-            
-            // Highlight active filter (Visual feedback)
-            document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('filter-active'));
-            // Simple mapping for demo
-            if(type === 'all') event.target.classList.add('filter-active');
-        }
-
-        function renderItem(data) {
-            const resList = document.getElementById('result-list');
-            const div = document.createElement('div');
-            div.className = 'result-item';
-            div.innerHTML = `
-                <div class="status-badge ${data.is_closed ? 'status-closed' : 'status-open'}">
-                    ${data.is_closed ? '✅ 已闭环' : '❌ 未闭环'}
-                </div>
-                <div class="msg-content">
-                    <div class="msg-meta">
-                        <span>📅 ${data.time}</span>
-                        <span>📂 ${data.group_name}</span>
+            list.forEach(data => {
+                const div = document.createElement('div');
+                div.className = 'result-item';
+                div.innerHTML = `
+                    <div class="status-badge ${data.is_closed ? 'status-closed' : 'status-open'}">
+                        ${data.is_closed ? '✅ 已闭环' : '❌ 未闭环'}
                     </div>
-                    <div class="msg-text">${data.found_text}</div>
-                    ${data.reason ? `<div class="${data.is_closed ? 'reason-success' : 'reason-text'}">${data.is_closed ? '🤖 ' : '⚠️ '}${data.reason}</div>` : ''}
-                    <a href="${data.link}" target="_blank" class="msg-link">🔗 跳转消息</a>
-                </div>
-            `;
-            resList.appendChild(div);
+                    <div class="msg-content">
+                        <div class="msg-meta">
+                            <span>📅 ${data.time}</span>
+                            <span>📂 ${data.group_name}</span>
+                        </div>
+                        <div class="msg-text">${data.found_text}</div>
+                        ${data.reason ? `<div class="${data.is_closed ? 'reason-success' : 'reason-text'}">${data.is_closed ? '🤖 ' : '⚠️ '}${data.reason}</div>` : ''}
+                        <a href="${data.link}" target="_blank" class="msg-link">🔗 跳转消息</a>
+                    </div>
+                `;
+                resList.appendChild(div);
+            });
         }
     </script>
 </body>
 </html>
 """
 
-@app.route('/')
-def status_page():
-    now = datetime.now(timezone(timedelta(hours=8))).strftime('%H:%M:%S')
-    return render_template_string(DASHBOARD_HTML, working=IS_WORKING, w=wait_timers, f=followup_timers, r=reply_timers, s=self_reply_timers, current_time=now)
-
-@app.route('/log')
-def log_ui(): return render_template_string(LOG_VIEWER_HTML)
-
-# [Ver 42.0] Fix 500 error by using raw Response instead of render_template_string for JS-heavy templates
-@app.route('/tool/wait_check')
-def wait_check_ui(): 
-    return Response(WAIT_CHECK_HTML, mimetype='text/html')
-
-@app.route('/log_raw')
-def log_raw():
-    try:
-        # [Ver 38.1] Check file exists first
-        if not os.path.exists(LOG_FILE_PATH):
-            return "Log file not created yet.", 200
-            
-        file_size = os.path.getsize(LOG_FILE_PATH)
+# ... rest of the file ...
+# [Ver 43.0] Update startup log
+# log_tree(0, "✅ 系统启动 (Ver 43.0 Global Sort)")
         read_size = 200 * 1024 
         with open(LOG_FILE_PATH, 'rb') as f:
             if file_size > read_size: f.seek(file_size - read_size)
