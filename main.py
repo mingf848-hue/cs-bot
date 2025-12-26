@@ -360,7 +360,7 @@ DASHBOARD_HTML = """
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
     <a href="/tool/work_stats" target="_blank" class="btn" style="margin-top:10px;background:#6a1b9a">📊 工作量统计</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 44.1 (Debug Info)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 44.2 (Strict Keep Keyword)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -1061,10 +1061,15 @@ async def _check_is_closed_logic(latest_msg):
                 reason = f"AI判定需回复：{ai_reason}"
     else:
         # 最后是客服发言 -> 检查内容是否仍包含等待词/跟进词
-        # [Ver 41.8] 统一逻辑：Wait和Keep都使用“包含匹配”(in)，解决Keep词因标点或连词导致的漏判
+        # [Ver 44.2] 修正: 跟进词 (Keep) 使用精确匹配 (Exact Match)，防止"转账处理中"触发"处理中"
         last_text_norm = normalize(latest_msg.text or "")
+        
+        # 稍等词 (Wait): 保持包含匹配 (Inclusion) 以兼容 "请稍等一下"
         is_wait = any(k in last_text_norm for k in WAIT_SIGNATURES)
-        is_keep = any(k in last_text_norm for k in KEEP_SIGNATURES)
+        
+        # 跟进词 (Keep): 使用精确匹配 (Exact Match)
+        # [Fix] 解决 "转账处理中..." 被误判为 "处理中"
+        is_keep = last_text_norm in KEEP_SIGNATURES
         
         if is_wait or is_keep:
             is_closed = False
@@ -1826,8 +1831,9 @@ async def handler(event):
 
         norm_text = normalize(text)
         is_wait_cmd = any(k in norm_text for k in WAIT_SIGNATURES)
-        # [Ver 42.3] 统一 Keep 判定逻辑为包含匹配，与 Audit 保持一致，防止"处理中..."被精确匹配漏掉
-        is_keep_cmd = any(k in norm_text for k in KEEP_SIGNATURES)
+        
+        # [Ver 44.2] 修正: 跟进词 (Keep) 使用精确匹配
+        is_keep_cmd = norm_text in KEEP_SIGNATURES
         
         # [Ver 39.2] 增强客服身份识别: ID匹配 或 名字前缀匹配
         is_name_cs = False
@@ -2114,7 +2120,7 @@ if __name__ == '__main__':
             
         Thread(target=run_web).start()
         # [Ver 43.5] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 44.1 Debug Info)")
+        log_tree(0, "✅ 系统启动 (Ver 44.2 Strict Keep Keyword)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
