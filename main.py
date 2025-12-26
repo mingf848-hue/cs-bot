@@ -106,13 +106,11 @@ try:
     raw_wait = {normalize(x) for x in clean_env.split(',') if x.strip()}
     WAIT_SIGNATURES = {x for x in raw_wait if x} 
 
-    # [Ver 42.1] 修复 Keep 关键词解析逻辑：优先使用 | 分隔，防止句子中的逗号把关键词截断
+    # [Ver 42.1] 修复 Keep 关键词解析逻辑：优先使用 | 分隔
     keep_keywords_env = os.environ.get("KEEP_KEYWORDS", "") 
     if '|' in keep_keywords_env:
-        # 如果包含竖线，仅使用竖线分隔（允许关键词内包含逗号）
         keep_list = keep_keywords_env.split('|')
     else:
-        # 兼容旧格式：如果没有竖线，则同时支持中文逗号和英文逗号
         keep_clean = keep_keywords_env.replace("，", ",")
         keep_list = keep_clean.split(',')
         
@@ -121,12 +119,10 @@ try:
     
     log_tree(0, f"🔍 关键词配置 (Normalized): WAIT={WAIT_SIGNATURES} | KEEP={KEEP_SIGNATURES}")
 
-    # [Ver 36.3] 扩展忽略关键词库 (包含用户请求的新增词汇)
-    # normalized 会去除标点，所以 "好的，感谢" 会匹配 "好的感谢"
     default_ignore = (
         "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴,"
         "好的呢,嗯,嗯嗯,谢了,okk,k,行,妥,了解,已收,没问题,好的收到,ok了,麻烦了,"
-        "好的感谢,哦,知道了,好的知道了"
+        "好的感谢,哦,知道了,好的知道了,没事了"
     )
     ignore_env = os.environ.get("IGNORE_KEYWORDS", default_ignore)
     clean_ignore = ignore_env.replace("，", ",")
@@ -134,9 +130,7 @@ try:
     
     CS_NAME_PREFIXES = ["YY_6/9_值班号", "Y_YY"]
 
-    # [Ver 39.0] AI 配置
     AI_PROXY_URL = os.environ.get("AI_PROXY_URL")
-    # GEMINI_API_KEY 已移除
     AI_MODEL_NAME = "gemini-3-flash-preview"
 
 except Exception as e:
@@ -151,24 +145,25 @@ log_tree(0, f"系统启动 | 稍等词: {len(WAIT_SIGNATURES)} | 跟进词: {len
 WAIT_TIMEOUT = 12 * 60
 FOLLOWUP_TIMEOUT = 15 * 60
 REPLY_TIMEOUT = 5 * 60
-SELF_REPLY_TIMEOUT = 3 * 60 # [Ver 38.0] 自回检测 3分钟
+SELF_REPLY_TIMEOUT = 3 * 60 
 
 MAX_CACHE_SIZE = 50000 
 
 wait_tasks = {}
 followup_tasks = {} 
 reply_tasks = {}
-self_reply_tasks = {} # [Ver 38.0]
+self_reply_tasks = {} 
 
 wait_timers = {}
 followup_timers = {}
 reply_timers = {}
-self_reply_timers = {} # [Ver 38.0]
+self_reply_timers = {} 
 
+# [重要] 映射表：CS回复的消息ID -> 客户原始消息ID
 wait_msg_map = {}        
 followup_msg_map = {} 
 deleted_cache = deque(maxlen=10000)
-self_reply_dedup = deque(maxlen=1000) # [Ver 39.4] 自回图集去重缓存
+self_reply_dedup = deque(maxlen=1000) 
 
 chat_user_active_msgs = {}
 chat_thread_active_msgs = {}
@@ -207,14 +202,11 @@ def update_content_cache(chat_id, msg_id, name, text):
     safe_text = text[:100].replace('\n', ' ') if text else "[非文本/空]"
     msg_content_cache[key] = {'name': name, 'text': safe_text}
 
-# [Ver 41.0] 时间源优化：强制使用传入的 timestamp (来自消息 event.date)
 def record_cs_activity(chat_id, user_id=None, thread_id=None, timestamp=None):
     if timestamp is None: 
-        timestamp = time.time() # 兜底，理论上不应触发
+        timestamp = time.time()
     
     if user_id: 
-        # 只记录最新的时间（防止乱序）
-        # old = cs_activity_log.get((chat_id, user_id), 0)
         cs_activity_log[(chat_id, user_id)] = timestamp
         
     if thread_id: 
@@ -240,17 +232,8 @@ async def is_official_cs(message):
     except: pass
     return False
 
-# [Ver 43.3] Helper: Check history for WAIT keywords
 async def check_wait_in_history(chat_id, thread_id=None, limit=30):
     try:
-        # [Ver 43.3 Logic]
-        # Use reply_to parameter to scan ONLY the specific message thread/topic.
-        # This is precise: it fetches messages belonging to the conversation flow.
-        
-        # If thread_id is None, it means the message is in the main chat (no reply context),
-        # so we scan the main chat history.
-        # If thread_id is present, we scan that thread.
-        
         kwargs = {'limit': limit}
         if thread_id:
              kwargs['reply_to'] = thread_id
@@ -258,12 +241,9 @@ async def check_wait_in_history(chat_id, thread_id=None, limit=30):
         async for m in client.iter_messages(chat_id, **kwargs):
             if not m.text: continue
             
-            # 1. Check if CS
             is_cs = False
-            # Check ID
             if m.sender_id in ([MY_ID] + OTHER_CS_IDS): is_cs = True
             else:
-                # Check Name Prefix
                 try:
                     s = await m.get_sender()
                     if s and getattr(s, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)):
@@ -271,17 +251,12 @@ async def check_wait_in_history(chat_id, thread_id=None, limit=30):
                 except: pass
             
             if is_cs:
-                # 2. Check Keyword
-                # Use normalize to match configured WAIT_KEYWORDS (which are normalized)
                 text_norm = normalize(m.text)
                 if any(k in text_norm for k in WAIT_SIGNATURES):
-                    log_tree(2, f"✅ 自回判定: 历史流(Thread={thread_id})中找到稍等词: [{m.text[:10]}]")
-                    return True # Found a WAIT instruction in this thread
-                    
+                    return True
     except Exception as e:
         logger.error(f"History check failed: {e}")
-        return False # Fail safe: don't alert if we can't check
-    
+        return False
     return False
 
 async def maintenance_task():
@@ -289,13 +264,12 @@ async def maintenance_task():
         try:
             await asyncio.sleep(600)
             now = time.time()
-            # 这里的 expired_keys 可能会因为 now 是服务器时间而稍有偏差，但 3600s 的 buffer 足够大，不影响
             expired_keys = [k for k, v in cs_activity_log.items() if now - v > 3600]
             for k in expired_keys: del cs_activity_log[k]
         except Exception as e: logger.error(f"维护任务出错: {e}")
 
 # ==========================================
-# 模块 4: Web 控制台 (UI 修复版)
+# 模块 4: Web 控制台
 # ==========================================
 app = Flask(__name__)
 
@@ -329,7 +303,7 @@ DASHBOARD_HTML = """
 </head>
 <body>
     <div class="header">
-        <h1>⚡️ 实时监控</h1>
+        <h1>⚡️ 实时监控 (Ver 45.1)</h1>
         <div class="status-grp">
             <span class="audio-btn" onclick="toggleAudio()" title="开启/关闭报警音">🔇</span>
             <a href="#" onclick="ctrl(1)" class="ctrl-btn">上班</a>
@@ -360,7 +334,7 @@ DASHBOARD_HTML = """
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
     <a href="/tool/work_stats" target="_blank" class="btn" style="margin-top:10px;background:#6a1b9a">📊 工作量统计</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 44.2 (Strict Keep Keyword)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.1 (Triangle Fix + Strict Keep)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -1061,14 +1035,13 @@ async def _check_is_closed_logic(latest_msg):
                 reason = f"AI判定需回复：{ai_reason}"
     else:
         # 最后是客服发言 -> 检查内容是否仍包含等待词/跟进词
-        # [Ver 44.2] 修正: 跟进词 (Keep) 使用精确匹配 (Exact Match)，防止"转账处理中"触发"处理中"
         last_text_norm = normalize(latest_msg.text or "")
         
         # 稍等词 (Wait): 保持包含匹配 (Inclusion) 以兼容 "请稍等一下"
         is_wait = any(k in last_text_norm for k in WAIT_SIGNATURES)
         
         # 跟进词 (Keep): 使用精确匹配 (Exact Match)
-        # [Fix] 解决 "转账处理中..." 被误判为 "处理中"
+        # [Ver 45.1 Fix] 复用 Keep Keyword 强制精确逻辑
         is_keep = last_text_norm in KEEP_SIGNATURES
         
         if is_wait or is_keep:
@@ -1476,43 +1449,53 @@ def remove_task_record(chat_id, user_id, msg_id, thread_id=None):
             chat_thread_active_msgs[t_key].discard(msg_id)
             if not chat_thread_active_msgs[t_key]: del chat_thread_active_msgs[t_key]
 
-# [Ver 42.5] 修复：外科手术式精准销单，禁止连坐
+# [Ver 45.1] 修复三角销单：A<-B<-C, D->A
 def cancel_tasks(chat_id, user_id, thread_id=None, target_msg_id=None, reason="未知", types=None):
     if types is None: types = ['wait', 'followup', 'reply', 'self_reply'] # Default to all
     
     targets = set()
     hit_specific = False
     
-    # 1. 精确打击：如果提供了 target_msg_id (即 Reply To ID)
+    # 1. 精确打击：如果提供了 target_msg_id
     if target_msg_id:
-        # [Ver 42.5 Fix] 无论在不在任务列表里，只要是有针对性的回复，就只针对这一个ID
-        # 尝试去找到这个ID对应的任务 (可能在wait_msg_map映射里)
-        real_task_id = target_msg_id
-        
-        # 检查反向映射表 (reply_id -> trigger_id)
-        # 有时候 reply_to_msg_id 是触发消息，有时候是客服回复的那条消息
-        # 我们需要找到“任务ID”，通常是触发消息的ID
-        
-        # 尝试查找直接任务
-        if real_task_id in wait_tasks or real_task_id in followup_tasks or real_task_id in reply_tasks or real_task_id in self_reply_tasks:
-            targets.add(real_task_id)
+        # A. 直接检查 target_msg_id 是否是任务本体
+        if target_msg_id in wait_tasks or target_msg_id in followup_tasks or target_msg_id in reply_tasks or target_msg_id in self_reply_tasks:
+            targets.add(target_msg_id)
             hit_specific = True
-        
-        # [Ver 42.5 Fix] 尝试查找关联任务 (如果 target_msg_id 是客服发的上一条跟进，那任务ID可能是它的上一条)
-        # 这里逻辑较复杂，简化为：如果提供了target，绝对不进行兜底删除。
-        
-        # 即使 targets 为空 (说明该消息没任务)，我们也标记 hit_specific = True
-        # 意思是：“用户的意图是回复这条消息，如果这条消息没倒计时，那就算了，别动其他的”
-        hit_specific = True
+            
+        # B. 检查 target_msg_id 是否是触发源 (例如回复了"稍等"这条消息)
+        # 很多时候 task key 是 CS 的消息，但也可能是客户的消息
+        if target_msg_id in wait_msg_map:
+            targets.add(wait_msg_map[target_msg_id])
+            hit_specific = True
+            
+        if target_msg_id in followup_msg_map:
+            targets.add(followup_msg_map[target_msg_id])
+            hit_specific = True
+
+        # 如果通过精确查找找到了任务，那就很棒
+        if targets:
+            hit_specific = True
+
+    # [Ver 45.1 Fix] 三角关系回退逻辑
+    # 如果客服回复了 Msg A (target_msg_id)，但 Msg A 身上没挂任务
+    # 但是！Msg A 的发送者 (user_id) 身上有其他任务 (比如挂在 Msg B 上)
+    # 这时候我们认为客服回复 Msg A 是为了解决该用户的问题，因此触发“用户级销单”
     
+    should_check_user = False
+    if not targets and target_msg_id and user_id:
+        # 我们回复了特定消息，但没找到特定任务 -> 尝试检查该用户的其他任务
+        should_check_user = True
+        log_tree(1, f" ┣━━ ⚠️ 三角销单尝试: 回复了 Msg={target_msg_id} (无任务), 转查 User={user_id}")
+
     # 2. 话题范围 (仅当没有精确命中时)
     if not hit_specific and thread_id:
         t_key = (chat_id, thread_id)
         if t_key in chat_thread_active_msgs:
             targets.update(chat_thread_active_msgs[t_key])
 
-    # 3. 用户范围 (仅当既没精确命中，也没在话题里，才执行全用户销单)
-    if not hit_specific and not thread_id and user_id:
+    # 3. 用户范围 (没精确命中，或者触发了三角回退)
+    if (not hit_specific or should_check_user) and user_id:
         u_key = (chat_id, user_id)
         if u_key in chat_user_active_msgs:
             targets.update(chat_user_active_msgs[u_key])
@@ -1832,7 +1815,8 @@ async def handler(event):
         norm_text = normalize(text)
         is_wait_cmd = any(k in norm_text for k in WAIT_SIGNATURES)
         
-        # [Ver 44.2] 修正: 跟进词 (Keep) 使用精确匹配
+        # [Ver 45.1 Fix] 跟进词 (Keep) 强制使用精确匹配 (in Set)，禁止模糊匹配
+        # 这确保 "转账处理中" 不会触发 "处理中"
         is_keep_cmd = norm_text in KEEP_SIGNATURES
         
         # [Ver 39.2] 增强客服身份识别: ID匹配 或 名字前缀匹配
@@ -2120,7 +2104,7 @@ if __name__ == '__main__':
             
         Thread(target=run_web).start()
         # [Ver 43.5] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 44.2 Strict Keep Keyword)")
+        log_tree(0, "✅ 系统启动 (Ver 45.1 Triangle Fix)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
