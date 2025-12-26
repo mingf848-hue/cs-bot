@@ -360,7 +360,7 @@ DASHBOARD_HTML = """
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
     <a href="/tool/work_stats" target="_blank" class="btn" style="margin-top:10px;background:#6a1b9a">📊 工作量统计</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 44.0 (Exempt Deleted Msgs)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 44.1 (Debug Info)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -740,6 +740,7 @@ WAIT_CHECK_HTML = """
         .msg-content { flex-grow: 1; min-width: 0; }
         .msg-meta { font-size: 12px; color: #888; margin-bottom: 4px; display: flex; gap: 10px; }
         .msg-text { font-size: 14px; line-height: 1.5; color: #333; word-wrap: break-word; background: #f5f5f5; padding: 8px; border-radius: 4px; margin: 5px 0; border-left: 3px solid #ccc; }
+        .latest-text { font-size: 12px; color: #d32f2f; margin-top: 6px; background: #fff3e0; padding: 4px 8px; border-radius: 4px; border: 1px dashed #ffa726; }
         .reason-text { color: #d32f2f; font-size: 13px; margin-top: 4px; font-style: italic; }
         .reason-success { color: #2e7d32; font-size: 13px; margin-top: 4px; font-style: italic; }
         .msg-link { text-decoration: none; color: #0088cc; font-size: 13px; display: inline-block; margin-top: 5px; font-weight: 500; }
@@ -879,7 +880,7 @@ WAIT_CHECK_HTML = """
             });
         }
         
-        // [Ver 43.0] New function to render a list of items
+        // [Ver 44.1] Added display of latest_text
         function renderResults(list) {
             const resList = document.getElementById('result-list');
             resList.innerHTML = '';
@@ -897,6 +898,7 @@ WAIT_CHECK_HTML = """
                         </div>
                         <div class="msg-text">${data.found_text}</div>
                         ${data.reason ? `<div class="${data.is_closed ? 'reason-success' : 'reason-text'}">${data.is_closed ? '🤖 ' : '⚠️ '}${data.reason}</div>` : ''}
+                        ${!data.is_closed && data.latest_text ? `<div class="latest-text">👀 判定依据 (最新消息): [${data.latest_text}]</div>` : ''}
                         <a href="${data.link}" target="_blank" class="msg-link">🔗 跳转消息</a>
                     </div>
                 `;
@@ -1171,6 +1173,9 @@ async def check_wait_keyword_logic(keyword, result_queue):
                              link = f"https://t.me/c/{real_chat_id}/{target_msg_for_link.id}?thread={url_thread_id}"
                         else:
                              link = f"https://t.me/c/{real_chat_id}/{target_msg_for_link.id}"
+                        
+                        # [Ver 44.1] 添加最新消息内容到结果中，方便用户排查
+                        latest_content = (latest_msg.text or "[媒体]")[:60].replace('\n', ' ')
 
                         result_queue.put(json.dumps({
                             "type": "result",
@@ -1179,6 +1184,7 @@ async def check_wait_keyword_logic(keyword, result_queue):
                             "time": beijing_time,
                             "group_name": group_name,
                             "found_text": safe_text,
+                            "latest_text": latest_content, # New field
                             "link": link
                         }))
 
@@ -2108,7 +2114,7 @@ if __name__ == '__main__':
             
         Thread(target=run_web).start()
         # [Ver 43.5] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 44.0 Exempt Deleted Msgs)")
+        log_tree(0, "✅ 系统启动 (Ver 44.1 Debug Info)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
