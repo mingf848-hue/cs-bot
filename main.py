@@ -135,7 +135,7 @@ try:
     CS_NAME_PREFIXES = ["YY_6/9_值班号", "Y_YY"]
 
     # [Ver 39.0] AI 配置
-    AI_PROXY_URL = os.environ.get("AI_PROXY_URL", "https://geminiproxy-black-one.vercel.app")
+    AI_PROXY_URL = os.environ.get("AI_PROXY_URL")
     # GEMINI_API_KEY 已移除
     AI_MODEL_NAME = "gemini-3-flash-preview"
 
