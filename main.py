@@ -303,7 +303,7 @@ DASHBOARD_HTML = """
 </head>
 <body>
     <div class="header">
-        <h1>⚡️ 实时监控 (Ver 45.1)</h1>
+        <h1>⚡️ 实时监控 (Ver 45.2)</h1>
         <div class="status-grp">
             <span class="audio-btn" onclick="toggleAudio()" title="开启/关闭报警音">🔇</span>
             <a href="#" onclick="ctrl(1)" class="ctrl-btn">上班</a>
@@ -334,7 +334,7 @@ DASHBOARD_HTML = """
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
     <a href="/tool/work_stats" target="_blank" class="btn" style="margin-top:10px;background:#6a1b9a">📊 工作量统计</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.1 (Triangle Fix + Strict Keep)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.2 (Strict Thread Cancellation)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -1449,7 +1449,8 @@ def remove_task_record(chat_id, user_id, msg_id, thread_id=None):
             chat_thread_active_msgs[t_key].discard(msg_id)
             if not chat_thread_active_msgs[t_key]: del chat_thread_active_msgs[t_key]
 
-# [Ver 45.1] 修复三角销单：A<-B<-C, D->A
+# [Ver 45.2] 修复三角销单：A<-B<-C, D->A
+# 严格限制销单逻辑，禁止宽泛的用户级销单
 def cancel_tasks(chat_id, user_id, thread_id=None, target_msg_id=None, reason="未知", types=None):
     if types is None: types = ['wait', 'followup', 'reply', 'self_reply'] # Default to all
     
@@ -1477,28 +1478,17 @@ def cancel_tasks(chat_id, user_id, thread_id=None, target_msg_id=None, reason="�
         if targets:
             hit_specific = True
 
-    # [Ver 45.1 Fix] 三角关系回退逻辑
-    # 如果客服回复了 Msg A (target_msg_id)，但 Msg A 身上没挂任务
-    # 但是！Msg A 的发送者 (user_id) 身上有其他任务 (比如挂在 Msg B 上)
-    # 这时候我们认为客服回复 Msg A 是为了解决该用户的问题，因此触发“用户级销单”
-    
-    should_check_user = False
-    if not targets and target_msg_id and user_id:
-        # 我们回复了特定消息，但没找到特定任务 -> 尝试检查该用户的其他任务
-        should_check_user = True
-        log_tree(1, f" ┣━━ ⚠️ 三角销单尝试: 回复了 Msg={target_msg_id} (无任务), 转查 User={user_id}")
-
     # 2. 话题范围 (仅当没有精确命中时)
+    # [Ver 45.2] 这是用户要求的"针对消息流的销单"
     if not hit_specific and thread_id:
         t_key = (chat_id, thread_id)
         if t_key in chat_thread_active_msgs:
             targets.update(chat_thread_active_msgs[t_key])
 
-    # 3. 用户范围 (没精确命中，或者触发了三角回退)
-    if (not hit_specific or should_check_user) and user_id:
-        u_key = (chat_id, user_id)
-        if u_key in chat_user_active_msgs:
-            targets.update(chat_user_active_msgs[u_key])
+    # 3. [已移除] 用户范围 (User Scope Fallback)
+    # [Ver 45.2] 用户明确要求"禁止宽泛销单"，因此移除基于 user_id 的兜底销单。
+    # 这避免了同一个账号（如转发Bot）发的不同工单因为回复了其中一个而导致其他工单被销单。
+    # if (not hit_specific) and user_id: ... REMOVED
 
     if not targets: return
 
@@ -2104,7 +2094,7 @@ if __name__ == '__main__':
             
         Thread(target=run_web).start()
         # [Ver 43.5] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 45.1 Triangle Fix)")
+        log_tree(0, "✅ 系统启动 (Ver 45.2 Strict Thread Cancellation)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
