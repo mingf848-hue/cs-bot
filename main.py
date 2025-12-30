@@ -1540,6 +1540,12 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
         await asyncio.sleep(WAIT_TIMEOUT)
         
         if not IS_WORKING: return
+
+        # [Safety Check] 醒来后再次检查目标消息是否在“已删除缓存”中
+        if key_id in deleted_cache:
+            log_tree(2, f"🛡️ 拦截已删除消息超时 [稍等] Msg={key_id}")
+            return
+
         if my_msg_id and not await check_msg_exists(chat_id, my_msg_id): return
 
         # 醒来后，使用触发时的消息时间戳去对比活动日志
@@ -1556,6 +1562,8 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
         await asyncio.sleep(CRITICAL_TIMEOUT)
         
         if not IS_WORKING: return
+        # Check again
+        if key_id in deleted_cache: return
         if my_msg_id and not await check_msg_exists(chat_id, my_msg_id): return
 
         is_safe_2, safe_reason_2 = check_recent_activity_safe(chat_id, trigger_timestamp, user_ids_list, thread_id)
@@ -1593,6 +1601,12 @@ async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_
 
         await asyncio.sleep(FOLLOWUP_TIMEOUT)
         if not IS_WORKING: return
+
+        # [Safety Check]
+        if key_id in deleted_cache:
+            log_tree(2, f"🛡️ 拦截已删除消息超时 [跟进] Msg={key_id}")
+            return
+
         if my_msg_id and not await check_msg_exists(chat_id, my_msg_id): return
 
         is_safe, safe_reason = check_recent_activity_safe(chat_id, trigger_timestamp, user_ids_list, thread_id)
@@ -1943,6 +1957,12 @@ async def handler(event):
                     related_users = [real_customer_id]
 
                 if related_users:
+                    # [Safety Fix] 在创建任务前，强制检查目标消息是否已在删除缓存中
+                    # 防止因为网络延迟/事件重放导致给已删除的消息创建僵尸任务
+                    if reply_to_msg_id in deleted_cache:
+                        log_tree(1, f"🛡️ 拦截僵尸任务(已删) Msg={reply_to_msg_id}")
+                        return # 直接终止任务创建
+
                     # [Ver 41.6] 逻辑回调：按关键词触发任务
                     if is_keep_cmd:
                         # [Fix] 前置检查：只有历史中有明确的 WAIT 关键词（属于我的任务），才开启跟进监控
