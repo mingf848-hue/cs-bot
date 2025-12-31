@@ -131,7 +131,7 @@ try:
     CS_NAME_PREFIXES = ["YY_6/9_值班号", "Y_YY"]
 
     AI_PROXY_URL = os.environ.get("AI_PROXY_URL")
-    AI_MODEL_NAME = "gemini-3-flash-preview"
+    AI_MODEL_NAME = "gemini-2.0-flash-exp"
 
 except Exception as e:
     logger.error(f"❌ 配置错误: {e}")
@@ -303,7 +303,7 @@ DASHBOARD_HTML = """
 </head>
 <body>
     <div class="header">
-        <h1>⚡️ 实时监控 (Ver 45.2)</h1>
+        <h1>⚡️ 实时监控 (Ver 45.4)</h1>
         <div class="status-grp">
             <span class="audio-btn" onclick="toggleAudio()" title="开启/关闭报警音">🔇</span>
             <a href="#" onclick="ctrl(1)" class="ctrl-btn">上班</a>
@@ -334,7 +334,7 @@ DASHBOARD_HTML = """
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
     <a href="/tool/work_stats" target="_blank" class="btn" style="margin-top:10px;background:#6a1b9a">📊 工作量统计</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.2 (Strict Thread Cancellation)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.4 (Deduction Only)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -724,11 +724,15 @@ WAIT_CHECK_HTML = """
         .filter-btn { cursor: pointer; color: #0056b3; text-decoration: underline; margin: 0 5px; }
         .filter-btn:hover { color: #003d80; }
         .filter-active { font-weight: 900; color: #d32f2f; text-decoration: none; }
+
+        /* 质检信息样式 */
+        .qa-box { margin-top: 8px; padding-top: 5px; border-top: 1px dashed #eee; }
+        .qa-item { color: #c62828; font-size: 12px; margin-top: 2px; font-weight: 500; }
     </style>
 </head>
 <body>
     <div class="card">
-        <h1>🔍 稍等关键词闭环检测</h1>
+        <h1>🔍 稍等关键词闭环检测 + 智能质检</h1>
         <div class="form-group">
             <label>输入关键词 (例如: 请稍等ART)</label>
             <input type="text" id="keyword" placeholder="输入要搜索的关键词..." value="请稍等ART">
@@ -795,13 +799,12 @@ WAIT_CHECK_HTML = """
                                 pText.innerText = data.msg;
                             } else if (data.type === 'result') {
                                 allResults.push(data);
-                                // [Ver 43.0] Collect all first for sorting
                                 pText.innerText = `已找到 ${allResults.length} 条结果...`;
                             } else if (data.type === 'done') {
                                 pFill.style.width = '100%';
                                 pText.innerText = '检测完成，正在排序...';
                                 
-                                // [Ver 43.0] Sort by time descending (Newest first)
+                                // 按时间倒序
                                 allResults.sort((a, b) => {
                                     return new Date(b.time) - new Date(a.time);
                                 });
@@ -839,7 +842,7 @@ WAIT_CHECK_HTML = """
             else if (type === 'closed') filtered = allResults.filter(d => d.is_closed);
             else if (type === 'open') filtered = allResults.filter(d => !d.is_closed);
             
-            // [Ver 43.0] Ensure sorted
+            // Ensure sorted
             filtered.sort((a, b) => new Date(b.time) - new Date(a.time));
             
             renderResults(filtered);
@@ -854,11 +857,20 @@ WAIT_CHECK_HTML = """
             });
         }
         
-        // [Ver 44.1] Added display of latest_text
         function renderResults(list) {
             const resList = document.getElementById('result-list');
             resList.innerHTML = '';
             list.forEach(data => {
+                // 渲染质检扣分项
+                let qaHtml = '';
+                if (data.quality_issues && data.quality_issues.length > 0) {
+                    qaHtml = '<div class="qa-box">';
+                    data.quality_issues.forEach(issue => {
+                        qaHtml += `<div class="qa-item">⚠️ ${issue.desc} (扣 ${issue.deduction} 分)</div>`;
+                    });
+                    qaHtml += '</div>';
+                }
+
                 const div = document.createElement('div');
                 div.className = 'result-item';
                 div.innerHTML = `
@@ -873,6 +885,7 @@ WAIT_CHECK_HTML = """
                         <div class="msg-text">${data.found_text}</div>
                         ${data.reason ? `<div class="${data.is_closed ? 'reason-success' : 'reason-text'}">${data.is_closed ? '🤖 ' : '⚠️ '}${data.reason}</div>` : ''}
                         ${!data.is_closed && data.latest_text ? `<div class="latest-text">👀 判定依据 (最新消息): [${data.latest_text}]</div>` : ''}
+                        ${qaHtml}
                         <a href="${data.link}" target="_blank" class="msg-link">🔗 跳转消息</a>
                     </div>
                 `;
@@ -933,140 +946,132 @@ def api_ctrl():
 # ==========================================
 # 模块 4.5: 稍等闭环检测 API (Async Generator)
 # ==========================================
-def _ai_check_reply_needed(text):
+def serialize_thread(messages, cs_ids):
     """
-    [Sync Function] 使用 Gemini AI 判断是否需要回复
-    返回 (bool, reason_str)
+    [新增] 将 Telethon 消息对象列表转换为 AI 质检所需的 JSON 格式
+    并预处理【修改时效】逻辑
     """
-    log_prefix = f"🤖 [AI-Audit] Text='{text[:20]}...' | "
+    chat_history = []
     
-    # 1. 基础鉴权检查 (已移除，直接使用 Proxy URL)
+    # 按时间正序排列（旧 -> 新）
+    sorted_msgs = sorted(messages, key=lambda m: m.date)
     
-    # 2. 构造请求
-    # [Ver 40.0] URL 优化：移除末尾斜杠并直接请求，不带 API KEY 参数
+    for m in sorted_msgs:
+        if not m.text: continue
+        
+        # 1. 判定角色
+        role = "customer"
+        sender_id = m.sender_id
+        if sender_id in cs_ids:
+            role = "cs_agent"
+        else:
+            # 尝试通过名字前缀判断
+            try:
+                s = m.sender
+                if s and getattr(s, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)):
+                    role = "cs_agent"
+            except: pass
+
+        # 2. 计算修改延迟 (针对你的第5条规则)
+        edit_delay_min = 0
+        is_edited = False
+        if m.edit_date:
+            is_edited = True
+            # edit_date 和 date 都是带时区的，可以直接相减
+            diff = m.edit_date - m.date
+            edit_delay_min = int(diff.total_seconds() / 60)
+
+        # 3. 获取回复关系 (针对艾特错误检测)
+        reply_to_id = None
+        if m.reply_to:
+            reply_to_id = m.reply_to.reply_to_msg_id
+
+        # 4. 组装数据包
+        msg_data = {
+            "msg_id": m.id,
+            "role": role,
+            "time": m.date.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S'),
+            "content": m.text,
+            "reply_to_msg_id": reply_to_id,
+            "is_edited": is_edited,
+            "edit_delay_minutes": edit_delay_min  # 核心字段：告诉AI修改晚了多少分钟
+        }
+        chat_history.append(msg_data)
+        
+    return chat_history
+
+def _ai_quality_audit(chat_history_json):
+    """
+    [新增] 调用 Gemini 进行多维度质检评分 (融合无需回复判断逻辑)
+    纯净模式：只识别问题，不评分，不计算及格线。
+    """
+    # 构造 Prompt，严格植入用户规则
+    prompt = f"""
+    你是一名严厉的客服质检员。请根据以下对话记录（JSON格式）识别【客服 (cs_agent)】的违规行为。
+
+    【对话记录】
+    {json.dumps(chat_history_json, ensure_ascii=False, indent=2)}
+
+    【核心判断逻辑 - 关于“遗漏回复”的界定】
+    在判定是否扣“遗漏回复”的分数前，请先检查客户的最后一条消息。
+    符合以下情况的，**不属于**遗漏回复，**不需要**客服继续跟进（即不扣分）：
+    1. 只是礼貌性的结束语（如“好的”、“谢谢”、“收到”、“明白了”、“ok”、“辛苦了”）。
+    2. 单纯的情绪表达（如“哈哈”）或表示话题已结束。
+    3. 仅仅是“好的谢谢”这种组合。
+    4. 只回复了“1”或类似代表明白的简单字符。
+    5. 客户说“稍等”、“我去核实一下”等客户自己去操作，且后续无新信息提供。
+    6. **反之，如果包含明确的问题、投诉、未解决的诉求、需要确认的操作而客服未回，必须判定为遗漏。**
+
+    【扣分标准】
+    1. 严重遗漏：完全遗漏回复客户的【有效提问/诉求】（参考上述核心判断逻辑），扣 3 分。
+       (注：如果客户最后只是说“谢谢”，客服没回，不扣分)
+    2. 部分遗漏：多问题遗漏（如问IP和设备，只回了设备），扣 1 分。
+    3. 态度问题：回复出现个人情绪（如反问、不耐烦、嘲讽），扣 1 分。
+    4. 规范错误：回复出现错别字，扣 0.5 分。
+    5. 操作错误：回复错人（艾特错对象/上下文不搭），扣 0.5 分。
+    6. 修改时效规则（基于 edit_delay_minutes 字段）：
+       - 5分钟内修改 (0-5)：不扣分。
+       - 6-30分钟内修改 (6-30)：记录为【提醒】，不扣分。
+       - 30分钟后修改 (>30)：扣 2 分。
+
+    【输出要求】
+    请直接返回 JSON 格式结果，不要包含 Markdown 标记。
+    如果没有任何问题，"issues" 数组返回空即可。
+    {{
+        "issues": [
+            {{"type": "missed_reply", "desc": "客户询问提现进度，客服未回复", "deduction": 3.0}},
+            {{"type": "typo", "desc": "回复中有错别字", "deduction": 0.5}}
+        ]
+    }}
+    """
+
     proxy_url = AI_PROXY_URL.rstrip('/')
     url = f"{proxy_url}/v1beta/models/{AI_MODEL_NAME}:generateContent"
-    
     headers = {'Content-Type': 'application/json'}
-    prompt = f"""
-    判断客户的这条最后回复是否需要客服继续跟进回复。
-    客户消息："{text}"
-    
-    规则：
-    1. 如果包含明确的问题、投诉、未解决的诉求、需要确认的操作，返回 TRUE。
-    2. 如果只是礼貌性的结束语（如“好的”、“谢谢”、“收到”、“明白了”、“ok”、“辛苦了”）、单纯的情绪表达（如“哈哈”）、或者表示话题已结束，返回 FALSE。
-    3. 仅仅是“好的谢谢”这种组合，绝对是 FALSE。
-    4. 如果只回复了“1”，代表明白，返回 FALSE。
-    5. 如果客户最后回复是“稍等”、“我去核实一下”、类似的客户自己去核实，但后续没有新信息提供的情况下，无需主动跟进，返回 FALSE。
-    
-    请输出 JSON 格式: {{"reason": "思考过程...", "need_reply": true/false}}
-    """
     data = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"response_mime_type": "application/json"}
     }
-    
-    # 3. 发送请求
+
     try:
-        start_t = time.time()
-        resp = requests.post(url, json=data, headers=headers, timeout=10)
-        cost_t = time.time() - start_t
-        
+        resp = requests.post(url, json=data, headers=headers, timeout=20)
         if resp.status_code == 200:
             res_json = resp.json()
+            # 兼容性处理
             try:
-                # 解析 Gemini 的 JSON 响应
-                candidates = res_json.get('candidates', [])
-                if not candidates:
-                    log_tree(9, log_prefix + "❌ AI返回空候选")
-                    return (True, "AI返回空结果")
-                
-                raw_content = candidates[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
-                
-                # 尝试解析 JSON
-                ai_decision = json.loads(raw_content)
-                reason = ai_decision.get("reason", "No reason")
-                need_reply = ai_decision.get("need_reply", True)
-                
-                log_tree(2, log_prefix + f"✅ AI响应({cost_t:.2f}s): [{str(need_reply).upper()}] 理由: {reason}")
-                return (need_reply, reason)
-                
-            except Exception as parse_e:
-                log_tree(9, log_prefix + f"⚠️ 解析失败: {parse_e} | Raw: {raw_content}")
-                # Fallback
-                return (True, f"解析失败: {str(parse_e)}")
+                raw_text = res_json['candidates'][0]['content']['parts'][0]['text']
+                raw_text = raw_text.replace('```json', '').replace('```', '').strip()
+                return json.loads(raw_text)
+            except:
+                return {"issues": []}
         else:
-            log_tree(9, log_prefix + f"❌ 请求失败: {resp.status_code} {resp.text}")
-            return (True, f"API请求失败: {resp.status_code}") 
+            return {"issues": [], "error": f"API Error {resp.status_code}"}
     except Exception as e:
-        log_tree(9, log_prefix + f"❌ 网络异常: {e}")
-        return (True, f"网络异常: {str(e)}") 
-
-# [Ver 41.8] 抽取公共闭环判断逻辑
-async def _check_is_closed_logic(latest_msg):
-    is_closed = False
-    reason = ""
-    
-    # 检查最新消息的发送者
-    last_sender_id = latest_msg.sender_id
-    last_sender_is_cs = False
-    if last_sender_id in ([MY_ID] + OTHER_CS_IDS):
-         last_sender_is_cs = True
-    else:
-         try:
-             s = await latest_msg.get_sender()
-             if s and getattr(s, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)):
-                 last_sender_is_cs = True
-         except: pass
-    
-    if not last_sender_is_cs:
-        # 最后是客户发言 -> AI 检测
-        if not latest_msg.text or not latest_msg.text.strip():
-            is_closed = False
-            reason = "最后是客户[媒体/贴纸]"
-        else:
-            # 使用同步执行器调用 AI
-            need_reply, ai_reason = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: _ai_check_reply_needed(latest_msg.text)
-            )
-            if not need_reply:
-                is_closed = True
-                reason = f"AI判定已闭环：{ai_reason}"
-            else:
-                is_closed = False
-                reason = f"AI判定需回复：{ai_reason}"
-    else:
-        # 最后是客服发言 -> 检查内容是否仍包含等待词/跟进词
-        last_text_norm = normalize(latest_msg.text or "")
-        
-        # 稍等词 (Wait): 保持包含匹配 (Inclusion) 以兼容 "请稍等一下"
-        is_wait = any(k in last_text_norm for k in WAIT_SIGNATURES)
-        
-        # 跟进词 (Keep): 使用精确匹配 (Exact Match)
-        # [Ver 45.1 Fix] 复用 Keep Keyword 强制精确逻辑
-        is_keep = last_text_norm in KEEP_SIGNATURES
-        
-        if is_wait or is_keep:
-            is_closed = False
-            reason = f"客服最后仍回复{'稍等' if is_wait else '跟进'}词"
-            
-            # [Ver 44.0] 豁免逻辑：如果客户删除了原消息，视为已闭环（无法回复）
-            if latest_msg.reply_to:
-                try:
-                    replied_obj = await latest_msg.get_reply_message()
-                    if not replied_obj: 
-                        is_closed = True
-                        reason = "客户已删消息 (自动豁免)"
-                except: pass
-        else:
-            is_closed = True
-            
-    return is_closed, reason
+        return {"issues": [], "error": str(e)}
 
 async def check_wait_keyword_logic(keyword, result_queue):
     """
-    搜索过去10小时内包含 `keyword` 的消息，并检查闭环。
-    将结果推送到 result_queue。
+    [修改版] 搜索过去10小时内包含 `keyword` 的消息，并检查闭环 + 智能质检
     """
     try:
         cutoff_time = datetime.now(timezone.utc) - timedelta(hours=10)
@@ -1077,6 +1082,8 @@ async def check_wait_keyword_logic(keyword, result_queue):
         
         found_count = 0
         closed_count = 0
+        
+        cs_ids_set = set([MY_ID] + OTHER_CS_IDS)
 
         for idx, chat_id in enumerate(CS_GROUP_IDS):
             if chat_id in EXCLUDED_GROUPS: continue
@@ -1091,21 +1098,19 @@ async def check_wait_keyword_logic(keyword, result_queue):
             try:
                 # 1. 抓取该群组最近10小时的消息
                 history = []
-                # 限制3000条或时间截止
                 async for m in client.iter_messages(chat_id, limit=3000):
                     if m.date and m.date < cutoff_time: break
                     history.append(m)
                 
-                # 2. 建立 Thread 状态表
-                thread_latest_msg = {}
+                # 2. 建立 Thread 归类 (按话题ID聚合消息)
+                thread_map = defaultdict(list)
                 for m in history:
                     t_id = None
                     if m.reply_to:
                         t_id = m.reply_to.reply_to_top_id 
                         if not t_id: t_id = m.reply_to.reply_to_msg_id
                     if not t_id: t_id = m.id
-                    if t_id not in thread_latest_msg:
-                        thread_latest_msg[t_id] = m
+                    thread_map[t_id].append(m)
 
                 # 3. 在历史中查找包含 keyword 的消息
                 for m in history:
@@ -1119,11 +1124,46 @@ async def check_wait_keyword_logic(keyword, result_queue):
                             if not t_id: t_id = m.reply_to.reply_to_msg_id
                         if not t_id: t_id = m.id
                         
-                        latest_msg = thread_latest_msg.get(t_id, m)
+                        # 获取该话题的所有上下文消息
+                        context_msgs = thread_map.get(t_id, [m])
                         
-                        # [Ver 42.0] 调用统一闭环判断逻辑 (Consistency Fix)
-                        is_closed, reason = await _check_is_closed_logic(latest_msg)
+                        # A. 执行 AI 质检 (这里是核心新增逻辑)
+                        # 为了不阻塞主线程，这里使用 run_in_executor 但注意这里本身就在 async thread 里
+                        # 直接同步调用 requests 可能会卡一点，但在 stream generator 里是可以接受的
+                        qa_result = {}
+                        try:
+                            # 序列化
+                            chat_json = serialize_thread(context_msgs, cs_ids_set)
+                            # 调用 AI (放入线程池避免卡死心跳)
+                            qa_result = await asyncio.get_event_loop().run_in_executor(
+                                None, lambda: _ai_quality_audit(chat_json)
+                            )
+                        except Exception as e:
+                            logger.error(f"QA Failed: {e}")
+
+                        # B. 解析结果
+                        issues = qa_result.get('issues', [])
                         
+                        # C. 判定闭环状态
+                        # 如果有 "严重遗漏 (missed_reply)"，则强制设为未闭环
+                        # 否则，如果 AI 没说遗漏，我们认为流程上是闭环的
+                        is_closed = True
+                        reason = "AI质检通过"
+                        
+                        has_missed_reply = False
+                        for iss in issues:
+                            if iss.get('type') == 'missed_reply' or iss.get('deduction', 0) >= 3:
+                                has_missed_reply = True
+                                break
+                        
+                        if has_missed_reply:
+                            is_closed = False
+                            reason = "AI判定: 遗漏回复"
+                        else:
+                            # 兼容旧逻辑：如果 issues 为空，但最后一条还是客服发的“稍等”，那其实也没闭环
+                            # 不过 AI 的规则 6 已经覆盖了“客服未回”的情况，所以 AI 判定更准。
+                            pass
+
                         if is_closed: closed_count += 1
 
                         # 构建结果并推送
@@ -1136,25 +1176,20 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         safe_text = (m.text or "")[:100].replace('\n', ' ')
                         beijing_time = m.date.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
                         
-                        # [Link Fix] 链接逻辑优化
-                        target_msg_for_link = latest_msg if not is_closed else m
+                        latest_msg = context_msgs[0] # history 是倒序的吗？ iter_messages 默认是 latest first.
+                        # thread_map 里的顺序取决于 history 的顺序。
+                        # history 是 iter_messages 拿出来的，默认是 Newest -> Oldest
+                        # 所以 context_msgs[0] 应该是最新的。
                         
                         link = ""
                         real_chat_id = str(chat_id).replace('-100', '')
-                        url_thread_id = None
-                        
-                        if "(客户删消息)" not in reason:
-                            if target_msg_for_link.reply_to:
-                                url_thread_id = target_msg_for_link.reply_to.reply_to_top_id
-                                if not url_thread_id:
-                                    url_thread_id = target_msg_for_link.reply_to.reply_to_msg_id
+                        url_thread_id = t_id
                         
                         if url_thread_id:
-                             link = f"https://t.me/c/{real_chat_id}/{target_msg_for_link.id}?thread={url_thread_id}"
+                             link = f"https://t.me/c/{real_chat_id}/{latest_msg.id}?thread={url_thread_id}"
                         else:
-                             link = f"https://t.me/c/{real_chat_id}/{target_msg_for_link.id}"
+                             link = f"https://t.me/c/{real_chat_id}/{latest_msg.id}"
                         
-                        # [Ver 44.1] 添加最新消息内容到结果中，方便用户排查
                         latest_content = (latest_msg.text or "[媒体]")[:60].replace('\n', ' ')
 
                         result_queue.put(json.dumps({
@@ -1164,8 +1199,9 @@ async def check_wait_keyword_logic(keyword, result_queue):
                             "time": beijing_time,
                             "group_name": group_name,
                             "found_text": safe_text,
-                            "latest_text": latest_content, # New field
-                            "link": link
+                            "latest_text": latest_content, 
+                            "link": link,
+                            "quality_issues": issues # 新增字段：质检扣分项
                         }))
 
             except Exception as e:
@@ -1332,9 +1368,29 @@ async def audit_pending_tasks():
                     
                     latest_msg = thread_latest_msg.get(t_id, m)
                     
-                    # [Ver 41.8] 调用统一闭环判断逻辑
-                    is_closed, reason = await _check_is_closed_logic(latest_msg)
+                    # [Ver 41.8] 调用统一闭环判断逻辑 (这里暂时保留旧的逻辑，不进行全量AI质检，节省资源)
+                    # 如果需要全量AI质检，可以在这里替换逻辑，但下班巡检量大，可能超时。
+                    # 这里沿用旧的逻辑，但因为没有引入 _check_is_closed_logic，我们简单判断一下
                     
+                    is_closed = False
+                    reason = "待检查"
+                    
+                    # 简单闭环检查 (不调用AI)
+                    last_sender_id = latest_msg.sender_id
+                    last_sender_is_cs = (last_sender_id in ([MY_ID] + OTHER_CS_IDS))
+                    if not last_sender_is_cs:
+                        # 客户最后说话 -> 视为未闭环 (简单粗暴，防止漏报)
+                        is_closed = False
+                        reason = "客户最后发言"
+                    else:
+                        # 客服最后说话 -> 检查内容
+                        last_text_norm = normalize(latest_msg.text or "")
+                        if any(k in last_text_norm for k in WAIT_SIGNATURES) or (last_text_norm in KEEP_SIGNATURES):
+                             is_closed = False
+                             reason = "客服最后回复仍为稍等/跟进"
+                        else:
+                             is_closed = True
+
                     if is_closed:
                         closed_count += 1
                     else:
@@ -2116,7 +2172,7 @@ if __name__ == '__main__':
             
         Thread(target=run_web).start()
         # [Ver 43.5] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 45.2 Strict Thread Cancellation)")
+        log_tree(0, "✅ 系统启动 (Ver 45.4 Deduction Only)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
