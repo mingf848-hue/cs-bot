@@ -2121,7 +2121,8 @@ if __name__ == '__main__':
             
         # [New Feature] 挂载关键词监控模块 -- 确保这一段只出现一次
         if init_monitor:
-            init_monitor(client, OTHER_CS_IDS, CS_NAME_PREFIXES)
+        # 注意：这里多传了一个 app 参数
+        init_monitor(client, app, OTHER_CS_IDS, CS_NAME_PREFIXES)
             
         # 启动 Web 服务
         Thread(target=run_web).start()
