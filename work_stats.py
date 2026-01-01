@@ -112,7 +112,7 @@ async def daily_scheduler(client):
     while True:
         try:
             now = datetime.now(BJ_TZ)
-            target_today = now.replace(hour=6, minute=10, second=0, microsecond=0)
+            target_today = now.replace(hour=6, minute=30, second=0, microsecond=0)
             target = target_today + timedelta(days=1) if now > target_today else target_today
             
             wait_seconds = (target - now).total_seconds()
