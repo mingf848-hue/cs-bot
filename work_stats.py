@@ -28,11 +28,11 @@ ALL_TARGET_GROUPS = list(PROMO_GROUPS | ASSIST_GROUPS)
 logger = logging.getLogger("BotLogger")
 
 # ==========================================
-# 兜底关键词 (如果连不上表格时使用)
+# 兜底关键词 (表格连不上时使用)
 # ==========================================
 FALLBACK_KEYWORDS = """稍等-an
 请稍等elk
-稍等～ys""" # 你可以在这里保留一些基础词
+稍等～ys""" 
 
 def normalize_text(text):
     if not text: return ""
@@ -41,28 +41,23 @@ def normalize_text(text):
 # ==========================================
 # 核心功能模块 (GAS 通信)
 # ==========================================
-
 def get_gas_url():
     return os.environ.get("GOOGLE_SCRIPT_URL")
 
-# 1. 从 GAS 获取关键词 (New!)
+# 1. 从 GAS 获取关键词
 def fetch_keywords_from_gas():
     url = get_gas_url()
     if not url: return None, "未配置 GOOGLE_SCRIPT_URL"
     
     try:
-        # 发送 action=get_keywords
         resp = requests.post(url, json={"action": "get_keywords"}, timeout=10, allow_redirects=True)
         if resp.status_code == 200:
             data = resp.json()
             if data.get("success"):
                 kw_list = data.get("keywords", [])
-                if kw_list:
-                    return kw_list, "获取成功"
-                else:
-                    return None, "表格返回了空列表"
-            else:
-                return None, f"GAS错误: {data.get('msg')}"
+                if kw_list: return kw_list, "获取成功"
+                else: return None, "表格返回空列表"
+            else: return None, f"GAS错误: {data.get('msg')}"
         return None, f"HTTP {resp.status_code}"
     except Exception as e:
         logger.error(f"Fetch KW Error: {e}")
@@ -83,7 +78,7 @@ def sync_data_via_script(day, stats_data):
     except Exception as e:
         return False, str(e)
 
-# 3. 静默扫描函数
+# 3. 静默扫描函数 (后台自动任务用)
 async def quiet_scan(client, start_time, end_time, keywords):
     stats = {kw: {'promo': 0, 'assist': 0} for kw in keywords}
     norm_map = [(kw, normalize_text(kw)) for kw in keywords]
@@ -106,39 +101,30 @@ async def quiet_scan(client, start_time, end_time, keywords):
             logger.error(f"AutoScan Error Group {chat_id}: {e}")
     return stats
 
-# 4. 每日定时调度器 (自动获取关键词版)
+# 4. 每日定时调度器
 async def daily_scheduler(client):
-    logger.info("⏰ 自动统计任务调度器已启动 (目标: 每天北京时间 00:05)")
+    logger.info("⏰ 自动统计任务调度器已启动 (目标: 每天北京时间 04:10)")
     while True:
         try:
             now = datetime.now(BJ_TZ)
-            target_today = now.replace(hour=6, minute=30, second=0, microsecond=0)
+            target_today = now.replace(hour=4, minute=10, second=0, microsecond=0)
             target = target_today + timedelta(days=1) if now > target_today else target_today
             
             wait_seconds = (target - now).total_seconds()
             logger.info(f"⏳ 下次执行: {target.strftime('%Y-%m-%d %H:%M:%S')}")
             await asyncio.sleep(wait_seconds)
             
-            # === 醒来后 ===
             logger.info("🤖 开始执行自动统计...")
             
-            # A. 尝试从表格获取最新关键词
-            logger.info("📡 正在从表格拉取最新关键词...")
+            # A. 自动拉取关键词
             online_kws, msg = fetch_keywords_from_gas()
-            
-            final_keywords = []
-            if online_kws:
-                logger.info(f"✅ 成功获取 {len(online_kws)} 个关键词")
-                final_keywords = online_kws
-            else:
-                logger.error(f"❌ 获取关键词失败 ({msg})，使用兜底列表")
-                final_keywords = [k.strip() for k in FALLBACK_KEYWORDS.splitlines() if k.strip()]
+            final_keywords = online_kws if online_kws else [k.strip() for k in FALLBACK_KEYWORDS.splitlines() if k.strip()]
             
             if not final_keywords:
-                logger.error("❌ 关键词列表为空，跳过本次统计")
+                logger.error("❌ 关键词为空，跳过")
                 continue
 
-            # B. 执行扫描
+            # B. 统计昨天的数据
             yesterday = datetime.now(BJ_TZ) - timedelta(days=1)
             day_str = str(yesterday.day)
             start = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -146,7 +132,7 @@ async def daily_scheduler(client):
             
             stats = await quiet_scan(client, start, end, final_keywords)
             
-            # C. 同步结果
+            # C. 自动同步
             logger.info(f"📊 同步 {yesterday.month}月{day_str}日 数据...")
             success, sync_msg = sync_data_via_script(day_str, stats)
             if success: logger.info(f"✅ 自动同步成功: {sync_msg}")
@@ -159,141 +145,300 @@ async def daily_scheduler(client):
             await asyncio.sleep(60)
 
 # ==========================================
-# 前端与路由
+# 前端 UI (Pro Version)
 # ==========================================
-
 STATS_HTML = """
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
-    <title>工作量统计 (云端同步版)</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="UTF-8">
+    <title>工作量统计 Pro</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
     <style>
-        body { font-family: -apple-system, sans-serif; background: #f0f2f5; padding: 20px; max-width: 900px; margin: 0 auto; color: #333; }
-        .card { background: white; padding: 25px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-        h1 { margin-top: 0; border-bottom: 2px solid #eee; padding-bottom: 15px; }
-        .submit-btn { background: #0088cc; color: white; border: none; padding: 12px 25px; border-radius: 6px; cursor: pointer; font-size: 16px; width: 100%; font-weight: bold; }
-        .sync-btn { background: #0f9d58; margin-bottom: 15px; }
-        textarea { width: 100%; height: 200px; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-family: monospace; }
-        input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; margin-bottom: 10px; }
-        #progress-bar { height: 10px; background: #4caf50; width: 0%; transition: width 0.3s; margin-top:10px; }
-        table { width: 100%; border-collapse: collapse; margin-top: 20px; display:none; }
-        td, th { border: 1px solid #ddd; padding: 8px; }
-        .col-promo { background: #e3f2fd; text-align: center; }
-        .col-assist { background: #fff3e0; text-align: center; }
-        .badge { background: #666; color: white; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
-        .status-tag { font-size: 12px; margin-bottom: 5px; display: inline-block; padding: 2px 8px; border-radius: 4px; }
-        .status-ok { background: #e8f5e9; color: #2e7d32; }
-        .status-err { background: #ffebee; color: #c62828; }
+        :root {
+            --primary: #007AFF;
+            --bg-body: #F5F7FA;
+            --bg-card: #FFFFFF;
+            --text-main: #1D1D1F;
+            --text-sub: #86868B;
+            --border: #E5E5EA;
+            --radius: 12px;
+            --shadow: 0 4px 20px rgba(0,0,0,0.04);
+            --success: #34C759;
+            --error: #FF3B30;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+            background-color: var(--bg-body);
+            color: var(--text-main);
+            margin: 0; padding: 20px;
+            display: flex; justify-content: center; min-height: 100vh;
+        }
+        .container {
+            width: 100%; max-width: 800px;
+            background: var(--bg-card); border-radius: var(--radius);
+            box-shadow: var(--shadow); padding: 40px;
+            height: fit-content;
+        }
+        header {
+            margin-bottom: 30px; border-bottom: 1px solid var(--border);
+            padding-bottom: 20px; display: flex; justify-content: space-between; align-items: center;
+        }
+        h1 { margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.5px; }
+        .status-badge {
+            font-size: 12px; color: var(--primary); background: rgba(0, 122, 255, 0.1);
+            padding: 4px 10px; border-radius: 20px; font-weight: 600;
+        }
+        .form-section { display: grid; gap: 24px; }
+        .input-group label {
+            display: block; font-size: 13px; font-weight: 600; color: var(--text-sub);
+            margin-bottom: 8px; text-transform: uppercase;
+        }
+        input[type="number"] {
+            width: 100%; padding: 14px; font-size: 16px;
+            border: 1px solid var(--border); border-radius: 8px; background: #FAFAFA;
+            box-sizing: border-box; font-weight: 500;
+        }
+        input:focus { background: #FFF; border-color: var(--primary); outline: none; }
+        
+        textarea.keywords-box {
+            width: 100%; height: 180px; padding: 14px;
+            font-family: "SF Mono", monospace; font-size: 13px; line-height: 1.5;
+            border: 1px solid var(--border); border-radius: 8px; background: #FAFAFA;
+            box-sizing: border-box; resize: vertical;
+        }
+        textarea:focus { background: #FFF; border-color: var(--primary); outline: none; }
+        
+        .helper-text { font-size: 12px; color: var(--text-sub); margin-top: 6px; }
+        .status-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; margin-bottom: 5px; }
+        .st-ok { background: #E8F5E9; color: #2E7D32; }
+        .st-err { background: #FFEBEE; color: #C62828; }
+
+        button.submit-btn {
+            width: 100%; padding: 16px; background: var(--text-main);
+            color: #FFF; border: none; border-radius: 8px;
+            font-size: 16px; font-weight: 600; cursor: pointer;
+            transition: opacity 0.2s; margin-top: 10px;
+        }
+        button:hover { opacity: 0.9; }
+        button:disabled { background: #CCC; cursor: not-allowed; }
+        
+        button.sync-btn {
+            background: var(--success); margin-top: 0; width: auto;
+            padding: 8px 16px; font-size: 14px;
+        }
+
+        #progress-wrapper {
+            margin-top: 24px; height: 4px; background: #F0F0F0;
+            border-radius: 2px; overflow: hidden; display: none;
+        }
+        #progress-bar { height: 100%; background: var(--primary); width: 0%; transition: width 0.3s; }
+        #progress-text { margin-top: 8px; font-size: 12px; color: var(--text-sub); text-align: center; display: none; }
+
+        #result-area { margin-top: 40px; animation: fadeIn 0.5s ease; display: none; }
+        .result-header {
+            display: flex; align-items: center; justify-content: space-between;
+            margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid var(--border);
+        }
+        .result-header h3 { margin: 0; font-size: 18px; font-weight: 600; }
+        
+        table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        th {
+            background: #F9F9F9; text-align: left; padding: 12px 16px;
+            font-weight: 600; color: var(--text-sub); border-bottom: 1px solid var(--border);
+        }
+        td { padding: 12px 16px; border-bottom: 1px solid var(--border); color: var(--text-main); }
+        .col-kw { font-family: "SF Mono", monospace; width: 40%; user-select: none; }
+        .col-promo { color: var(--primary); text-align: center; background: rgba(0,122,255,0.03); }
+        .col-assist { color: #FF9500; text-align: center; background: rgba(255,149,0,0.03); }
+        
+        .hint-box {
+            background: #F2F2F7; padding: 12px; border-radius: 8px;
+            font-size: 13px; color: var(--text-sub); margin-bottom: 20px;
+        }
+        .error-box {
+            background: #FFF2F2; color: #D12F2F; padding: 12px;
+            border-radius: 8px; font-size: 14px; margin-top: 20px; display: none;
+        }
+        #sync-status { font-size: 13px; margin-right: 10px; font-weight: 600; }
+
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
 <body>
-    <div class="card">
-        <h1>📊 工作量统计 <span class="badge">自动运行中</span></h1>
+    <div class="container">
+        <header>
+            <h1>工作量统计</h1>
+            <span class="status-badge">Pro Version</span>
+        </header>
         
-        <div>
-            <label>📅 手动补单 (输入日期号):</label>
-            <input type="number" id="dayInput" placeholder="例如: 6">
+        <div class="form-section">
+            <div class="input-group">
+                <label>统计日期 (默认为昨日)</label>
+                <input type="number" id="dayInput" placeholder="请输入日期..." min="1" max="31">
+                <div class="helper-text">已自动填入“昨天”的日期，可手动修改。</div>
+            </div>
+            
+            <div class="input-group">
+                <label>关键词配置</label>
+                {% if fetch_status %}
+                    <span class="status-tag st-ok">✅ 已从表格同步</span>
+                {% else %}
+                    <span class="status-tag st-err">⚠️ 使用本地缓存 ({{ fetch_msg }})</span>
+                {% endif %}
+                <textarea id="keywordsInput" class="keywords-box">{{ default_keywords }}</textarea>
+            </div>
+
+            <button onclick="startStats()" id="btnSubmit" class="submit-btn">开始统计</button>
         </div>
         
-        <div>
-            <label>📝 关键词列表:</label>
-            {% if fetch_status %}
-                <span class="status-tag status-ok">✅ 已从表格自动加载</span>
-            {% else %}
-                <span class="status-tag status-err">⚠️ 加载失败，使用本地缓存 ({{ fetch_msg }})</span>
-            {% endif %}
-            <textarea id="keywordsInput">{{ default_keywords }}</textarea>
-        </div>
-        
-        <button onclick="startStats()" id="btnSubmit" class="submit-btn" style="margin-top:10px">🚀 手动开始统计</button>
-        
-        <div id="progress-container" style="display:none; margin-top:10px;">
-            <div style="background:#eee; height:10px; border-radius:5px; overflow:hidden;"><div id="progress-bar"></div></div>
-            <div id="progress-text" style="text-align:center; font-size:12px; color:#666; margin-top:5px;"></div>
-        </div>
-        
-        <div id="result-area" style="display:none; margin-top:20px;">
-            <button onclick="syncToCloud()" id="btnSync" class="submit-btn sync-btn">☁️ 一键同步到表格</button>
-            <div id="sync-msg" style="text-align:center; font-weight:bold; margin-bottom:10px;"></div>
-            <table id="result-table">
-                <thead><tr><th>关键词</th><th class="col-promo">推广</th><th class="col-assist">协助</th></tr></thead>
-                <tbody id="result-body"></tbody>
-            </table>
+        <div id="progress-wrapper"><div id="progress-bar"></div></div>
+        <div id="progress-text">准备就绪...</div>
+        <div id="error-box" class="error-box"></div>
+
+        <div id="result-area">
+            <div class="result-header">
+                <h3 id="result-title">统计结果</h3>
+                <div style="display:flex; align-items:center">
+                    <span id="sync-status"></span>
+                    <button onclick="syncToCloud()" id="btnSync" class="submit-btn sync-btn">☁️ 同步到表格</button>
+                </div>
+            </div>
+            
+            <div class="hint-box">💡 确认数据无误后，点击上方“同步”按钮即可一键写入表格。</div>
+            
+            <div style="border: 1px solid var(--border); border-radius: 8px; overflow: hidden;">
+                <table id="result-table">
+                    <thead>
+                        <tr>
+                            <th>关键词</th>
+                            <th style="text-align:center">推广群</th>
+                            <th style="text-align:center">协助群</th>
+                        </tr>
+                    </thead>
+                    <tbody id="result-body"></tbody>
+                </table>
+            </div>
         </div>
     </div>
+
     <script>
-        let currentStats = null, currentDay = null;
+        let currentStats = null;
+        let currentDay = null;
+
+        window.onload = function() {
+            const now = new Date();
+            const yesterday = new Date(now);
+            yesterday.setDate(now.getDate() - 1);
+            const input = document.getElementById('dayInput');
+            if(input) input.value = yesterday.getDate();
+        };
+
         async function startStats() {
-            const day = document.getElementById('dayInput').value;
-            const kws = document.getElementById('keywordsInput').value;
-            if(!day || !kws) return alert("请填写日期和关键词");
+            const day = document.getElementById('dayInput').value.trim();
+            const keywords = document.getElementById('keywordsInput').value;
+            
+            if (!day || !keywords) { alert("请填写完整"); return; }
             currentDay = day;
-            
-            document.getElementById('btnSubmit').disabled = true;
-            document.getElementById('progress-container').style.display = 'block';
-            document.getElementById('result-area').style.display = 'none';
-            document.getElementById('result-body').innerHTML = '';
-            
-            const params = new URLSearchParams({day: day, keywords: kws});
-            const res = await fetch('/api/work_stats_stream?' + params);
-            const reader = res.body.getReader();
-            const decoder = new TextDecoder();
-            
-            while(true) {
-                const {value, done} = await reader.read();
-                if(done) break;
-                const chunks = decoder.decode(value, {stream:true}).split('\\n');
-                for(let chunk of chunks) {
-                    if(!chunk.trim()) continue;
-                    try {
-                        const data = JSON.parse(chunk);
-                        if(data.type === 'progress') {
-                            document.getElementById('progress-bar').style.width = data.percent + '%';
-                            document.getElementById('progress-text').innerText = data.msg;
-                        } else if(data.type === 'done') {
-                            currentStats = data.results;
-                            renderTable(data.results, kws);
-                            document.getElementById('progress-bar').style.width = '100%';
-                            document.getElementById('progress-text').innerText = '完成';
-                            document.getElementById('result-area').style.display = 'block';
-                        }
-                    } catch(e){}
-                }
-            }
-            document.getElementById('btnSubmit').disabled = false;
-        }
-        function renderTable(stats, kws) {
+
+            const btn = document.getElementById('btnSubmit');
+            const pWrap = document.getElementById('progress-wrapper');
+            const pBar = document.getElementById('progress-bar');
+            const pText = document.getElementById('progress-text');
+            const errBox = document.getElementById('error-box');
+            const resArea = document.getElementById('result-area');
             const tbody = document.getElementById('result-body');
-            kws.split('\\n').forEach(k => {
-                k = k.trim(); if(!k) return;
-                const row = document.createElement('tr');
-                const s = stats[k] || {promo:0, assist:0};
-                row.innerHTML = `<td>${k}</td><td class="col-promo">${s.promo}</td><td class="col-assist">${s.assist}</td>`;
-                tbody.appendChild(row);
-            });
-            document.getElementById('result-table').style.display = 'table';
+            const syncBtn = document.getElementById('btnSync');
+            const syncSt = document.getElementById('sync-status');
+
+            btn.disabled = true; btn.innerText = "统计中...";
+            pWrap.style.display = 'block'; pText.style.display = 'block'; pBar.style.width = '2%';
+            pText.innerText = '连接服务器...'; errBox.style.display = 'none';
+            resArea.style.display = 'none'; tbody.innerHTML = '';
+            syncSt.innerText = ''; syncBtn.disabled = false; syncBtn.innerText = "☁️ 同步到表格";
+
+            try {
+                const params = new URLSearchParams({day, keywords});
+                const response = await fetch('/api/work_stats_stream?' + params);
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    const lines = decoder.decode(value, {stream:true}).split('\\n');
+                    for (const line of lines) {
+                        if (!line.trim()) continue;
+                        try {
+                            const data = JSON.parse(line);
+                            if (data.type === 'progress') {
+                                pBar.style.width = data.percent + '%';
+                                pText.innerText = data.msg;
+                            } else if (data.type === 'done') {
+                                currentStats = data.results;
+                                renderTable(data.results, keywords);
+                                pBar.style.width = '100%';
+                                pText.innerText = '✨ 统计完成';
+                            } else if (data.type === 'error') throw new Error(data.msg);
+                        } catch (e) {}
+                    }
+                }
+            } catch (e) {
+                errBox.innerText = "❌ 错误: " + e.message; errBox.style.display = 'block';
+                pText.innerText = '失败'; pBar.style.backgroundColor = '#FF3B30';
+            } finally {
+                btn.disabled = false; btn.innerText = "开始统计";
+            }
         }
+
+        function renderTable(statsMap, rawKeywords) {
+            const tbody = document.getElementById('result-body');
+            const lines = rawKeywords.split('\\n');
+            let total = 0;
+            lines.forEach(line => {
+                const kw = line.trim(); if (!kw) return;
+                const data = statsMap[kw] || {promo: 0, assist: 0};
+                total += (data.promo + data.assist);
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td class="col-kw">${kw}</td><td class="col-promo">${data.promo}</td><td class="col-assist">${data.assist}</td>`;
+                tbody.appendChild(tr);
+            });
+            document.getElementById('result-area').style.display = 'block';
+            document.getElementById('result-title').innerText = `统计结果 (${total})`;
+        }
+
         async function syncToCloud() {
+            if (!currentStats || !currentDay) return;
             const btn = document.getElementById('btnSync');
-            const msg = document.getElementById('sync-msg');
-            btn.disabled = true; btn.innerText = "同步中..."; msg.innerText = "";
+            const st = document.getElementById('sync-status');
+            btn.disabled = true; btn.innerText = "同步中...";
+            
             try {
                 const res = await fetch('/api/sync_to_sheet', {
-                    method:'POST', headers:{'Content-Type':'application/json'},
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({day: currentDay, stats: currentStats})
                 });
                 const json = await res.json();
-                if(json.success) { msg.innerText = "✅ " + json.msg; msg.style.color = "green"; btn.innerText = "同步成功"; }
-                else { msg.innerText = "❌ " + json.msg; msg.style.color = "red"; btn.innerText = "重试"; btn.disabled = false; }
-            } catch(e) { msg.innerText = "❌ 网络错误"; btn.disabled = false; }
+                if (json.success) {
+                    st.style.color = '#34C759'; st.innerText = "✅ " + json.msg;
+                    btn.innerText = "已同步";
+                } else {
+                    st.style.color = '#FF3B30'; st.innerText = "❌ " + json.msg;
+                    btn.disabled = false; btn.innerText = "重试";
+                }
+            } catch (e) {
+                st.style.color = '#FF3B30'; st.innerText = "❌ 网络错误";
+                btn.disabled = false; btn.innerText = "重试";
+            }
         }
     </script>
 </body>
 </html>
 """
 
-# 手动扫描逻辑
+# ==========================================
+# 任务执行器 (流式进度)
+# ==========================================
 async def perform_scan(client, start_time, end_time, keywords, result_queue):
     try:
         stats = {kw: {'promo': 0, 'assist': 0} for kw in keywords}
@@ -305,8 +450,10 @@ async def perform_scan(client, start_time, end_time, keywords, result_queue):
         for idx, chat_id in enumerate(ALL_TARGET_GROUPS):
             percent = int((idx / total) * 100)
             result_queue.put(json.dumps({"type": "progress", "percent": percent, "msg": f"扫描中: {chat_id}"}))
+            
             category = 'promo' if chat_id in PROMO_GROUPS else 'assist' if chat_id in ASSIST_GROUPS else 'other'
             if category == 'other': continue
+
             try:
                 async for message in client.iter_messages(chat_id, offset_date=utc_end, reverse=False):
                     if message.date < utc_start: break
@@ -317,19 +464,23 @@ async def perform_scan(client, start_time, end_time, keywords, result_queue):
                             stats[orig][category] += 1
                             break 
             except: pass
+        
         result_queue.put(json.dumps({"type": "done", "results": stats}))
     except Exception as e:
         result_queue.put(json.dumps({"type": "error", "msg": str(e)}))
     finally:
         result_queue.put(None)
 
+# ==========================================
+# 路由初始化
+# ==========================================
 def init_stats_blueprint(app, client, bot_loop, _unused_args=None):
+    # 启动每日定时任务
     if bot_loop and client:
         bot_loop.create_task(daily_scheduler(client))
 
     @app.route('/tool/work_stats')
     def work_stats_view():
-        # 打开网页时，尝试去表格拉取最新词
         online_kws, msg = fetch_keywords_from_gas()
         if online_kws:
             kw_str = "\n".join(online_kws)
@@ -337,14 +488,13 @@ def init_stats_blueprint(app, client, bot_loop, _unused_args=None):
         else:
             kw_str = FALLBACK_KEYWORDS
             status = False
-            
         return render_template_string(STATS_HTML, default_keywords=kw_str, fetch_status=status, fetch_msg=msg)
 
     @app.route('/api/work_stats_stream')
     def work_stats_stream():
         day = request.args.get('day')
         kws = request.args.get('keywords', '')
-        if not day or not kws: return "Err", 400
+        if not day or not kws: return "Error", 400
         def generate():
             try:
                 now = datetime.now(BJ_TZ)
