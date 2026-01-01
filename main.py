@@ -2115,25 +2115,22 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         
-        # [Ver 43.5] 功能挂载
+        # [Ver 43.5] 功能挂载 (工作量统计) -- 确保这一段只出现一次
         if init_stats_blueprint:
             init_stats_blueprint(app, client, bot_loop, CS_GROUP_IDS)
             
-        Thread(target=run_web).start()
-        # [Ver 43.5] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 45.2 Strict Thread Cancellation)")
-        # [Ver 43.5] 功能挂载
-        if init_stats_blueprint:
-            init_stats_blueprint(app, client, bot_loop, CS_GROUP_IDS)
-            
-        # [New Feature] 挂载关键词监控模块
-        # 将 client 和主程序里的客服配置传过去
+        # [New Feature] 挂载关键词监控模块 -- 确保这一段只出现一次
         if init_monitor:
             init_monitor(client, OTHER_CS_IDS, CS_NAME_PREFIXES)
             
+        # 启动 Web 服务
         Thread(target=run_web).start()
+        
+        # [Ver 43.5] 启动日志更新
+        log_tree(0, "✅ 系统启动 (Ver 45.2 Strict Thread Cancellation)")
         client.start()
         client.run_until_disconnected()
+        
     except AuthKeyDuplicatedError:
         logger.critical("🚨 严重错误: SESSION_STRING 已失效！检测到多地登录冲突。")
         logger.critical("👉 请重新生成 SESSION_STRING 并更新环境变量。")
