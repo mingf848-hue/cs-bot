@@ -2115,14 +2115,14 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         
-        # [Ver 43.5] 功能挂载 (工作量统计) -- 确保这一段只出现一次
+        # [Ver 43.5] 功能挂载 (工作量统计)
         if init_stats_blueprint:
             init_stats_blueprint(app, client, bot_loop, CS_GROUP_IDS)
             
-        # [New Feature] 挂载关键词监控模块 -- 确保这一段只出现一次
+        # [New Feature] 挂载关键词监控模块 (请注意缩进！)
         if init_monitor:
-        # 注意：这里多传了一个 app 参数
-        init_monitor(client, app, OTHER_CS_IDS, CS_NAME_PREFIXES)
+            # ↓↓↓ 这一行必须比上面的 if 缩进 4 个空格 ↓↓↓
+            init_monitor(client, app, OTHER_CS_IDS, CS_NAME_PREFIXES)
             
         # 启动 Web 服务
         Thread(target=run_web).start()
