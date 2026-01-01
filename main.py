@@ -19,6 +19,11 @@ try:
     from work_stats import init_stats_blueprint
 except ImportError:
     init_stats_blueprint = None
+# [New] 引入独立监控模块
+try:
+    from monitor_responder import init_monitor
+except ImportError:
+    init_monitor = None
 
 # ==========================================
 # 模块 0: 北京时间树状日志系统
@@ -2117,6 +2122,16 @@ if __name__ == '__main__':
         Thread(target=run_web).start()
         # [Ver 43.5] 启动日志更新
         log_tree(0, "✅ 系统启动 (Ver 45.2 Strict Thread Cancellation)")
+        # [Ver 43.5] 功能挂载
+        if init_stats_blueprint:
+            init_stats_blueprint(app, client, bot_loop, CS_GROUP_IDS)
+            
+        # [New Feature] 挂载关键词监控模块
+        # 将 client 和主程序里的客服配置传过去
+        if init_monitor:
+            init_monitor(client, OTHER_CS_IDS, CS_NAME_PREFIXES)
+            
+        Thread(target=run_web).start()
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
