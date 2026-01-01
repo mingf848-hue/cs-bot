@@ -4,8 +4,7 @@ import time
 import random
 import json
 import os
-import uuid
-from flask import request, render_template_string, jsonify
+from flask import request, jsonify, Response # [Fix] 引入 Response，移除 render_template_string
 from telethon import events
 
 logger = logging.getLogger("BotLogger")
@@ -13,7 +12,6 @@ logger = logging.getLogger("BotLogger")
 CONFIG_FILE = "monitor_config_v2.json"
 
 # --- 默认配置结构 ---
-# 包含一条示例规则
 DEFAULT_CONFIG = {
     "enabled": True,
     "rules": [
@@ -22,8 +20,8 @@ DEFAULT_CONFIG = {
             "name": "示例规则-监控非客服",
             "groups": [-1002169616907],
             "keywords": ["对比上时段缺少"],
-            "sender_mode": "exclude",  # exclude(排除模式) 或 include(仅限模式)
-            "sender_prefixes": [],     # 这里留空，加载时会自动填充 main.py 里的客服前缀
+            "sender_mode": "exclude",
+            "sender_prefixes": [],
             "cooldown": 60,
             "replies": [
                 {"text": "请稍等ART", "min": 3, "max": 5},
@@ -35,7 +33,6 @@ DEFAULT_CONFIG = {
 
 # 全局状态
 current_config = DEFAULT_CONFIG.copy()
-# 记录每个规则的最后触发时间: { "rule_id": timestamp }
 rule_timers = {}
 
 # --- 配置管理 ---
@@ -45,17 +42,14 @@ def load_config(system_cs_prefixes):
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                 saved = json.load(f)
-                # 简单合并
                 if "rules" in saved:
                     current_config = saved
                 else:
-                    # 旧版本迁移或格式错误
                     logger.warning("⚠️ [Monitor] 检测到旧配置格式，正在重置为多规则模式")
                     current_config = DEFAULT_CONFIG.copy()
         else:
             current_config = DEFAULT_CONFIG.copy()
             
-        # 初始化：确保所有 exclude 模式的规则，如果前缀为空，则使用系统的客服前缀
         for rule in current_config["rules"]:
             if rule["sender_mode"] == "exclude" and not rule["sender_prefixes"]:
                 rule["sender_prefixes"] = list(system_cs_prefixes)
@@ -68,7 +62,6 @@ def load_config(system_cs_prefixes):
 def save_config(new_config):
     global current_config
     try:
-        # 简单清洗数据
         for rule in new_config.get("rules", []):
             rule["groups"] = [int(x) for x in rule["groups"]]
             rule["cooldown"] = int(rule["cooldown"])
@@ -85,7 +78,8 @@ def save_config(new_config):
         logger.error(f"❌ [Monitor] 保存失败: {e}")
         return False
 
-# --- Web UI (Vue.js CDN版, 单文件) ---
+# --- Web UI ---
+# [Fix] 纯 HTML 字符串，不经 Jinja2 解析
 SETTINGS_HTML = """
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -192,13 +186,11 @@ SETTINGS_HTML = """
             const config = reactive({ enabled: true, rules: [] });
             const toast = reactive({ show: false, msg: '' });
 
-            // 初始化加载
             fetch('/tool/monitor_settings_json').then(r=>r.json()).then(data => {
                 config.enabled = data.enabled;
                 config.rules = data.rules || [];
             });
 
-            // 辅助函数
             const groupsToString = (rule) => rule.groups.join('\\n');
             const stringToGroups = (e, rule) => { rule.groups = e.target.value.split('\\n').map(x=>x.trim()).filter(x=>x); };
             
@@ -253,108 +245,80 @@ SETTINGS_HTML = """
 # --- 核心逻辑 ---
 
 def check_rule_match(rule, event, other_cs_ids):
-    """判断单个规则是否命中"""
-    # 1. 群组检查
-    # 将 event.chat_id 转换为整数比较 (以防万一)
     if event.chat_id not in rule.get("groups", []):
         return False
     
-    # 2. 消息流 (Reply) 检查：根据需求，必须不是回复消息
     if event.is_reply:
         return False
         
-    # 3. 基础身份排除：如果是机器人自己发的，或者是其他已知客服发的(ID匹配)，直接跳过
-    # 注意：这里只排除 ID 明确是客服的。对于名字前缀的检查，由下面的 sender_mode 决定。
     if event.out or (event.sender_id in other_cs_ids):
         return False
 
-    # 4. 关键词检查
     text = event.text or ""
     keywords = rule.get("keywords", [])
     if not keywords or not any(kw in text for kw in keywords):
         return False
 
-    # 5. 发送人前缀检查 (核心逻辑变化)
     sender_mode = rule.get("sender_mode", "exclude")
     prefixes = rule.get("sender_prefixes", [])
-    
-    # 获取发送者名字
-    # 这里需要 await，但在同步函数里没法 await，所以 sender 对象需要在外部传进来
-    # 稍微重构一下调用逻辑，在 handler 里获取 sender
     sender_name = getattr(event.sender, 'first_name', '') or ''
-    
     match_prefix = any(sender_name.startswith(p) for p in prefixes)
     
     if sender_mode == "exclude":
-        # 排除模式：如果匹配了前缀（是客服），则【不】回复 -> return False
-        if match_prefix:
-            return False
+        if match_prefix: return False
     elif sender_mode == "include":
-        # 仅限模式：如果【没】匹配前缀（不是指定的人），则【不】回复 -> return False
-        if not match_prefix:
-            return False
+        if not match_prefix: return False
 
-    # 6. 冷却检查
     rule_id = rule.get("id", "unknown")
     last_time = rule_timers.get(rule_id, 0)
     now = time.time()
     cooldown = rule.get("cooldown", 60)
     
     if now - last_time < cooldown:
-        # 命中但冷却中
         return False
     
-    # 全部通过，更新冷却
     rule_timers[rule_id] = now
     return True
 
 # --- 初始化与挂载 ---
 
 def init_monitor(client, app, other_cs_ids, main_cs_prefixes):
-    # 1. 加载配置
     load_config(main_cs_prefixes)
 
-    # 2. 路由: 页面
+    # [Fix] 使用 Response 直接返回 HTML，避免 Jinja2 模板冲突
     @app.route('/tool/monitor_settings')
     def monitor_settings_page():
-        return render_template_string(SETTINGS_HTML)
+        return Response(SETTINGS_HTML, mimetype='text/html')
     
-    # 3. 路由: 获取 JSON 数据 (供 Vue 使用)
     @app.route('/tool/monitor_settings_json')
     def monitor_settings_json():
         return jsonify(current_config)
 
-    # 4. 路由: 保存 API
     @app.route('/api/monitor_settings', methods=['POST'])
     def update_monitor_settings():
         if save_config(request.json):
             return jsonify({"success": True})
         return jsonify({"success": False}), 500
 
-    # 5. 注册监听器
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
         if not current_config.get("enabled", True):
             return
             
-        # 预先获取 Sender，避免在循环里重复请求
         try:
             event.sender = await event.get_sender()
         except:
-            return # 无法获取发送者，跳过
+            return 
 
-        # 遍历所有规则
         for rule in current_config.get("rules", []):
             try:
                 if check_rule_match(rule, event, other_cs_ids):
                     logger.info(f"🔎 [Monitor] 规则 '{rule.get('name')}' 触发 | Group={event.chat_id} | User={event.sender_id}")
                     
-                    # 执行回复序列
                     for reply in rule.get("replies", []):
                         content = reply.get("text", "")
                         if not content: continue
                         
-                        # 随机延迟
                         min_d = reply.get("min", 1)
                         max_d = reply.get("max", 3)
                         delay = random.uniform(min_d, max_d)
@@ -362,8 +326,6 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes):
                         await asyncio.sleep(delay)
                         await event.reply(content)
                         
-                    # 一个消息只触发一条规则，防止冲突？
-                    # 建议 break，否则如果多条规则重叠，会发多次
                     break
             except Exception as e:
                 logger.error(f"❌ [Monitor] 规则执行错误: {e}")
