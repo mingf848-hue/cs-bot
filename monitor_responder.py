@@ -76,7 +76,7 @@ def save_config(new_config):
         logger.error(f"❌ [Monitor] 保存失败: {e}")
         return False
 
-# --- Web UI (修复 v-model 语法错误) ---
+# --- Web UI ---
 SETTINGS_HTML = """
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -134,8 +134,8 @@ SETTINGS_HTML = """
                 <textarea :value="groupsToString(rule)" @input="stringToGroups($event, rule)"></textarea>
             </div>
             <div class="form-group">
-                <label>触发关键词 (换行分隔)</label>
-                <textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')"></textarea>
+                <label>触发关键词 (留空则匹配所有消息)</label>
+                <textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')" placeholder="留空则匹配所有消息"></textarea>
             </div>
         </div>
 
@@ -186,7 +186,6 @@ SETTINGS_HTML = """
             const config = reactive({ enabled: true, rules: [] });
             const toast = reactive({ show: false, msg: '' });
 
-            // 获取后端数据
             fetch('/tool/monitor_settings_json')
                 .then(r => r.json())
                 .then(data => {
@@ -259,12 +258,16 @@ def check_rule_match(rule, event, other_cs_ids):
 
     text = event.text or ""
     keywords = rule.get("keywords", [])
-    if not keywords or not any(kw in text for kw in keywords):
-        return False
+    
+    # [Modify] 如果 keywords 列表不为空，则检查匹配
+    # 如果 keywords 为空，则视为“无限制”，直接跳过此检查
+    if keywords:
+        if not any(kw in text for kw in keywords):
+            return False
 
     sender_mode = rule.get("sender_mode", "exclude")
     prefixes = rule.get("sender_prefixes", [])
-    # 尝试安全获取 first_name
+    
     sender_name = ""
     if event.sender:
         sender_name = getattr(event.sender, 'first_name', '') or ''
@@ -310,7 +313,6 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes):
         if not current_config.get("enabled", True):
             return
         try:
-            # 必须 await get_sender 才能在 check_rule_match 中使用 event.sender
             event.sender = await event.get_sender()
         except:
             return 
