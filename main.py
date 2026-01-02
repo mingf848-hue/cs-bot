@@ -2119,10 +2119,10 @@ if __name__ == '__main__':
         if init_stats_blueprint:
             init_stats_blueprint(app, client, bot_loop, CS_GROUP_IDS)
             
-        # [New Feature] 挂载关键词监控模块 (请注意缩进！)
+        # [New Feature] 挂载关键词监控模块
         if init_monitor:
-            # ↓↓↓ 这一行必须比上面的 if 缩进 4 个空格 ↓↓↓
-            init_monitor(client, app, OTHER_CS_IDS, CS_NAME_PREFIXES)
+            # ↓↓↓↓↓ 注意这里最后多传了一个 handler ↓↓↓↓↓
+            init_monitor(client, app, OTHER_CS_IDS, CS_NAME_PREFIXES, handler)
             
         # 启动 Web 服务
         Thread(target=run_web).start()
