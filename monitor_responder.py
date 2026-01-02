@@ -29,7 +29,10 @@ DEFAULT_CONFIG = {
             "sender_mode": "exclude",
             "sender_prefixes": [],
             "cooldown": 60,
-            "replies": [{"text": "请稍等ART", "min": 3, "max": 5}]
+            "replies": [
+                {"type": "text", "text": "请稍等ART", "min": 3, "max": 5},
+                {"type": "forward", "forward_to": -100123456789, "min": 1, "max": 2}
+            ]
         }
     ]
 }
@@ -104,6 +107,8 @@ def save_config(new_config):
                 except: r["min"] = 1.0
                 try: r["max"] = float(r.get("max", 3.0))
                 except: r["max"] = 3.0
+                # 确保 type 字段存在
+                if "type" not in r: r["type"] = "text"
         
         if redis_client:
             try: redis_client.set(REDIS_KEY, json.dumps(new_config, ensure_ascii=False))
@@ -264,7 +269,7 @@ SETTINGS_HTML = """
                             <div class="flex items-center gap-2 text-xs font-bold text-slate-500 uppercase tracking-wider">
                                 <i class="fa-solid fa-bolt text-primary"></i> 执行流 (Timeline)
                             </div>
-                            <button @click="rule.replies.push({text:'', min:2, max:4})" class="text-[10px] bg-primary/10 text-primary px-2 py-1 rounded hover:bg-primary hover:text-white transition-colors">
+                            <button @click="rule.replies.push({type:'text', text:'', forward_to:'', min:2, max:4})" class="text-[10px] bg-primary/10 text-primary px-2 py-1 rounded hover:bg-primary hover:text-white transition-colors">
                                 + 添加步骤
                             </button>
                         </div>
@@ -289,7 +294,16 @@ SETTINGS_HTML = """
                                     
                                     <div class="flex-1 bg-white border border-slate-200 rounded-lg p-2 flex items-center gap-2 shadow-sm group-hover/item:border-primary/50 group-hover/item:shadow-md transition-all">
                                         <div class="w-1.5 h-1.5 rounded-full bg-primary flex-shrink-0"></div>
-                                        <input v-model="reply.text" class="flex-1 text-xs border-none p-0 focus:ring-0 text-slate-700 placeholder-slate-300" placeholder="发送回复内容...">
+                                        
+                                        <select v-model="reply.type" class="w-20 text-[10px] bg-slate-50 border-none rounded focus:ring-0 text-slate-500 py-1 cursor-pointer">
+                                            <option value="text">💬 回复</option>
+                                            <option value="forward">🔀 转发</option>
+                                        </select>
+
+                                        <input v-if="!reply.type || reply.type === 'text'" v-model="reply.text" class="flex-1 text-xs border-none p-0 focus:ring-0 text-slate-700 placeholder-slate-300" placeholder="发送回复内容...">
+                                        
+                                        <input v-else v-model="reply.forward_to" class="flex-1 text-xs border-none p-0 focus:ring-0 text-blue-600 font-mono placeholder-slate-300" placeholder="目标群组 ID (-100...)">
+
                                         <button @click="rule.replies.splice(rIndex, 1)" class="text-slate-300 hover:text-danger transition-colors px-1">
                                             <i class="fa-solid fa-xmark"></i>
                                         </button>
@@ -333,7 +347,16 @@ SETTINGS_HTML = """
             // Initialize
             fetch('/tool/monitor_settings_json')
                 .then(r => r.json())
-                .then(data => { config.enabled = data.enabled; config.rules = data.rules || []; });
+                .then(data => { 
+                    config.enabled = data.enabled; 
+                    // 数据迁移：确保所有 reply 都有 type 字段，防止 undefined
+                    config.rules = (data.rules || []).map(r => {
+                        if(r.replies) {
+                            r.replies = r.replies.map(rep => ({...rep, type: rep.type || 'text'}));
+                        }
+                        return r;
+                    });
+                });
 
             // Helpers
             const listToString = (list) => (list || []).join('\\n');
@@ -344,7 +367,7 @@ SETTINGS_HTML = """
                 config.rules.push({
                     name: 'New Rule #' + (config.rules.length + 1),
                     groups: [], keywords: [], sender_mode: 'exclude', sender_prefixes: [], cooldown: 60,
-                    replies: [{text: '', min: 2, max: 4}]
+                    replies: [{type:'text', text: '', min: 2, max: 4}]
                 });
             };
             
@@ -379,7 +402,6 @@ SETTINGS_HTML = """
 </html>
 """
 
-# [保留原有的后端逻辑，不做任何修改，确保稳定性]
 def analyze_message(rule, event, other_cs_ids, sender_name):
     if event.chat_id not in rule.get("groups", []): return False, "群组不符"
     if event.is_reply: return False, "是回复消息"
@@ -437,23 +459,42 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             try:
                 is_match, reason = analyze_message(rule, event, other_cs_ids, sender_name)
                 if is_match:
-                    logger.info(f"✅ [Monitor] 规则 '{rule.get('name')}' 触发! 开始回复...")
+                    logger.info(f"✅ [Monitor] 规则 '{rule.get('name')}' 触发! 开始执行流程...")
                     rule_id = rule.get("id", str(rule.get("groups")))
                     rule_timers[rule_id] = time.time()
                     
-                    for reply in rule.get("replies", []):
-                        content = reply.get("text", "")
-                        if not content: continue
-                        delay = random.uniform(reply.get("min", 1), reply.get("max", 3))
+                    for step in rule.get("replies", []):
+                        # 1. 随机延迟
+                        delay = random.uniform(step.get("min", 1), step.get("max", 3))
                         await asyncio.sleep(delay)
                         
-                        sent_msg = await event.reply(content)
-                        
-                        if global_main_handler:
-                            try:
-                                fake_event = events.NewMessage.Event(sent_msg)
-                                asyncio.create_task(global_main_handler(fake_event))
-                            except: pass
+                        # 2. 判断动作类型 (兼容旧配置，默认为 text)
+                        step_type = step.get("type", "text")
+
+                        if step_type == "forward":
+                            target = step.get("forward_to")
+                            if target:
+                                try:
+                                    target_id = int(str(target).strip())
+                                    # 转发核心逻辑
+                                    await client.forward_messages(target_id, event.message)
+                                    logger.info(f"➡️ [Monitor] 已将消息转发至 {target_id}")
+                                except Exception as e:
+                                    logger.error(f"❌ [Monitor] 消息转发失败: {e}")
+                                    
+                        else:
+                            # 默认为文本回复
+                            content = step.get("text", "")
+                            if not content: continue
+                            
+                            sent_msg = await event.reply(content)
+                            
+                            # 触发主程序的统计/回调逻辑
+                            if global_main_handler:
+                                try:
+                                    fake_event = events.NewMessage.Event(sent_msg)
+                                    asyncio.create_task(global_main_handler(fake_event))
+                                except: pass
                     break
             except Exception as e:
                 logger.error(f"❌ [Monitor] 规则执行错误: {e}")
