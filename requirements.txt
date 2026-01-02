@@ -2,3 +2,4 @@ telethon
 flask
 requests
 gunicorn
+redis
