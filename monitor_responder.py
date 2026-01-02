@@ -7,7 +7,7 @@ import os
 from flask import request, jsonify, Response
 from telethon import events
 
-# [New] 引入 Redis
+# 引入 Redis
 try:
     import redis
 except ImportError:
@@ -25,7 +25,7 @@ DEFAULT_CONFIG = {
         {
             "id": "default_rule",
             "name": "示例规则",
-            "groups": [-1002169616907],
+            "groups": [-1002169616907], # 默认只有一个群，注意检查这里！
             "keywords": ["对比上时段缺少"],
             "sender_mode": "exclude",
             "sender_prefixes": [],
@@ -81,8 +81,13 @@ def load_config(system_cs_prefixes):
     for rule in current_config["rules"]:
         if rule["sender_mode"] == "exclude" and not rule["sender_prefixes"]:
             rule["sender_prefixes"] = list(system_cs_prefixes)
-    
-    logger.info(f"✅ [Monitor] 配置就绪，共 {len(current_config['rules'])} 条规则")
+            
+    # 打印当前的规则摘要，方便调试
+    logger.info("-" * 30)
+    logger.info(f"✅ [Monitor] 配置加载完成，共 {len(current_config['rules'])} 条规则")
+    for i, rule in enumerate(current_config['rules']):
+        logger.info(f"   规则 {i+1}: {rule.get('name')} | 监控群: {rule.get('groups')}")
+    logger.info("-" * 30)
 
 def save_config(new_config):
     global current_config
@@ -223,23 +228,27 @@ SETTINGS_HTML = """
 </html>
 """
 
-# --- 调试版核心逻辑 ---
+# --- 强制显示所有日志的检查逻辑 ---
 def check_rule_match_debug(rule, event, other_cs_ids):
     rule_name = rule.get("name", "未命名")
+    target_groups = rule.get("groups", [])
+    
+    # [强制打印] 每次匹配规则时，都打印当前消息在哪，规则要求在哪
+    # 注意：这会产生很多日志，但能彻底解决疑问
     
     # 1. 群组检查
-    if event.chat_id not in rule.get("groups", []):
-        # 群组不匹配很常见，只在 debug 级别记录，避免刷屏
+    if event.chat_id not in target_groups:
+        # 这里改成了 INFO 级别，确保您能看到
+        logger.info(f"🔍 [Monitor] 规则 '{rule_name}' 忽略 -> 消息所在群 ({event.chat_id}) 不在规则列表 {target_groups}")
         return False, "群组不匹配"
     
-    # 2. 消息流检查 (最常见的原因)
+    # 2. 消息流检查
     if event.is_reply:
         logger.info(f"🚫 [Monitor] 规则 '{rule_name}' 跳过 -> 这是一条【回复消息】")
         return False, "是回复消息"
         
-    # 3. 基础身份排除 (Bot自己或其他客服ID)
-    if event.out:
-        return False, "Bot自己发送"
+    # 3. 基础身份排除
+    if event.out: return False, "Bot自己发送"
     if event.sender_id in other_cs_ids:
         logger.info(f"🚫 [Monitor] 规则 '{rule_name}' 跳过 -> 发送者ID在客服列表中 (ID={event.sender_id})")
         return False, "ID是客服"
@@ -249,34 +258,30 @@ def check_rule_match_debug(rule, event, other_cs_ids):
     keywords = rule.get("keywords", [])
     if keywords:
         if not any(kw in text for kw in keywords):
-            # 关键词不匹配也常见，Debug级别
+            logger.info(f"🔍 [Monitor] 规则 '{rule_name}' 忽略 -> 关键词不匹配")
             return False, "关键词不匹配"
 
-    # 5. 发送人前缀检查 (重点调试)
+    # 5. 发送人前缀检查
     sender_mode = rule.get("sender_mode", "exclude")
     prefixes = rule.get("sender_prefixes", [])
-    
     sender_name = ""
     if event.sender:
         sender_name = getattr(event.sender, 'first_name', '') or ''
         
     match_prefix = any(sender_name.startswith(p) for p in prefixes)
     
-    if sender_mode == "exclude":
-        if match_prefix:
-            logger.info(f"🚫 [Monitor] 规则 '{rule_name}' 跳过 -> 发送者前缀匹配排除名单 (Name={sender_name})")
-            return False, f"前缀排除: {sender_name}"
-    elif sender_mode == "include":
-        if not match_prefix:
-            logger.info(f"🚫 [Monitor] 规则 '{rule_name}' 跳过 -> 发送者前缀不在白名单 (Name={sender_name})")
-            return False, f"前缀非白名单: {sender_name}"
+    if sender_mode == "exclude" and match_prefix:
+        logger.info(f"🚫 [Monitor] 规则 '{rule_name}' 跳过 -> 前缀排除命中 ({sender_name})")
+        return False, "前缀排除"
+    elif sender_mode == "include" and not match_prefix:
+        logger.info(f"🚫 [Monitor] 规则 '{rule_name}' 跳过 -> 前缀不在白名单 ({sender_name})")
+        return False, "前缀非白名单"
 
     # 6. 冷却检查
-    rule_id = rule.get("id", str(rule.get("groups"))) # 简易ID
+    rule_id = rule.get("id", str(target_groups))
     last_time = rule_timers.get(rule_id, 0)
     now = time.time()
     cooldown = rule.get("cooldown", 60)
-    
     if now - last_time < cooldown:
         logger.info(f"⏳ [Monitor] 规则 '{rule_name}' 冷却中 (剩余 {int(cooldown - (now - last_time))}s)")
         return False, "冷却中"
@@ -301,36 +306,27 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes):
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if not current_config.get("enabled", True): return
+        # [强制打印] 收到任何消息，先吼一声
+        # 这样您就知道 Bot 到底有没有收到消息
+        # logger.info(f"📨 [Monitor] 收到消息: ChatID={event.chat_id} | User={event.sender_id}")
         
-        try:
-            event.sender = await event.get_sender()
+        if not current_config.get("enabled", True): return
+        try: event.sender = await event.get_sender()
         except: return 
 
-        # 遍历规则
         for rule in current_config.get("rules", []):
             try:
-                # 使用调试版检查函数
                 is_match, reason = check_rule_match_debug(rule, event, other_cs_ids)
-                
                 if is_match:
-                    logger.info(f"✅ [Monitor] 规则 '{rule.get('name')}' 触发! | Group={event.chat_id} | User={event.sender_id}")
+                    logger.info(f"✅ [Monitor] 规则 '{rule.get('name')}' 触发! 开始回复...")
                     for reply in rule.get("replies", []):
                         content = reply.get("text", "")
                         if not content: continue
-                        min_d = reply.get("min", 1); max_d = reply.get("max", 3)
-                        delay = random.uniform(min_d, max_d)
+                        delay = random.uniform(reply.get("min", 1), reply.get("max", 3))
                         await asyncio.sleep(delay)
                         await event.reply(content)
-                    break # 匹配一条后停止
-                else:
-                    # 如果群组匹配，但其他条件不匹配，打印一下原因（方便调试）
-                    if event.chat_id in rule.get("groups", []):
-                        # 过滤掉常见的"Bot自己发送"
-                        if reason != "Bot自己发送":
-                            logger.info(f"🔍 [Monitor] 规则 '{rule.get('name')}' 未触发 | 原因: {reason} | User={event.sender_id}")
-
+                    break
             except Exception as e:
                 logger.error(f"❌ [Monitor] 规则执行错误: {e}")
 
-    logger.info("🛠️ [Monitor] 调试模式已启动")
+    logger.info("🛠️ [Monitor] 强制日志调试模式已启动")
