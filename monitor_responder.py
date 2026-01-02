@@ -409,7 +409,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     init_redis_connection()
     load_config(main_cs_prefixes)
 
-    @app.route('/tool/monitor_settings')
+    @app.route('/zd')
     def monitor_settings_page(): return Response(SETTINGS_HTML, mimetype='text/html')
     @app.route('/tool/monitor_settings_json')
     def monitor_settings_json(): return jsonify(current_config)
