@@ -7,9 +7,16 @@ import os
 from flask import request, jsonify, Response
 from telethon import events
 
+# [New] 引入 Redis
+try:
+    import redis
+except ImportError:
+    redis = None
+
 logger = logging.getLogger("BotLogger")
 
 CONFIG_FILE = "monitor_config_v2.json"
+REDIS_KEY = "monitor_config"
 
 # --- 默认配置 ---
 DEFAULT_CONFIG = {
@@ -33,33 +40,71 @@ DEFAULT_CONFIG = {
 
 current_config = DEFAULT_CONFIG.copy()
 rule_timers = {}
+redis_client = None
 
-# --- 配置管理 ---
+# --- 初始化 Redis 连接 ---
+def init_redis_connection():
+    global redis_client
+    redis_url = os.environ.get("REDIS_URL") or os.environ.get("REDIS_PUBLIC_URL")
+    if redis and redis_url:
+        try:
+            # decode_responses=True 让 Redis 直接返回字符串而不是字节
+            redis_client = redis.from_url(redis_url, decode_responses=True)
+            logger.info("✅ [Monitor] Redis 数据库连接成功")
+        except Exception as e:
+            logger.error(f"❌ [Monitor] Redis 连接失败: {e}")
+            redis_client = None
+    else:
+        if not redis:
+            logger.warning("⚠️ [Monitor] 未安装 redis 库，仅使用本地文件存储")
+        elif not redis_url:
+            logger.warning("⚠️ [Monitor] 未检测到 REDIS_URL，仅使用本地文件存储")
+
+# --- 配置管理 (数据库 + 文件双备份) ---
 def load_config(system_cs_prefixes):
     global current_config
-    try:
-        if os.path.exists(CONFIG_FILE):
+    
+    loaded = False
+    
+    # 1. 优先尝试从 Redis 读取
+    if redis_client:
+        try:
+            data = redis_client.get(REDIS_KEY)
+            if data:
+                saved = json.loads(data)
+                if "rules" in saved:
+                    current_config = saved
+                    loaded = True
+                    logger.info("📥 [Monitor] 已从 Redis 数据库加载配置")
+        except Exception as e:
+            logger.error(f"❌ [Monitor] Redis 读取错误: {e}")
+
+    # 2. 如果 Redis 没数据或失败，尝试从本地文件读取
+    if not loaded and os.path.exists(CONFIG_FILE):
+        try:
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                 saved = json.load(f)
                 if "rules" in saved:
                     current_config = saved
-                else:
-                    current_config = DEFAULT_CONFIG.copy()
-        else:
-            current_config = DEFAULT_CONFIG.copy()
-            
-        for rule in current_config["rules"]:
-            if rule["sender_mode"] == "exclude" and not rule["sender_prefixes"]:
-                rule["sender_prefixes"] = list(system_cs_prefixes)
-                
-        logger.info(f"✅ [Monitor] 配置已加载，共 {len(current_config['rules'])} 条规则")
-    except Exception as e:
-        logger.error(f"❌ [Monitor] 加载配置失败: {e}")
+                    loaded = True
+                    logger.info("📂 [Monitor] 已从本地文件加载配置")
+        except Exception as e:
+            logger.error(f"❌ [Monitor] 本地文件加载失败: {e}")
+
+    if not loaded:
         current_config = DEFAULT_CONFIG.copy()
+
+    # 数据清洗：填充默认前缀
+    for rule in current_config["rules"]:
+        if rule["sender_mode"] == "exclude" and not rule["sender_prefixes"]:
+            rule["sender_prefixes"] = list(system_cs_prefixes)
+    
+    logger.info(f"✅ [Monitor] 配置就绪，共 {len(current_config['rules'])} 条规则")
 
 def save_config(new_config):
     global current_config
     try:
+        # 数据类型清洗
         for rule in new_config.get("rules", []):
             rule["groups"] = [int(x) for x in rule["groups"]]
             rule["cooldown"] = int(rule["cooldown"])
@@ -67,13 +112,22 @@ def save_config(new_config):
                 r["min"] = float(r["min"])
                 r["max"] = float(r["max"])
         
+        # 1. 保存到 Redis (持久化核心)
+        if redis_client:
+            try:
+                redis_client.set(REDIS_KEY, json.dumps(new_config, ensure_ascii=False))
+                logger.info("💾 [Monitor] 配置已保存到 Redis")
+            except Exception as e:
+                logger.error(f"❌ [Monitor] Redis 保存失败: {e}")
+
+        # 2. 保存到本地文件 (作为副本)
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(new_config, f, indent=4, ensure_ascii=False)
+        
         current_config = new_config
-        logger.info("💾 [Monitor] 配置已保存")
         return True
     except Exception as e:
-        logger.error(f"❌ [Monitor] 保存失败: {e}")
+        logger.error(f"❌ [Monitor] 保存流程失败: {e}")
         return False
 
 # --- Web UI ---
@@ -230,7 +284,7 @@ SETTINGS_HTML = """
                         body: JSON.stringify(config)
                     });
                     const j = await res.json();
-                    showToast(j.success ? "✅ 保存成功" : "❌ 保存失败");
+                    showToast(j.success ? "✅ 保存成功 (已同步至数据库)" : "❌ 保存失败");
                 } catch(e) { showToast("❌ 网络错误: " + e); }
             };
 
@@ -259,8 +313,7 @@ def check_rule_match(rule, event, other_cs_ids):
     text = event.text or ""
     keywords = rule.get("keywords", [])
     
-    # [Modify] 如果 keywords 列表不为空，则检查匹配
-    # 如果 keywords 为空，则视为“无限制”，直接跳过此检查
+    # 关键词逻辑：如果 keywords 列表不为空，则检查匹配；为空则跳过（匹配所有）
     if keywords:
         if not any(kw in text for kw in keywords):
             return False
@@ -292,7 +345,8 @@ def check_rule_match(rule, event, other_cs_ids):
 
 # --- 初始化与挂载 ---
 def init_monitor(client, app, other_cs_ids, main_cs_prefixes):
-    load_config(main_cs_prefixes)
+    init_redis_connection() # 连接数据库
+    load_config(main_cs_prefixes) # 加载配置
 
     @app.route('/tool/monitor_settings')
     def monitor_settings_page():
@@ -333,4 +387,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes):
             except Exception as e:
                 logger.error(f"❌ [Monitor] 规则执行错误: {e}")
 
-    logger.info("🛠️ [Monitor v2] 多规则监控系统已启动")
+    logger.info("🛠️ [Monitor v2] 多规则监控系统已启动 (Redis支持)")
