@@ -25,16 +25,17 @@ DEFAULT_CONFIG = {
     "rules": [
         {
             "id": "default_rule",
-            "name": "催单监控规则",
+            "name": "催单规则",
             "groups": [-1002169616907],
             "keywords": [],
-            "regex": "(?=.*催)(?=.*5\\d{15})", # 默认填好，你可以在UI改
+            "regex": "(?=.*催)(?=.*5\\d{15})", 
+            "suffix": "ART",  # 新增后缀配置
             "sender_mode": "exclude",
             "sender_prefixes": [],
             "cooldown": 60,
             "replies": [
-                {"type": "text", "text": "请稍等ART", "min": 2, "max": 4},
-                {"type": "teams_webhook", "webhook_url": "", "min": 0, "max": 1}
+                {"type": "text", "text": "请稍等ART", "min": 2, "max": 3},
+                {"type": "teams_webhook", "webhook_url": "https://ntfy.sh/cs_help_vip_888", "min": 0, "max": 1}
             ]
         }
     ]
@@ -81,9 +82,9 @@ def load_config(system_cs_prefixes):
 
     if not loaded: current_config = DEFAULT_CONFIG.copy()
     
-    # 确保每个规则都有 regex 字段，防止旧配置报错
     for rule in current_config["rules"]:
         if "regex" not in rule: rule["regex"] = ""
+        if "suffix" not in rule: rule["suffix"] = "ART" # 确保有默认值
         if rule["sender_mode"] == "exclude" and not rule["sender_prefixes"]:
             rule["sender_prefixes"] = list(system_cs_prefixes)
 
@@ -107,9 +108,8 @@ def save_config(new_config):
             
             try: rule["cooldown"] = int(rule.get("cooldown", 60))
             except: rule["cooldown"] = 60
-            
-            # 确保保存 regex
             if "regex" not in rule: rule["regex"] = ""
+            if "suffix" not in rule: rule["suffix"] = "ART"
             
             for r in rule.get("replies", []):
                 try: r["min"] = float(r.get("min", 1.0))
@@ -133,7 +133,7 @@ def save_config(new_config):
         logger.error(f"❌ [Monitor] 保存失败: {e}")
         return False, str(e)
 
-# --- 核心 UI 代码 (Web 界面) ---
+# --- Web UI ---
 SETTINGS_HTML = """
 <!DOCTYPE html>
 <html lang="zh-CN" class="bg-slate-50">
@@ -184,9 +184,15 @@ SETTINGS_HTML = """
                                 <label class="text-[10px] text-slate-400 uppercase font-bold">关键词 (可选)</label>
                                 <textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')" class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs h-12" placeholder="关键词..."></textarea>
                              </div>
-                             <div class="relative">
-                                <label class="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1">高级正则 <span class="bg-purple-100 text-purple-600 px-1 rounded">Pro</span></label>
-                                <input v-model="rule.regex" class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-mono text-purple-600 focus:ring-primary focus:border-primary" placeholder="例如: (?=.*催)(?=.*5\d{15})">
+                             <div class="grid grid-cols-3 gap-2">
+                                <div class="col-span-2 relative">
+                                    <label class="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1">高级正则</label>
+                                    <input v-model="rule.regex" class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-mono text-purple-600 focus:ring-primary focus:border-primary" placeholder="例如: (?=.*催)(?=.*5\d{15})">
+                                </div>
+                                <div class="relative">
+                                    <label class="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1">信标后缀</label>
+                                    <input v-model="rule.suffix" class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-bold text-center text-primary focus:ring-primary focus:border-primary" placeholder="ART">
+                                </div>
                              </div>
                         </div>
                     </div>
@@ -231,15 +237,15 @@ SETTINGS_HTML = """
                 config.enabled = data.enabled; 
                 config.rules = (data.rules || []).map(r => {
                     if(r.replies) r.replies = r.replies.map(rep => ({...rep, type: rep.type || 'text', webhook_url: rep.webhook_url || ''}));
-                    // 确保 regex 字段存在
-                    r.regex = r.regex || ''; 
+                    r.regex = r.regex || '';
+                    r.suffix = r.suffix || 'ART'; // 默认值
                     return r;
                 });
             });
             const listToString = (list) => (list || []).join('\\n');
             const stringToList = (e, rule, key) => { rule[key] = e.target.value.split('\\n').map(x=>x.trim()).filter(x=>x); };
             const stringToIntList = (e, rule, key) => { rule[key] = e.target.value.split('\\n').map(x=>x.trim()).filter(x=>x); };
-            const addRule = () => { config.rules.push({ name: 'New Rule #' + (config.rules.length + 1), groups: [], keywords: [], regex: '', sender_mode: 'exclude', sender_prefixes: [], cooldown: 60, replies: [{type:'text', text: '', min: 2, max: 4}] }); };
+            const addRule = () => { config.rules.push({ name: 'New Rule #' + (config.rules.length + 1), groups: [], keywords: [], regex: '', suffix: 'ART', sender_mode: 'exclude', sender_prefixes: [], cooldown: 60, replies: [{type:'text', text: '', min: 2, max: 4}] }); };
             const removeRule = (index) => { if(confirm('确定删除?')) config.rules.splice(index, 1); };
             const saveConfig = async () => {
                 try {
@@ -258,7 +264,6 @@ SETTINGS_HTML = """
 """
 
 def analyze_message(rule, event, other_cs_ids, sender_name):
-    # 1. 基础检查
     if event.chat_id not in rule.get("groups", []): return False, "群组不符"
     if event.is_reply: return False, "是回复消息"
     if event.out: return False, "Bot自己发送"
@@ -266,23 +271,16 @@ def analyze_message(rule, event, other_cs_ids, sender_name):
     
     text = event.text or ""
     
-    # 2. 关键词检查 (OR 逻辑)
     keywords = rule.get("keywords", [])
     has_keyword = False
     if keywords:
-        if any(kw in text for kw in keywords):
-            has_keyword = True
-    else:
-        # 如果没填关键词，默认通过，交给正则去判断
-        has_keyword = True 
+        if any(kw in text for kw in keywords): has_keyword = True
+    else: has_keyword = True 
 
-    # 3. 高级正则检查 (AND 逻辑)
     regex_pattern = rule.get("regex", "")
     if regex_pattern:
         try:
-            if not re.search(regex_pattern, text, re.DOTALL):
-                return False, "正则不匹配"
-            # 如果正则匹配了，也算命中
+            if not re.search(regex_pattern, text, re.DOTALL): return False, "正则不匹配"
             has_keyword = True
         except Exception as e:
             logger.error(f"Regex Error: {e}")
@@ -290,14 +288,12 @@ def analyze_message(rule, event, other_cs_ids, sender_name):
             
     if not has_keyword: return False, "无匹配"
 
-    # 4. 发送者过滤
     sender_mode = rule.get("sender_mode", "exclude")
     prefixes = rule.get("sender_prefixes", [])
     match_prefix = any(sender_name.startswith(p) for p in prefixes)
     if sender_mode == "exclude" and match_prefix: return False, "前缀被排除"
     elif sender_mode == "include" and not match_prefix: return False, "前缀不在白名单"
     
-    # 5. 冷却时间
     rule_id = rule.get("id", str(rule.get("groups")))
     last_time = rule_timers.get(rule_id, 0)
     now = time.time()
@@ -322,40 +318,31 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         if success: return jsonify({"success": True})
         return jsonify({"success": False, "msg": msg}), 200
 
-    # === Automa 回复接收接口 ===
+    # === Automa 回复接口 ===
     @app.route('/api/teams_reply', methods=['POST'])
     def receive_teams_reply():
         try:
             data = request.json
             reply_text = data.get('text', '')
-            
             if reply_text and global_client:
-                # 默认转发给第一个规则的第一个群
-                # (为了简化逻辑，如果你有多个群，建议在 Automa 里不区分，直接发回来)
                 target_group = None
                 if current_config['rules'] and current_config['rules'][0]['groups']:
                     target_group = current_config['rules'][0]['groups'][0]
-                
                 if target_group:
                     logger.info(f"📨 [Teams回复] 转发: {reply_text} -> {target_group}")
                     async def send_back():
-                        await global_client.send_message(target_group, f"**[Teams 客服回复]**\n{reply_text}")
+                        await global_client.send_message(target_group, f"**[Teams 回复]**\n{reply_text}")
                     global_client.loop.create_task(send_back())
                     return jsonify({"status": "sent"}), 200
-            
             return jsonify({"status": "ignored"}), 200
-        except Exception as e:
-            logger.error(f"Teams Reply Error: {e}")
-            return jsonify({"status": "error"}), 500
+        except: return jsonify({"status": "error"}), 500
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
         if event.text == "/debug":
             await event.reply("Monitor Debug: Alive")
             return
-
         if not current_config.get("enabled", True): return
-        
         sender_name = ""
         try:
             event.sender = await event.get_sender()
@@ -366,64 +353,36 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             try:
                 is_match, reason = analyze_message(rule, event, other_cs_ids, sender_name)
                 if is_match:
-                    logger.info(f"✅ [Monitor] 规则 '{rule.get('name')}' 触发!")
+                    logger.info(f"✅ [Monitor] 规则触发!")
                     rule_id = rule.get("id", str(rule.get("groups")))
                     rule_timers[rule_id] = time.time()
                     
+                    # 获取配置的后缀，默认为 ART
+                    suffix = rule.get("suffix", "ART")
+
                     for step in rule.get("replies", []):
                         delay = random.uniform(step.get("min", 1), step.get("max", 3))
                         await asyncio.sleep(delay)
-                        
                         step_type = step.get("type", "text")
 
-                        if step_type == "forward":
-                            target = step.get("forward_to")
-                            if target:
-                                try:
-                                    target_id = int(str(target).strip())
-                                    await client.forward_messages(target_id, event.message)
-                                except Exception as e:
-                                    logger.error(f"❌ [Monitor] 转发失败: {e}")
-                                    
+                        if step_type == "text":
+                            # 注意：如果是回复TG用户，是否加后缀取决于你的需求，这里默认不改动用户填的内容
+                            # 如果用户填了 "请稍等ART"，那就是 "请稍等ART"
+                            await event.reply(step.get("text", ""))
                         elif step_type == "teams_webhook":
                             url = step.get("webhook_url")
                             if url and url.startswith("http"):
                                 try:
-                                    msg_text = event.text or "[媒体消息]"
-                                    # 构造 Ntfy 消息
-                                    chat_id_str = str(event.chat_id).replace("-100", "")
-                                    msg_link = f"https://t.me/c/{chat_id_str}/{event.id}"
+                                    msg_text = event.text or ""
+                                    # [核心逻辑] 自动加上配置的后缀
+                                    content_str = f"{msg_text} {suffix}"
                                     
-                                    # === 核心逻辑：自动加 ART 后缀 ===
-                                    # 这样 Automa 才能识别出这是机器人发的，不会死循环抓取
-                                    content_str = f"🔔 {rule.get('name')}\nUser: {sender_name}\n{msg_text}\n{msg_link} ART"
-                                    
-                                    # 如果是 ntfy，发送纯文本
                                     if "ntfy.sh" in url:
                                         requests.post(url, data=content_str.encode('utf-8'), timeout=5)
-                                        logger.info(f"📢 [Monitor] 已推送到 Ntfy (带ART后缀)")
                                     else:
-                                        # 兼容普通 Teams Webhook
-                                        payload = {
-                                            "title": f"🔔 监控触发: {rule.get('name')}",
-                                            "text": f"**发送者:** {sender_name}\n\n**内容:** {msg_text}\n\n[点击跳转]({msg_link}) ART"
-                                        }
-                                        requests.post(url, json=payload, timeout=5)
-                                        logger.info(f"📢 [Monitor] 已推送到 Teams")
-                                except Exception as e:
-                                    logger.error(f"❌ [Monitor] Webhook 异常: {e}")
-                                    
-                        else:
-                            content = step.get("text", "")
-                            if not content: continue
-                            sent_msg = await event.reply(content)
-                            if global_main_handler:
-                                try:
-                                    fake_event = events.NewMessage.Event(sent_msg)
-                                    asyncio.create_task(global_main_handler(fake_event))
+                                        requests.post(url, json={"text": content_str}, timeout=5)
+                                    logger.info(f"📢 已推送到 Teams/Ntfy")
                                 except: pass
                     break
-            except Exception as e:
-                logger.error(f"❌ [Monitor] 规则错误: {e}")
-
-    logger.info("🛠️ [Monitor] Ultimate UI 已启动")
+            except: pass
+    logger.info("🛠️ [Monitor] Ultimate UI Ready")
