@@ -76,7 +76,7 @@ def save_config(new_config):
         logger.error(f"❌ [Monitor] 保存失败: {e}")
         return False
 
-# --- Web UI (已更换国内CDN) ---
+# --- Web UI (修复 v-model 语法错误) ---
 SETTINGS_HTML = """
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -131,11 +131,11 @@ SETTINGS_HTML = """
         <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 20px;">
             <div class="form-group">
                 <label>监控群组 ID (换行分隔)</label>
-                <textarea v-model="groupsToString(rule)" @input="stringToGroups($event, rule)"></textarea>
+                <textarea :value="groupsToString(rule)" @input="stringToGroups($event, rule)"></textarea>
             </div>
             <div class="form-group">
                 <label>触发关键词 (换行分隔)</label>
-                <textarea v-model="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')"></textarea>
+                <textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')"></textarea>
             </div>
         </div>
 
@@ -149,7 +149,7 @@ SETTINGS_HTML = """
             </div>
             <div class="form-group">
                 <label>前缀列表 (换行分隔)</label>
-                <textarea v-model="listToString(rule.sender_prefixes)" @input="stringToList($event, rule, 'sender_prefixes')" placeholder="留空则应用默认值"></textarea>
+                <textarea :value="listToString(rule.sender_prefixes)" @input="stringToList($event, rule, 'sender_prefixes')" placeholder="留空则应用默认值"></textarea>
             </div>
             <div class="form-group">
                 <label>规则冷却时间 (秒)</label>
@@ -264,7 +264,11 @@ def check_rule_match(rule, event, other_cs_ids):
 
     sender_mode = rule.get("sender_mode", "exclude")
     prefixes = rule.get("sender_prefixes", [])
-    sender_name = getattr(event.sender, 'first_name', '') or ''
+    # 尝试安全获取 first_name
+    sender_name = ""
+    if event.sender:
+        sender_name = getattr(event.sender, 'first_name', '') or ''
+        
     match_prefix = any(sender_name.startswith(p) for p in prefixes)
     
     if sender_mode == "exclude":
@@ -287,7 +291,6 @@ def check_rule_match(rule, event, other_cs_ids):
 def init_monitor(client, app, other_cs_ids, main_cs_prefixes):
     load_config(main_cs_prefixes)
 
-    # 返回纯HTML，无需模板解析
     @app.route('/tool/monitor_settings')
     def monitor_settings_page():
         return Response(SETTINGS_HTML, mimetype='text/html')
@@ -307,6 +310,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes):
         if not current_config.get("enabled", True):
             return
         try:
+            # 必须 await get_sender 才能在 check_rule_match 中使用 event.sender
             event.sender = await event.get_sender()
         except:
             return 
