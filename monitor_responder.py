@@ -75,7 +75,6 @@ def load_config(system_cs_prefixes):
 
     if not loaded: current_config = DEFAULT_CONFIG.copy()
     
-    # 填充默认前缀
     for rule in current_config["rules"]:
         if rule["sender_mode"] == "exclude" and not rule["sender_prefixes"]:
             rule["sender_prefixes"] = list(system_cs_prefixes)
@@ -120,211 +119,278 @@ def save_config(new_config):
         logger.error(f"❌ [Monitor] 保存失败: {e}")
         return False, str(e)
 
-# --- Web UI (RPA 风格重构) ---
+# --- Web UI (Professional SaaS Style) ---
 SETTINGS_HTML = """
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>自动化响应流 | AutoResponder</title>
+    <title>AutoResponder Dashboard</title>
     <script src="https://cdn.staticfile.net/vue/3.3.4/vue.global.prod.min.js"></script>
     <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
     <style>
         :root {
-            --primary: #4F46E5; /* Indigo */
-            --primary-hover: #4338ca;
-            --bg-page: #F3F4F6;
+            --primary: #000000; /* Vercel Black */
+            --primary-hover: #333333;
+            --accent: #0070f3; /* Azure Blue */
+            --bg-page: #FAFAFA;
             --bg-card: #FFFFFF;
-            --text-main: #1F2937;
-            --text-sub: #6B7280;
-            --border: #E5E7EB;
-            --success: #10B981;
-            --danger: #EF4444;
-            --line-color: #E0E7FF;
+            --text-main: #171717;
+            --text-sub: #666666;
+            --border: #EAEAEA;
+            --border-hover: #999;
+            --danger: #E00;
+            --success: #0070f3;
+            --shadow-card: 0 5px 10px rgba(0,0,0,0.04);
+            --shadow-hover: 0 8px 30px rgba(0,0,0,0.08);
+            --radius: 8px;
         }
-        body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg-page); color: var(--text-main); margin: 0; padding: 20px; line-height: 1.5; }
         
-        /* Layout */
-        .container { max-width: 900px; margin: 0 auto; }
-        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; background: var(--bg-card); padding: 15px 25px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-        .header h2 { margin: 0; font-size: 1.25rem; color: var(--text-main); display: flex; align-items: center; gap: 10px; }
-        .logo-icon { color: var(--primary); font-size: 1.5rem; }
-
-        /* Buttons */
-        .btn { padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; font-size: 0.9rem; display: inline-flex; align-items: center; gap: 6px; }
-        .btn-primary { background: var(--primary); color: white; box-shadow: 0 4px 6px -1px rgba(79, 70, 229, 0.2); }
-        .btn-primary:hover { background: var(--primary-hover); transform: translateY(-1px); }
-        .btn-outline { background: white; border: 1px solid var(--border); color: var(--text-sub); }
-        .btn-outline:hover { border-color: var(--primary); color: var(--primary); }
-        .btn-danger-ghost { background: transparent; color: var(--danger); padding: 6px; }
-        .btn-danger-ghost:hover { background: #FEF2F2; border-radius: 6px; }
-        .btn-add { width: 100%; justify-content: center; padding: 15px; border: 2px dashed #CBD5E1; color: #64748B; background: transparent; }
-        .btn-add:hover { border-color: var(--primary); color: var(--primary); background: #EEF2FF; }
-
-        /* Switch */
-        .switch { position: relative; display: inline-block; width: 44px; height: 24px; }
-        .switch input { opacity: 0; width: 0; height: 0; }
-        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .4s; border-radius: 34px; }
-        .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }
-        input:checked + .slider { background-color: var(--success); }
-        input:checked + .slider:before { transform: translateX(20px); }
-
-        /* Rule Card (RPA Flow Style) */
-        .rpa-card { background: var(--bg-card); border-radius: 16px; margin-bottom: 24px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); overflow: hidden; position: relative; border-left: 5px solid var(--primary); }
-        .card-header { padding: 15px 25px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; background: #FAFAFA; }
-        .card-title-input { border: none; background: transparent; font-size: 1rem; font-weight: 700; color: var(--text-main); width: 200px; }
-        .card-title-input:focus { outline: none; border-bottom: 2px solid var(--primary); }
-
-        .flow-container { padding: 25px; position: relative; }
+        * { box-sizing: border-box; }
         
-        /* The Connector Line */
-        .flow-line { position: absolute; left: 45px; top: 20px; bottom: 20px; width: 2px; background: var(--line-color); z-index: 0; }
-
-        /* Flow Steps */
-        .step-block { display: flex; gap: 20px; margin-bottom: 25px; position: relative; z-index: 1; }
-        .step-icon { width: 40px; height: 40px; background: white; border: 2px solid var(--line-color); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.1rem; color: var(--text-sub); flex-shrink: 0; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-        .step-content { flex-grow: 1; background: #F8FAFC; border-radius: 12px; padding: 20px; border: 1px solid var(--border); }
+        body { 
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; 
+            background: var(--bg-page); 
+            color: var(--text-main); 
+            margin: 0; 
+            padding-top: 80px; /* Space for fixed header */
+            font-size: 14px;
+            -webkit-font-smoothing: antialiased;
+        }
         
-        .step-block.trigger .step-icon { color: #D946EF; border-color: #D946EF; background: #FDF4FF; }
-        .step-block.filter .step-icon { color: #F59E0B; border-color: #F59E0B; background: #FFFBEB; }
-        .step-block.action .step-icon { color: var(--primary); border-color: var(--primary); background: #EEF2FF; }
-
-        /* Form Elements */
-        .form-label { display: block; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-sub); margin-bottom: 8px; }
-        .input-area { width: 100%; border: 1px solid #D1D5DB; border-radius: 8px; padding: 10px; font-family: monospace; font-size: 0.9rem; resize: vertical; box-sizing: border-box; transition: border 0.2s; }
-        .input-area:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1); }
-        .input-row { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
-        select { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #D1D5DB; background: white; }
-
-        /* Action Timeline */
-        .action-timeline { display: flex; flex-direction: column; gap: 10px; }
-        .reply-node { display: flex; align-items: center; gap: 10px; background: white; padding: 10px 15px; border-radius: 8px; border: 1px solid var(--border); box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
-        .node-delay { display: flex; align-items: center; gap: 5px; background: #F3F4F6; padding: 5px 10px; border-radius: 6px; font-size: 0.85rem; color: #4B5563; white-space: nowrap; }
-        .node-delay input { width: 40px; border: none; background: transparent; text-align: center; font-weight: bold; border-bottom: 1px dashed #9CA3AF; }
-        .node-text { flex-grow: 1; }
-        .node-text input { width: 100%; border: none; outline: none; font-size: 0.95rem; }
-
-        .toast { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); background: rgba(17, 24, 39, 0.9); color: white; padding: 12px 24px; border-radius: 30px; font-weight: 500; opacity: 0; transition: 0.3s; pointer-events: none; z-index: 999; display: flex; align-items: center; gap: 8px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
-        .toast.show { opacity: 1; transform: translateX(-50%) translateY(-10px); }
+        /* Fixed Header with Blur */
+        .navbar {
+            position: fixed; top: 0; left: 0; right: 0; height: 64px;
+            background: rgba(255, 255, 255, 0.8); backdrop-filter: saturate(180%) blur(12px);
+            border-bottom: 1px solid var(--border); z-index: 100;
+            display: flex; justify-content: center;
+        }
+        .nav-content {
+            width: 100%; max-width: 1200px; padding: 0 24px;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .brand { font-weight: 700; font-size: 18px; display: flex; align-items: center; gap: 10px; letter-spacing: -0.5px; }
+        .brand-icon { width: 24px; height: 24px; background: var(--text-main); border-radius: 6px; display:flex; align-items:center; justify-content:center; color:white; font-size:14px; }
+        
+        .nav-actions { display: flex; align-items: center; gap: 16px; }
+        
+        /* Main Container */
+        .container { max-width: 1200px; margin: 0 auto; padding: 0 24px 40px; }
+        
+        /* Switch Component */
+        .toggle-switch { display: flex; align-items: center; gap: 8px; font-weight: 500; font-size: 13px; color: var(--text-sub); cursor: pointer; }
+        .switch-base { 
+            width: 36px; height: 20px; background: #EAEAEA; border-radius: 20px; 
+            position: relative; transition: 0.3s; 
+        }
+        .switch-base::after {
+            content: ''; position: absolute; left: 2px; top: 2px; width: 16px; height: 16px; 
+            background: white; border-radius: 50%; box-shadow: 0 1px 2px rgba(0,0,0,0.1); 
+            transition: 0.3s;
+        }
+        input:checked + .switch-base { background: var(--success); }
+        input:checked + .switch-base::after { transform: translateX(16px); }
+        
+        /* Button Styles */
+        .btn {
+            height: 36px; padding: 0 16px; border-radius: 6px; font-weight: 500; font-size: 13px;
+            cursor: pointer; border: 1px solid transparent; transition: all 0.2s;
+            display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+        }
+        .btn-primary { background: var(--text-main); color: white; border-color: var(--text-main); }
+        .btn-primary:hover { background: #333; }
+        .btn-outline { background: white; border-color: var(--border); color: var(--text-main); }
+        .btn-outline:hover { border-color: var(--text-main); }
+        .btn-danger-ghost { background: transparent; color: #999; width: 32px; padding:0; }
+        .btn-danger-ghost:hover { color: var(--danger); background: #FFF0F0; }
+        
+        /* Grid Layout */
+        .grid-layout {
+            display: grid; 
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); 
+            gap: 24px;
+        }
+        
+        /* Card Component */
+        .card {
+            background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+            box-shadow: var(--shadow-card); transition: all 0.3s ease;
+            display: flex; flex-direction: column; overflow: hidden;
+        }
+        .card:hover { box-shadow: var(--shadow-hover); border-color: #CCC; transform: translateY(-2px); }
+        
+        .card-header {
+            padding: 16px; border-bottom: 1px solid var(--border); background: #FCFCFC;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .card-title-wrap { display: flex; align-items: center; gap: 8px; width: 100%; }
+        .status-dot { width: 8px; height: 8px; background: var(--success); border-radius: 50%; box-shadow: 0 0 0 2px rgba(0,112,243,0.2); }
+        .input-title { 
+            border: none; background: transparent; font-weight: 600; font-size: 14px; 
+            color: var(--text-main); width: 100%; padding: 4px 0;
+        }
+        .input-title:focus { outline: none; border-bottom: 1px solid var(--accent); }
+        
+        .card-body { padding: 20px; display: flex; flex-direction: column; gap: 20px; }
+        
+        /* Section Styling */
+        .section-label { 
+            font-size: 11px; font-weight: 600; text-transform: uppercase; color: #888; 
+            letter-spacing: 0.5px; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;
+        }
+        
+        /* Form Inputs */
+        .input-wrapper { position: relative; }
+        .form-input, .form-select, .form-textarea {
+            width: 100%; padding: 10px 12px; font-size: 13px; color: var(--text-main);
+            border: 1px solid var(--border); border-radius: 6px; background: #FFFFFF;
+            transition: all 0.2s; font-family: 'Inter', monospace;
+        }
+        .form-textarea { min-height: 70px; resize: vertical; line-height: 1.5; }
+        .form-input:focus, .form-select:focus, .form-textarea:focus {
+            outline: none; border-color: var(--text-main); ring: 2px rgba(0,0,0,0.05);
+        }
+        
+        /* Action Flow List */
+        .action-list { display: flex; flex-direction: column; gap: 10px; }
+        .action-item {
+            display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+            background: #FAFAFA; border: 1px solid var(--border); border-radius: 6px;
+        }
+        .delay-pill {
+            background: white; border: 1px solid var(--border); border-radius: 4px;
+            padding: 2px 6px; font-size: 11px; font-weight: 600; color: var(--text-sub);
+            display: flex; align-items: center; gap: 4px; white-space: nowrap; box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+        }
+        .delay-input { 
+            width: 24px; text-align: center; border: none; font-weight: 700; color: var(--text-main); 
+            border-bottom: 1px dashed #CCC; padding: 0;
+        }
+        .action-input { border: none; background: transparent; flex: 1; font-size: 13px; font-weight: 500; }
+        .action-input:focus { outline: none; }
+        
+        /* Add Card */
+        .card-add {
+            border: 2px dashed var(--border); background: transparent; box-shadow: none;
+            align-items: center; justify-content: center; min-height: 300px;
+            cursor: pointer; color: var(--text-sub); transition: 0.2s;
+        }
+        .card-add:hover { border-color: var(--text-sub); color: var(--text-main); background: #F5F5F5; }
+        
+        .toast {
+            position: fixed; bottom: 32px; right: 32px; background: var(--text-main); color: white;
+            padding: 12px 20px; border-radius: 6px; font-weight: 500; font-size: 14px;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); transform: translateY(100px); opacity: 0;
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1); z-index: 200;
+            display: flex; align-items: center; gap: 10px;
+        }
+        .toast.show { transform: translateY(0); opacity: 1; }
+        
+        /* Icons */
+        .icon-sm { font-size: 12px; }
     </style>
 </head>
 <body>
 <div id="app">
-    <div class="container">
-        <div class="header">
-            <h2><i class="fa-solid fa-bolt logo-icon"></i> 自动响应流配置</h2>
-            <div style="display:flex; gap: 20px; align-items:center">
-                <div style="display:flex; align-items:center; gap:8px;">
-                    <span style="font-size:0.9rem; font-weight:600; color:var(--text-sub)">功能总开关</span>
-                    <label class="switch">
-                        <input type="checkbox" v-model="config.enabled">
-                        <span class="slider"></span>
-                    </label>
-                </div>
+    <nav class="navbar">
+        <div class="nav-content">
+            <div class="brand">
+                <div class="brand-icon"><i class="fa-solid fa-bolt"></i></div>
+                <span>AutoResponse <span style="color:#999;font-weight:400">Pro</span></span>
+            </div>
+            
+            <div class="nav-actions">
+                <label class="toggle-switch">
+                    <input type="checkbox" v-model="config.enabled" hidden>
+                    <span class="switch-base"></span>
+                    <span>System {{ config.enabled ? 'ON' : 'OFF' }}</span>
+                </label>
+                <div style="width: 1px; height: 24px; background: var(--border);"></div>
                 <button class="btn btn-primary" @click="saveConfig">
-                    <i class="fa-solid fa-floppy-disk"></i> 保存配置
+                    <i class="fa-solid fa-floppy-disk"></i> Save Changes
                 </button>
             </div>
         </div>
+    </nav>
 
-        <div v-for="(rule, index) in config.rules" :key="index" class="rpa-card">
-            <div class="card-header">
-                <div style="display:flex; align-items:center; gap:10px;">
-                    <i class="fa-solid fa-hashtag" style="color:#CBD5E1"></i>
-                    <input v-model="rule.name" class="card-title-input" placeholder="规则名称...">
+    <div class="container">
+        <div class="grid-layout">
+            <div v-for="(rule, index) in config.rules" :key="index" class="card">
+                <div class="card-header">
+                    <div class="card-title-wrap">
+                        <div class="status-dot" title="Active"></div>
+                        <input v-model="rule.name" class="input-title" placeholder="Untitled Rule">
+                    </div>
+                    <button class="btn btn-danger-ghost" @click="removeRule(index)" title="Delete Rule">
+                        <i class="fa-regular fa-trash-can"></i>
+                    </button>
                 </div>
-                <button class="btn btn-danger-ghost" @click="removeRule(index)" title="删除此规则">
-                    <i class="fa-solid fa-trash"></i>
-                </button>
+                
+                <div class="card-body">
+                    <div>
+                        <div class="section-label"><i class="fa-solid fa-satellite-dish icon-sm"></i> 监听配置</div>
+                        <div style="display:grid; gap:12px">
+                            <textarea class="form-textarea" :value="listToString(rule.groups)" @input="stringToIntList($event, rule, 'groups')" placeholder="Target Group IDs (-100...)" style="height:60px"></textarea>
+                            <textarea class="form-textarea" :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')" placeholder="Keywords (Empty = All)" style="height:60px"></textarea>
+                        </div>
+                    </div>
+
+                    <div>
+                        <div class="section-label"><i class="fa-solid fa-filter icon-sm"></i> 过滤与限制</div>
+                        <div style="display:grid; grid-template-columns: 1.5fr 1fr; gap:12px; margin-bottom:12px;">
+                            <select v-model="rule.sender_mode" class="form-select">
+                                <option value="exclude">🚫 排除名单</option>
+                                <option value="include">✅ 白名单</option>
+                            </select>
+                            <div style="position:relative">
+                                <input type="number" v-model.number="rule.cooldown" class="form-input" style="padding-right:32px">
+                                <span style="position:absolute; right:10px; top:10px; font-size:11px; color:#999; pointer-events:none">sec</span>
+                            </div>
+                        </div>
+                        <textarea class="form-textarea" :value="listToString(rule.sender_prefixes)" @input="stringToList($event, rule, 'sender_prefixes')" placeholder="Prefixes (e.g. YY_)" style="height:50px"></textarea>
+                    </div>
+
+                    <div style="flex:1; display:flex; flex-direction:column;">
+                        <div class="section-label" style="justify-content:space-between">
+                            <span><i class="fa-solid fa-bolt icon-sm"></i> 执行流</span>
+                            <span @click="rule.replies.push({text:'', min:2, max:4})" style="cursor:pointer; color:var(--accent); font-size:11px">+ Add Step</span>
+                        </div>
+                        
+                        <div class="action-list">
+                            <div v-if="rule.replies.length === 0" style="text-align:center; padding:15px; color:#999; font-size:12px; background:#FAFAFA; border-radius:6px; border:1px dashed #DDD;">
+                                No actions defined
+                            </div>
+                            <div v-for="(reply, rIndex) in rule.replies" :key="rIndex" class="action-item">
+                                <div class="delay-pill">
+                                    <i class="fa-regular fa-clock icon-sm"></i>
+                                    <input v-model.number="reply.min" type="number" class="delay-input">
+                                    -
+                                    <input v-model.number="reply.max" type="number" class="delay-input">
+                                </div>
+                                <input v-model="reply.text" class="action-input" placeholder="Reply content...">
+                                <i class="fa-solid fa-xmark" style="color:#CCC; cursor:pointer; font-size:12px;" @click="rule.replies.splice(rIndex, 1)"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
 
-            <div class="flow-container">
-                <div class="flow-line"></div>
-
-                <div class="step-block trigger">
-                    <div class="step-icon"><i class="fa-solid fa-satellite-dish"></i></div>
-                    <div class="step-content">
-                        <div class="input-row">
-                            <div>
-                                <label class="form-label"><i class="fa-regular fa-comments"></i> 监控群组 (ID)</label>
-                                <textarea :value="listToString(rule.groups)" @input="stringToIntList($event, rule, 'groups')" class="input-area" style="height:80px" placeholder="-100xxxxxx (每行一个)"></textarea>
-                            </div>
-                            <div>
-                                <label class="form-label"><i class="fa-solid fa-key"></i> 触发关键词</label>
-                                <textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')" class="input-area" style="height:80px" placeholder="留空则匹配所有消息..."></textarea>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="step-block filter">
-                    <div class="step-icon"><i class="fa-solid fa-filter"></i></div>
-                    <div class="step-content">
-                        <div class="input-row">
-                            <div>
-                                <label class="form-label">发送人模式</label>
-                                <select v-model="rule.sender_mode">
-                                    <option value="exclude">🚫 黑名单 (排除这些前缀)</option>
-                                    <option value="include">✅ 白名单 (仅限这些前缀)</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label class="form-label">冷却时间 (全局CD)</label>
-                                <div style="position:relative">
-                                    <input type="number" v-model.number="rule.cooldown" class="input-area" style="padding-right:30px">
-                                    <span style="position:absolute; right:10px; top:10px; color:#9CA3AF; font-size:0.8rem">秒</span>
-                                </div>
-                            </div>
-                        </div>
-                        <div style="margin-top:15px">
-                            <label class="form-label">前缀列表</label>
-                            <textarea :value="listToString(rule.sender_prefixes)" @input="stringToList($event, rule, 'sender_prefixes')" class="input-area" style="height:60px" placeholder="例如: YY_ (每行一个)"></textarea>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="step-block action">
-                    <div class="step-icon"><i class="fa-solid fa-paper-plane"></i></div>
-                    <div class="step-content">
-                        <label class="form-label">执行回复流 (按顺序发送)</label>
-                        <div class="action-timeline">
-                            <div v-for="(reply, rIndex) in rule.replies" :key="rIndex" class="reply-node">
-                                <div class="node-delay" title="随机延迟范围">
-                                    <i class="fa-regular fa-clock"></i>
-                                    <input v-model.number="reply.min" type="number" step="0.1">
-                                    <span>-</span>
-                                    <input v-model.number="reply.max" type="number" step="0.1">
-                                    <span>s</span>
-                                </div>
-                                <div class="node-text">
-                                    <input v-model="reply.text" placeholder="请输入回复内容...">
-                                </div>
-                                <button class="btn btn-danger-ghost" @click="rule.replies.splice(rIndex, 1)">
-                                    <i class="fa-solid fa-xmark"></i>
-                                </button>
-                            </div>
-                            <button class="btn btn-outline" style="justify-content:center; border-style:dashed" @click="rule.replies.push({text:'', min:2, max:4})">
-                                <i class="fa-solid fa-plus"></i> 添加回复步骤
-                            </button>
-                        </div>
-                    </div>
-                </div>
-
+            <div class="card card-add" @click="addRule">
+                <i class="fa-solid fa-plus" style="font-size:24px; margin-bottom:12px; color:#DDD"></i>
+                <span style="font-weight:600">Create New Rule</span>
             </div>
         </div>
-
-        <button class="btn btn-add" @click="addRule">
-            <i class="fa-solid fa-circle-plus"></i> 添加新的响应规则
-        </button>
-
-        <div style="height:50px"></div>
     </div>
-    
+
     <div :class="['toast', toast.show ? 'show' : '']">
-        <i v-if="toast.type=='success'" class="fa-solid fa-check-circle" style="color:#34D399"></i>
-        <i v-else class="fa-solid fa-triangle-exclamation" style="color:#F87171"></i>
-        {{ toast.msg }}
+        <i v-if="toast.type==='success'" class="fa-solid fa-circle-check" style="color:#4ADE80"></i>
+        <i v-else class="fa-solid fa-circle-exclamation" style="color:#F87171"></i>
+        <span>{{ toast.msg }}</span>
     </div>
 </div>
 
@@ -335,24 +401,27 @@ SETTINGS_HTML = """
             const config = reactive({ enabled: true, rules: [] });
             const toast = reactive({ show: false, msg: '', type: 'success' });
 
+            // Initialize
             fetch('/tool/monitor_settings_json')
                 .then(r => r.json())
                 .then(data => { config.enabled = data.enabled; config.rules = data.rules || []; });
 
+            // Helpers
             const listToString = (list) => (list || []).join('\\n');
             const stringToList = (e, rule, key) => { rule[key] = e.target.value.split('\\n').map(x=>x.trim()).filter(x=>x); };
             const stringToIntList = (e, rule, key) => { rule[key] = e.target.value.split('\\n').map(x=>x.trim()).filter(x=>x); };
 
+            // Actions
             const addRule = () => {
                 config.rules.push({
-                    name: '新规则 #' + (config.rules.length + 1), 
+                    name: 'New Rule ' + (config.rules.length + 1),
                     groups: [], keywords: [], sender_mode: 'exclude', sender_prefixes: [], cooldown: 60,
                     replies: [{text: '', min: 2, max: 4}]
                 });
             };
             
             const removeRule = (index) => {
-                if(confirm('确定删除此规则吗？')) config.rules.splice(index, 1);
+                if(confirm('Are you sure you want to delete this rule?')) config.rules.splice(index, 1);
             };
 
             const saveConfig = async () => {
@@ -360,14 +429,18 @@ SETTINGS_HTML = """
                     const res = await fetch('/api/monitor_settings', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(config) });
                     const json = await res.json();
                     if (json.success) {
-                        toast.msg = "配置已保存并生效"; toast.type = 'success';
+                        showToast('Configuration saved successfully', 'success');
                     } else {
-                        toast.msg = "保存失败: " + (json.msg || "未知错误"); toast.type = 'error';
+                        showToast('Save failed: ' + json.msg, 'error');
                     }
                 } catch(e) {
-                    toast.msg = "网络错误，无法连接服务器"; toast.type = 'error';
+                    showToast('Network error occurred', 'error');
                 }
-                toast.show = true; setTimeout(()=>toast.show=false, 3000);
+            };
+
+            const showToast = (msg, type) => {
+                toast.msg = msg; toast.type = type; toast.show = true;
+                setTimeout(() => toast.show = false, 3000);
             };
 
             return { config, toast, listToString, stringToList, stringToIntList, addRule, removeRule, saveConfig };
@@ -420,7 +493,6 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
         if event.text == "/debug":
-            # 简易诊断
             await event.reply("Monitor Debug: Alive")
             return
 
@@ -448,15 +520,13 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                         
                         sent_msg = await event.reply(content)
                         
-                        # 联动主程序
                         if global_main_handler:
                             try:
                                 fake_event = events.NewMessage.Event(sent_msg)
                                 asyncio.create_task(global_main_handler(fake_event))
-                                logger.info(f"🔗 [Monitor] 联动汇报 Msg={sent_msg.id}")
                             except: pass
                     break
             except Exception as e:
                 logger.error(f"❌ [Monitor] 规则执行错误: {e}")
 
-    logger.info("🛠️ [Monitor] RPA UI版已启动")
+    logger.info("🛠️ [Monitor] SaaS Pro UI 已启动")
