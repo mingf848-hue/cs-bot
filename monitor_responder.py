@@ -185,9 +185,9 @@ SETTINGS_HTML = """
                           <span :class="config.enabled ? 'bg-success' : 'bg-slate-400'" class="relative inline-flex rounded-full h-2.5 w-2.5"></span>
                         </span>
                         <label class="text-xs font-semibold text-slate-600 cursor-pointer select-none">
-                            <input type="checkbox" v-model="config.enabled" class="hidden">
-                            System {{ config.enabled ? 'Online' : 'Offline' }}
-                        </label>
+    <input type="checkbox" v-model="config.enabled" @change="saveConfig" class="hidden">
+    System {{ config.enabled ? 'Online' : 'Offline' }}
+</label>
                     </div>
                     <button @click="saveConfig" class="bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all shadow-lg shadow-slate-900/20 flex items-center gap-2">
                         <i class="fa-solid fa-floppy-disk"></i> 保存配置
