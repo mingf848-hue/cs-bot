@@ -119,279 +119,208 @@ def save_config(new_config):
         logger.error(f"❌ [Monitor] 保存失败: {e}")
         return False, str(e)
 
-# --- Web UI (Professional SaaS Style) ---
+# --- Web UI (Tailwind CSS Professional) ---
 SETTINGS_HTML = """
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="bg-slate-50">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>AutoResponder Dashboard</title>
+    <title>AutoResponder Pro</title>
     <script src="https://cdn.staticfile.net/vue/3.3.4/vue.global.prod.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     
     <style>
-        :root {
-            --primary: #000000; /* Vercel Black */
-            --primary-hover: #333333;
-            --accent: #0070f3; /* Azure Blue */
-            --bg-page: #FAFAFA;
-            --bg-card: #FFFFFF;
-            --text-main: #171717;
-            --text-sub: #666666;
-            --border: #EAEAEA;
-            --border-hover: #999;
-            --danger: #E00;
-            --success: #0070f3;
-            --shadow-card: 0 5px 10px rgba(0,0,0,0.04);
-            --shadow-hover: 0 8px 30px rgba(0,0,0,0.08);
-            --radius: 8px;
-        }
+        body { font-family: 'Inter', sans-serif; }
+        /* 自定义滚动条 */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
         
-        * { box-sizing: border-box; }
+        /* 针对 Textarea 的微调 */
+        textarea { font-family: 'Menlo', 'Monaco', 'Courier New', monospace; font-size: 12px; }
         
-        body { 
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; 
-            background: var(--bg-page); 
-            color: var(--text-main); 
-            margin: 0; 
-            padding-top: 80px; /* Space for fixed header */
-            font-size: 14px;
-            -webkit-font-smoothing: antialiased;
-        }
-        
-        /* Fixed Header with Blur */
-        .navbar {
-            position: fixed; top: 0; left: 0; right: 0; height: 64px;
-            background: rgba(255, 255, 255, 0.8); backdrop-filter: saturate(180%) blur(12px);
-            border-bottom: 1px solid var(--border); z-index: 100;
-            display: flex; justify-content: center;
-        }
-        .nav-content {
-            width: 100%; max-width: 1200px; padding: 0 24px;
-            display: flex; justify-content: space-between; align-items: center;
-        }
-        .brand { font-weight: 700; font-size: 18px; display: flex; align-items: center; gap: 10px; letter-spacing: -0.5px; }
-        .brand-icon { width: 24px; height: 24px; background: var(--text-main); border-radius: 6px; display:flex; align-items:center; justify-content:center; color:white; font-size:14px; }
-        
-        .nav-actions { display: flex; align-items: center; gap: 16px; }
-        
-        /* Main Container */
-        .container { max-width: 1200px; margin: 0 auto; padding: 0 24px 40px; }
-        
-        /* Switch Component */
-        .toggle-switch { display: flex; align-items: center; gap: 8px; font-weight: 500; font-size: 13px; color: var(--text-sub); cursor: pointer; }
-        .switch-base { 
-            width: 36px; height: 20px; background: #EAEAEA; border-radius: 20px; 
-            position: relative; transition: 0.3s; 
-        }
-        .switch-base::after {
-            content: ''; position: absolute; left: 2px; top: 2px; width: 16px; height: 16px; 
-            background: white; border-radius: 50%; box-shadow: 0 1px 2px rgba(0,0,0,0.1); 
-            transition: 0.3s;
-        }
-        input:checked + .switch-base { background: var(--success); }
-        input:checked + .switch-base::after { transform: translateX(16px); }
-        
-        /* Button Styles */
-        .btn {
-            height: 36px; padding: 0 16px; border-radius: 6px; font-weight: 500; font-size: 13px;
-            cursor: pointer; border: 1px solid transparent; transition: all 0.2s;
-            display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-        }
-        .btn-primary { background: var(--text-main); color: white; border-color: var(--text-main); }
-        .btn-primary:hover { background: #333; }
-        .btn-outline { background: white; border-color: var(--border); color: var(--text-main); }
-        .btn-outline:hover { border-color: var(--text-main); }
-        .btn-danger-ghost { background: transparent; color: #999; width: 32px; padding:0; }
-        .btn-danger-ghost:hover { color: var(--danger); background: #FFF0F0; }
-        
-        /* Grid Layout */
-        .grid-layout {
-            display: grid; 
-            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); 
-            gap: 24px;
-        }
-        
-        /* Card Component */
-        .card {
-            background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
-            box-shadow: var(--shadow-card); transition: all 0.3s ease;
-            display: flex; flex-direction: column; overflow: hidden;
-        }
-        .card:hover { box-shadow: var(--shadow-hover); border-color: #CCC; transform: translateY(-2px); }
-        
-        .card-header {
-            padding: 16px; border-bottom: 1px solid var(--border); background: #FCFCFC;
-            display: flex; justify-content: space-between; align-items: center;
-        }
-        .card-title-wrap { display: flex; align-items: center; gap: 8px; width: 100%; }
-        .status-dot { width: 8px; height: 8px; background: var(--success); border-radius: 50%; box-shadow: 0 0 0 2px rgba(0,112,243,0.2); }
-        .input-title { 
-            border: none; background: transparent; font-weight: 600; font-size: 14px; 
-            color: var(--text-main); width: 100%; padding: 4px 0;
-        }
-        .input-title:focus { outline: none; border-bottom: 1px solid var(--accent); }
-        
-        .card-body { padding: 20px; display: flex; flex-direction: column; gap: 20px; }
-        
-        /* Section Styling */
-        .section-label { 
-            font-size: 11px; font-weight: 600; text-transform: uppercase; color: #888; 
-            letter-spacing: 0.5px; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;
-        }
-        
-        /* Form Inputs */
-        .input-wrapper { position: relative; }
-        .form-input, .form-select, .form-textarea {
-            width: 100%; padding: 10px 12px; font-size: 13px; color: var(--text-main);
-            border: 1px solid var(--border); border-radius: 6px; background: #FFFFFF;
-            transition: all 0.2s; font-family: 'Inter', monospace;
-        }
-        .form-textarea { min-height: 70px; resize: vertical; line-height: 1.5; }
-        .form-input:focus, .form-select:focus, .form-textarea:focus {
-            outline: none; border-color: var(--text-main); ring: 2px rgba(0,0,0,0.05);
-        }
-        
-        /* Action Flow List */
-        .action-list { display: flex; flex-direction: column; gap: 10px; }
-        .action-item {
-            display: flex; align-items: center; gap: 10px; padding: 8px 12px;
-            background: #FAFAFA; border: 1px solid var(--border); border-radius: 6px;
-        }
-        .delay-pill {
-            background: white; border: 1px solid var(--border); border-radius: 4px;
-            padding: 2px 6px; font-size: 11px; font-weight: 600; color: var(--text-sub);
-            display: flex; align-items: center; gap: 4px; white-space: nowrap; box-shadow: 0 1px 2px rgba(0,0,0,0.03);
-        }
-        .delay-input { 
-            width: 24px; text-align: center; border: none; font-weight: 700; color: var(--text-main); 
-            border-bottom: 1px dashed #CCC; padding: 0;
-        }
-        .action-input { border: none; background: transparent; flex: 1; font-size: 13px; font-weight: 500; }
-        .action-input:focus { outline: none; }
-        
-        /* Add Card */
-        .card-add {
-            border: 2px dashed var(--border); background: transparent; box-shadow: none;
-            align-items: center; justify-content: center; min-height: 300px;
-            cursor: pointer; color: var(--text-sub); transition: 0.2s;
-        }
-        .card-add:hover { border-color: var(--text-sub); color: var(--text-main); background: #F5F5F5; }
-        
-        .toast {
-            position: fixed; bottom: 32px; right: 32px; background: var(--text-main); color: white;
-            padding: 12px 20px; border-radius: 6px; font-weight: 500; font-size: 14px;
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); transform: translateY(100px); opacity: 0;
-            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1); z-index: 200;
-            display: flex; align-items: center; gap: 10px;
-        }
-        .toast.show { transform: translateY(0); opacity: 1; }
-        
-        /* Icons */
-        .icon-sm { font-size: 12px; }
+        /* 动画 */
+        .fade-enter-active, .fade-leave-active { transition: opacity 0.3s ease; }
+        .fade-enter-from, .fade-leave-to { opacity: 0; }
     </style>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#3B82F6',
+                        secondary: '#64748B',
+                        success: '#10B981',
+                        danger: '#EF4444',
+                        slate: { 50:'#f8fafc', 100:'#f1f5f9', 200:'#e2e8f0', 800:'#1e293b', 900:'#0f172a' }
+                    }
+                }
+            }
+        }
+    </script>
 </head>
-<body>
-<div id="app">
-    <nav class="navbar">
-        <div class="nav-content">
-            <div class="brand">
-                <div class="brand-icon"><i class="fa-solid fa-bolt"></i></div>
-                <span>AutoResponse <span style="color:#999;font-weight:400">Pro</span></span>
-            </div>
-            
-            <div class="nav-actions">
-                <label class="toggle-switch">
-                    <input type="checkbox" v-model="config.enabled" hidden>
-                    <span class="switch-base"></span>
-                    <span>System {{ config.enabled ? 'ON' : 'OFF' }}</span>
-                </label>
-                <div style="width: 1px; height: 24px; background: var(--border);"></div>
-                <button class="btn btn-primary" @click="saveConfig">
-                    <i class="fa-solid fa-floppy-disk"></i> Save Changes
-                </button>
+<body class="text-slate-800 antialiased">
+<div id="app" class="min-h-screen pb-20">
+    
+    <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 bg-opacity-90 backdrop-blur-md">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center gap-3">
+                    <div class="bg-primary/10 text-primary p-2 rounded-lg">
+                        <i class="fa-solid fa-robot text-xl"></i>
+                    </div>
+                    <div>
+                        <h1 class="text-lg font-bold text-slate-900 tracking-tight">AutoResponder <span class="text-xs font-medium text-primary bg-primary/10 px-2 py-0.5 rounded-full ml-1">Pro</span></h1>
+                        <p class="text-xs text-slate-500 font-medium">自动化响应规则管理系统</p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-4">
+                    <div class="flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200">
+                        <span class="relative flex h-2.5 w-2.5">
+                          <span v-if="config.enabled" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
+                          <span :class="config.enabled ? 'bg-success' : 'bg-slate-400'" class="relative inline-flex rounded-full h-2.5 w-2.5"></span>
+                        </span>
+                        <label class="text-xs font-semibold text-slate-600 cursor-pointer select-none">
+                            <input type="checkbox" v-model="config.enabled" class="hidden">
+                            System {{ config.enabled ? 'Online' : 'Offline' }}
+                        </label>
+                    </div>
+                    <button @click="saveConfig" class="bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all shadow-lg shadow-slate-900/20 flex items-center gap-2">
+                        <i class="fa-solid fa-floppy-disk"></i> 保存配置
+                    </button>
+                </div>
             </div>
         </div>
     </nav>
 
-    <div class="container">
-        <div class="grid-layout">
-            <div v-for="(rule, index) in config.rules" :key="index" class="card">
-                <div class="card-header">
-                    <div class="card-title-wrap">
-                        <div class="status-dot" title="Active"></div>
-                        <input v-model="rule.name" class="input-title" placeholder="Untitled Rule">
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        
+        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+            
+            <div v-for="(rule, index) in config.rules" :key="index" 
+                 class="group bg-white rounded-xl border border-slate-200 shadow-sm hover:shadow-xl hover:border-primary/30 transition-all duration-300 flex flex-col overflow-hidden relative">
+                
+                <div class="px-5 py-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
+                    <div class="flex items-center gap-2 flex-1">
+                        <i class="fa-solid fa-hashtag text-slate-400 text-sm"></i>
+                        <input v-model="rule.name" class="bg-transparent border-none p-0 text-sm font-bold text-slate-800 focus:ring-0 placeholder-slate-400 w-full" placeholder="输入规则名称...">
                     </div>
-                    <button class="btn btn-danger-ghost" @click="removeRule(index)" title="Delete Rule">
+                    <button @click="removeRule(index)" class="text-slate-400 hover:text-danger hover:bg-red-50 p-1.5 rounded transition-colors" title="删除规则">
                         <i class="fa-regular fa-trash-can"></i>
                     </button>
                 </div>
-                
-                <div class="card-body">
-                    <div>
-                        <div class="section-label"><i class="fa-solid fa-satellite-dish icon-sm"></i> 监听配置</div>
-                        <div style="display:grid; gap:12px">
-                            <textarea class="form-textarea" :value="listToString(rule.groups)" @input="stringToIntList($event, rule, 'groups')" placeholder="Target Group IDs (-100...)" style="height:60px"></textarea>
-                            <textarea class="form-textarea" :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')" placeholder="Keywords (Empty = All)" style="height:60px"></textarea>
-                        </div>
-                    </div>
 
-                    <div>
-                        <div class="section-label"><i class="fa-solid fa-filter icon-sm"></i> 过滤与限制</div>
-                        <div style="display:grid; grid-template-columns: 1.5fr 1fr; gap:12px; margin-bottom:12px;">
-                            <select v-model="rule.sender_mode" class="form-select">
-                                <option value="exclude">🚫 排除名单</option>
-                                <option value="include">✅ 白名单</option>
-                            </select>
-                            <div style="position:relative">
-                                <input type="number" v-model.number="rule.cooldown" class="form-input" style="padding-right:32px">
-                                <span style="position:absolute; right:10px; top:10px; font-size:11px; color:#999; pointer-events:none">sec</span>
+                <div class="p-5 flex-1 flex flex-col gap-5">
+                    
+                    <div class="space-y-3">
+                        <div class="flex items-center gap-2 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                            <i class="fa-solid fa-satellite-dish text-primary"></i> 监听配置
+                        </div>
+                        <div class="grid grid-cols-1 gap-3">
+                            <div class="relative">
+                                <textarea :value="listToString(rule.groups)" @input="stringToIntList($event, rule, 'groups')"
+                                    class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none h-20"
+                                    placeholder="-100xxxxxx (每行一个群ID)"></textarea>
+                                <div class="absolute right-2 bottom-2 text-[10px] text-slate-400 bg-slate-100 px-1.5 rounded">Group IDs</div>
+                            </div>
+                            <div class="relative">
+                                <textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')"
+                                    class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none h-20"
+                                    placeholder="留空则匹配所有消息..."></textarea>
+                                <div class="absolute right-2 bottom-2 text-[10px] text-slate-400 bg-slate-100 px-1.5 rounded">Keywords</div>
                             </div>
                         </div>
-                        <textarea class="form-textarea" :value="listToString(rule.sender_prefixes)" @input="stringToList($event, rule, 'sender_prefixes')" placeholder="Prefixes (e.g. YY_)" style="height:50px"></textarea>
                     </div>
 
-                    <div style="flex:1; display:flex; flex-direction:column;">
-                        <div class="section-label" style="justify-content:space-between">
-                            <span><i class="fa-solid fa-bolt icon-sm"></i> 执行流</span>
-                            <span @click="rule.replies.push({text:'', min:2, max:4})" style="cursor:pointer; color:var(--accent); font-size:11px">+ Add Step</span>
+                    <div class="space-y-3 pt-2 border-t border-slate-100">
+                        <div class="flex items-center justify-between text-xs font-bold text-slate-500 uppercase tracking-wider">
+                            <div class="flex items-center gap-2"><i class="fa-solid fa-filter text-primary"></i> 过滤 & 冷却</div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div class="col-span-1">
+                                <select v-model="rule.sender_mode" class="w-full bg-slate-50 border border-slate-200 text-slate-700 text-xs rounded-lg p-2 focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                    <option value="exclude">🚫 排除名单</option>
+                                    <option value="include">✅ 仅限白名单</option>
+                                </select>
+                            </div>
+                            <div class="col-span-1 relative">
+                                <input type="number" v-model.number="rule.cooldown" class="w-full bg-slate-50 border border-slate-200 text-slate-700 text-xs rounded-lg p-2 focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                <span class="absolute right-3 top-2 text-xs text-slate-400 pointer-events-none">秒</span>
+                            </div>
+                            <div class="col-span-2">
+                                <input :value="listToString(rule.sender_prefixes).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'sender_prefixes')" 
+                                    class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-primary/20 focus:border-primary truncate"
+                                    placeholder="前缀列表 (YY_, admin)... 使用换行分隔">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="space-y-3 pt-2 border-t border-slate-100 flex-1">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center gap-2 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                                <i class="fa-solid fa-bolt text-primary"></i> 执行流 (Timeline)
+                            </div>
+                            <button @click="rule.replies.push({text:'', min:2, max:4})" class="text-[10px] bg-primary/10 text-primary px-2 py-1 rounded hover:bg-primary hover:text-white transition-colors">
+                                + 添加步骤
+                            </button>
                         </div>
                         
-                        <div class="action-list">
-                            <div v-if="rule.replies.length === 0" style="text-align:center; padding:15px; color:#999; font-size:12px; background:#FAFAFA; border-radius:6px; border:1px dashed #DDD;">
-                                No actions defined
+                        <div class="space-y-2 relative">
+                            <div class="absolute left-3 top-2 bottom-2 w-0.5 bg-slate-200 z-0"></div>
+                            
+                            <div v-if="rule.replies.length === 0" class="text-center py-4 text-xs text-slate-400 bg-slate-50 rounded-lg border border-dashed border-slate-200 z-10 relative">
+                                暂无回复动作
                             </div>
-                            <div v-for="(reply, rIndex) in rule.replies" :key="rIndex" class="action-item">
-                                <div class="delay-pill">
-                                    <i class="fa-regular fa-clock icon-sm"></i>
-                                    <input v-model.number="reply.min" type="number" class="delay-input">
-                                    -
-                                    <input v-model.number="reply.max" type="number" class="delay-input">
+
+                            <div v-for="(reply, rIndex) in rule.replies" :key="rIndex" class="relative z-10 group/item">
+                                <div class="flex items-start gap-2">
+                                    <div class="flex flex-col items-center bg-white border border-slate-200 rounded shadow-sm px-1 py-0.5 min-w-[40px] z-10 mt-1">
+                                        <div class="flex items-center gap-0.5 text-[10px] font-mono text-slate-500">
+                                            <input v-model.number="reply.min" class="w-3 text-center bg-transparent border-b border-dashed border-slate-300 focus:outline-none focus:border-primary p-0">
+                                            <span>-</span>
+                                            <input v-model.number="reply.max" class="w-3 text-center bg-transparent border-b border-dashed border-slate-300 focus:outline-none focus:border-primary p-0">
+                                        </div>
+                                        <div class="text-[9px] text-slate-300">sec</div>
+                                    </div>
+                                    
+                                    <div class="flex-1 bg-white border border-slate-200 rounded-lg p-2 flex items-center gap-2 shadow-sm group-hover/item:border-primary/50 group-hover/item:shadow-md transition-all">
+                                        <div class="w-1.5 h-1.5 rounded-full bg-primary flex-shrink-0"></div>
+                                        <input v-model="reply.text" class="flex-1 text-xs border-none p-0 focus:ring-0 text-slate-700 placeholder-slate-300" placeholder="发送回复内容...">
+                                        <button @click="rule.replies.splice(rIndex, 1)" class="text-slate-300 hover:text-danger transition-colors px-1">
+                                            <i class="fa-solid fa-xmark"></i>
+                                        </button>
+                                    </div>
                                 </div>
-                                <input v-model="reply.text" class="action-input" placeholder="Reply content...">
-                                <i class="fa-solid fa-xmark" style="color:#CCC; cursor:pointer; font-size:12px;" @click="rule.replies.splice(rIndex, 1)"></i>
                             </div>
                         </div>
                     </div>
+
                 </div>
             </div>
 
-            <div class="card card-add" @click="addRule">
-                <i class="fa-solid fa-plus" style="font-size:24px; margin-bottom:12px; color:#DDD"></i>
-                <span style="font-weight:600">Create New Rule</span>
+            <div @click="addRule" class="border-2 border-dashed border-slate-300 rounded-xl flex flex-col items-center justify-center p-10 cursor-pointer hover:border-primary hover:bg-blue-50/50 transition-all min-h-[400px] group">
+                <div class="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center text-slate-400 group-hover:bg-blue-100 group-hover:text-primary transition-all mb-4">
+                    <i class="fa-solid fa-plus text-2xl"></i>
+                </div>
+                <h3 class="text-slate-500 font-semibold group-hover:text-primary">添加新规则卡片</h3>
+                <p class="text-xs text-slate-400 mt-2">点击创建一个新的监听任务</p>
             </div>
+
+        </div>
+    </main>
+
+    <div class="fixed bottom-6 right-6 z-50 transition-all duration-500 transform translate-y-20 opacity-0" :class="{'translate-y-0 opacity-100': toast.show}">
+        <div class="bg-slate-800 text-white px-6 py-3 rounded-lg shadow-2xl flex items-center gap-3">
+            <i v-if="toast.type==='success'" class="fa-solid fa-circle-check text-green-400 text-lg"></i>
+            <i v-else class="fa-solid fa-triangle-exclamation text-red-400 text-lg"></i>
+            <span class="font-medium text-sm">{{ toast.msg }}</span>
         </div>
     </div>
 
-    <div :class="['toast', toast.show ? 'show' : '']">
-        <i v-if="toast.type==='success'" class="fa-solid fa-circle-check" style="color:#4ADE80"></i>
-        <i v-else class="fa-solid fa-circle-exclamation" style="color:#F87171"></i>
-        <span>{{ toast.msg }}</span>
-    </div>
 </div>
 
 <script>
@@ -411,17 +340,16 @@ SETTINGS_HTML = """
             const stringToList = (e, rule, key) => { rule[key] = e.target.value.split('\\n').map(x=>x.trim()).filter(x=>x); };
             const stringToIntList = (e, rule, key) => { rule[key] = e.target.value.split('\\n').map(x=>x.trim()).filter(x=>x); };
 
-            // Actions
             const addRule = () => {
                 config.rules.push({
-                    name: 'New Rule ' + (config.rules.length + 1),
+                    name: 'New Rule #' + (config.rules.length + 1),
                     groups: [], keywords: [], sender_mode: 'exclude', sender_prefixes: [], cooldown: 60,
                     replies: [{text: '', min: 2, max: 4}]
                 });
             };
             
             const removeRule = (index) => {
-                if(confirm('Are you sure you want to delete this rule?')) config.rules.splice(index, 1);
+                if(confirm('确定删除此任务卡片吗？此操作无法撤销。')) config.rules.splice(index, 1);
             };
 
             const saveConfig = async () => {
@@ -429,12 +357,12 @@ SETTINGS_HTML = """
                     const res = await fetch('/api/monitor_settings', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(config) });
                     const json = await res.json();
                     if (json.success) {
-                        showToast('Configuration saved successfully', 'success');
+                        showToast('配置已成功保存并生效', 'success');
                     } else {
-                        showToast('Save failed: ' + json.msg, 'error');
+                        showToast('保存失败: ' + json.msg, 'error');
                     }
                 } catch(e) {
-                    showToast('Network error occurred', 'error');
+                    showToast('网络连接错误', 'error');
                 }
             };
 
@@ -451,6 +379,7 @@ SETTINGS_HTML = """
 </html>
 """
 
+# [保留原有的后端逻辑，不做任何修改，确保稳定性]
 def analyze_message(rule, event, other_cs_ids, sender_name):
     if event.chat_id not in rule.get("groups", []): return False, "群组不符"
     if event.is_reply: return False, "是回复消息"
@@ -529,4 +458,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             except Exception as e:
                 logger.error(f"❌ [Monitor] 规则执行错误: {e}")
 
-    logger.info("🛠️ [Monitor] SaaS Pro UI 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI 已启动")
