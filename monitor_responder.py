@@ -4,14 +4,12 @@ import time
 import random
 import json
 import os
+import re  # <--- 必须确保这一行存在
 from flask import request, jsonify, Response
 from telethon import events
 
-# 引入 Redis
-try:
-    import redis
-except ImportError:
-    redis = None
+try: import redis
+except ImportError: redis = None
 
 logger = logging.getLogger("BotLogger")
 
@@ -25,7 +23,7 @@ DEFAULT_CONFIG = {
         {
             "id": "default_rule",
             "name": "示例规则",
-            "groups": [-1002169616907], # 默认只有一个群，注意检查这里！
+            "groups": [-1002169616907],
             "keywords": ["对比上时段缺少"],
             "sender_mode": "exclude",
             "sender_prefixes": [],
@@ -62,8 +60,7 @@ def load_config(system_cs_prefixes):
                     current_config = saved
                     loaded = True
                     logger.info("📥 [Monitor] 已从 Redis 加载配置")
-        except Exception as e:
-            logger.error(f"❌ [Monitor] Redis 读取错误: {e}")
+        except: pass
 
     if not loaded and os.path.exists(CONFIG_FILE):
         try:
@@ -82,7 +79,6 @@ def load_config(system_cs_prefixes):
         if rule["sender_mode"] == "exclude" and not rule["sender_prefixes"]:
             rule["sender_prefixes"] = list(system_cs_prefixes)
             
-    # 打印当前的规则摘要，方便调试
     logger.info("-" * 30)
     logger.info(f"✅ [Monitor] 配置加载完成，共 {len(current_config['rules'])} 条规则")
     for i, rule in enumerate(current_config['rules']):
@@ -92,25 +88,57 @@ def load_config(system_cs_prefixes):
 def save_config(new_config):
     global current_config
     try:
-        # 数据清洗
+        # 数据清洗与容错
+        if not isinstance(new_config, dict) or "rules" not in new_config:
+            return False, "无效的配置格式 (Missing rules)"
+
         for rule in new_config.get("rules", []):
-            rule["groups"] = [int(x) for x in rule["groups"]]
-            rule["cooldown"] = int(rule["cooldown"])
-            for r in rule["replies"]:
-                r["min"] = float(r["min"]); r["max"] = float(r["max"])
+            clean_groups = []
+            raw_groups = rule.get("groups", [])
+            # 兼容：如果前端发来的是字符串（被改坏了的情况），尝试分割
+            if isinstance(raw_groups, str):
+                raw_groups = raw_groups.split('\n')
+                
+            for g in raw_groups:
+                g_str = str(g).strip()
+                # 强力提取：只要包含数字就尝试提取
+                # 比如 "-100123(备注)" -> "-100123"
+                match = re.search(r'-?\d+', g_str)
+                if match:
+                    try:
+                        clean_groups.append(int(match.group()))
+                    except: pass
+            rule["groups"] = clean_groups
+            
+            # 数值字段容错
+            try: rule["cooldown"] = int(rule.get("cooldown", 60))
+            except: rule["cooldown"] = 60
+
+            for r in rule.get("replies", []):
+                try: r["min"] = float(r.get("min", 1.0))
+                except: r["min"] = 1.0
+                try: r["max"] = float(r.get("max", 3.0))
+                except: r["max"] = 3.0
         
+        # 尝试写入 Redis
         if redis_client:
-            redis_client.set(REDIS_KEY, json.dumps(new_config, ensure_ascii=False))
+            try:
+                redis_client.set(REDIS_KEY, json.dumps(new_config, ensure_ascii=False))
+            except Exception as e:
+                logger.error(f"Redis Write Error: {e}")
+                # Redis 失败不影响文件保存
         
+        # 写入文件
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(new_config, f, indent=4, ensure_ascii=False)
         
         current_config = new_config
-        logger.info("💾 [Monitor] 配置已更新并保存")
-        return True
+        logger.info(f"💾 [Monitor] 配置已更新并保存 (规则数: {len(new_config['rules'])})")
+        return True, "保存成功"
     except Exception as e:
         logger.error(f"❌ [Monitor] 保存失败: {e}")
-        return False
+        # 返回具体错误信息给前端
+        return False, str(e)
 
 # --- Web UI ---
 SETTINGS_HTML = """
@@ -126,8 +154,9 @@ SETTINGS_HTML = """
         .card { background: #FFF; padding: 20px; border-radius: 12px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
         input, textarea, select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; margin-top: 5px; }
         button { background: #007AFF; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; }
-        .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); color: white; padding: 10px 20px; border-radius: 20px; opacity: 0; transition: 0.3s; pointer-events: none; }
+        .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); color: white; padding: 10px 20px; border-radius: 20px; opacity: 0; transition: 0.3s; pointer-events: none; z-index: 999; }
         .toast.show { opacity: 1; }
+        .error-msg { color: red; font-size: 12px; margin-top: 5px; }
     </style>
 </head>
 <body>
@@ -150,7 +179,7 @@ SETTINGS_HTML = """
         <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom:15px">
             <div>
                 <label>监控群组 ID (换行分隔)</label>
-                <textarea :value="listToString(rule.groups)" @input="stringToIntList($event, rule, 'groups')" style="height:80px"></textarea>
+                <textarea :value="listToString(rule.groups)" @input="stringToIntList($event, rule, 'groups')" style="height:80px" placeholder="-100xxxxxx(备注)"></textarea>
             </div>
             <div>
                 <label>触发关键词 (留空则匹配所有消息)</label>
@@ -215,9 +244,20 @@ SETTINGS_HTML = """
             };
 
             const saveConfig = async () => {
-                const res = await fetch('/api/monitor_settings', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(config) });
-                const json = await res.json();
-                toast.msg = json.success ? "✅ 保存成功" : "❌ 保存失败"; toast.show = true; setTimeout(()=>toast.show=false, 3000);
+                try {
+                    const res = await fetch('/api/monitor_settings', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(config) });
+                    const json = await res.json();
+                    if (json.success) {
+                        toast.msg = "✅ 保存成功";
+                    } else {
+                        // 显示具体的错误信息
+                        toast.msg = "❌ 保存失败: " + (json.msg || "未知错误");
+                        console.error(json.msg);
+                    }
+                } catch(e) {
+                    toast.msg = "❌ 网络错误或服务器崩溃(500)";
+                }
+                toast.show = true; setTimeout(()=>toast.show=false, 3000);
             };
 
             return { config, toast, listToString, stringToList, stringToIntList, addRule, saveConfig };
@@ -228,66 +268,43 @@ SETTINGS_HTML = """
 </html>
 """
 
-# --- 强制显示所有日志的检查逻辑 ---
-def check_rule_match_debug(rule, event, other_cs_ids):
-    rule_name = rule.get("name", "未命名")
+# --- 核心判断逻辑 (/debug) ---
+def analyze_message(rule, event, other_cs_ids, sender_name):
     target_groups = rule.get("groups", [])
     
-    # [强制打印] 每次匹配规则时，都打印当前消息在哪，规则要求在哪
-    # 注意：这会产生很多日志，但能彻底解决疑问
-    
-    # 1. 群组检查
     if event.chat_id not in target_groups:
-        # 这里改成了 INFO 级别，确保您能看到
-        logger.info(f"🔍 [Monitor] 规则 '{rule_name}' 忽略 -> 消息所在群 ({event.chat_id}) 不在规则列表 {target_groups}")
-        return False, "群组不匹配"
+        return False, f"群组不符 (当前: {event.chat_id})"
     
-    # 2. 消息流检查
     if event.is_reply:
-        logger.info(f"🚫 [Monitor] 规则 '{rule_name}' 跳过 -> 这是一条【回复消息】")
-        return False, "是回复消息"
+        return False, "是回复消息 (忽略)"
         
-    # 3. 基础身份排除
     if event.out: return False, "Bot自己发送"
     if event.sender_id in other_cs_ids:
-        logger.info(f"🚫 [Monitor] 规则 '{rule_name}' 跳过 -> 发送者ID在客服列表中 (ID={event.sender_id})")
-        return False, "ID是客服"
+        return False, f"ID是客服 ({event.sender_id})"
 
-    # 4. 关键词检查
     text = event.text or ""
     keywords = rule.get("keywords", [])
-    if keywords:
-        if not any(kw in text for kw in keywords):
-            logger.info(f"🔍 [Monitor] 规则 '{rule_name}' 忽略 -> 关键词不匹配")
-            return False, "关键词不匹配"
+    if keywords and not any(kw in text for kw in keywords):
+        return False, f"无匹配关键词 (需: {keywords})"
 
-    # 5. 发送人前缀检查
     sender_mode = rule.get("sender_mode", "exclude")
     prefixes = rule.get("sender_prefixes", [])
-    sender_name = ""
-    if event.sender:
-        sender_name = getattr(event.sender, 'first_name', '') or ''
-        
     match_prefix = any(sender_name.startswith(p) for p in prefixes)
     
     if sender_mode == "exclude" and match_prefix:
-        logger.info(f"🚫 [Monitor] 规则 '{rule_name}' 跳过 -> 前缀排除命中 ({sender_name})")
-        return False, "前缀排除"
+        return False, f"前缀被排除 ({sender_name})"
     elif sender_mode == "include" and not match_prefix:
-        logger.info(f"🚫 [Monitor] 规则 '{rule_name}' 跳过 -> 前缀不在白名单 ({sender_name})")
-        return False, "前缀非白名单"
+        return False, f"前缀不在白名单 ({sender_name})"
 
-    # 6. 冷却检查
+    # 冷却
     rule_id = rule.get("id", str(target_groups))
     last_time = rule_timers.get(rule_id, 0)
     now = time.time()
     cooldown = rule.get("cooldown", 60)
     if now - last_time < cooldown:
-        logger.info(f"⏳ [Monitor] 规则 '{rule_name}' 冷却中 (剩余 {int(cooldown - (now - last_time))}s)")
-        return False, "冷却中"
+        return False, f"冷却中 (剩余 {int(cooldown - (now - last_time))}s)"
     
-    rule_timers[rule_id] = now
-    return True, "匹配成功"
+    return True, "✅ 匹配成功"
 
 def init_monitor(client, app, other_cs_ids, main_cs_prefixes):
     init_redis_connection()
@@ -301,24 +318,48 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes):
 
     @app.route('/api/monitor_settings', methods=['POST'])
     def update_monitor_settings():
-        if save_config(request.json): return jsonify({"success": True})
-        return jsonify({"success": False}), 500
+        success, msg = save_config(request.json)
+        # 即使失败也返回 200，让前端能读取到错误信息 msg
+        if success: return jsonify({"success": True})
+        return jsonify({"success": False, "msg": msg}), 200
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        # [强制打印] 收到任何消息，先吼一声
-        # 这样您就知道 Bot 到底有没有收到消息
-        # logger.info(f"📨 [Monitor] 收到消息: ChatID={event.chat_id} | User={event.sender_id}")
-        
+        if event.text == "/debug":
+            debug_report = f"🛠️ **Monitor 诊断报告**\nChatID: `{event.chat_id}`\nUser: `{event.sender_id}`\n"
+            try:
+                sender = await event.get_sender()
+                s_name = getattr(sender, 'first_name', 'Unknown')
+                debug_report += f"SenderName: `{s_name}`\n\n"
+                
+                for i, rule in enumerate(current_config.get("rules", [])):
+                    match, reason = analyze_message(rule, event, other_cs_ids, s_name)
+                    icon = "✅" if match else "❌"
+                    debug_report += f"Rule {i+1} ({rule.get('name')}): {icon} {reason}\n"
+                
+                await event.reply(debug_report)
+                return
+            except Exception as e:
+                await event.reply(f"诊断出错: {e}")
+                return
+
         if not current_config.get("enabled", True): return
-        try: event.sender = await event.get_sender()
-        except: return 
+        
+        sender_name = ""
+        try:
+            event.sender = await event.get_sender()
+            sender_name = getattr(event.sender, 'first_name', '') or ''
+        except: pass
 
         for rule in current_config.get("rules", []):
             try:
-                is_match, reason = check_rule_match_debug(rule, event, other_cs_ids)
+                is_match, reason = analyze_message(rule, event, other_cs_ids, sender_name)
+                
                 if is_match:
                     logger.info(f"✅ [Monitor] 规则 '{rule.get('name')}' 触发! 开始回复...")
+                    rule_id = rule.get("id", str(rule.get("groups")))
+                    rule_timers[rule_id] = time.time()
+                    
                     for reply in rule.get("replies", []):
                         content = reply.get("text", "")
                         if not content: continue
@@ -329,4 +370,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes):
             except Exception as e:
                 logger.error(f"❌ [Monitor] 规则执行错误: {e}")
 
-    logger.info("🛠️ [Monitor] 强制日志调试模式已启动")
+    logger.info("🛠️ [Monitor] 防弹版已启动 (含正则清洗)")
