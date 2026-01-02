@@ -171,4 +171,160 @@ SETTINGS_HTML = """
                 </div>
                 <button class="btn btn-outline" @click="rule.replies.splice(rIndex, 1)">✕</button>
             </div>
-            <button class="btn btn-outline" @click="addReply
+            <button class="btn btn-outline" @click="addReply(rule)" style="width:100%; border-style:dashed; margin-top:5px">+ 添加回复步骤</button>
+        </div>
+    </div>
+
+    <button class="btn btn-outline" @click="addRule" style="width:100%; padding: 15px; border-style:dashed; margin-bottom: 50px;">+ 添加新规则</button>
+    <div :class="['toast', toast.show ? 'show' : '']">{{ toast.msg }}</div>
+</div>
+
+<script>
+    const { createApp, reactive } = Vue;
+    createApp({
+        setup() {
+            const config = reactive({ enabled: true, rules: [] });
+            const toast = reactive({ show: false, msg: '' });
+
+            // 获取后端数据
+            fetch('/tool/monitor_settings_json')
+                .then(r => r.json())
+                .then(data => {
+                    config.enabled = data.enabled;
+                    config.rules = data.rules || [];
+                })
+                .catch(err => {
+                    alert("无法连接服务器，请检查网络或刷新页面。");
+                });
+
+            const groupsToString = (rule) => (rule.groups || []).join('\\n');
+            const stringToGroups = (e, rule) => { rule.groups = e.target.value.split('\\n').map(x=>x.trim()).filter(x=>x); };
+            
+            const listToString = (list) => (list || []).join('\\n');
+            const stringToList = (e, rule, key) => { rule[key] = e.target.value.split('\\n').map(x=>x.trim()).filter(x=>x); };
+
+            const addRule = () => {
+                config.rules.push({
+                    id: 'rule_' + Date.now(),
+                    name: '新规则',
+                    groups: [],
+                    keywords: [],
+                    sender_mode: 'exclude',
+                    sender_prefixes: [],
+                    cooldown: 60,
+                    replies: [{text: '', min: 2, max: 4}]
+                });
+            };
+
+            const addReply = (rule) => {
+                rule.replies.push({text: '', min: 1, max: 3});
+            };
+
+            const removeRule = (idx) => {
+                if(confirm('确定删除此规则吗？')) config.rules.splice(idx, 1);
+            };
+
+            const saveConfig = async () => {
+                try {
+                    const res = await fetch('/api/monitor_settings', {
+                        method: 'POST', headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(config)
+                    });
+                    const j = await res.json();
+                    showToast(j.success ? "✅ 保存成功" : "❌ 保存失败");
+                } catch(e) { showToast("❌ 网络错误: " + e); }
+            };
+
+            const showToast = (msg) => {
+                toast.msg = msg; toast.show = true;
+                setTimeout(() => toast.show = false, 3000);
+            };
+
+            return { config, toast, groupsToString, stringToGroups, listToString, stringToList, addRule, addReply, removeRule, saveConfig };
+        }
+    }).mount('#app');
+</script>
+</body>
+</html>
+"""
+
+# --- 核心逻辑 ---
+def check_rule_match(rule, event, other_cs_ids):
+    if event.chat_id not in rule.get("groups", []):
+        return False
+    if event.is_reply:
+        return False
+    if event.out or (event.sender_id in other_cs_ids):
+        return False
+
+    text = event.text or ""
+    keywords = rule.get("keywords", [])
+    if not keywords or not any(kw in text for kw in keywords):
+        return False
+
+    sender_mode = rule.get("sender_mode", "exclude")
+    prefixes = rule.get("sender_prefixes", [])
+    sender_name = getattr(event.sender, 'first_name', '') or ''
+    match_prefix = any(sender_name.startswith(p) for p in prefixes)
+    
+    if sender_mode == "exclude":
+        if match_prefix: return False
+    elif sender_mode == "include":
+        if not match_prefix: return False
+
+    rule_id = rule.get("id", "unknown")
+    last_time = rule_timers.get(rule_id, 0)
+    now = time.time()
+    cooldown = rule.get("cooldown", 60)
+    
+    if now - last_time < cooldown:
+        return False
+    
+    rule_timers[rule_id] = now
+    return True
+
+# --- 初始化与挂载 ---
+def init_monitor(client, app, other_cs_ids, main_cs_prefixes):
+    load_config(main_cs_prefixes)
+
+    # 返回纯HTML，无需模板解析
+    @app.route('/tool/monitor_settings')
+    def monitor_settings_page():
+        return Response(SETTINGS_HTML, mimetype='text/html')
+    
+    @app.route('/tool/monitor_settings_json')
+    def monitor_settings_json():
+        return jsonify(current_config)
+
+    @app.route('/api/monitor_settings', methods=['POST'])
+    def update_monitor_settings():
+        if save_config(request.json):
+            return jsonify({"success": True})
+        return jsonify({"success": False}), 500
+
+    @client.on(events.NewMessage())
+    async def multi_rule_handler(event):
+        if not current_config.get("enabled", True):
+            return
+        try:
+            event.sender = await event.get_sender()
+        except:
+            return 
+
+        for rule in current_config.get("rules", []):
+            try:
+                if check_rule_match(rule, event, other_cs_ids):
+                    logger.info(f"🔎 [Monitor] 规则 '{rule.get('name')}' 触发 | Group={event.chat_id} | User={event.sender_id}")
+                    for reply in rule.get("replies", []):
+                        content = reply.get("text", "")
+                        if not content: continue
+                        min_d = reply.get("min", 1)
+                        max_d = reply.get("max", 3)
+                        delay = random.uniform(min_d, max_d)
+                        await asyncio.sleep(delay)
+                        await event.reply(content)
+                    break
+            except Exception as e:
+                logger.error(f"❌ [Monitor] 规则执行错误: {e}")
+
+    logger.info("🛠️ [Monitor v2] 多规则监控系统已启动")
