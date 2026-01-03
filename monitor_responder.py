@@ -620,4 +620,11 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                             
                             if global_main_handler:
                                 try:
-                                    fake_
+                                    fake_event = events.NewMessage.Event(sent_msg)
+                                    asyncio.create_task(global_main_handler(fake_event))
+                                except: pass
+                    break
+            except Exception as e:
+                logger.error(f"❌ [Monitor] 规则执行错误: {e}")
+
+    logger.info("🛠️ [Monitor] Ultimate UI v3 (File Check) 已启动")
