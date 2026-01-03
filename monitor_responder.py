@@ -5,6 +5,7 @@ import random
 import json
 import os
 import re
+from datetime import datetime, timedelta, timezone
 from flask import request, jsonify, Response
 from telethon import events
 
@@ -25,13 +26,21 @@ DEFAULT_CONFIG = {
             "id": "default_rule",
             "name": "示例规则",
             "groups": [-1002169616907],
-            "keywords": ["对比上时段缺少"],
+            "check_file": False,          # 是否开启文件检测
+            "keywords": [],               # 普通模式：文本关键词
+            "file_extensions": ["xlsx"],  # 文件模式：后缀
+            "filename_keywords": ["结算"],# 文件模式：文件名关键词
             "sender_mode": "exclude",
             "sender_prefixes": [],
             "cooldown": 60,
             "replies": [
-                {"type": "text", "text": "请稍等ART", "min": 3, "max": 5},
-                {"type": "forward", "forward_to": -100123456789, "min": 1, "max": 2}
+                {
+                    "type": "copy_file", 
+                    "forward_to": -100123456789, 
+                    "text": "#文件转发\n收到一份报表\n时间：{time}",
+                    "min": 1, 
+                    "max": 2
+                }
             ]
         }
     ]
@@ -40,6 +49,9 @@ DEFAULT_CONFIG = {
 current_config = DEFAULT_CONFIG.copy()
 rule_timers = {}
 redis_client = None
+
+# 北京时区
+BJ_TZ = timezone(timedelta(hours=8))
 
 def init_redis_connection():
     global redis_client
@@ -79,6 +91,10 @@ def load_config(system_cs_prefixes):
     if not loaded: current_config = DEFAULT_CONFIG.copy()
     
     for rule in current_config["rules"]:
+        # 兼容旧配置
+        if "check_file" not in rule: rule["check_file"] = False
+        if "filename_keywords" not in rule: rule["filename_keywords"] = []
+        
         if rule["sender_mode"] == "exclude" and not rule["sender_prefixes"]:
             rule["sender_prefixes"] = list(system_cs_prefixes)
 
@@ -100,6 +116,26 @@ def save_config(new_config):
                     except: pass
             rule["groups"] = clean_groups
             
+            # 确保 check_file 是布尔值
+            rule["check_file"] = bool(rule.get("check_file", False))
+
+            # 清洗文件配置
+            clean_exts = []
+            raw_exts = rule.get("file_extensions", [])
+            if isinstance(raw_exts, str): raw_exts = raw_exts.split('\n')
+            for ext in raw_exts:
+                e = str(ext).strip().lower().replace('.', '')
+                if e: clean_exts.append(e)
+            rule["file_extensions"] = clean_exts
+
+            clean_fn_kws = []
+            raw_fn_kws = rule.get("filename_keywords", [])
+            if isinstance(raw_fn_kws, str): raw_fn_kws = raw_fn_kws.split('\n')
+            for k in raw_fn_kws:
+                k = str(k).strip()
+                if k: clean_fn_kws.append(k)
+            rule["filename_keywords"] = clean_fn_kws
+            
             try: rule["cooldown"] = int(rule.get("cooldown", 60))
             except: rule["cooldown"] = 60
             for r in rule.get("replies", []):
@@ -107,7 +143,6 @@ def save_config(new_config):
                 except: r["min"] = 1.0
                 try: r["max"] = float(r.get("max", 3.0))
                 except: r["max"] = 3.0
-                # 确保 type 字段存在
                 if "type" not in r: r["type"] = "text"
         
         if redis_client:
@@ -131,7 +166,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>AutoResponder Pro</title>
+    <title>Monitor Pro v3</title>
     <script src="https://cdn.staticfile.net/vue/3.3.4/vue.global.prod.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -139,18 +174,11 @@ SETTINGS_HTML = """
     
     <style>
         body { font-family: 'Inter', sans-serif; }
-        /* 自定义滚动条 */
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
         ::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
-        
-        /* 针对 Textarea 的微调 */
         textarea { font-family: 'Menlo', 'Monaco', 'Courier New', monospace; font-size: 12px; }
-        
-        /* 动画 */
-        .fade-enter-active, .fade-leave-active { transition: opacity 0.3s ease; }
-        .fade-enter-from, .fade-leave-to { opacity: 0; }
     </style>
     <script>
         tailwind.config = {
@@ -179,8 +207,8 @@ SETTINGS_HTML = """
                         <i class="fa-solid fa-robot text-xl"></i>
                     </div>
                     <div>
-                        <h1 class="text-lg font-bold text-slate-900 tracking-tight">AutoResponder <span class="text-xs font-medium text-primary bg-primary/10 px-2 py-0.5 rounded-full ml-1">Pro</span></h1>
-                        <p class="text-xs text-slate-500 font-medium">自动化响应规则管理系统</p>
+                        <h1 class="text-lg font-bold text-slate-900 tracking-tight">Monitor <span class="text-xs font-medium text-primary bg-primary/10 px-2 py-0.5 rounded-full ml-1">Pro v3</span></h1>
+                        <p class="text-xs text-slate-500 font-medium">自动化响应 & 文件流转系统</p>
                     </div>
                 </div>
                 <div class="flex items-center gap-4">
@@ -190,12 +218,12 @@ SETTINGS_HTML = """
                           <span :class="config.enabled ? 'bg-success' : 'bg-slate-400'" class="relative inline-flex rounded-full h-2.5 w-2.5"></span>
                         </span>
                         <label class="text-xs font-semibold text-slate-600 cursor-pointer select-none">
-    <input type="checkbox" v-model="config.enabled" @change="saveConfig" class="hidden">
-    System {{ config.enabled ? 'Online' : 'Offline' }}
-</label>
+                            <input type="checkbox" v-model="config.enabled" @change="saveConfig" class="hidden">
+                            System {{ config.enabled ? 'Online' : 'Offline' }}
+                        </label>
                     </div>
                     <button @click="saveConfig" class="bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all shadow-lg shadow-slate-900/20 flex items-center gap-2">
-                        <i class="fa-solid fa-floppy-disk"></i> 保存配置
+                        <i class="fa-solid fa-floppy-disk"></i> 保存
                     </button>
                 </div>
             </div>
@@ -222,22 +250,46 @@ SETTINGS_HTML = """
                 <div class="p-5 flex-1 flex flex-col gap-5">
                     
                     <div class="space-y-3">
-                        <div class="flex items-center gap-2 text-xs font-bold text-slate-500 uppercase tracking-wider">
-                            <i class="fa-solid fa-satellite-dish text-primary"></i> 监听配置
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center gap-2 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                                <i class="fa-solid fa-satellite-dish text-primary"></i> 监听配置
+                            </div>
+                            <label class="flex items-center gap-2 cursor-pointer select-none bg-slate-100 hover:bg-slate-200 px-2 py-1 rounded transition-colors">
+                                <input type="checkbox" v-model="rule.check_file" class="w-3.5 h-3.5 rounded border-slate-300 text-primary focus:ring-primary">
+                                <span class="text-xs font-semibold" :class="rule.check_file ? 'text-primary' : 'text-slate-500'">开启文件检测</span>
+                            </label>
                         </div>
+                        
                         <div class="grid grid-cols-1 gap-3">
                             <div class="relative">
                                 <textarea :value="listToString(rule.groups)" @input="stringToIntList($event, rule, 'groups')"
-                                    class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none h-20"
+                                    class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none h-16"
                                     placeholder="-100xxxxxx (每行一个群ID)"></textarea>
                                 <div class="absolute right-2 bottom-2 text-[10px] text-slate-400 bg-slate-100 px-1.5 rounded">Group IDs</div>
                             </div>
-                            <div class="relative">
+                            
+                            <div v-if="!rule.check_file" class="relative animate-fade-in">
                                 <textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')"
                                     class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none h-20"
-                                    placeholder="留空则匹配所有消息..."></textarea>
-                                <div class="absolute right-2 bottom-2 text-[10px] text-slate-400 bg-slate-100 px-1.5 rounded">Keywords</div>
+                                    placeholder="文本关键词 (留空则匹配所有文本)"></textarea>
+                                <div class="absolute right-2 bottom-2 text-[10px] text-slate-400 bg-slate-100 px-1.5 rounded">Msg Keywords</div>
                             </div>
+
+                            <div v-else class="grid grid-cols-2 gap-2 animate-fade-in">
+                                <div class="relative">
+                                    <textarea :value="listToString(rule.file_extensions)" @input="stringToList($event, rule, 'file_extensions')"
+                                        class="w-full bg-yellow-50 border border-yellow-200 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none h-20"
+                                        placeholder="后缀: png, xlsx"></textarea>
+                                    <div class="absolute right-2 bottom-2 text-[10px] text-yellow-600 bg-yellow-100 px-1.5 rounded">File Exts</div>
+                                </div>
+                                <div class="relative">
+                                    <textarea :value="listToString(rule.filename_keywords)" @input="stringToList($event, rule, 'filename_keywords')"
+                                        class="w-full bg-yellow-50 border border-yellow-200 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none h-20"
+                                        placeholder="文件名关键词..."></textarea>
+                                    <div class="absolute right-2 bottom-2 text-[10px] text-yellow-600 bg-yellow-100 px-1.5 rounded">File Name</div>
+                                </div>
+                            </div>
+
                         </div>
                     </div>
 
@@ -256,11 +308,6 @@ SETTINGS_HTML = """
                                 <input type="number" v-model.number="rule.cooldown" class="w-full bg-slate-50 border border-slate-200 text-slate-700 text-xs rounded-lg p-2 focus:ring-2 focus:ring-primary/20 focus:border-primary">
                                 <span class="absolute right-3 top-2 text-xs text-slate-400 pointer-events-none">秒</span>
                             </div>
-                            <div class="col-span-2">
-                                <input :value="listToString(rule.sender_prefixes).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'sender_prefixes')" 
-                                    class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-primary/20 focus:border-primary truncate"
-                                    placeholder="前缀列表 (YY_, admin)... 使用换行分隔">
-                            </div>
                         </div>
                     </div>
 
@@ -270,7 +317,7 @@ SETTINGS_HTML = """
                                 <i class="fa-solid fa-bolt text-primary"></i> 执行流 (Timeline)
                             </div>
                             <button @click="rule.replies.push({type:'text', text:'', forward_to:'', min:2, max:4})" class="text-[10px] bg-primary/10 text-primary px-2 py-1 rounded hover:bg-primary hover:text-white transition-colors">
-                                + 添加步骤
+                                + 添加
                             </button>
                         </div>
                         
@@ -292,21 +339,32 @@ SETTINGS_HTML = """
                                         <div class="text-[9px] text-slate-300">sec</div>
                                     </div>
                                     
-                                    <div class="flex-1 bg-white border border-slate-200 rounded-lg p-2 flex items-center gap-2 shadow-sm group-hover/item:border-primary/50 group-hover/item:shadow-md transition-all">
-                                        <div class="w-1.5 h-1.5 rounded-full bg-primary flex-shrink-0"></div>
-                                        
-                                        <select v-model="reply.type" class="w-20 text-[10px] bg-slate-50 border-none rounded focus:ring-0 text-slate-500 py-1 cursor-pointer">
-                                            <option value="text">💬 回复</option>
-                                            <option value="forward">🔀 转发</option>
-                                        </select>
+                                    <div class="flex-1 bg-white border border-slate-200 rounded-lg p-2 flex flex-col gap-2 shadow-sm group-hover/item:border-primary/50 group-hover/item:shadow-md transition-all">
+                                        <div class="flex items-center gap-2">
+                                            <div class="w-1.5 h-1.5 rounded-full bg-primary flex-shrink-0"></div>
+                                            <select v-model="reply.type" class="w-24 text-[10px] bg-slate-50 border-none rounded focus:ring-0 text-slate-500 py-1 cursor-pointer">
+                                                <option value="text">💬 纯文本回复</option>
+                                                <option value="forward">🔀 原样转发</option>
+                                                <option value="copy_file">📂 转发+换词</option>
+                                            </select>
+                                            <button @click="rule.replies.splice(rIndex, 1)" class="ml-auto text-slate-300 hover:text-danger transition-colors px-1">
+                                                <i class="fa-solid fa-xmark"></i>
+                                            </button>
+                                        </div>
 
-                                        <input v-if="!reply.type || reply.type === 'text'" v-model="reply.text" class="flex-1 text-xs border-none p-0 focus:ring-0 text-slate-700 placeholder-slate-300" placeholder="发送回复内容...">
+                                        <template v-if="reply.type === 'text'">
+                                            <textarea v-model="reply.text" class="w-full text-xs border border-slate-100 rounded p-1.5 bg-slate-50 focus:ring-1 focus:ring-primary/20 resize-none h-16" placeholder="输入回复内容 ({time} 可用)..."></textarea>
+                                        </template>
                                         
-                                        <input v-else v-model="reply.forward_to" class="flex-1 text-xs border-none p-0 focus:ring-0 text-blue-600 font-mono placeholder-slate-300" placeholder="目标群组 ID (-100...)">
+                                        <template v-if="reply.type === 'forward'">
+                                            <input v-model="reply.forward_to" class="w-full text-xs border border-slate-100 rounded p-1.5 bg-slate-50 focus:ring-1 focus:ring-primary/20 font-mono text-blue-600" placeholder="目标群组 ID (-100...)">
+                                        </template>
 
-                                        <button @click="rule.replies.splice(rIndex, 1)" class="text-slate-300 hover:text-danger transition-colors px-1">
-                                            <i class="fa-solid fa-xmark"></i>
-                                        </button>
+                                        <template v-if="reply.type === 'copy_file'">
+                                            <input v-model="reply.forward_to" class="w-full text-xs border border-slate-100 rounded p-1.5 bg-slate-50 focus:ring-1 focus:ring-primary/20 font-mono text-blue-600 mb-1" placeholder="目标群组 ID (-100...)">
+                                            <textarea v-model="reply.text" class="w-full text-xs border border-slate-100 rounded p-1.5 bg-yellow-50 focus:ring-1 focus:ring-primary/20 resize-none h-20" placeholder="新文案 ({time} 可插入时间)"></textarea>
+                                        </template>
+
                                     </div>
                                 </div>
                             </div>
@@ -344,21 +402,21 @@ SETTINGS_HTML = """
             const config = reactive({ enabled: true, rules: [] });
             const toast = reactive({ show: false, msg: '', type: 'success' });
 
-            // Initialize
             fetch('/tool/monitor_settings_json')
                 .then(r => r.json())
                 .then(data => { 
                     config.enabled = data.enabled; 
-                    // 数据迁移：确保所有 reply 都有 type 字段，防止 undefined
                     config.rules = (data.rules || []).map(r => {
                         if(r.replies) {
                             r.replies = r.replies.map(rep => ({...rep, type: rep.type || 'text'}));
                         }
+                        if(r.check_file === undefined) r.check_file = false;
+                        if(!r.file_extensions) r.file_extensions = [];
+                        if(!r.filename_keywords) r.filename_keywords = [];
                         return r;
                     });
                 });
 
-            // Helpers
             const listToString = (list) => (list || []).join('\\n');
             const stringToList = (e, rule, key) => { rule[key] = e.target.value.split('\\n').map(x=>x.trim()).filter(x=>x); };
             const stringToIntList = (e, rule, key) => { rule[key] = e.target.value.split('\\n').map(x=>x.trim()).filter(x=>x); };
@@ -366,7 +424,10 @@ SETTINGS_HTML = """
             const addRule = () => {
                 config.rules.push({
                     name: 'New Rule #' + (config.rules.length + 1),
-                    groups: [], keywords: [], sender_mode: 'exclude', sender_prefixes: [], cooldown: 60,
+                    groups: [], 
+                    check_file: false,
+                    keywords: [], file_extensions: [], filename_keywords: [],
+                    sender_mode: 'exclude', sender_prefixes: [], cooldown: 60,
                     replies: [{type:'text', text: '', min: 2, max: 4}]
                 });
             };
@@ -398,6 +459,10 @@ SETTINGS_HTML = """
         }
     }).mount('#app');
 </script>
+<style>
+.animate-fade-in { animation: fadeIn 0.3s ease-in-out; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
+</style>
 </body>
 </html>
 """
@@ -408,22 +473,66 @@ def analyze_message(rule, event, other_cs_ids, sender_name):
     if event.out: return False, "Bot自己发送"
     if event.sender_id in other_cs_ids: return False, "ID是客服"
     
-    text = event.text or ""
-    keywords = rule.get("keywords", [])
-    if keywords and not any(kw in text for kw in keywords): return False, "关键词不匹配"
+    check_file = rule.get("check_file", False)
+    text = (event.text or "").lower()
     
+    if check_file:
+        # --- 文件检测模式 ---
+        if not event.message.file: return False, "非文件消息"
+        
+        # 1. 检查后缀 (如果有配置)
+        file_exts = rule.get("file_extensions", [])
+        if file_exts:
+            ext = (event.message.file.ext or "").lower().replace('.', '')
+            if ext not in file_exts: return False, "后缀不符"
+            
+        # 2. 检查文件名关键词 (如果有配置)
+        fn_kws = rule.get("filename_keywords", [])
+        if fn_kws:
+            filename = ""
+            if event.message.file.name: 
+                filename = event.message.file.name
+            else:
+                # 尝试从属性中获取文件名
+                for attr in event.message.file.attributes:
+                    if hasattr(attr, 'file_name'):
+                        filename = attr.file_name
+                        break
+            
+            filename = (filename or "").lower()
+            if not any(k.lower() in filename for k in fn_kws):
+                return False, "文件名关键词不符"
+
+        # 如果两者都没配置，则匹配所有文件
+        
+    else:
+        # --- 普通模式 (仅检测文本) ---
+        keywords = rule.get("keywords", [])
+        if keywords:
+            if not any(kw.lower() in text for kw in keywords):
+                return False, "文本关键词不符"
+        # 如果没配置关键词，则匹配所有文本消息
+
+    # --- 发送者检查 ---
     sender_mode = rule.get("sender_mode", "exclude")
     prefixes = rule.get("sender_prefixes", [])
     match_prefix = any(sender_name.startswith(p) for p in prefixes)
     if sender_mode == "exclude" and match_prefix: return False, "前缀被排除"
     elif sender_mode == "include" and not match_prefix: return False, "前缀不在白名单"
     
+    # --- 冷却 ---
     rule_id = rule.get("id", str(rule.get("groups")))
     last_time = rule_timers.get(rule_id, 0)
     now = time.time()
     if now - last_time < rule.get("cooldown", 60): return False, "冷却中"
     
     return True, "✅ 匹配成功"
+
+def format_caption(tpl):
+    """处理动态时间等变量"""
+    if not tpl: return ""
+    now_str = datetime.now(BJ_TZ).strftime('%Y-%-m-%-d %H:%M') 
+    return tpl.replace('{time}', now_str)
 
 def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None):
     global global_main_handler
@@ -444,7 +553,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
         if event.text == "/debug":
-            await event.reply("Monitor Debug: Alive")
+            await event.reply("Monitor Debug: Alive v3")
             return
 
         if not current_config.get("enabled", True): return
@@ -468,7 +577,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                         delay = random.uniform(step.get("min", 1), step.get("max", 3))
                         await asyncio.sleep(delay)
                         
-                        # 2. 判断动作类型 (兼容旧配置，默认为 text)
+                        # 2. 判断动作类型
                         step_type = step.get("type", "text")
 
                         if step_type == "forward":
@@ -476,27 +585,39 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                             if target:
                                 try:
                                     target_id = int(str(target).strip())
-                                    # 转发核心逻辑
                                     await client.forward_messages(target_id, event.message)
-                                    logger.info(f"➡️ [Monitor] 已将消息转发至 {target_id}")
+                                    logger.info(f"➡️ [Monitor] Forward -> {target_id}")
                                 except Exception as e:
-                                    logger.error(f"❌ [Monitor] 消息转发失败: {e}")
+                                    logger.error(f"❌ [Monitor] 转发失败: {e}")
+                        
+                        elif step_type == "copy_file":
+                            # 新功能：复制文件并替换文案
+                            target = step.get("forward_to")
+                            caption_tpl = step.get("text", "")
+                            
+                            if target and event.message.file:
+                                try:
+                                    target_id = int(str(target).strip())
+                                    final_caption = format_caption(caption_tpl)
                                     
+                                    # 针对不同类型的文件发送
+                                    # 注意：send_file 可以自动处理 photo/document
+                                    await client.send_file(target_id, event.message.file.media, caption=final_caption)
+                                    
+                                    logger.info(f"➡️ [Monitor] CopyFile -> {target_id}")
+                                except Exception as e:
+                                    logger.error(f"❌ [Monitor] 携带文案转发失败: {e}")
+                            else:
+                                logger.warning(f"⚠️ [Monitor] CopyFile 忽略: 目标ID为空或原消息无文件")
+
                         else:
                             # 默认为文本回复
                             content = step.get("text", "")
                             if not content: continue
                             
-                            sent_msg = await event.reply(content)
+                            final_text = format_caption(content)
+                            sent_msg = await event.reply(final_text)
                             
-                            # 触发主程序的统计/回调逻辑
                             if global_main_handler:
                                 try:
-                                    fake_event = events.NewMessage.Event(sent_msg)
-                                    asyncio.create_task(global_main_handler(fake_event))
-                                except: pass
-                    break
-            except Exception as e:
-                logger.error(f"❌ [Monitor] 规则执行错误: {e}")
-
-    logger.info("🛠️ [Monitor] Ultimate UI 已启动")
+                                    fake_
