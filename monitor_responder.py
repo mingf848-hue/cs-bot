@@ -136,6 +136,15 @@ def save_config(new_config):
                 if k: clean_fn_kws.append(k)
             rule["filename_keywords"] = clean_fn_kws
             
+            # 清洗前缀列表
+            clean_prefixes = []
+            raw_prefixes = rule.get("sender_prefixes", [])
+            if isinstance(raw_prefixes, str): raw_prefixes = raw_prefixes.split('\n')
+            for p in raw_prefixes:
+                p = str(p).strip()
+                if p: clean_prefixes.append(p)
+            rule["sender_prefixes"] = clean_prefixes
+            
             try: rule["cooldown"] = int(rule.get("cooldown", 60))
             except: rule["cooldown"] = 60
             for r in rule.get("replies", []):
@@ -166,7 +175,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v3</title>
+    <title>Monitor Pro v4</title>
     <script src="https://cdn.staticfile.net/vue/3.3.4/vue.global.prod.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -174,11 +183,12 @@ SETTINGS_HTML = """
     
     <style>
         body { font-family: 'Inter', sans-serif; }
-        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
         ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 2px; }
         ::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
-        textarea { font-family: 'Menlo', 'Monaco', 'Courier New', monospace; font-size: 12px; }
+        textarea { font-family: 'Menlo', 'Monaco', 'Courier New', monospace; font-size: 11px; line-height: 1.4; }
+        input, select { font-size: 12px; }
     </style>
     <script>
         tailwind.config = {
@@ -199,30 +209,29 @@ SETTINGS_HTML = """
 <body class="text-slate-800 antialiased">
 <div id="app" class="min-h-screen pb-20">
     
-    <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 bg-opacity-90 backdrop-blur-md">
+    <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 bg-opacity-90 backdrop-blur-md shadow-sm">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between h-16">
+            <div class="flex justify-between h-14">
                 <div class="flex items-center gap-3">
-                    <div class="bg-primary/10 text-primary p-2 rounded-lg">
-                        <i class="fa-solid fa-robot text-xl"></i>
+                    <div class="bg-primary/10 text-primary p-1.5 rounded-lg">
+                        <i class="fa-solid fa-robot text-lg"></i>
                     </div>
                     <div>
-                        <h1 class="text-lg font-bold text-slate-900 tracking-tight">Monitor <span class="text-xs font-medium text-primary bg-primary/10 px-2 py-0.5 rounded-full ml-1">Pro v3</span></h1>
-                        <p class="text-xs text-slate-500 font-medium">自动化响应 & 文件流转系统</p>
+                        <h1 class="text-base font-bold text-slate-900 tracking-tight">Monitor <span class="text-[10px] font-medium text-primary bg-primary/10 px-1.5 py-0.5 rounded-full ml-1">Pro v4</span></h1>
                     </div>
                 </div>
-                <div class="flex items-center gap-4">
-                    <div class="flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200">
-                        <span class="relative flex h-2.5 w-2.5">
+                <div class="flex items-center gap-3">
+                    <div class="flex items-center gap-2 bg-slate-100 px-3 py-1 rounded-full border border-slate-200">
+                        <span class="relative flex h-2 w-2">
                           <span v-if="config.enabled" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
-                          <span :class="config.enabled ? 'bg-success' : 'bg-slate-400'" class="relative inline-flex rounded-full h-2.5 w-2.5"></span>
+                          <span :class="config.enabled ? 'bg-success' : 'bg-slate-400'" class="relative inline-flex rounded-full h-2 w-2"></span>
                         </span>
-                        <label class="text-xs font-semibold text-slate-600 cursor-pointer select-none">
+                        <label class="text-[11px] font-semibold text-slate-600 cursor-pointer select-none">
                             <input type="checkbox" v-model="config.enabled" @change="saveConfig" class="hidden">
-                            System {{ config.enabled ? 'Online' : 'Offline' }}
+                            System {{ config.enabled ? 'On' : 'Off' }}
                         </label>
                     </div>
-                    <button @click="saveConfig" class="bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all shadow-lg shadow-slate-900/20 flex items-center gap-2">
+                    <button @click="saveConfig" class="bg-slate-900 hover:bg-slate-800 text-white px-3 py-1.5 rounded-md text-xs font-medium transition-all shadow-md flex items-center gap-1.5">
                         <i class="fa-solid fa-floppy-disk"></i> 保存
                     </button>
                 </div>
@@ -230,139 +239,144 @@ SETTINGS_HTML = """
         </div>
     </nav>
 
-    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         
-        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
             
             <div v-for="(rule, index) in config.rules" :key="index" 
-                 class="group bg-white rounded-xl border border-slate-200 shadow-sm hover:shadow-xl hover:border-primary/30 transition-all duration-300 flex flex-col overflow-hidden relative">
+                 class="group bg-white rounded-lg border border-slate-200 shadow-sm hover:shadow-lg hover:border-primary/30 transition-all duration-200 flex flex-col overflow-hidden relative">
                 
-                <div class="px-5 py-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
+                <div class="px-4 py-3 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
                     <div class="flex items-center gap-2 flex-1">
-                        <i class="fa-solid fa-hashtag text-slate-400 text-sm"></i>
-                        <input v-model="rule.name" class="bg-transparent border-none p-0 text-sm font-bold text-slate-800 focus:ring-0 placeholder-slate-400 w-full" placeholder="输入规则名称...">
+                        <i class="fa-solid fa-hashtag text-slate-400 text-xs"></i>
+                        <input v-model="rule.name" class="bg-transparent border-none p-0 text-xs font-bold text-slate-800 focus:ring-0 placeholder-slate-400 w-full" placeholder="输入规则名称...">
                     </div>
-                    <button @click="removeRule(index)" class="text-slate-400 hover:text-danger hover:bg-red-50 p-1.5 rounded transition-colors" title="删除规则">
-                        <i class="fa-regular fa-trash-can"></i>
+                    <button @click="removeRule(index)" class="text-slate-400 hover:text-danger hover:bg-red-50 p-1 rounded transition-colors" title="删除">
+                        <i class="fa-regular fa-trash-can text-xs"></i>
                     </button>
                 </div>
 
-                <div class="p-5 flex-1 flex flex-col gap-5">
+                <div class="p-4 flex-1 flex flex-col gap-4">
                     
-                    <div class="space-y-3">
+                    <div class="space-y-2">
                         <div class="flex items-center justify-between">
-                            <div class="flex items-center gap-2 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                            <div class="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
                                 <i class="fa-solid fa-satellite-dish text-primary"></i> 监听配置
                             </div>
-                            <label class="flex items-center gap-2 cursor-pointer select-none bg-slate-100 hover:bg-slate-200 px-2 py-1 rounded transition-colors">
-                                <input type="checkbox" v-model="rule.check_file" class="w-3.5 h-3.5 rounded border-slate-300 text-primary focus:ring-primary">
-                                <span class="text-xs font-semibold" :class="rule.check_file ? 'text-primary' : 'text-slate-500'">开启文件检测</span>
+                            <label class="flex items-center gap-1.5 cursor-pointer select-none bg-slate-100 hover:bg-slate-200 px-2 py-0.5 rounded transition-colors">
+                                <input type="checkbox" v-model="rule.check_file" class="w-3 h-3 rounded border-slate-300 text-primary focus:ring-primary">
+                                <span class="text-[10px] font-semibold" :class="rule.check_file ? 'text-primary' : 'text-slate-500'">文件模式</span>
                             </label>
                         </div>
                         
-                        <div class="grid grid-cols-1 gap-3">
+                        <div class="space-y-2">
                             <div class="relative">
-                                <textarea :value="listToString(rule.groups)" @input="stringToIntList($event, rule, 'groups')"
-                                    class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none h-16"
-                                    placeholder="-100xxxxxx (每行一个群ID)"></textarea>
-                                <div class="absolute right-2 bottom-2 text-[10px] text-slate-400 bg-slate-100 px-1.5 rounded">Group IDs</div>
+                                <textarea :value="listToString(rule.groups)" @input="stringToIntList($event, rule, 'groups')" rows="2"
+                                    class="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1.5 focus:ring-1 focus:ring-primary/20 focus:border-primary transition-all resize-y"
+                                    placeholder="-100xxxxxx"></textarea>
+                                <div class="absolute right-1 bottom-1 text-[9px] text-slate-400 bg-slate-100 px-1 rounded opacity-60">IDs</div>
                             </div>
                             
                             <div v-if="!rule.check_file" class="relative animate-fade-in">
-                                <textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')"
-                                    class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none h-20"
-                                    placeholder="文本关键词 (留空则匹配所有文本)"></textarea>
-                                <div class="absolute right-2 bottom-2 text-[10px] text-slate-400 bg-slate-100 px-1.5 rounded">Msg Keywords</div>
+                                <textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')" rows="2"
+                                    class="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1.5 focus:ring-1 focus:ring-primary/20 focus:border-primary transition-all resize-y"
+                                    placeholder="文本关键词..."></textarea>
+                                <div class="absolute right-1 bottom-1 text-[9px] text-slate-400 bg-slate-100 px-1 rounded opacity-60">Keywords</div>
                             </div>
 
                             <div v-else class="grid grid-cols-2 gap-2 animate-fade-in">
                                 <div class="relative">
-                                    <textarea :value="listToString(rule.file_extensions)" @input="stringToList($event, rule, 'file_extensions')"
-                                        class="w-full bg-yellow-50 border border-yellow-200 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none h-20"
-                                        placeholder="后缀: png, xlsx"></textarea>
-                                    <div class="absolute right-2 bottom-2 text-[10px] text-yellow-600 bg-yellow-100 px-1.5 rounded">File Exts</div>
+                                    <textarea :value="listToString(rule.file_extensions)" @input="stringToList($event, rule, 'file_extensions')" rows="2"
+                                        class="w-full bg-yellow-50 border border-yellow-200 rounded px-2 py-1.5 focus:ring-1 focus:ring-primary/20 focus:border-primary transition-all resize-y"
+                                        placeholder="png, xlsx"></textarea>
+                                    <div class="absolute right-1 bottom-1 text-[9px] text-yellow-600 bg-yellow-100 px-1 rounded opacity-60">Exts</div>
                                 </div>
                                 <div class="relative">
-                                    <textarea :value="listToString(rule.filename_keywords)" @input="stringToList($event, rule, 'filename_keywords')"
-                                        class="w-full bg-yellow-50 border border-yellow-200 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none h-20"
-                                        placeholder="文件名关键词..."></textarea>
-                                    <div class="absolute right-2 bottom-2 text-[10px] text-yellow-600 bg-yellow-100 px-1.5 rounded">File Name</div>
+                                    <textarea :value="listToString(rule.filename_keywords)" @input="stringToList($event, rule, 'filename_keywords')" rows="2"
+                                        class="w-full bg-yellow-50 border border-yellow-200 rounded px-2 py-1.5 focus:ring-1 focus:ring-primary/20 focus:border-primary transition-all resize-y"
+                                        placeholder="文件名关键词"></textarea>
+                                    <div class="absolute right-1 bottom-1 text-[9px] text-yellow-600 bg-yellow-100 px-1 rounded opacity-60">Name</div>
                                 </div>
                             </div>
 
                         </div>
                     </div>
 
-                    <div class="space-y-3 pt-2 border-t border-slate-100">
-                        <div class="flex items-center justify-between text-xs font-bold text-slate-500 uppercase tracking-wider">
-                            <div class="flex items-center gap-2"><i class="fa-solid fa-filter text-primary"></i> 过滤 & 冷却</div>
+                    <div class="space-y-2 pt-2 border-t border-slate-100">
+                        <div class="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                            <i class="fa-solid fa-filter text-primary"></i> 过滤 & 冷却
                         </div>
-                        <div class="grid grid-cols-2 gap-3">
+                        <div class="grid grid-cols-2 gap-2">
                             <div class="col-span-1">
-                                <select v-model="rule.sender_mode" class="w-full bg-slate-50 border border-slate-200 text-slate-700 text-xs rounded-lg p-2 focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                <select v-model="rule.sender_mode" class="w-full bg-slate-50 border border-slate-200 text-slate-700 rounded px-2 py-1 focus:ring-1 focus:ring-primary/20 focus:border-primary h-8">
                                     <option value="exclude">🚫 排除名单</option>
                                     <option value="include">✅ 仅限白名单</option>
                                 </select>
                             </div>
                             <div class="col-span-1 relative">
-                                <input type="number" v-model.number="rule.cooldown" class="w-full bg-slate-50 border border-slate-200 text-slate-700 text-xs rounded-lg p-2 focus:ring-2 focus:ring-primary/20 focus:border-primary">
-                                <span class="absolute right-3 top-2 text-xs text-slate-400 pointer-events-none">秒</span>
+                                <input type="number" v-model.number="rule.cooldown" class="w-full bg-slate-50 border border-slate-200 text-slate-700 rounded px-2 py-1 focus:ring-1 focus:ring-primary/20 focus:border-primary h-8">
+                                <span class="absolute right-2 top-2 text-[10px] text-slate-400 pointer-events-none">秒</span>
+                            </div>
+                            <div class="col-span-2 relative">
+                                <input :value="listToString(rule.sender_prefixes).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'sender_prefixes')" 
+                                    class="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1 text-slate-600 focus:ring-1 focus:ring-primary/20 focus:border-primary truncate h-8"
+                                    placeholder="前缀列表 (YY_, admin)... 逗号或换行分隔">
+                                <i class="fa-solid fa-user-tag absolute right-2 top-2.5 text-slate-300 text-xs pointer-events-none"></i>
                             </div>
                         </div>
                     </div>
 
-                    <div class="space-y-3 pt-2 border-t border-slate-100 flex-1">
+                    <div class="space-y-2 pt-2 border-t border-slate-100 flex-1">
                         <div class="flex items-center justify-between">
-                            <div class="flex items-center gap-2 text-xs font-bold text-slate-500 uppercase tracking-wider">
-                                <i class="fa-solid fa-bolt text-primary"></i> 执行流 (Timeline)
+                            <div class="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                                <i class="fa-solid fa-bolt text-primary"></i> Timeline
                             </div>
-                            <button @click="rule.replies.push({type:'text', text:'', forward_to:'', min:2, max:4})" class="text-[10px] bg-primary/10 text-primary px-2 py-1 rounded hover:bg-primary hover:text-white transition-colors">
+                            <button @click="rule.replies.push({type:'text', text:'', forward_to:'', min:2, max:4})" class="text-[9px] bg-primary/10 text-primary px-1.5 py-0.5 rounded hover:bg-primary hover:text-white transition-colors">
                                 + 添加
                             </button>
                         </div>
                         
-                        <div class="space-y-2 relative">
-                            <div class="absolute left-3 top-2 bottom-2 w-0.5 bg-slate-200 z-0"></div>
+                        <div class="space-y-1.5 relative">
+                            <div class="absolute left-2.5 top-2 bottom-2 w-px bg-slate-200 z-0"></div>
                             
-                            <div v-if="rule.replies.length === 0" class="text-center py-4 text-xs text-slate-400 bg-slate-50 rounded-lg border border-dashed border-slate-200 z-10 relative">
-                                暂无回复动作
+                            <div v-if="rule.replies.length === 0" class="text-center py-3 text-[10px] text-slate-400 bg-slate-50 rounded border border-dashed border-slate-200 z-10 relative">
+                                无动作
                             </div>
 
                             <div v-for="(reply, rIndex) in rule.replies" :key="rIndex" class="relative z-10 group/item">
-                                <div class="flex items-start gap-2">
-                                    <div class="flex flex-col items-center bg-white border border-slate-200 rounded shadow-sm px-1 py-0.5 min-w-[40px] z-10 mt-1">
-                                        <div class="flex items-center gap-0.5 text-[10px] font-mono text-slate-500">
-                                            <input v-model.number="reply.min" class="w-3 text-center bg-transparent border-b border-dashed border-slate-300 focus:outline-none focus:border-primary p-0">
+                                <div class="flex items-start gap-1.5">
+                                    <div class="flex flex-col items-center bg-white border border-slate-200 rounded px-0.5 py-0.5 min-w-[32px] z-10 mt-0.5">
+                                        <div class="flex items-center gap-0.5 text-[9px] font-mono text-slate-500">
+                                            <input v-model.number="reply.min" class="w-2.5 text-center bg-transparent border-b border-dashed border-slate-300 focus:outline-none focus:border-primary p-0">
                                             <span>-</span>
-                                            <input v-model.number="reply.max" class="w-3 text-center bg-transparent border-b border-dashed border-slate-300 focus:outline-none focus:border-primary p-0">
+                                            <input v-model.number="reply.max" class="w-2.5 text-center bg-transparent border-b border-dashed border-slate-300 focus:outline-none focus:border-primary p-0">
                                         </div>
-                                        <div class="text-[9px] text-slate-300">sec</div>
                                     </div>
                                     
-                                    <div class="flex-1 bg-white border border-slate-200 rounded-lg p-2 flex flex-col gap-2 shadow-sm group-hover/item:border-primary/50 group-hover/item:shadow-md transition-all">
-                                        <div class="flex items-center gap-2">
-                                            <div class="w-1.5 h-1.5 rounded-full bg-primary flex-shrink-0"></div>
-                                            <select v-model="reply.type" class="w-24 text-[10px] bg-slate-50 border-none rounded focus:ring-0 text-slate-500 py-1 cursor-pointer">
-                                                <option value="text">💬 纯文本回复</option>
-                                                <option value="forward">🔀 原样转发</option>
-                                                <option value="copy_file">📂 转发+换词</option>
+                                    <div class="flex-1 bg-white border border-slate-200 rounded p-1.5 flex flex-col gap-1.5 shadow-sm group-hover/item:border-primary/50 transition-all">
+                                        <div class="flex items-center gap-1.5">
+                                            <div class="w-1 h-1 rounded-full bg-primary flex-shrink-0"></div>
+                                            <select v-model="reply.type" class="w-20 text-[10px] bg-slate-50 border-none rounded focus:ring-0 text-slate-500 py-0.5 cursor-pointer h-5">
+                                                <option value="text">💬 回复</option>
+                                                <option value="forward">🔀 转发</option>
+                                                <option value="copy_file">📂 文件+文案</option>
                                             </select>
                                             <button @click="rule.replies.splice(rIndex, 1)" class="ml-auto text-slate-300 hover:text-danger transition-colors px-1">
-                                                <i class="fa-solid fa-xmark"></i>
+                                                <i class="fa-solid fa-xmark text-[10px]"></i>
                                             </button>
                                         </div>
 
                                         <template v-if="reply.type === 'text'">
-                                            <textarea v-model="reply.text" class="w-full text-xs border border-slate-100 rounded p-1.5 bg-slate-50 focus:ring-1 focus:ring-primary/20 resize-none h-16" placeholder="输入回复内容 ({time} 可用)..."></textarea>
+                                            <textarea v-model="reply.text" rows="2" class="w-full text-xs border border-slate-100 rounded p-1 bg-slate-50 focus:ring-1 focus:ring-primary/20 resize-y" placeholder="回复内容 ({time})..."></textarea>
                                         </template>
                                         
                                         <template v-if="reply.type === 'forward'">
-                                            <input v-model="reply.forward_to" class="w-full text-xs border border-slate-100 rounded p-1.5 bg-slate-50 focus:ring-1 focus:ring-primary/20 font-mono text-blue-600" placeholder="目标群组 ID (-100...)">
+                                            <input v-model="reply.forward_to" class="w-full text-xs border border-slate-100 rounded p-1 bg-slate-50 focus:ring-1 focus:ring-primary/20 font-mono text-blue-600 h-6" placeholder="Target ID">
                                         </template>
 
                                         <template v-if="reply.type === 'copy_file'">
-                                            <input v-model="reply.forward_to" class="w-full text-xs border border-slate-100 rounded p-1.5 bg-slate-50 focus:ring-1 focus:ring-primary/20 font-mono text-blue-600 mb-1" placeholder="目标群组 ID (-100...)">
-                                            <textarea v-model="reply.text" class="w-full text-xs border border-slate-100 rounded p-1.5 bg-yellow-50 focus:ring-1 focus:ring-primary/20 resize-none h-20" placeholder="新文案 ({time} 可插入时间)"></textarea>
+                                            <input v-model="reply.forward_to" class="w-full text-xs border border-slate-100 rounded p-1 bg-slate-50 focus:ring-1 focus:ring-primary/20 font-mono text-blue-600 h-6 mb-1" placeholder="Target ID">
+                                            <textarea v-model="reply.text" rows="2" class="w-full text-xs border border-slate-100 rounded p-1 bg-yellow-50 focus:ring-1 focus:ring-primary/20 resize-y" placeholder="新文案 ({time})..."></textarea>
                                         </template>
 
                                     </div>
@@ -374,22 +388,21 @@ SETTINGS_HTML = """
                 </div>
             </div>
 
-            <div @click="addRule" class="border-2 border-dashed border-slate-300 rounded-xl flex flex-col items-center justify-center p-10 cursor-pointer hover:border-primary hover:bg-blue-50/50 transition-all min-h-[400px] group">
-                <div class="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center text-slate-400 group-hover:bg-blue-100 group-hover:text-primary transition-all mb-4">
-                    <i class="fa-solid fa-plus text-2xl"></i>
+            <div @click="addRule" class="border-2 border-dashed border-slate-300 rounded-lg flex flex-col items-center justify-center p-6 cursor-pointer hover:border-primary hover:bg-blue-50/50 transition-all min-h-[300px] group">
+                <div class="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center text-slate-400 group-hover:bg-blue-100 group-hover:text-primary transition-all mb-3">
+                    <i class="fa-solid fa-plus text-xl"></i>
                 </div>
-                <h3 class="text-slate-500 font-semibold group-hover:text-primary">添加新规则卡片</h3>
-                <p class="text-xs text-slate-400 mt-2">点击创建一个新的监听任务</p>
+                <h3 class="text-slate-500 text-sm font-semibold group-hover:text-primary">添加规则</h3>
             </div>
 
         </div>
     </main>
 
     <div class="fixed bottom-6 right-6 z-50 transition-all duration-500 transform translate-y-20 opacity-0" :class="{'translate-y-0 opacity-100': toast.show}">
-        <div class="bg-slate-800 text-white px-6 py-3 rounded-lg shadow-2xl flex items-center gap-3">
-            <i v-if="toast.type==='success'" class="fa-solid fa-circle-check text-green-400 text-lg"></i>
-            <i v-else class="fa-solid fa-triangle-exclamation text-red-400 text-lg"></i>
-            <span class="font-medium text-sm">{{ toast.msg }}</span>
+        <div class="bg-slate-800 text-white px-4 py-2 rounded shadow-xl flex items-center gap-2">
+            <i v-if="toast.type==='success'" class="fa-solid fa-circle-check text-green-400 text-sm"></i>
+            <i v-else class="fa-solid fa-triangle-exclamation text-red-400 text-sm"></i>
+            <span class="font-medium text-xs">{{ toast.msg }}</span>
         </div>
     </div>
 
@@ -413,12 +426,21 @@ SETTINGS_HTML = """
                         if(r.check_file === undefined) r.check_file = false;
                         if(!r.file_extensions) r.file_extensions = [];
                         if(!r.filename_keywords) r.filename_keywords = [];
+                        if(!r.sender_prefixes) r.sender_prefixes = [];
                         return r;
                     });
                 });
 
             const listToString = (list) => (list || []).join('\\n');
-            const stringToList = (e, rule, key) => { rule[key] = e.target.value.split('\\n').map(x=>x.trim()).filter(x=>x); };
+            const stringToList = (e, rule, key) => { 
+                const val = e.target.value;
+                // 支持逗号或换行分隔
+                if (val.includes(',')) {
+                    rule[key] = val.split(',').map(x=>x.trim()).filter(x=>x);
+                } else {
+                    rule[key] = val.split('\\n').map(x=>x.trim()).filter(x=>x);
+                }
+            };
             const stringToIntList = (e, rule, key) => { rule[key] = e.target.value.split('\\n').map(x=>x.trim()).filter(x=>x); };
 
             const addRule = () => {
@@ -433,7 +455,7 @@ SETTINGS_HTML = """
             };
             
             const removeRule = (index) => {
-                if(confirm('确定删除此任务卡片吗？此操作无法撤销。')) config.rules.splice(index, 1);
+                if(confirm('Delete this rule?')) config.rules.splice(index, 1);
             };
 
             const saveConfig = async () => {
@@ -441,12 +463,12 @@ SETTINGS_HTML = """
                     const res = await fetch('/api/monitor_settings', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(config) });
                     const json = await res.json();
                     if (json.success) {
-                        showToast('配置已成功保存并生效', 'success');
+                        showToast('Saved successfully', 'success');
                     } else {
-                        showToast('保存失败: ' + json.msg, 'error');
+                        showToast('Error: ' + json.msg, 'error');
                     }
                 } catch(e) {
-                    showToast('网络连接错误', 'error');
+                    showToast('Network Error', 'error');
                 }
             };
 
@@ -461,7 +483,7 @@ SETTINGS_HTML = """
 </script>
 <style>
 .animate-fade-in { animation: fadeIn 0.3s ease-in-out; }
-@keyframes fadeIn { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
 </style>
 </body>
 </html>
@@ -503,15 +525,12 @@ def analyze_message(rule, event, other_cs_ids, sender_name):
             if not any(k.lower() in filename for k in fn_kws):
                 return False, "文件名关键词不符"
 
-        # 如果两者都没配置，则匹配所有文件
-        
     else:
         # --- 普通模式 (仅检测文本) ---
         keywords = rule.get("keywords", [])
         if keywords:
             if not any(kw.lower() in text for kw in keywords):
                 return False, "文本关键词不符"
-        # 如果没配置关键词，则匹配所有文本消息
 
     # --- 发送者检查 ---
     sender_mode = rule.get("sender_mode", "exclude")
@@ -553,7 +572,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
         if event.text == "/debug":
-            await event.reply("Monitor Debug: Alive v3")
+            await event.reply("Monitor Debug: Alive v4")
             return
 
         if not current_config.get("enabled", True): return
@@ -599,11 +618,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                 try:
                                     target_id = int(str(target).strip())
                                     final_caption = format_caption(caption_tpl)
-                                    
                                     # 针对不同类型的文件发送
-                                    # 注意：send_file 可以自动处理 photo/document
                                     await client.send_file(target_id, event.message.file.media, caption=final_caption)
-                                    
                                     logger.info(f"➡️ [Monitor] CopyFile -> {target_id}")
                                 except Exception as e:
                                     logger.error(f"❌ [Monitor] 携带文案转发失败: {e}")
@@ -627,4 +643,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             except Exception as e:
                 logger.error(f"❌ [Monitor] 规则执行错误: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v3 (File Check) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v4 (Compact & Fixed) 已启动")
