@@ -1232,26 +1232,40 @@ def _post_request(url, payload):
 
 async def send_alert(text, link, extra_log=""):
     if not BOT_TOKEN: return
+    # 提取第一行作为摘要/标题
     summary = text.splitlines()[1] if len(text.splitlines()) > 1 else '通知'
+    
     log_tree(3, f"{extra_log} [ALERT] 发送报警 -> 全文:\n{text}")
+    
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     loop = asyncio.get_event_loop()
     tasks = []
+    
+    # --- [原有] Telegram 推送 ---
     for chat_id in ALERT_GROUP_IDS:
         payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": True}
         tasks.append(loop.run_in_executor(None, lambda p=payload: _post_request(url, p)))
-    if tasks: await asyncio.gather(*tasks)
 
-async def check_msg_exists(channel_id, msg_id):
-    try:
-        msg = await client.get_messages(channel_id, ids=msg_id)
-        if not msg: 
-            log_tree(2, f"❌ 检查发现消息 {msg_id} 已物理删除")
-            return False 
-        return True
-    except Exception as e:
-        log_tree(2, f"⚠️ 网络检测失败 ({e}) -> 强制防漏报")
-        return True 
+    # --- [新增] NTFY 推送 (cs_help_vip_888) ---
+    def _push_ntfy():
+        try:
+            ntfy_url = "https://ntfy.sh/cs_help_vip_888"
+            # 发送 POST 请求，body 为消息内容，Header 中带上标题
+            # 这里的 .encode('utf-8') 确保中文不会乱码
+            requests.post(
+                ntfy_url, 
+                data=text.encode('utf-8'), 
+                headers={"Title": summary.encode('utf-8'), "Priority": "high"},
+                timeout=10
+            )
+        except Exception as e:
+            log_tree(9, f"NTFY推送异常: {e}")
+
+    # 将 NTFY 任务也加入到异步队列中，避免阻塞主程序
+    tasks.append(loop.run_in_executor(None, _push_ntfy))
+    # ----------------------------------------
+
+    if tasks: await asyncio.gather(*tasks)
 
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
