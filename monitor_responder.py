@@ -168,260 +168,231 @@ def save_config(new_config):
         logger.error(f"❌ [Monitor] 保存失败: {e}")
         return False, str(e)
 
-# --- Web UI (Glassmorphism / Frosted Glass) ---
+# --- Web UI (Bento Grid / Linear Style + Typography Pro) ---
 SETTINGS_HTML = """
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="bg-[#F3F4F6]">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro Glass</title>
+    <title>Monitor Pro v7</title>
     <script src="https://cdn.staticfile.net/vue/3.3.4/vue.global.prod.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     
     <style>
-        body { 
-            font-family: 'Inter', sans-serif; 
-            background-color: #0f172a;
-            background-image: 
-                radial-gradient(at 0% 0%, hsla(253,16%,7%,1) 0, transparent 50%), 
-                radial-gradient(at 50% 0%, hsla(225,39%,30%,1) 0, transparent 50%), 
-                radial-gradient(at 100% 0%, hsla(339,49%,30%,1) 0, transparent 50%);
-            background-attachment: fixed;
-            background-size: cover;
-        }
-        /* Custom Scrollbar for Glass Theme */
-        ::-webkit-scrollbar { width: 6px; height: 6px; }
-        ::-webkit-scrollbar-track { background: rgba(0,0,0,0.1); }
-        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 3px; }
-        ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.3); }
+        /* Base Font Setting */
+        body { font-family: 'Plus Jakarta Sans', sans-serif; }
         
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 2px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+        
+        /* Input Font Setting -> JetBrains Mono */
         textarea, input, select { 
-            font-family: 'Menlo', 'Monaco', monospace; 
+            font-family: 'JetBrains Mono', monospace; 
             font-size: 11px; 
-            line-height: 1.4;
-            color: #e2e8f0; 
+            letter-spacing: -0.01em;
         }
         
-        /* Glass Classes */
-        .glass-panel {
-            background: rgba(255, 255, 255, 0.05);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+        /* Linear/Bento Style Classes */
+        .bento-card {
+            background: white;
+            border: 1px solid #E5E7EB;
+            border-radius: 8px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+            transition: all 0.2s ease;
         }
-        .glass-input {
-            background: rgba(0, 0, 0, 0.2);
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            color: white;
-            transition: all 0.3s ease;
+        .bento-card:hover {
+            border-color: #D1D5DB;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
         }
-        .glass-input:focus {
-            background: rgba(0, 0, 0, 0.4);
-            border-color: rgba(255, 255, 255, 0.3);
+        .bento-input {
+            background-color: #F9FAFB;
+            border: 1px solid #E5E7EB;
+            border-radius: 6px;
+            color: #374151;
+            transition: all 0.15s;
+        }
+        .bento-input:focus {
+            background-color: white;
+            border-color: #6366F1;
+            ring: 2px solid rgba(99, 102, 241, 0.1);
             outline: none;
         }
-        .glass-btn {
-            background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0) 100%);
-            border: 1px solid rgba(255,255,255,0.1);
-            transition: all 0.2s;
-        }
-        .glass-btn:hover {
-            background: rgba(255,255,255,0.1);
-            border-color: rgba(255,255,255,0.3);
+        .section-label {
+            font-size: 10px;
+            font-weight: 700;
+            color: #6B7280;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
         }
     </style>
     <script>
         tailwind.config = {
             theme: {
                 extend: {
+                    fontFamily: {
+                        sans: ['"Plus Jakarta Sans"', 'sans-serif'],
+                        mono: ['"JetBrains Mono"', 'monospace'],
+                    },
                     colors: {
-                        primary: '#60A5FA',
-                        secondary: '#94A3B8',
-                        success: '#34D399',
-                        danger: '#F87171',
+                        primary: '#6366F1', /* Indigo-500 */
+                        slate: { 50:'#f9fafb', 100:'#f3f4f6', 200:'#e5e7eb', 800:'#1f2937' }
                     }
                 }
             }
         }
     </script>
 </head>
-<body class="text-slate-200 antialiased min-h-screen">
-<div id="app" class="pb-20">
+<body class="text-slate-800 antialiased min-h-screen pb-20 font-sans">
+<div id="app">
     
-    <nav class="sticky top-0 z-50 glass-panel border-b border-white/10">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between h-16 items-center">
-                <div class="flex items-center gap-3">
-                    <div class="bg-primary/20 text-primary p-2 rounded-lg backdrop-blur-sm border border-primary/20">
-                        <i class="fa-solid fa-layer-group text-lg"></i>
-                    </div>
-                    <div>
-                        <h1 class="text-base font-bold text-white tracking-wide">Monitor <span class="text-[10px] font-medium text-cyan-300 bg-cyan-400/10 px-2 py-0.5 rounded-full ml-1 border border-cyan-400/20">Glass v5</span></h1>
-                    </div>
-                </div>
-                <div class="flex items-center gap-4">
-                    <div class="flex items-center gap-2 bg-black/20 px-3 py-1.5 rounded-full border border-white/5 backdrop-blur-sm">
-                        <span class="relative flex h-2 w-2">
-                          <span v-if="config.enabled" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
-                          <span :class="config.enabled ? 'bg-success' : 'bg-slate-600'" class="relative inline-flex rounded-full h-2 w-2"></span>
-                        </span>
-                        <label class="text-xs font-medium text-slate-300 cursor-pointer select-none">
-                            <input type="checkbox" v-model="config.enabled" @change="saveConfig" class="hidden">
-                            System {{ config.enabled ? 'Active' : 'Standby' }}
-                        </label>
-                    </div>
-                    <button @click="saveConfig" class="bg-primary/80 hover:bg-primary text-white px-4 py-2 rounded-lg text-xs font-bold transition-all shadow-lg shadow-blue-500/20 backdrop-blur-sm flex items-center gap-2 border border-white/10">
-                        <i class="fa-solid fa-floppy-disk"></i> Save
-                    </button>
-                </div>
+    <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
+        <div class="flex items-center gap-2">
+            <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs">
+                <i class="fa-solid fa-bolt"></i>
             </div>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v7</span></span>
+        </div>
+        <div class="flex items-center gap-3">
+            <label class="flex items-center gap-1.5 cursor-pointer select-none bg-slate-50 px-2 py-1 rounded border border-slate-200 hover:border-slate-300 transition-colors">
+                <div class="w-2 h-2 rounded-full" :class="config.enabled ? 'bg-green-500' : 'bg-slate-300'"></div>
+                <input type="checkbox" v-model="config.enabled" @change="saveConfig" class="hidden">
+                <span class="text-[11px] font-semibold text-slate-600">{{ config.enabled ? 'Active' : 'Paused' }}</span>
+            </label>
+            <button @click="saveConfig" class="bg-slate-900 hover:bg-black text-white px-3 py-1 rounded text-[11px] font-bold transition-colors flex items-center gap-1.5 shadow-sm">
+                <i class="fa-solid fa-floppy-disk"></i> 保存
+            </button>
         </div>
     </nav>
 
-    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <main class="max-w-[1400px] mx-auto px-4 py-6">
         
-        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             
             <div v-for="(rule, index) in config.rules" :key="index" 
-                 class="group glass-panel rounded-2xl flex flex-col overflow-hidden relative transition-all duration-300 hover:shadow-[0_8px_40px_rgba(0,0,0,0.3)] hover:border-white/20">
+                 class="bento-card flex flex-col overflow-hidden relative group">
                 
-                <div class="px-5 py-4 border-b border-white/5 bg-white/5 flex justify-between items-center">
-                    <div class="flex items-center gap-3 flex-1">
-                        <i class="fa-solid fa-hashtag text-slate-500 text-xs"></i>
-                        <input v-model="rule.name" class="bg-transparent border-none p-0 text-sm font-bold text-white focus:ring-0 placeholder-slate-500 w-full" placeholder="Rule Name...">
+                <div class="px-3 py-2 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                    <div class="flex items-center gap-2 flex-1">
+                        <span class="text-slate-400 text-[10px] font-mono">#{{index+1}}</span>
+                        <input v-model="rule.name" class="bg-transparent border-none p-0 text-xs font-bold text-slate-700 focus:ring-0 placeholder-slate-300 w-full font-sans" placeholder="未命名规则">
                     </div>
-                    <button @click="removeRule(index)" class="text-slate-500 hover:text-danger hover:bg-white/10 p-1.5 rounded transition-colors" title="Delete">
-                        <i class="fa-regular fa-trash-can text-xs"></i>
+                    <button @click="removeRule(index)" class="text-slate-300 hover:text-red-500 transition-colors px-1" title="删除">
+                        <i class="fa-solid fa-trash text-[10px]"></i>
                     </button>
                 </div>
 
-                <div class="p-5 flex-1 flex flex-col gap-5">
+                <div class="p-3 flex flex-col gap-3">
                     
-                    <div class="space-y-3">
+                    <div class="space-y-1.5">
                         <div class="flex items-center justify-between">
-                            <div class="flex items-center gap-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                                <i class="fa-solid fa-satellite-dish text-primary"></i> Listener
-                            </div>
-                            <label class="flex items-center gap-2 cursor-pointer select-none bg-black/20 hover:bg-black/40 px-2 py-1 rounded transition-colors border border-white/5">
-                                <input type="checkbox" v-model="rule.check_file" class="w-3 h-3 rounded bg-slate-700 border-none text-primary focus:ring-offset-0 focus:ring-0">
-                                <span class="text-[10px] font-semibold" :class="rule.check_file ? 'text-primary' : 'text-slate-500'">File Mode</span>
+                            <span class="section-label"><i class="fa-solid fa-eye mr-1"></i>监听来源</span>
+                            <label class="flex items-center gap-1 cursor-pointer select-none">
+                                <input type="checkbox" v-model="rule.check_file" class="w-3 h-3 text-primary border-slate-300 rounded focus:ring-0">
+                                <span class="text-[10px] text-slate-500 font-medium" :class="{'text-primary': rule.check_file}">文件模式</span>
                             </label>
                         </div>
                         
-                        <div class="space-y-3">
-                            <div class="relative">
-                                <textarea :value="listToString(rule.groups)" @input="stringToIntList($event, rule, 'groups')" rows="2"
-                                    class="w-full glass-input rounded-lg px-3 py-2 resize-y focus:ring-1 focus:ring-primary/50"
-                                    placeholder="-100xxxxxx"></textarea>
-                                <div class="absolute right-2 bottom-2 text-[9px] text-slate-500 pointer-events-none">Group IDs</div>
-                            </div>
-                            
-                            <div v-if="!rule.check_file" class="relative animate-fade-in">
-                                <textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')" rows="2"
-                                    class="w-full glass-input rounded-lg px-3 py-2 resize-y focus:ring-1 focus:ring-primary/50"
-                                    placeholder="Keywords (Optional)"></textarea>
-                                <div class="absolute right-2 bottom-2 text-[9px] text-slate-500 pointer-events-none">Text Keywords</div>
-                            </div>
+                        <div class="relative">
+                            <textarea :value="listToString(rule.groups)" @input="stringToIntList($event, rule, 'groups')" rows="1"
+                                class="bento-input w-full px-2 py-1.5 resize-none h-8 leading-tight font-mono text-[11px]"
+                                placeholder="群ID (换行分隔)"></textarea>
+                        </div>
+                        
+                        <div v-if="!rule.check_file" class="relative">
+                            <textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')" rows="1"
+                                class="bento-input w-full px-2 py-1.5 resize-none h-8 leading-tight font-mono text-[11px]"
+                                placeholder="文本关键词 (留空匹配所有)"></textarea>
+                        </div>
 
-                            <div v-else class="grid grid-cols-2 gap-3 animate-fade-in">
-                                <div class="relative">
-                                    <textarea :value="listToString(rule.file_extensions)" @input="stringToList($event, rule, 'file_extensions')" rows="2"
-                                        class="w-full glass-input rounded-lg px-3 py-2 resize-y focus:ring-1 focus:ring-yellow-500/50 text-yellow-100"
-                                        placeholder="png, xlsx"></textarea>
-                                    <div class="absolute right-2 bottom-2 text-[9px] text-yellow-500/70 pointer-events-none">Exts</div>
-                                </div>
-                                <div class="relative">
-                                    <textarea :value="listToString(rule.filename_keywords)" @input="stringToList($event, rule, 'filename_keywords')" rows="2"
-                                        class="w-full glass-input rounded-lg px-3 py-2 resize-y focus:ring-1 focus:ring-yellow-500/50 text-yellow-100"
-                                        placeholder="Name match"></textarea>
-                                    <div class="absolute right-2 bottom-2 text-[9px] text-yellow-500/70 pointer-events-none">Name</div>
-                                </div>
-                            </div>
+                        <div v-else class="grid grid-cols-2 gap-2">
+                            <input :value="listToString(rule.file_extensions).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'file_extensions')"
+                                class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]"
+                                placeholder="后缀: xlsx, png">
+                            <input :value="listToString(rule.filename_keywords).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'filename_keywords')"
+                                class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]"
+                                placeholder="文件名关键词">
                         </div>
                     </div>
 
-                    <div class="space-y-3 pt-3 border-t border-white/5">
-                        <div class="flex items-center gap-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                            <i class="fa-solid fa-filter text-primary"></i> Filters
-                        </div>
-                        <div class="grid grid-cols-2 gap-3">
-                            <div class="col-span-1">
-                                <select v-model="rule.sender_mode" class="w-full glass-input rounded-lg px-2 py-1.5 h-9">
-                                    <option value="exclude" class="text-slate-800">🚫 Exclude</option>
-                                    <option value="include" class="text-slate-800">✅ Include Only</option>
+                    <div class="h-px bg-slate-100"></div>
+
+                    <div class="space-y-1.5">
+                        <div class="section-label"><i class="fa-solid fa-filter mr-1"></i>过滤与冷却</div>
+                        <div class="grid grid-cols-5 gap-2">
+                            <div class="col-span-2">
+                                <select v-model="rule.sender_mode" class="bento-input w-full px-1 py-0 h-7 text-[10px] font-sans font-medium">
+                                    <option value="exclude">🚫 排除前缀</option>
+                                    <option value="include">✅ 只许前缀</option>
                                 </select>
                             </div>
-                            <div class="col-span-1 relative">
-                                <input type="number" v-model.number="rule.cooldown" class="w-full glass-input rounded-lg px-2 py-1.5 h-9 text-center">
-                                <span class="absolute right-2 top-2 text-[10px] text-slate-500 pointer-events-none">sec</span>
-                            </div>
-                            <div class="col-span-2 relative">
+                            <div class="col-span-3">
                                 <input :value="listToString(rule.sender_prefixes).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'sender_prefixes')" 
-                                    class="w-full glass-input rounded-lg px-3 py-1.5 h-9 truncate pr-8"
-                                    placeholder="Prefix list (e.g. YY_, admin)...">
-                                <i class="fa-solid fa-user-tag absolute right-3 top-2.5 text-slate-600 text-xs pointer-events-none"></i>
+                                    class="bento-input w-full px-2 py-1.5 h-7 truncate font-mono text-[11px]"
+                                    placeholder="前缀: YY, AA">
+                            </div>
+                            <div class="col-span-5 relative flex items-center gap-2 mt-0.5">
+                                <span class="text-[10px] text-slate-400 font-medium">冷却CD:</span>
+                                <input type="number" v-model.number="rule.cooldown" class="bento-input w-16 px-1 py-0 h-6 text-center text-[10px] font-mono font-bold">
+                                <span class="text-[10px] text-slate-400 font-medium">秒</span>
                             </div>
                         </div>
                     </div>
 
-                    <div class="space-y-3 pt-3 border-t border-white/5 flex-1">
+                    <div class="h-px bg-slate-100"></div>
+
+                    <div class="space-y-1.5">
                         <div class="flex items-center justify-between">
-                            <div class="flex items-center gap-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                                <i class="fa-solid fa-bolt text-primary"></i> Timeline
-                            </div>
-                            <button @click="rule.replies.push({type:'text', text:'', forward_to:'', min:2, max:4})" class="glass-btn text-[9px] text-primary px-2 py-1 rounded hover:text-white transition-colors">
-                                + ADD ACTION
+                            <span class="section-label text-primary"><i class="fa-solid fa-bolt mr-1"></i>执行动作流</span>
+                            <button @click="rule.replies.push({type:'text', text:'', forward_to:'', min:1, max:3})" class="text-[10px] text-primary hover:bg-primary/5 px-1.5 py-0.5 rounded transition-colors border border-transparent hover:border-primary/10 font-bold">
+                                + 添加步骤
                             </button>
                         </div>
                         
-                        <div class="space-y-2 relative">
-                            <div class="absolute left-3 top-2 bottom-2 w-px bg-white/10 z-0"></div>
-                            
-                            <div v-if="rule.replies.length === 0" class="text-center py-4 text-[10px] text-slate-600 bg-black/10 rounded-lg border border-dashed border-white/5 z-10 relative">
-                                No actions defined
-                            </div>
+                        <div v-if="rule.replies.length === 0" class="text-center py-2 text-[10px] text-slate-300 border border-dashed border-slate-200 rounded font-medium">
+                            无动作
+                        </div>
 
-                            <div v-for="(reply, rIndex) in rule.replies" :key="rIndex" class="relative z-10 group/item">
-                                <div class="flex items-start gap-2">
-                                    <div class="flex flex-col items-center glass-panel bg-black/40 rounded px-1 py-1 min-w-[36px] z-10 mt-0.5 border-white/5">
-                                        <div class="flex items-center gap-0.5 text-[9px] font-mono text-slate-400">
-                                            <input v-model.number="reply.min" class="w-3 text-center bg-transparent border-b border-white/10 focus:outline-none focus:border-primary p-0">
-                                            <span>-</span>
-                                            <input v-model.number="reply.max" class="w-3 text-center bg-transparent border-b border-white/10 focus:outline-none focus:border-primary p-0">
-                                        </div>
+                        <div class="space-y-1.5">
+                            <div v-for="(reply, rIndex) in rule.replies" :key="rIndex" class="flex gap-1.5 group/item">
+                                <div class="flex flex-col justify-center items-center w-8 bg-slate-50 border border-slate-200 rounded h-auto font-mono">
+                                    <input v-model.number="reply.min" class="w-full text-center bg-transparent text-[9px] text-slate-500 focus:outline-none h-3 p-0" placeholder="min">
+                                    <div class="w-3 h-px bg-slate-200 my-0.5"></div>
+                                    <input v-model.number="reply.max" class="w-full text-center bg-transparent text-[9px] text-slate-500 focus:outline-none h-3 p-0" placeholder="max">
+                                </div>
+                                
+                                <div class="flex-1 bg-slate-50 border border-slate-200 rounded p-1.5 hover:border-primary/30 hover:bg-white transition-all">
+                                    <div class="flex items-center gap-1.5 mb-1">
+                                        <select v-model="reply.type" class="text-[10px] bg-transparent border-none p-0 text-slate-600 font-bold focus:ring-0 cursor-pointer w-auto font-sans">
+                                            <option value="text">💬 发送文本</option>
+                                            <option value="forward">🔀 直接转发</option>
+                                            <option value="copy_file">📂 转发+新文案</option>
+                                        </select>
+                                        <button @click="rule.replies.splice(rIndex, 1)" class="ml-auto text-slate-300 hover:text-red-400">
+                                            <i class="fa-solid fa-xmark text-[10px]"></i>
+                                        </button>
                                     </div>
+
+                                    <template v-if="reply.type === 'text'">
+                                        <textarea v-model="reply.text" rows="2" class="bento-input w-full px-1.5 py-1 text-[10px] resize-none border-transparent bg-white focus:border-slate-200 font-mono" placeholder="内容... ({time})"></textarea>
+                                    </template>
                                     
-                                    <div class="flex-1 glass-panel bg-black/20 rounded-lg p-2 flex flex-col gap-2 transition-all hover:bg-black/30 hover:border-white/20">
-                                        <div class="flex items-center gap-2">
-                                            <div class="w-1.5 h-1.5 rounded-full bg-primary flex-shrink-0 shadow-[0_0_8px_rgba(96,165,250,0.8)]"></div>
-                                            <select v-model="reply.type" class="w-24 text-[10px] bg-transparent border-none rounded focus:ring-0 text-slate-300 py-0 cursor-pointer h-5 font-bold">
-                                                <option value="text" class="text-slate-800">💬 Reply</option>
-                                                <option value="forward" class="text-slate-800">🔀 Forward</option>
-                                                <option value="copy_file" class="text-slate-800">📂 File+Text</option>
-                                            </select>
-                                            <button @click="rule.replies.splice(rIndex, 1)" class="ml-auto text-slate-600 hover:text-danger transition-colors px-1">
-                                                <i class="fa-solid fa-xmark text-[10px]"></i>
-                                            </button>
-                                        </div>
+                                    <template v-if="reply.type === 'forward'">
+                                        <input v-model="reply.forward_to" class="bento-input w-full px-1.5 py-1 h-6 text-[10px] font-mono text-blue-600" placeholder="目标群ID">
+                                    </template>
 
-                                        <template v-if="reply.type === 'text'">
-                                            <textarea v-model="reply.text" rows="2" class="w-full glass-input rounded p-1.5 text-xs bg-black/30 focus:bg-black/50" placeholder="Reply content ({time})..."></textarea>
-                                        </template>
-                                        
-                                        <template v-if="reply.type === 'forward'">
-                                            <input v-model="reply.forward_to" class="w-full glass-input rounded p-1.5 text-xs font-mono text-blue-300 h-7" placeholder="Target ID (-100...)">
-                                        </template>
-
-                                        <template v-if="reply.type === 'copy_file'">
-                                            <input v-model="reply.forward_to" class="w-full glass-input rounded p-1.5 text-xs font-mono text-blue-300 h-7 mb-1" placeholder="Target ID (-100...)">
-                                            <textarea v-model="reply.text" rows="2" class="w-full glass-input rounded p-1.5 text-xs bg-yellow-900/20 text-yellow-100 border-yellow-500/20 focus:border-yellow-500/50" placeholder="Caption ({time})..."></textarea>
-                                        </template>
-
-                                    </div>
+                                    <template v-if="reply.type === 'copy_file'">
+                                        <input v-model="reply.forward_to" class="bento-input w-full px-1.5 py-1 h-6 text-[10px] font-mono text-blue-600 mb-1" placeholder="目标群ID">
+                                        <textarea v-model="reply.text" rows="2" class="bento-input w-full px-1.5 py-1 text-[10px] resize-none bg-yellow-50 border-yellow-100 focus:border-yellow-300 font-mono" placeholder="新文案... ({time})"></textarea>
+                                    </template>
                                 </div>
                             </div>
                         </div>
@@ -430,21 +401,21 @@ SETTINGS_HTML = """
                 </div>
             </div>
 
-            <div @click="addRule" class="glass-panel border-dashed border-white/20 rounded-2xl flex flex-col items-center justify-center p-8 cursor-pointer hover:bg-white/5 hover:border-primary/50 transition-all min-h-[300px] group">
-                <div class="w-14 h-14 bg-white/5 rounded-full flex items-center justify-center text-slate-500 group-hover:bg-primary/20 group-hover:text-primary transition-all mb-3 backdrop-blur-sm border border-white/5">
-                    <i class="fa-solid fa-plus text-xl"></i>
+            <div @click="addRule" class="border border-dashed border-slate-300 rounded-lg flex flex-col items-center justify-center p-4 cursor-pointer hover:border-primary hover:bg-slate-50 transition-all min-h-[200px] text-slate-400 hover:text-primary group">
+                <div class="w-10 h-10 rounded-full bg-slate-50 flex items-center justify-center mb-2 group-hover:bg-primary/10 transition-colors">
+                    <i class="fa-solid fa-plus text-lg"></i>
                 </div>
-                <h3 class="text-slate-400 text-sm font-semibold group-hover:text-white transition-colors">Create New Rule</h3>
+                <span class="text-xs font-bold">新建规则卡片</span>
             </div>
 
         </div>
     </main>
 
-    <div class="fixed bottom-6 right-6 z-50 transition-all duration-500 transform translate-y-20 opacity-0" :class="{'translate-y-0 opacity-100': toast.show}">
-        <div class="glass-panel bg-black/80 text-white px-5 py-3 rounded-xl shadow-2xl flex items-center gap-3 border border-white/10 backdrop-blur-xl">
-            <i v-if="toast.type==='success'" class="fa-solid fa-circle-check text-success text-lg shadow-[0_0_10px_rgba(52,211,153,0.5)] rounded-full"></i>
-            <i v-else class="fa-solid fa-triangle-exclamation text-danger text-lg"></i>
-            <span class="font-medium text-xs tracking-wide">{{ toast.msg }}</span>
+    <div class="fixed bottom-4 right-4 z-50 transition-all duration-300" :class="{'translate-y-20 opacity-0': !toast.show, 'translate-y-0 opacity-100': toast.show}">
+        <div class="bg-slate-800 text-white px-3 py-2 rounded shadow-lg flex items-center gap-2 text-xs font-medium">
+            <i v-if="toast.type==='success'" class="fa-solid fa-check text-green-400"></i>
+            <i v-else class="fa-solid fa-triangle-exclamation text-red-400"></i>
+            <span>{{ toast.msg }}</span>
         </div>
     </div>
 
@@ -486,17 +457,17 @@ SETTINGS_HTML = """
 
             const addRule = () => {
                 config.rules.push({
-                    name: 'New Rule #' + (config.rules.length + 1),
+                    name: '新规则 #' + (config.rules.length + 1),
                     groups: [], 
                     check_file: false,
                     keywords: [], file_extensions: [], filename_keywords: [],
                     sender_mode: 'exclude', sender_prefixes: [], cooldown: 60,
-                    replies: [{type:'text', text: '', min: 2, max: 4}]
+                    replies: [{type:'text', text: '', min: 1, max: 2}]
                 });
             };
             
             const removeRule = (index) => {
-                if(confirm('Delete this rule?')) config.rules.splice(index, 1);
+                if(confirm('确定删除此规则？')) config.rules.splice(index, 1);
             };
 
             const saveConfig = async () => {
@@ -504,28 +475,24 @@ SETTINGS_HTML = """
                     const res = await fetch('/api/monitor_settings', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(config) });
                     const json = await res.json();
                     if (json.success) {
-                        showToast('Settings saved successfully', 'success');
+                        showToast('配置已保存', 'success');
                     } else {
-                        showToast('Error: ' + json.msg, 'error');
+                        showToast('保存失败: ' + json.msg, 'error');
                     }
                 } catch(e) {
-                    showToast('Network Error', 'error');
+                    showToast('网络错误', 'error');
                 }
             };
 
             const showToast = (msg, type) => {
                 toast.msg = msg; toast.type = type; toast.show = true;
-                setTimeout(() => toast.show = false, 3000);
+                setTimeout(() => toast.show = false, 2000);
             };
 
             return { config, toast, listToString, stringToList, stringToIntList, addRule, removeRule, saveConfig };
         }
     }).mount('#app');
 </script>
-<style>
-.animate-fade-in { animation: fadeIn 0.3s ease-in-out; }
-@keyframes fadeIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
-</style>
 </body>
 </html>
 """
@@ -613,7 +580,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
         if event.text == "/debug":
-            await event.reply("Monitor Debug: Alive v5 Glass")
+            await event.reply("Monitor Debug: Alive v7 Pro Max")
             return
 
         if not current_config.get("enabled", True): return
@@ -684,4 +651,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             except Exception as e:
                 logger.error(f"❌ [Monitor] 规则执行错误: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v5 Glass Edition 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v7 (Typography Pro) 已启动")
