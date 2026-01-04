@@ -40,6 +40,11 @@ DEFAULT_CONFIG = {
                     "text": "#文件转发\n收到一份报表\n时间：{time}",
                     "min": 1, 
                     "max": 2
+                },
+                {
+                    "type": "preempt_check",
+                    "min": 0.5,
+                    "max": 1.0
                 }
             ]
         }
@@ -91,10 +96,8 @@ def load_config(system_cs_prefixes):
     if not loaded: current_config = DEFAULT_CONFIG.copy()
     
     for rule in current_config["rules"]:
-        # 兼容旧配置
         if "check_file" not in rule: rule["check_file"] = False
         if "filename_keywords" not in rule: rule["filename_keywords"] = []
-        
         if rule["sender_mode"] == "exclude" and not rule["sender_prefixes"]:
             rule["sender_prefixes"] = list(system_cs_prefixes)
 
@@ -116,10 +119,8 @@ def save_config(new_config):
                     except: pass
             rule["groups"] = clean_groups
             
-            # 确保 check_file 是布尔值
             rule["check_file"] = bool(rule.get("check_file", False))
 
-            # 清洗文件配置
             clean_exts = []
             raw_exts = rule.get("file_extensions", [])
             if isinstance(raw_exts, str): raw_exts = raw_exts.split('\n')
@@ -136,7 +137,6 @@ def save_config(new_config):
                 if k: clean_fn_kws.append(k)
             rule["filename_keywords"] = clean_fn_kws
             
-            # 清洗前缀列表
             clean_prefixes = []
             raw_prefixes = rule.get("sender_prefixes", [])
             if isinstance(raw_prefixes, str): raw_prefixes = raw_prefixes.split('\n')
@@ -175,7 +175,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v7</title>
+    <title>Monitor Pro v8</title>
     <script src="https://cdn.staticfile.net/vue/3.3.4/vue.global.prod.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -185,23 +185,18 @@ SETTINGS_HTML = """
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     
     <style>
-        /* Base Font Setting */
         body { font-family: 'Plus Jakarta Sans', sans-serif; }
-        
-        /* Scrollbar */
         ::-webkit-scrollbar { width: 4px; height: 4px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 2px; }
         ::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
         
-        /* Input Font Setting -> JetBrains Mono */
         textarea, input, select { 
             font-family: 'JetBrains Mono', monospace; 
             font-size: 11px; 
             letter-spacing: -0.01em;
         }
         
-        /* Linear/Bento Style Classes */
         .bento-card {
             background: white;
             border: 1px solid #E5E7EB;
@@ -259,7 +254,7 @@ SETTINGS_HTML = """
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs">
                 <i class="fa-solid fa-bolt"></i>
             </div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v7</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v8</span></span>
         </div>
         <div class="flex items-center gap-3">
             <label class="flex items-center gap-1.5 cursor-pointer select-none bg-slate-50 px-2 py-1 rounded border border-slate-200 hover:border-slate-300 transition-colors">
@@ -375,6 +370,7 @@ SETTINGS_HTML = """
                                             <option value="text">💬 发送文本</option>
                                             <option value="forward">🔀 直接转发</option>
                                             <option value="copy_file">📂 转发+新文案</option>
+                                            <option value="preempt_check">⚡ 抢答检测 (自删)</option>
                                         </select>
                                         <button @click="rule.replies.splice(rIndex, 1)" class="ml-auto text-slate-300 hover:text-red-400">
                                             <i class="fa-solid fa-xmark text-[10px]"></i>
@@ -392,6 +388,13 @@ SETTINGS_HTML = """
                                     <template v-if="reply.type === 'copy_file'">
                                         <input v-model="reply.forward_to" class="bento-input w-full px-1.5 py-1 h-6 text-[10px] font-mono text-blue-600 mb-1" placeholder="目标群ID">
                                         <textarea v-model="reply.text" rows="2" class="bento-input w-full px-1.5 py-1 text-[10px] resize-none bg-yellow-50 border-yellow-100 focus:border-yellow-300 font-mono" placeholder="新文案... ({time})"></textarea>
+                                    </template>
+                                    
+                                    <template v-if="reply.type === 'preempt_check'">
+                                        <div class="px-1.5 py-1 bg-red-50 text-red-500 rounded text-[10px] font-medium border border-red-100 flex items-center gap-2">
+                                            <i class="fa-solid fa-user-ninja"></i>
+                                            <span>检测到中间有人插话则删除自己</span>
+                                        </div>
                                     </template>
                                 </div>
                             </div>
@@ -507,47 +510,36 @@ def analyze_message(rule, event, other_cs_ids, sender_name):
     text = (event.text or "").lower()
     
     if check_file:
-        # --- 文件检测模式 ---
         if not event.message.file: return False, "非文件消息"
-        
-        # 1. 检查后缀 (如果有配置)
         file_exts = rule.get("file_extensions", [])
         if file_exts:
             ext = (event.message.file.ext or "").lower().replace('.', '')
             if ext not in file_exts: return False, "后缀不符"
-            
-        # 2. 检查文件名关键词 (如果有配置)
         fn_kws = rule.get("filename_keywords", [])
         if fn_kws:
             filename = ""
             if event.message.file.name: 
                 filename = event.message.file.name
             else:
-                # 尝试从属性中获取文件名
                 for attr in event.message.file.attributes:
                     if hasattr(attr, 'file_name'):
                         filename = attr.file_name
                         break
-            
             filename = (filename or "").lower()
             if not any(k.lower() in filename for k in fn_kws):
                 return False, "文件名关键词不符"
-
     else:
-        # --- 普通模式 (仅检测文本) ---
         keywords = rule.get("keywords", [])
         if keywords:
             if not any(kw.lower() in text for kw in keywords):
                 return False, "文本关键词不符"
 
-    # --- 发送者检查 ---
     sender_mode = rule.get("sender_mode", "exclude")
     prefixes = rule.get("sender_prefixes", [])
     match_prefix = any(sender_name.startswith(p) for p in prefixes)
     if sender_mode == "exclude" and match_prefix: return False, "前缀被排除"
     elif sender_mode == "include" and not match_prefix: return False, "前缀不在白名单"
     
-    # --- 冷却 ---
     rule_id = rule.get("id", str(rule.get("groups")))
     last_time = rule_timers.get(rule_id, 0)
     now = time.time()
@@ -556,7 +548,6 @@ def analyze_message(rule, event, other_cs_ids, sender_name):
     return True, "✅ 匹配成功"
 
 def format_caption(tpl):
-    """处理动态时间等变量"""
     if not tpl: return ""
     now_str = datetime.now(BJ_TZ).strftime('%Y-%-m-%-d %H:%M') 
     return tpl.replace('{time}', now_str)
@@ -580,7 +571,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
         if event.text == "/debug":
-            await event.reply("Monitor Debug: Alive v7 Pro Max")
+            await event.reply("Monitor Debug: Alive v8 Preempt Check")
             return
 
         if not current_config.get("enabled", True): return
@@ -599,12 +590,13 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     rule_id = rule.get("id", str(rule.get("groups")))
                     rule_timers[rule_id] = time.time()
                     
+                    # 记录本轮发送的消息，用于防撞车检测
+                    sent_msgs = []
+                    
                     for step in rule.get("replies", []):
-                        # 1. 随机延迟
                         delay = random.uniform(step.get("min", 1), step.get("max", 3))
                         await asyncio.sleep(delay)
                         
-                        # 2. 判断动作类型
                         step_type = step.get("type", "text")
 
                         if step_type == "forward":
@@ -612,35 +604,67 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                             if target:
                                 try:
                                     target_id = int(str(target).strip())
-                                    await client.forward_messages(target_id, event.message)
+                                    msg = await client.forward_messages(target_id, event.message)
+                                    sent_msgs.append(msg)
                                     logger.info(f"➡️ [Monitor] Forward -> {target_id}")
                                 except Exception as e:
                                     logger.error(f"❌ [Monitor] 转发失败: {e}")
                         
                         elif step_type == "copy_file":
-                            # 新功能：复制文件并替换文案
                             target = step.get("forward_to")
                             caption_tpl = step.get("text", "")
-                            
                             if target and event.message.file:
                                 try:
                                     target_id = int(str(target).strip())
                                     final_caption = format_caption(caption_tpl)
-                                    # 针对不同类型的文件发送
-                                    await client.send_file(target_id, event.message.file.media, caption=final_caption)
+                                    msg = await client.send_file(target_id, event.message.file.media, caption=final_caption)
+                                    sent_msgs.append(msg)
                                     logger.info(f"➡️ [Monitor] CopyFile -> {target_id}")
                                 except Exception as e:
                                     logger.error(f"❌ [Monitor] 携带文案转发失败: {e}")
-                            else:
-                                logger.warning(f"⚠️ [Monitor] CopyFile 忽略: 目标ID为空或原消息无文件")
+
+                        elif step_type == "preempt_check":
+                            # 防撞车检测逻辑
+                            if not sent_msgs: continue # 还没发过消息，无需检测
+                            
+                            try:
+                                logger.info("⚡ [Monitor] 执行抢答检测...")
+                                me = await client.get_me()
+                                # 获取触发消息(event.id) 之后，到机器人最新发送消息(sent_msgs[-1].id) 之间的历史记录
+                                # 注意：get_messages 的 min_id 是不包含的，max_id 是包含的（或相反取决于实现，通常安全做法是取一段范围）
+                                # Telethon: min_id (exclusive) - returns messages NEWER than min_id
+                                # max_id (exclusive) - returns messages OLDER than max_id
+                                # 我们要找的是：Trigger < Other_Msg < Bot_Msg
+                                
+                                # 获取触发消息之后的所有消息
+                                history = await client.get_messages(event.chat_id, limit=10, min_id=event.id)
+                                
+                                preempted = False
+                                for m in history:
+                                    # 忽略自己发的消息
+                                    if m.sender_id == me.id: continue
+                                    # 忽略触发者自己追加的消息（通常用户自己补充信息不算抢答，要看是否有其他人/客服接入）
+                                    if m.sender_id == event.sender_id: continue
+                                    
+                                    # 如果在这期间有任何其他人说话，视为被抢答/插话
+                                    logger.warning(f"⚠️ [Monitor] 检测到抢答消息 (ID: {m.id}, Sender: {m.sender_id})")
+                                    preempted = True
+                                    break
+                                
+                                if preempted:
+                                    logger.warning(f"🚫 [Monitor] 触发防撞车机制，正在撤回已发出的 {len(sent_msgs)} 条消息...")
+                                    await client.delete_messages(event.chat_id, sent_msgs)
+                                    sent_msgs = [] # 清空列表
+                                    break # 停止后续步骤
+                            except Exception as e:
+                                logger.error(f"❌ [Monitor] 抢答检测出错: {e}")
 
                         else:
-                            # 默认为文本回复
                             content = step.get("text", "")
                             if not content: continue
-                            
                             final_text = format_caption(content)
                             sent_msg = await event.reply(final_text)
+                            sent_msgs.append(sent_msg)
                             
                             if global_main_handler:
                                 try:
@@ -651,4 +675,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             except Exception as e:
                 logger.error(f"❌ [Monitor] 规则执行错误: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v7 (Typography Pro) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v8 (Preempt Check) 已启动")
