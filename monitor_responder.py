@@ -175,7 +175,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v8</title>
+    <title>Monitor Pro v11</title>
     <script src="https://cdn.staticfile.net/vue/3.3.4/vue.global.prod.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -228,6 +228,10 @@ SETTINGS_HTML = """
             text-transform: uppercase;
             letter-spacing: 0.05em;
         }
+        .recovery-panel {
+            background: linear-gradient(135deg, #FFF1F2 0%, #FFF 100%);
+            border: 1px solid #FECDD3;
+        }
     </style>
     <script>
         tailwind.config = {
@@ -238,7 +242,7 @@ SETTINGS_HTML = """
                         mono: ['"JetBrains Mono"', 'monospace'],
                     },
                     colors: {
-                        primary: '#6366F1', /* Indigo-500 */
+                        primary: '#6366F1',
                         slate: { 50:'#f9fafb', 100:'#f3f4f6', 200:'#e5e7eb', 800:'#1f2937' }
                     }
                 }
@@ -254,7 +258,7 @@ SETTINGS_HTML = """
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs">
                 <i class="fa-solid fa-bolt"></i>
             </div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v8</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v11</span></span>
         </div>
         <div class="flex items-center gap-3">
             <label class="flex items-center gap-1.5 cursor-pointer select-none bg-slate-50 px-2 py-1 rounded border border-slate-200 hover:border-slate-300 transition-colors">
@@ -268,13 +272,12 @@ SETTINGS_HTML = """
         </div>
     </nav>
 
-    <main class="max-w-[1400px] mx-auto px-4 py-6">
+    <main class="max-w-[1400px] mx-auto px-4 py-6 space-y-6">
         
         <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             
             <div v-for="(rule, index) in config.rules" :key="index" 
                  class="bento-card flex flex-col overflow-hidden relative group">
-                
                 <div class="px-3 py-2 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
                     <div class="flex items-center gap-2 flex-1">
                         <span class="text-slate-400 text-[10px] font-mono">#{{index+1}}</span>
@@ -284,9 +287,7 @@ SETTINGS_HTML = """
                         <i class="fa-solid fa-trash text-[10px]"></i>
                     </button>
                 </div>
-
                 <div class="p-3 flex flex-col gap-3">
-                    
                     <div class="space-y-1.5">
                         <div class="flex items-center justify-between">
                             <span class="section-label"><i class="fa-solid fa-eye mr-1"></i>监听来源</span>
@@ -295,31 +296,18 @@ SETTINGS_HTML = """
                                 <span class="text-[10px] text-slate-500 font-medium" :class="{'text-primary': rule.check_file}">文件模式</span>
                             </label>
                         </div>
-                        
                         <div class="relative">
-                            <textarea :value="listToString(rule.groups)" @input="stringToIntList($event, rule, 'groups')" rows="1"
-                                class="bento-input w-full px-2 py-1.5 resize-none h-8 leading-tight font-mono text-[11px]"
-                                placeholder="群ID (换行分隔)"></textarea>
+                            <textarea :value="listToString(rule.groups)" @input="stringToIntList($event, rule, 'groups')" rows="1" class="bento-input w-full px-2 py-1.5 resize-none h-8 leading-tight font-mono text-[11px]" placeholder="群ID (换行分隔)"></textarea>
                         </div>
-                        
                         <div v-if="!rule.check_file" class="relative">
-                            <textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')" rows="1"
-                                class="bento-input w-full px-2 py-1.5 resize-none h-8 leading-tight font-mono text-[11px]"
-                                placeholder="文本关键词 (留空匹配所有)"></textarea>
+                            <textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')" rows="1" class="bento-input w-full px-2 py-1.5 resize-none h-8 leading-tight font-mono text-[11px]" placeholder="文本关键词 (留空匹配所有)"></textarea>
                         </div>
-
                         <div v-else class="grid grid-cols-2 gap-2">
-                            <input :value="listToString(rule.file_extensions).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'file_extensions')"
-                                class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]"
-                                placeholder="后缀: xlsx, png">
-                            <input :value="listToString(rule.filename_keywords).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'filename_keywords')"
-                                class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]"
-                                placeholder="文件名关键词">
+                            <input :value="listToString(rule.file_extensions).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'file_extensions')" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="后缀: xlsx, png">
+                            <input :value="listToString(rule.filename_keywords).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'filename_keywords')" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="文件名关键词">
                         </div>
                     </div>
-
                     <div class="h-px bg-slate-100"></div>
-
                     <div class="space-y-1.5">
                         <div class="section-label"><i class="fa-solid fa-filter mr-1"></i>过滤与冷却</div>
                         <div class="grid grid-cols-5 gap-2">
@@ -330,9 +318,7 @@ SETTINGS_HTML = """
                                 </select>
                             </div>
                             <div class="col-span-3">
-                                <input :value="listToString(rule.sender_prefixes).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'sender_prefixes')" 
-                                    class="bento-input w-full px-2 py-1.5 h-7 truncate font-mono text-[11px]"
-                                    placeholder="前缀: YY, AA">
+                                <input :value="listToString(rule.sender_prefixes).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'sender_prefixes')" class="bento-input w-full px-2 py-1.5 h-7 truncate font-mono text-[11px]" placeholder="前缀: YY, AA">
                             </div>
                             <div class="col-span-5 relative flex items-center gap-2 mt-0.5">
                                 <span class="text-[10px] text-slate-400 font-medium">冷却CD:</span>
@@ -341,9 +327,7 @@ SETTINGS_HTML = """
                             </div>
                         </div>
                     </div>
-
                     <div class="h-px bg-slate-100"></div>
-
                     <div class="space-y-1.5">
                         <div class="flex items-center justify-between">
                             <span class="section-label text-primary"><i class="fa-solid fa-bolt mr-1"></i>执行动作流</span>
@@ -351,11 +335,7 @@ SETTINGS_HTML = """
                                 + 添加步骤
                             </button>
                         </div>
-                        
-                        <div v-if="rule.replies.length === 0" class="text-center py-2 text-[10px] text-slate-300 border border-dashed border-slate-200 rounded font-medium">
-                            无动作
-                        </div>
-
+                        <div v-if="rule.replies.length === 0" class="text-center py-2 text-[10px] text-slate-300 border border-dashed border-slate-200 rounded font-medium">无动作</div>
                         <div class="space-y-1.5">
                             <div v-for="(reply, rIndex) in rule.replies" :key="rIndex" class="flex gap-1.5 group/item">
                                 <div class="flex flex-col justify-center items-center w-8 bg-slate-50 border border-slate-200 rounded h-auto font-mono">
@@ -363,7 +343,6 @@ SETTINGS_HTML = """
                                     <div class="w-3 h-px bg-slate-200 my-0.5"></div>
                                     <input v-model.number="reply.max" class="w-full text-center bg-transparent text-[9px] text-slate-500 focus:outline-none h-3 p-0" placeholder="max">
                                 </div>
-                                
                                 <div class="flex-1 bg-slate-50 border border-slate-200 rounded p-1.5 hover:border-primary/30 hover:bg-white transition-all">
                                     <div class="flex items-center gap-1.5 mb-1">
                                         <select v-model="reply.type" class="text-[10px] bg-transparent border-none p-0 text-slate-600 font-bold focus:ring-0 cursor-pointer w-auto font-sans">
@@ -376,20 +355,16 @@ SETTINGS_HTML = """
                                             <i class="fa-solid fa-xmark text-[10px]"></i>
                                         </button>
                                     </div>
-
                                     <template v-if="reply.type === 'text'">
                                         <textarea v-model="reply.text" rows="2" class="bento-input w-full px-1.5 py-1 text-[10px] resize-none border-transparent bg-white focus:border-slate-200 font-mono" placeholder="内容... ({time})"></textarea>
                                     </template>
-                                    
                                     <template v-if="reply.type === 'forward'">
                                         <input v-model="reply.forward_to" class="bento-input w-full px-1.5 py-1 h-6 text-[10px] font-mono text-blue-600" placeholder="目标群ID">
                                     </template>
-
                                     <template v-if="reply.type === 'copy_file'">
                                         <input v-model="reply.forward_to" class="bento-input w-full px-1.5 py-1 h-6 text-[10px] font-mono text-blue-600 mb-1" placeholder="目标群ID">
                                         <textarea v-model="reply.text" rows="2" class="bento-input w-full px-1.5 py-1 text-[10px] resize-none bg-yellow-50 border-yellow-100 focus:border-yellow-300 font-mono" placeholder="新文案... ({time})"></textarea>
                                     </template>
-                                    
                                     <template v-if="reply.type === 'preempt_check'">
                                         <div class="px-1.5 py-1 bg-red-50 text-red-500 rounded text-[10px] font-medium border border-red-100 flex items-center gap-2">
                                             <i class="fa-solid fa-user-ninja"></i>
@@ -400,7 +375,6 @@ SETTINGS_HTML = """
                             </div>
                         </div>
                     </div>
-
                 </div>
             </div>
 
@@ -410,8 +384,40 @@ SETTINGS_HTML = """
                 </div>
                 <span class="text-xs font-bold">新建规则卡片</span>
             </div>
-
         </div>
+
+        <div class="bento-card recovery-panel p-4 flex flex-col md:flex-row gap-4 items-center justify-between shadow-sm hover:shadow-md transition-all">
+            <div class="flex items-center gap-3 w-full md:w-auto">
+                <div class="w-10 h-10 bg-red-100 text-red-500 rounded-lg flex items-center justify-center text-xl shrink-0">
+                    <i class="fa-solid fa-truck-medical"></i>
+                </div>
+                <div>
+                    <h3 class="text-sm font-bold text-slate-800">突发事件批量回复 (Global Reply)</h3>
+                    <p class="text-[10px] text-slate-500 mt-0.5">全局扫描(无需配置)，自动查找包含"反馈话术"的自己人消息</p>
+                </div>
+            </div>
+            
+            <div class="flex flex-col md:flex-row gap-3 w-full md:w-auto flex-1 justify-end">
+                <div class="flex flex-col gap-1 w-full md:w-48">
+                    <label class="text-[9px] font-bold text-slate-500 uppercase">查找已发送的反馈话术</label>
+                    <input v-model="recovery.search" class="bento-input px-2 py-1.5 h-8 text-xs font-mono border-red-200 focus:border-red-400" placeholder="例如: 场馆技术核实中...">
+                </div>
+                <div class="flex flex-col gap-1 w-full md:w-48">
+                    <label class="text-[9px] font-bold text-slate-500 uppercase">发送回复话术</label>
+                    <input v-model="recovery.reply" class="bento-input px-2 py-1.5 h-8 text-xs font-mono border-green-200 focus:border-green-400" placeholder="例如: 已恢复，请刷新重试">
+                </div>
+                <div class="flex flex-col gap-1 w-full md:w-20">
+                    <label class="text-[9px] font-bold text-slate-500 uppercase">范围(小时)</label>
+                    <input type="number" v-model.number="recovery.hours" class="bento-input px-2 py-1.5 h-8 text-xs text-center font-bold" placeholder="5">
+                </div>
+                <div class="flex items-end">
+                    <button @click="runRecovery" :disabled="!recovery.search || !recovery.reply" class="h-8 bg-red-500 hover:bg-red-600 disabled:bg-slate-300 text-white px-4 rounded text-xs font-bold transition-colors flex items-center gap-2 shadow-sm whitespace-nowrap">
+                        <i class="fa-solid fa-paper-plane"></i> 执行回复
+                    </button>
+                </div>
+            </div>
+        </div>
+
     </main>
 
     <div class="fixed bottom-4 right-4 z-50 transition-all duration-300" :class="{'translate-y-20 opacity-0': !toast.show, 'translate-y-0 opacity-100': toast.show}">
@@ -430,6 +436,7 @@ SETTINGS_HTML = """
         setup() {
             const config = reactive({ enabled: true, rules: [] });
             const toast = reactive({ show: false, msg: '', type: 'success' });
+            const recovery = reactive({ search: '', reply: '', hours: 5 });
 
             fetch('/tool/monitor_settings_json')
                 .then(r => r.json())
@@ -486,13 +493,33 @@ SETTINGS_HTML = """
                     showToast('网络错误', 'error');
                 }
             };
+            
+            const runRecovery = async () => {
+                if(!confirm(`⚠️ 确定要执行批量回复吗？\\n\\n范围: 过去 ${recovery.hours} 小时\\n目标: 所有包含 "${recovery.search}" 的【自己发送的】消息\\n动作: 追加回复 "${recovery.reply}"`)) return;
+                
+                try {
+                    const res = await fetch('/api/batch_recovery', { 
+                        method: 'POST', 
+                        headers: {'Content-Type': 'application/json'}, 
+                        body: JSON.stringify(recovery) 
+                    });
+                    const json = await res.json();
+                    if (json.success) {
+                        showToast(json.msg, 'success');
+                    } else {
+                        showToast('执行失败: ' + json.msg, 'error');
+                    }
+                } catch(e) {
+                    showToast('网络请求错误', 'error');
+                }
+            };
 
             const showToast = (msg, type) => {
                 toast.msg = msg; toast.type = type; toast.show = true;
-                setTimeout(() => toast.show = false, 2000);
+                setTimeout(() => toast.show = false, 3000);
             };
 
-            return { config, toast, listToString, stringToList, stringToIntList, addRule, removeRule, saveConfig };
+            return { config, toast, recovery, listToString, stringToList, stringToIntList, addRule, removeRule, saveConfig, runRecovery };
         }
     }).mount('#app');
 </script>
@@ -568,10 +595,67 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         if success: return jsonify({"success": True})
         return jsonify({"success": False, "msg": msg}), 200
 
+    # --- 新增: 批量回复 API (全局搜索) ---
+    @app.route('/api/batch_recovery', methods=['POST'])
+    def trigger_batch_recovery():
+        data = request.json
+        search_kw = data.get('search')
+        reply_kw = data.get('reply')
+        hours = float(data.get('hours', 5))
+        
+        if not search_kw or not reply_kw:
+            return jsonify({"success": False, "msg": "参数不完整"}), 200
+
+        client.loop.create_task(run_batch_recovery_task(client, search_kw, reply_kw, hours))
+        return jsonify({"success": True, "msg": "批量回复任务已在后台启动，请留意日志"}), 200
+
+    async def run_batch_recovery_task(cli, search, reply, hours):
+        logger.info(f"🚑 [Reply] 开始执行批量回复 (全局搜索)... 搜索: '{search}', 回复: '{reply}', 范围: {hours}h")
+        
+        count = 0
+        scanned_count = 0
+        limit_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+        
+        try:
+            # 全局搜索 (None 表示所有对话)
+            # 注意: Telethon 的 iter_messages(None) 使用 messages.searchGlobal
+            # 它返回的是所有匹配的消息，不分群组
+            async for msg in cli.iter_messages(None, search=search):
+                
+                # 1. 时间检查 (因为返回顺序通常是新->旧，若遇到超时的可以提前break? 
+                # 但 SearchGlobal 有时顺序不完全严格，稳妥起见我们只 continue)
+                # 修正: SearchGlobal 返回通常按时间倒序。
+                if msg.date < limit_time:
+                    # 如果消息太旧，我们认为后面的更旧，直接停止搜索
+                    break
+                
+                scanned_count += 1
+                
+                # 2. 严格筛选: 
+                # - 必须是群组 (is_group)
+                # - 必须是"我"发的 (out=True)
+                if not msg.is_group or not msg.out:
+                    continue
+                
+                try:
+                    final_text = format_caption(reply)
+                    await msg.reply(final_text)
+                    count += 1
+                    logger.info(f"✅ [Reply] 已回复 Group:{msg.chat_id} Msg:{msg.id}")
+                    # 随机延迟防风控
+                    await asyncio.sleep(random.uniform(1.0, 2.5)) 
+                except Exception as e:
+                    logger.error(f"❌ [Reply] 回复失败 Group:{msg.chat_id}: {e}")
+                    
+        except Exception as e:
+            logger.error(f"⚠️ [Reply] 全局搜索出错: {e}")
+        
+        logger.info(f"🏁 [Reply] 任务完成! 扫描匹配 {scanned_count} 条，成功回复 {count} 条")
+
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
         if event.text == "/debug":
-            await event.reply("Monitor Debug: Alive v8 Preempt Check")
+            await event.reply("Monitor Debug: Alive v11 Global Search")
             return
 
         if not current_config.get("enabled", True): return
@@ -590,7 +674,6 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     rule_id = rule.get("id", str(rule.get("groups")))
                     rule_timers[rule_id] = time.time()
                     
-                    # 记录本轮发送的消息，用于防撞车检测
                     sent_msgs = []
                     
                     for step in rule.get("replies", []):
@@ -624,38 +707,24 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                     logger.error(f"❌ [Monitor] 携带文案转发失败: {e}")
 
                         elif step_type == "preempt_check":
-                            # 防撞车检测逻辑
-                            if not sent_msgs: continue # 还没发过消息，无需检测
-                            
+                            if not sent_msgs: continue 
                             try:
                                 logger.info("⚡ [Monitor] 执行抢答检测...")
                                 me = await client.get_me()
-                                # 获取触发消息(event.id) 之后，到机器人最新发送消息(sent_msgs[-1].id) 之间的历史记录
-                                # 注意：get_messages 的 min_id 是不包含的，max_id 是包含的（或相反取决于实现，通常安全做法是取一段范围）
-                                # Telethon: min_id (exclusive) - returns messages NEWER than min_id
-                                # max_id (exclusive) - returns messages OLDER than max_id
-                                # 我们要找的是：Trigger < Other_Msg < Bot_Msg
-                                
-                                # 获取触发消息之后的所有消息
                                 history = await client.get_messages(event.chat_id, limit=10, min_id=event.id)
-                                
                                 preempted = False
                                 for m in history:
-                                    # 忽略自己发的消息
                                     if m.sender_id == me.id: continue
-                                    # 忽略触发者自己追加的消息（通常用户自己补充信息不算抢答，要看是否有其他人/客服接入）
                                     if m.sender_id == event.sender_id: continue
-                                    
-                                    # 如果在这期间有任何其他人说话，视为被抢答/插话
-                                    logger.warning(f"⚠️ [Monitor] 检测到抢答消息 (ID: {m.id}, Sender: {m.sender_id})")
+                                    logger.warning(f"⚠️ [Monitor] 检测到抢答消息 (ID: {m.id})")
                                     preempted = True
                                     break
                                 
                                 if preempted:
-                                    logger.warning(f"🚫 [Monitor] 触发防撞车机制，正在撤回已发出的 {len(sent_msgs)} 条消息...")
+                                    logger.warning(f"🚫 [Monitor] 触发防撞车机制，撤回 {len(sent_msgs)} 条消息...")
                                     await client.delete_messages(event.chat_id, sent_msgs)
-                                    sent_msgs = [] # 清空列表
-                                    break # 停止后续步骤
+                                    sent_msgs = [] 
+                                    break
                             except Exception as e:
                                 logger.error(f"❌ [Monitor] 抢答检测出错: {e}")
 
@@ -675,4 +744,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             except Exception as e:
                 logger.error(f"❌ [Monitor] 规则执行错误: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v8 (Preempt Check) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v11 (Global Search Reply) 已启动")
