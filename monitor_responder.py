@@ -175,7 +175,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v11.1</title>
+    <title>Monitor Pro v12</title>
     <script src="https://cdn.staticfile.net/vue/3.3.4/vue.global.prod.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -258,7 +258,7 @@ SETTINGS_HTML = """
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs">
                 <i class="fa-solid fa-bolt"></i>
             </div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v11.1</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v12</span></span>
         </div>
         <div class="flex items-center gap-3">
             <label class="flex items-center gap-1.5 cursor-pointer select-none bg-slate-50 px-2 py-1 rounded border border-slate-200 hover:border-slate-300 transition-colors">
@@ -393,17 +393,17 @@ SETTINGS_HTML = """
                 </div>
                 <div>
                     <h3 class="text-sm font-bold text-slate-800">突发事件批量回复 (Global Reply)</h3>
-                    <p class="text-[10px] text-slate-500 mt-0.5">全局扫描(无需配置)，自动查找包含"反馈话术"的自己人消息</p>
+                    <p class="text-[10px] text-slate-500 mt-0.5">自动查找我的反馈消息，并回复给<strong class="text-red-500">原提问者</strong> (Original Sender)</p>
                 </div>
             </div>
             
             <div class="flex flex-col md:flex-row gap-3 w-full md:w-auto flex-1 justify-end">
                 <div class="flex flex-col gap-1 w-full md:w-48">
-                    <label class="text-[9px] font-bold text-slate-500 uppercase">查找已发送的反馈话术</label>
+                    <label class="text-[9px] font-bold text-slate-500 uppercase">查找我的反馈话术</label>
                     <input v-model="recovery.search" class="bento-input px-2 py-1.5 h-8 text-xs font-mono border-red-200 focus:border-red-400" placeholder="例如: 场馆技术核实中...">
                 </div>
                 <div class="flex flex-col gap-1 w-full md:w-48">
-                    <label class="text-[9px] font-bold text-slate-500 uppercase">发送回复话术</label>
+                    <label class="text-[9px] font-bold text-slate-500 uppercase">回复给原提问者</label>
                     <input v-model="recovery.reply" class="bento-input px-2 py-1.5 h-8 text-xs font-mono border-green-200 focus:border-green-400" placeholder="例如: 已恢复，请刷新重试">
                 </div>
                 <div class="flex flex-col gap-1 w-full md:w-20">
@@ -495,7 +495,7 @@ SETTINGS_HTML = """
             };
             
             const runRecovery = async () => {
-                if(!confirm(`⚠️ 确定要执行批量回复吗？\\n\\n范围: 过去 ${recovery.hours} 小时\\n目标: 所有包含 "${recovery.search}" 的【自己发送的】消息\\n动作: 追加回复 "${recovery.reply}"`)) return;
+                if(!confirm(`⚠️ 确定要执行批量回复吗？\\n\\n范围: 过去 ${recovery.hours} 小时\\n目标: 我发送的 "${recovery.search}" \\n动作: 追溯回复给【原消息发送者】`)) return;
                 
                 try {
                     const res = await fetch('/api/batch_recovery', { 
@@ -585,15 +585,12 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     init_redis_connection()
     load_config(main_cs_prefixes)
     
-    # 关键修复: 在主线程获取事件循环对象
-    # 如果 client 已经连接，它应该有 loop；如果没有，获取当前线程的 loop
     try:
         bot_loop = client.loop
     except:
         try:
             bot_loop = asyncio.get_event_loop()
         except:
-            # 如果真的没有 loop (不太可能，因为 Telethon 需要 loop)，创建一个
             bot_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(bot_loop)
 
@@ -607,7 +604,6 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         if success: return jsonify({"success": True})
         return jsonify({"success": False, "msg": msg}), 200
 
-    # --- 新增: 批量回复 API (全局搜索) ---
     @app.route('/api/batch_recovery', methods=['POST'])
     def trigger_batch_recovery():
         data = request.json
@@ -618,7 +614,6 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         if not search_kw or not reply_kw:
             return jsonify({"success": False, "msg": "参数不完整"}), 200
 
-        # 关键修复: 使用 run_coroutine_threadsafe 跨线程提交任务
         asyncio.run_coroutine_threadsafe(
             run_batch_recovery_task(client, search_kw, reply_kw, hours),
             bot_loop
@@ -633,22 +628,27 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         limit_time = datetime.now(timezone.utc) - timedelta(hours=hours)
         
         try:
-            # 全局搜索
             async for msg in cli.iter_messages(None, search=search):
                 if msg.date < limit_time:
                     break
                 
                 scanned_count += 1
-                
-                # 严格筛选: 群组消息 & 我发送的
                 if not msg.is_group or not msg.out:
                     continue
                 
                 try:
                     final_text = format_caption(reply)
-                    await msg.reply(final_text)
+                    
+                    # 尝试定位“消息流的第一条消息”（即当前这条机器人消息所回复的对象）
+                    target_id = msg.id # 默认回复自己(兜底)
+                    if msg.is_reply and msg.reply_to_msg_id:
+                        target_id = msg.reply_to_msg_id
+                    
+                    # 发送消息给原消息
+                    await cli.send_message(msg.chat_id, final_text, reply_to=target_id)
+                    
                     count += 1
-                    logger.info(f"✅ [Reply] 已回复 Group:{msg.chat_id} Msg:{msg.id}")
+                    logger.info(f"✅ [Reply] 已回复 Group:{msg.chat_id} Origin:{target_id}")
                     await asyncio.sleep(random.uniform(1.0, 2.5)) 
                 except Exception as e:
                     logger.error(f"❌ [Reply] 回复失败 Group:{msg.chat_id}: {e}")
@@ -661,7 +661,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
         if event.text == "/debug":
-            await event.reply("Monitor Debug: Alive v11.1 Thread Safe")
+            await event.reply("Monitor Debug: Alive v12 Original Reply")
             return
 
         if not current_config.get("enabled", True): return
@@ -750,4 +750,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             except Exception as e:
                 logger.error(f"❌ [Monitor] 规则执行错误: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v11.1 (Thread Safe Recovery) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v12 (Reply to Original) 已启动")
