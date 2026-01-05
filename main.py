@@ -274,315 +274,82 @@ async def maintenance_task():
         except Exception as e: logger.error(f"维护任务出错: {e}")
 
 # ==========================================
-# 模块 4: Web 控制台 (UI Upgrade v8)
+# 模块 4: Web 控制台
 # ==========================================
 app = Flask(__name__)
 
 DASHBOARD_HTML = """
 <!DOCTYPE html>
-<html lang="zh-CN" class="bg-[#F3F4F6]">
+<html>
 <head>
-    <meta charset="UTF-8">
+    <title>监控看板</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta http-equiv="refresh" content="5"> 
-    <title>CS-Bot Dashboard Pro</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    fontFamily: {
-                        sans: ['"Plus Jakarta Sans"', 'sans-serif'],
-                        mono: ['"JetBrains Mono"', 'monospace'],
-                    },
-                    colors: {
-                        primary: '#6366F1', /* Indigo-500 */
-                        slate: { 50:'#f9fafb', 100:'#f3f4f6', 200:'#e5e7eb', 800:'#1f2937' }
-                    }
-                }
-            }
-        }
-    </script>
     <style>
-        body { font-family: 'Plus Jakarta Sans', sans-serif; }
-        .bento-card {
-            background: white;
-            border: 1px solid #E5E7EB;
-            border-radius: 12px;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-            transition: all 0.2s ease;
-        }
-        .bento-card:hover {
-            border-color: #D1D5DB;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-        }
-        .font-mono { font-family: 'JetBrains Mono', monospace; }
-        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 2px; }
-        .late { color: #EF4444; text-decoration: underline; animation: flash 1s infinite; }
-        @keyframes flash { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+        :root { --bg: #fff; --text: #333; --card: #f8f9fa; --border: #eee; --green: #28a745; --red: #dc3545; }
+        body { background: var(--bg); color: var(--text); font-family: sans-serif; padding: 20px; max-width: 600px; margin: 0 auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 20px; }
+        h1 { margin: 0; font-size: 1.4rem; }
+        .status-grp { display: flex; gap: 10px; align-items: center; }
+        .tag { padding: 4px 10px; border-radius: 4px; color: #fff; font-weight: bold; font-size: 0.9rem; }
+        .on { background: var(--green); } .off { background: var(--red); }
+        .ctrl-btn { padding: 4px 8px; border: 1px solid #ccc; background: #eee; cursor: pointer; border-radius: 4px; font-size: 0.8rem; text-decoration: none; color: #333; }
+        .ctrl-btn:hover { background: #ddd; }
+        .audio-btn { cursor: pointer; font-size: 1.2rem; user-select: none; }
+        .box { margin-bottom: 20px; }
+        .title { font-weight: bold; border-left: 4px solid #333; padding-left: 8px; margin-bottom: 8px; color: #555; display: flex; justify-content: space-between; }
+        .card { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
+        .t { font-family: monospace; font-weight: bold; font-size: 1.1rem; color: #d63384; }
+        .late { color: red; text-decoration: underline; animation: flash 1s infinite; }
+        .empty { color: #999; text-align: center; font-style: italic; padding: 10px; }
+        .btn { display: block; width: 100%; padding: 12px; background: #222; color: #fff; text-align: center; text-decoration: none; border-radius: 6px; font-weight: bold; margin-top: 20px; }
+        @keyframes flash { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
     </style>
 </head>
-<body class="text-slate-800 antialiased min-h-screen pb-20">
-    <nav class="bg-white/80 backdrop-blur border-b border-slate-200 sticky top-0 z-50 h-14 flex items-center px-4 justify-between">
-        <div class="flex items-center gap-2">
-            <div class="w-7 h-7 bg-primary text-white rounded flex items-center justify-center text-xs">
-                <i class="fa-solid fa-robot"></i>
-            </div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">CS-Bot <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">v45.2</span></span>
-            <span class="ml-2 text-[10px] text-slate-400 font-mono hidden md:inline">UPDATED: {{ current_time }}</span>
-        </div>
-        <div class="flex items-center gap-3">
-             <button class="audio-btn w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center transition text-slate-600 text-xs" onclick="toggleAudio()" title="静音开关">🔊</button>
-             
-             <div class="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200">
-                <button onclick="ctrl(1)" class="px-3 py-1 rounded-md text-[11px] font-bold transition {{ 'bg-white shadow-sm text-primary' if working else 'text-slate-500 hover:text-slate-700' }}">上班</button>
-                <div class="w-px bg-slate-200 my-1 mx-0.5"></div>
-                <button onclick="ctrl(0)" class="px-3 py-1 rounded-md text-[11px] font-bold transition {{ 'bg-white shadow-sm text-red-500' if not working else 'text-slate-500 hover:text-slate-700' }}">下班</button>
-             </div>
-
-             <div class="flex items-center gap-1.5 bg-slate-50 px-2 py-1 rounded border border-slate-200">
-                <div class="w-2 h-2 rounded-full {{ 'bg-green-500' if working else 'bg-red-500' }}"></div>
-                <span class="text-[11px] font-bold text-slate-600">{{ 'WORKING' if working else 'STOPPED' }}</span>
-             </div>
-        </div>
-    </nav>
-
-    <div class="max-w-[1400px] mx-auto px-4 py-6">
-        
-        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-8">
-            <div class="bento-card flex flex-col h-[500px] overflow-hidden">
-                <div class="px-4 py-3 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
-                    <div class="flex items-center gap-2 font-bold text-slate-700 text-sm">
-                        <i class="fa-solid fa-hourglass-half text-blue-500"></i>
-                        稍等 (12m)
-                    </div>
-                    <span class="bg-blue-100 text-blue-600 text-[10px] font-bold px-2 py-0.5 rounded-full">{{ w|length }}</span>
-                </div>
-                <div class="p-3 overflow-y-auto flex-1 custom-scrollbar bg-white">
-                    {% if w %}
-                        {% for mid, info in w.items() %}
-                        <div class="p-3 mb-2 rounded-lg border border-slate-100 hover:border-blue-200 hover:shadow-sm transition bg-slate-50 group">
-                            <div class="flex justify-between items-start mb-1">
-                                <div class="font-bold text-xs text-slate-800 truncate pr-2 w-32" title="{{ info.user }}">{{ info.user }}</div>
-                                <div class="t font-mono text-xs font-bold text-blue-500" data-end="{{ info.ts }}">--:--</div>
-                            </div>
-                            <div class="flex justify-between items-center mt-2">
-                                <span class="text-[10px] text-slate-400">Task #{{ mid }}</span>
-                                <a href="{{ info.url }}" target="_blank" class="text-[10px] bg-white border border-slate-200 px-2 py-0.5 rounded text-slate-500 hover:text-blue-500 transition">Jump 🔗</a>
-                            </div>
-                        </div>
-                        {% endfor %}
-                    {% else %}
-                        <div class="h-full flex flex-col items-center justify-center text-slate-300">
-                            <i class="fa-regular fa-circle-check text-2xl mb-1"></i>
-                            <span class="text-[10px]">No Tasks</span>
-                        </div>
-                    {% endif %}
-                </div>
-            </div>
-
-            <div class="bento-card flex flex-col h-[500px] overflow-hidden">
-                <div class="px-4 py-3 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
-                    <div class="flex items-center gap-2 font-bold text-slate-700 text-sm">
-                        <i class="fa-solid fa-magnifying-glass text-indigo-500"></i>
-                        跟进 (15m)
-                    </div>
-                    <span class="bg-indigo-100 text-indigo-600 text-[10px] font-bold px-2 py-0.5 rounded-full">{{ f|length }}</span>
-                </div>
-                <div class="p-3 overflow-y-auto flex-1 custom-scrollbar bg-white">
-                    {% if f %}
-                        {% for mid, info in f.items() %}
-                        <div class="p-3 mb-2 rounded-lg border border-slate-100 hover:border-indigo-200 hover:shadow-sm transition bg-slate-50 group">
-                            <div class="flex justify-between items-start mb-1">
-                                <div class="font-bold text-xs text-slate-800 truncate pr-2 w-32" title="{{ info.user }}">{{ info.user }}</div>
-                                <div class="t font-mono text-xs font-bold text-indigo-500" data-end="{{ info.ts }}">--:--</div>
-                            </div>
-                            <div class="flex justify-between items-center mt-2">
-                                <span class="text-[10px] text-slate-400">Task #{{ mid }}</span>
-                                <a href="{{ info.url }}" target="_blank" class="text-[10px] bg-white border border-slate-200 px-2 py-0.5 rounded text-slate-500 hover:text-indigo-500 transition">Jump 🔗</a>
-                            </div>
-                        </div>
-                        {% endfor %}
-                    {% else %}
-                        <div class="h-full flex flex-col items-center justify-center text-slate-300">
-                            <i class="fa-regular fa-circle-check text-2xl mb-1"></i>
-                            <span class="text-[10px]">No Tasks</span>
-                        </div>
-                    {% endif %}
-                </div>
-            </div>
-
-            <div class="bento-card flex flex-col h-[500px] overflow-hidden">
-                <div class="px-4 py-3 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
-                    <div class="flex items-center gap-2 font-bold text-slate-700 text-sm">
-                        <i class="fa-solid fa-bell text-amber-500"></i>
-                        漏回 (5m)
-                    </div>
-                    <span class="bg-amber-100 text-amber-600 text-[10px] font-bold px-2 py-0.5 rounded-full">{{ r|length }}</span>
-                </div>
-                <div class="p-3 overflow-y-auto flex-1 custom-scrollbar bg-white">
-                    {% if r %}
-                        {% for mid, info in r.items() %}
-                        <div class="p-3 mb-2 rounded-lg border border-slate-100 hover:border-amber-200 hover:shadow-sm transition bg-slate-50 group">
-                            <div class="flex justify-between items-start mb-1">
-                                <div class="flex flex-col">
-                                    <span class="font-bold text-xs text-slate-800 truncate w-32" title="{{ info.user }}">{{ info.user }}</span>
-                                    <span class="text-[9px] text-slate-400">to {{ info.target }}</span>
-                                </div>
-                                <div class="t font-mono text-xs font-bold text-amber-500" data-end="{{ info.ts }}">--:--</div>
-                            </div>
-                            <div class="flex justify-between items-center mt-2">
-                                <a href="{{ info.url }}" target="_blank" class="text-[10px] bg-white border border-slate-200 px-2 py-0.5 rounded text-slate-500 hover:text-amber-500 transition w-full text-center">Jump 🔗</a>
-                            </div>
-                        </div>
-                        {% endfor %}
-                    {% else %}
-                        <div class="h-full flex flex-col items-center justify-center text-slate-300">
-                            <i class="fa-regular fa-circle-check text-2xl mb-1"></i>
-                            <span class="text-[10px]">No Tasks</span>
-                        </div>
-                    {% endif %}
-                </div>
-            </div>
-
-            <div class="bento-card flex flex-col h-[500px] overflow-hidden">
-                <div class="px-4 py-3 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
-                    <div class="flex items-center gap-2 font-bold text-slate-700 text-sm">
-                        <i class="fa-solid fa-rotate text-purple-500"></i>
-                        自回 (3m)
-                    </div>
-                    <span class="bg-purple-100 text-purple-600 text-[10px] font-bold px-2 py-0.5 rounded-full">{{ s|length }}</span>
-                </div>
-                <div class="p-3 overflow-y-auto flex-1 custom-scrollbar bg-white">
-                    {% if s %}
-                        {% for mid, info in s.items() %}
-                        <div class="p-3 mb-2 rounded-lg border border-slate-100 hover:border-purple-200 hover:shadow-sm transition bg-slate-50 group">
-                            <div class="flex justify-between items-start mb-1">
-                                <div class="font-bold text-xs text-slate-800 truncate pr-2 w-32" title="{{ info.user }}">{{ info.user }}</div>
-                                <div class="t font-mono text-xs font-bold text-purple-500" data-end="{{ info.ts }}">--:--</div>
-                            </div>
-                            <div class="flex justify-between items-center mt-2">
-                                <a href="{{ info.url }}" target="_blank" class="text-[10px] bg-white border border-slate-200 px-2 py-0.5 rounded text-slate-500 hover:text-purple-500 transition w-full text-center">Jump 🔗</a>
-                            </div>
-                        </div>
-                        {% endfor %}
-                    {% else %}
-                        <div class="h-full flex flex-col items-center justify-center text-slate-300">
-                            <i class="fa-regular fa-circle-check text-2xl mb-1"></i>
-                            <span class="text-[10px]">No Tasks</span>
-                        </div>
-                    {% endif %}
-                </div>
-            </div>
-        </div>
-
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <a href="/log" target="_blank" class="bento-card p-4 flex items-center gap-4 hover:border-primary/50 group cursor-pointer no-underline">
-                <div class="w-10 h-10 rounded-full bg-slate-50 text-slate-400 group-hover:bg-primary/10 group-hover:text-primary flex items-center justify-center transition-colors">
-                    <i class="fa-solid fa-terminal text-lg"></i>
-                </div>
-                <div>
-                    <h3 class="text-sm font-bold text-slate-700 group-hover:text-primary transition-colors">System Log Stream</h3>
-                    <p class="text-[10px] text-slate-400">实时查看系统运行状态与排错</p>
-                </div>
-            </a>
-
-            <a href="/tool/wait_check" target="_blank" class="bento-card p-4 flex items-center gap-4 hover:border-emerald-500/50 group cursor-pointer no-underline">
-                <div class="w-10 h-10 rounded-full bg-slate-50 text-slate-400 group-hover:bg-emerald-500/10 group-hover:text-emerald-500 flex items-center justify-center transition-colors">
-                    <i class="fa-solid fa-check-double text-lg"></i>
-                </div>
-                <div>
-                    <h3 class="text-sm font-bold text-slate-700 group-hover:text-emerald-500 transition-colors">Wait Check Tool</h3>
-                    <p class="text-[10px] text-slate-400">稍等关键词闭环状态扫描</p>
-                </div>
-            </a>
-
-            <a href="/tool/work_stats" target="_blank" class="bento-card p-4 flex items-center gap-4 hover:border-purple-500/50 group cursor-pointer no-underline">
-                <div class="w-10 h-10 rounded-full bg-slate-50 text-slate-400 group-hover:bg-purple-500/10 group-hover:text-purple-500 flex items-center justify-center transition-colors">
-                    <i class="fa-solid fa-chart-simple text-lg"></i>
-                </div>
-                <div>
-                    <h3 class="text-sm font-bold text-slate-700 group-hover:text-purple-500 transition-colors">Work Statistics</h3>
-                    <p class="text-[10px] text-slate-400">工作量统计与KPI导出</p>
-                </div>
-            </a>
-        </div>
-        
-        <div class="mt-8 text-center">
-            <p class="text-[10px] text-slate-300 font-mono">Ver 45.2 (Strict Thread Cancellation) | Powered by Python/Telethon</p>
+<body>
+    <div class="header">
+        <h1>⚡️ 实时监控 (Ver 45.2)</h1>
+        <div class="status-grp">
+            <span class="audio-btn" onclick="toggleAudio()" title="开启/关闭报警音">🔇</span>
+            <a href="#" onclick="ctrl(1)" class="ctrl-btn">上班</a>
+            <a href="#" onclick="ctrl(0)" class="ctrl-btn">下班</a>
+            <div class="tag {{ 'on' if working else 'off' }}">{{ 'WORKING' if working else 'STOPPED' }}</div>
         </div>
     </div>
-
+    {% for title, timers in [('⏳ 稍等 (12m)', w), ('🕵️ 跟进 (15m)', f), ('🔔 漏回 (5m)', r), ('🔄 自回 (3m)', s)] %}
+    <div class="box">
+        <div class="title"><span>{{ title }}</span><span>{{ timers|length }}</span></div>
+        {% if timers %}
+            {% for mid, info in timers.items() %}
+            <div class="card">
+                <div>
+                    <b>{{ info.user }}</b>
+                    {% if title == '🔔 漏回 (5m)' and info.target %}
+                        <span style="font-size:0.85rem; color:#666"> ➔ {{ info.target }}</span>
+                    {% endif %}
+                    <br>
+                    <a href="{{ info.url }}" target="_blank" style="font-size:0.8rem">🔗跳转</a>
+                </div>
+                <span class="t" data-end="{{ info.ts }}">--:--</span>
+            </div>
+            {% endfor %}
+        {% else %}<div class="empty">无任务</div>{% endif %}
+    </div>
+    {% endfor %}
+    <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
+    <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
+    <a href="/tool/work_stats" target="_blank" class="btn" style="margin-top:10px;background:#6a1b9a">📊 工作量统计</a>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.2 (Strict Thread Cancellation)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         const audioBtn = document.querySelector('.audio-btn');
-        
-        if (audioBtn) { 
-            audioBtn.innerText = audioEnabled ? "🔊" : "🔇"; 
-            if(!audioEnabled) audioBtn.classList.add('opacity-50');
-        }
-
-        function playAlarm() { 
-            if (!audioEnabled) return; 
-            if (audioCtx.state === 'suspended') audioCtx.resume().catch(e => console.log(e)); 
-            const oscillator = audioCtx.createOscillator(); 
-            const gainNode = audioCtx.createGain(); 
-            oscillator.type = 'square'; 
-            oscillator.frequency.setValueAtTime(800, audioCtx.currentTime); 
-            oscillator.frequency.exponentialRampToValueAtTime(400, audioCtx.currentTime + 0.1); 
-            gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime); 
-            gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1); 
-            oscillator.connect(gainNode); 
-            gainNode.connect(audioCtx.destination); 
-            oscillator.start(); 
-            oscillator.stop(audioCtx.currentTime + 0.2); 
-        }
-
-        function toggleAudio() { 
-            audioEnabled = !audioEnabled; 
-            localStorage.setItem('tg_bot_audio_enabled', audioEnabled); 
-            const btn = document.querySelector('.audio-btn'); 
-            btn.innerText = audioEnabled ? "🔊" : "🔇"; 
-            if(audioEnabled) { 
-                btn.classList.remove('opacity-50');
-                if (audioCtx.state === 'suspended') audioCtx.resume(); 
-                playAlarm(); 
-            } else {
-                btn.classList.add('opacity-50');
-            }
-        }
-
-        function ctrl(s) { 
-            fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => setTimeout(() => location.reload(), 500)); 
-        }
-
-        // Timer Logic
-        setInterval(() => { 
-            const now = Date.now() / 1000; 
-            let hasLate = false; 
-            document.querySelectorAll('.t').forEach(el => { 
-                const diff = parseFloat(el.dataset.end) - now; 
-                if(diff <= 0) { 
-                    el.innerText = "OVERDUE"; 
-                    el.classList.add('late'); 
-                    hasLate = true; 
-                } else { 
-                    const m = Math.floor(diff / 60); 
-                    const s = Math.floor(diff % 60); 
-                    el.innerText = `${m}:${s.toString().padStart(2, '0')}`; 
-                    el.classList.remove('late');
-                } 
-            }); 
-            if (hasLate && audioEnabled) playAlarm(); 
-        }, 1000);
+        if (audioBtn) { audioBtn.innerText = audioEnabled ? "🔊" : "🔇"; }
+        function playAlarm() { if (!audioEnabled) return; if (audioCtx.state === 'suspended') audioCtx.resume().catch(e => console.log(e)); const oscillator = audioCtx.createOscillator(); const gainNode = audioCtx.createGain(); oscillator.type = 'square'; oscillator.frequency.setValueAtTime(800, audioCtx.currentTime); oscillator.frequency.exponentialRampToValueAtTime(400, audioCtx.currentTime + 0.1); gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime); gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1); oscillator.connect(gainNode); gainNode.connect(audioCtx.destination); oscillator.start(); oscillator.stop(audioCtx.currentTime + 0.2); }
+        function toggleAudio() { audioEnabled = !audioEnabled; localStorage.setItem('tg_bot_audio_enabled', audioEnabled); const btn = document.querySelector('.audio-btn'); btn.innerText = audioEnabled ? "🔊" : "🔇"; if(audioEnabled) { if (audioCtx.state === 'suspended') audioCtx.resume(); playAlarm(); } }
+        function ctrl(s) { fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => setTimeout(() => location.reload(), 500)); }
+        setInterval(() => { const now = Date.now() / 1000; let hasLate = false; document.querySelectorAll('.t').forEach(el => { const diff = parseFloat(el.dataset.end) - now; if(diff <= 0) { el.innerText = "已超时"; el.classList.add('late'); hasLate = true; } else { const m = Math.floor(diff / 60); const s = Math.floor(diff % 60); el.innerText = `${m}:${s.toString().padStart(2, '0')}`; } }); if (hasLate && audioEnabled) playAlarm(); }, 1000);
     </script>
 </body>
 </html>
@@ -590,72 +357,239 @@ DASHBOARD_HTML = """
 
 LOG_VIEWER_HTML = """
 <!DOCTYPE html>
-<html lang="zh-CN" class="bg-[#F3F4F6]">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <title>系统日志流 | Log Viewer</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    fontFamily: { sans: ['"Plus Jakarta Sans"', 'sans-serif'], mono: ['"JetBrains Mono"', 'monospace'] },
-                    colors: { primary: '#6366F1' }
-                }
-            }
-        }
-    </script>
     <style>
-        body { font-family: 'Plus Jakarta Sans', sans-serif; }
-        .log-bubble { max-width: 90%; word-wrap: break-word; white-space: pre-wrap; }
-        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
+        :root {
+            --bg-body: #0f172a;
+            --bg-panel: #1e293b;
+            --bg-input: #334155;
+            --text-main: #f1f5f9;
+            --text-muted: #94a3b8;
+            --primary: #3b82f6;
+            --user-bubble: #334155;
+            --cs-bubble: #0f766e;
+            --alert-bg: rgba(239, 68, 68, 0.15);
+            --alert-border: #ef4444;
+            --audit-bg: rgba(245, 158, 11, 0.15);
+            --audit-border: #f59e0b;
+            --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+        }
+        * { box-sizing: border-box; }
+        body {
+            background-color: var(--bg-body);
+            color: var(--text-main);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg-body); }
+        ::-webkit-scrollbar-thumb { background: var(--bg-input); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+        /* Toolbar */
+        .toolbar {
+            background: rgba(15, 23, 42, 0.85);
+            backdrop-filter: blur(12px);
+            padding: 16px 24px;
+            border-bottom: 1px solid var(--bg-input);
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            z-index: 10;
+            box-shadow: var(--shadow);
+        }
+        input {
+            flex-grow: 1;
+            background: var(--bg-panel);
+            border: 1px solid var(--bg-input);
+            color: var(--text-main);
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+        }
+        button {
+            background: var(--bg-panel);
+            color: var(--text-main);
+            border: 1px solid var(--bg-input);
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 14px;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+        button:hover { background: var(--bg-input); transform: translateY(-1px); }
+        
+        /* Log Container */
+        #log-container {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            scroll-behavior: smooth;
+        }
+
+        /* Message Rows */
+        .msg-row {
+            display: flex;
+            flex-direction: column;
+            max-width: 100%;
+            animation: fadeIn 0.3s ease;
+        }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+        .msg-meta {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+            font-family: "Menlo", "Consolas", monospace;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 0 4px;
+        }
+
+        .bubble {
+            padding: 12px 18px;
+            border-radius: 16px;
+            font-size: 14px;
+            line-height: 1.6;
+            position: relative;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+            box-shadow: var(--shadow);
+            max-width: 85%;
+        }
+
+        /* User Message (Left) */
+        .msg-user { align-items: flex-start; }
+        .msg-user .bubble {
+            background-color: var(--user-bubble);
+            border-top-left-radius: 2px;
+            color: #e2e8f0;
+        }
+
+        /* CS Message (Right) */
+        .msg-cs { align-items: flex-end; }
+        .msg-cs .bubble {
+            background-color: var(--cs-bubble);
+            border-top-right-radius: 2px;
+            color: #f0fdfa;
+        }
+        .msg-cs .msg-meta { flex-direction: row-reverse; }
+
+        /* System/Audit/Alert Messages */
+        .msg-sys, .msg-alert, .msg-audit {
+            align-items: center;
+            width: 100%;
+        }
+        .msg-sys .bubble, .msg-alert .bubble, .msg-audit .bubble {
+            max-width: 95%;
+            background: transparent;
+            box-shadow: none;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-family: "Menlo", "Consolas", monospace;
+            font-size: 12px;
+            border-left: 3px solid;
+        }
+
+        .msg-sys .bubble {
+            border-color: var(--text-muted);
+            background: rgba(148, 163, 184, 0.05);
+            color: var(--text-muted);
+        }
+
+        .msg-alert .bubble {
+            border-color: var(--alert-border);
+            background: var(--alert-bg);
+            color: #fca5a5;
+        }
+
+        .msg-audit .bubble {
+            border-color: var(--audit-border);
+            background: var(--audit-bg);
+            color: #fdba74;
+        }
+
+        /* Interactive Elements */
+        .pill {
+            display: inline-block;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 2px 6px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.2s;
+            user-select: all;
+        }
+        .pill:hover { background: rgba(255, 255, 255, 0.2); color: #fff; }
+
+        .highlight-row .bubble {
+            box-shadow: 0 0 0 2px #fbbf24, 0 0 20px rgba(251, 191, 36, 0.2);
+            z-index: 10;
+        }
+
+        .btn-report {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            text-transform: uppercase;
+            font-weight: bold;
+            cursor: pointer;
+            letter-spacing: 0.5px;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+        .btn-missed { background: #f59e0b; color: black; }
+        .btn-false { background: #ef4444; color: white; }
+
+        .error-msg { text-align: center; padding: 40px; color: var(--text-muted); font-style: italic; }
     </style>
 </head>
-<body class="text-slate-800 h-screen flex flex-col overflow-hidden">
-    
-    <div class="bg-white border-b border-slate-200 px-4 py-3 flex items-center gap-3 shadow-sm z-10">
-        <div class="relative flex-1">
-            <i class="fa-solid fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
-            <input type="text" id="search" placeholder="Search ID / Keyword (Press Enter)" onkeyup="if(event.key==='Enter') doSearch()"
-                class="w-full bg-slate-50 border border-slate-200 rounded-lg pl-8 pr-4 py-2 text-xs font-mono focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 transition">
-        </div>
-        <button onclick="doSearch()" class="px-3 py-2 bg-slate-100 hover:bg-slate-200 rounded-lg text-xs font-bold text-slate-600 transition">
-            Find
-        </button>
-        <button onclick="window.location.reload()" class="px-3 py-2 bg-slate-100 hover:bg-slate-200 rounded-lg text-xs font-bold text-slate-600 transition">
-            <i class="fa-solid fa-rotate-right mr-1"></i> Refresh
-        </button>
-        <button onclick="scrollToBottom()" class="px-3 py-2 bg-slate-800 hover:bg-black rounded-lg text-xs font-bold text-white transition">
-            <i class="fa-solid fa-arrow-down"></i>
-        </button>
+<body>
+    <div class="toolbar">
+        <input type="text" id="search" placeholder="🔍 输入 ID / 关键词 (回车跳转)..." onkeyup="if(event.key==='Enter') doSearch()">
+        <button onclick="doSearch()">查找</button>
+        <button onclick="window.location.reload()">🔄 刷新</button>
+        <button onclick="scrollToBottom()">⬇️ 底部</button>
     </div>
-
-    <div id="log-container" class="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar bg-[#F3F4F6]">
-        <div class="text-center py-10 text-slate-400 text-sm">Loading logs...</div>
-    </div>
-
+    <div id="log-container">Loading logs...</div>
     <script>
         const container = document.getElementById('log-container');
         let parsedLogs = [];
-        
+        // [Ver 34.0] UI Fix: Handle date format
         fetch('/log_raw?t=' + Date.now())
             .then(r => { if (!r.ok) throw new Error('Network response was not ok'); return r.text(); })
             .then(text => {
-                if (!text.trim()) { container.innerHTML = '<div class="text-center py-10 text-slate-400 italic">暂无日志数据</div>'; return; }
+                if (!text.trim()) { container.innerHTML = '<div class="error-msg">暂无日志数据</div>'; return; }
                 try { parseLogs(text); renderLogs(); scrollToBottom(); } 
-                catch (e) { console.error("Log parsing error:", e); container.innerHTML = `<div class="p-4 bg-red-50 text-red-500 rounded text-sm">日志解析错误: ${e.message}</div>`; }
+                catch (e) { console.error("Log parsing error:", e); container.innerHTML = `<div class="error-msg">日志解析错误: ${e.message}</div>`; }
             })
-            .catch(err => { container.innerHTML = `<div class="p-4 bg-red-50 text-red-500 rounded text-sm">加载失败: ${err.message}</div>`; });
+            .catch(err => { container.innerHTML = `<div class="error-msg">加载失败: ${err.message}</div>`; });
 
         function parseLogs(text) {
+            // [Fix JS Escaping] Use double backslash for python string
             const rawLines = text.split(/\\r?\\n/);
             parsedLogs = [];
             let currentEntry = null;
+            // [Fix JS Escaping] Escape \\d and \\s for JS regex
             const timeRegex = /^(\\d{4}-\\d{2}-\\d{2}\\s+)?(\\d{2}:\\d{2}:\\d{2})(.*)/;
             
             rawLines.forEach(line => {
@@ -663,8 +597,10 @@ LOG_VIEWER_HTML = """
                 const match = line.match(timeRegex);
                 if (match) {
                     if (currentEntry) parsedLogs.push(currentEntry);
+                    // match[2] is time, match[3] is content
                     currentEntry = { time: match[2], raw: match[3], content: match[3].trim(), fullText: match[3] };
                 } else {
+                    // [Fix JS Escaping] Use \\n for literal newline char in JS string
                     if (currentEntry) { currentEntry.fullText += '\\n' + line; currentEntry.content += '\\n' + line; }
                 }
             });
@@ -678,6 +614,7 @@ LOG_VIEWER_HTML = """
                 let content = entry.content;
                 let raw = entry.raw || "";
                 let ids = [];
+                // [Fix JS Escaping] Escape \\d and \\s for JS regex
                 const idRegex = /(Msg|User|Thread|流|归属|用户)[:=]?\\s?(\\d+)/g;
                 let match;
                 while ((match = idRegex.exec(content)) !== null) { ids.push(match[2]); }
@@ -689,94 +626,47 @@ LOG_VIEWER_HTML = """
                 else if (raw.includes('👮') || raw.includes('[AUDIT]')) { type = 'audit'; }
                 else if (raw.includes('┣━━') || raw.includes('┗━━')) { type = 'sys'; }
 
-                content = content.replace(/(Msg[:=]?\\s?)(\\d+)/g, '$1<span class="cursor-pointer bg-black/5 hover:bg-black/10 px-1 rounded transition select-all" onclick="searchId(\\'$2\\')">$2</span>');
-                content = content.replace(/(User|用户|归属)[:=]?\\s?(\\d+)/g, '$1<span class="cursor-pointer bg-black/5 hover:bg-black/10 px-1 rounded transition select-all" onclick="searchId(\\'$2\\')">$2</span>');
+                // [Fix JS Escaping] Escape \\d, \\s and quotes inside replacement string
+                content = content.replace(/(Msg[:=]?\\s?)(\\d+)/g, '$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
+                content = content.replace(/(User|用户|归属)[:=]?\\s?(\\d+)/g, '$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
                 
                 let actionBtn = '';
+                // [Ver 43.4 Fix] Fixed string interpolation for reportBug by removing extra escaping
                 if (type === 'user') {
-                    actionBtn = ids.length > 0 ? `<span class="ml-2 px-1.5 py-0.5 bg-amber-100 text-amber-700 text-[9px] rounded font-bold uppercase cursor-pointer hover:bg-amber-200" onclick="reportBug('漏报', '${idsStr}')">🐞 Missed</span>` : '';
+                    actionBtn = ids.length > 0 ? `<span class="btn-report btn-missed" onclick="reportBug('漏报', '${idsStr}')">🐞 漏报</span>` : '';
                 } else if (type === 'alert' || type === 'audit') {
-                    actionBtn = ids.length > 0 ? `<span class="ml-2 px-1.5 py-0.5 bg-red-100 text-red-700 text-[9px] rounded font-bold uppercase cursor-pointer hover:bg-red-200" onclick="reportBug('误报', '${idsStr}')">🐞 False</span>` : '';
+                    actionBtn = ids.length > 0 ? `<span class="btn-report btn-false" onclick="reportBug('误报', '${idsStr}')">🐞 误报</span>` : '';
                 }
                 
-                let timeHtml = `<span class="font-mono text-[10px] text-slate-400 mr-2 select-none">${entry.time}</span>`;
-                let rowId = `log-${idx}`;
+                let metaHtml = `<div class="msg-meta">${entry.time} #${idx} ${actionBtn}</div>`;
+                let rowClass = `msg-row msg-${type}`;
                 
-                if (type === 'user') {
-                    html += `
-                    <div class="flex flex-col items-start msg-row" id="${rowId}">
-                        <div class="flex items-center mb-1 pl-1">
-                            ${timeHtml}
-                            <span class="text-[10px] text-slate-500 font-bold">USER</span>
-                            ${actionBtn}
-                        </div>
-                        <div class="log-bubble bg-white border border-slate-200 text-slate-700 px-4 py-3 rounded-2xl rounded-tl-sm shadow-sm text-sm font-sans">
-                            ${content}
-                        </div>
-                    </div>`;
-                } else if (type === 'cs') {
-                    html += `
-                    <div class="flex flex-col items-end msg-row" id="${rowId}">
-                        <div class="flex items-center mb-1 pr-1 flex-row-reverse">
-                            ${timeHtml}
-                            <span class="text-[10px] text-primary font-bold">CS BOT</span>
-                        </div>
-                        <div class="log-bubble bg-primary text-white px-4 py-3 rounded-2xl rounded-tr-sm shadow-sm text-sm font-sans">
-                            ${content}
-                        </div>
-                    </div>`;
-                } else if (type === 'alert') {
-                    html += `
-                    <div class="flex justify-center msg-row my-2" id="${rowId}">
-                        <div class="bg-red-50 border border-red-100 text-red-600 px-4 py-2 rounded-lg text-xs font-mono w-full max-w-2xl flex items-center gap-2">
-                             <i class="fa-solid fa-triangle-exclamation"></i>
-                             <div class="flex-1">${content}</div>
-                             ${actionBtn}
-                        </div>
-                    </div>`;
-                } else if (type === 'audit') {
-                    html += `
-                    <div class="flex justify-center msg-row my-2" id="${rowId}">
-                        <div class="bg-orange-50 border border-orange-100 text-orange-600 px-4 py-2 rounded-lg text-xs font-mono w-full max-w-2xl flex items-center gap-2">
-                             <i class="fa-solid fa-shield-halved"></i>
-                             <div class="flex-1">${content}</div>
-                             ${actionBtn}
-                        </div>
-                    </div>`;
+                if (type === 'user' || type === 'cs') {
+                    html += `<div class="${rowClass}" id="log-${idx}">${type === 'cs' ? metaHtml : ''}<div class="bubble">${content}</div>${type === 'user' ? metaHtml : ''}</div>`;
                 } else {
-                    html += `
-                    <div class="flex items-start msg-row pl-2" id="${rowId}">
-                         <div class="font-mono text-[10px] text-slate-300 mr-2 min-w-[50px]">${entry.time}</div>
-                         <div class="font-mono text-xs text-slate-500 break-all border-l-2 border-slate-200 pl-2">${content}</div>
-                    </div>`;
+                    if (type === 'alert' || type === 'audit') {
+                          html += `<div class="${rowClass}" id="log-${idx}"><div class="bubble">${actionBtn} <b>${content}</b></div></div>`;
+                    } else {
+                          html += `<div class="${rowClass}" id="log-${idx}"><div class="bubble">${entry.time} ${content}</div></div>`;
+                    }
                 }
             });
             container.innerHTML = html;
         }
-
         function searchId(id) { document.getElementById('search').value = id; doSearch(); }
-        
         function doSearch() {
             const term = document.getElementById('search').value.toLowerCase();
             if (!term) return;
-            document.querySelectorAll('.ring-2').forEach(el => el.classList.remove('ring-2', 'ring-yellow-400'));
-            
+            document.querySelectorAll('.highlight-row').forEach(el => el.classList.remove('highlight-row'));
             let found = false;
             const rows = Array.from(document.querySelectorAll('.msg-row')).reverse();
             for (let row of rows) {
                 if (row.innerText.toLowerCase().includes(term)) {
-                    // Highlight logic
-                    const bubble = row.querySelector('.log-bubble') || row.querySelector('div[class*="bg-"]');
-                    if(bubble) bubble.classList.add('ring-2', 'ring-yellow-400');
-                    
-                    if (!found) { 
-                        row.scrollIntoView({behavior: "smooth", block: "center"}); 
-                        found = true; 
-                    }
+                    row.classList.add('highlight-row');
+                    if (!found) { row.scrollIntoView({behavior: "smooth", block: "center"}); found = true; }
                 }
             }
         }
-        
         function reportBug(type, idsStr) {
             const ids = idsStr.split(',');
             if (ids.length === 0) return;
@@ -787,7 +677,7 @@ LOG_VIEWER_HTML = """
                 for (let id of ids) { if (entry.raw.includes(id)) { hit = true; break; } }
                 if (hit) { report += `[${entry.time}] ${entry.content}\\n`; }
             });
-            navigator.clipboard.writeText(report).then(() => { alert(`✅ [${type}] Report Copied! Paste to developer.`); });
+            navigator.clipboard.writeText(report).then(() => { alert(`✅ [${type}] 详情已复制！请直接粘贴发送。`); });
         }
         function scrollToBottom() { container.scrollTop = container.scrollHeight; }
     </script>
@@ -797,78 +687,68 @@ LOG_VIEWER_HTML = """
 
 WAIT_CHECK_HTML = """
 <!DOCTYPE html>
-<html lang="zh-CN" class="bg-[#F3F4F6]">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <title>Wait Check Tool</title>
+    <title>稍等关键词闭环检测工具</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    fontFamily: { sans: ['"Plus Jakarta Sans"', 'sans-serif'], mono: ['"JetBrains Mono"', 'monospace'] },
-                    colors: { primary: '#6366F1' }
-                }
-            }
-        }
-    </script>
     <style>
-        body { font-family: 'Plus Jakarta Sans', sans-serif; }
-        .bento-card { @apply bg-white border border-slate-200 rounded-xl shadow-sm; }
+        body { font-family: -apple-system, sans-serif; background: #f0f2f5; padding: 20px; max-width: 800px; margin: 0 auto; color: #333; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        h1 { margin-top: 0; color: #1a1a1a; font-size: 1.5rem; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input[type="text"] { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; font-size: 16px; }
+        button { background: #0088cc; color: white; border: none; padding: 12px 20px; border-radius: 6px; cursor: pointer; font-size: 16px; width: 100%; font-weight: bold; transition: background 0.2s; }
+        button:hover { background: #006699; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        
+        #progress-container { margin-top: 20px; display: none; background: #f8f9fa; padding: 15px; border-radius: 6px; border: 1px solid #eee; }
+        #progress-bar { width: 100%; height: 10px; background: #ddd; border-radius: 5px; overflow: hidden; margin-bottom: 8px; }
+        #progress-fill { height: 100%; background: #4caf50; width: 0%; transition: width 0.3s; }
+        #status-text { font-size: 14px; color: #666; text-align: center; }
+
+        .result-list { margin-top: 20px; }
+        .result-item { padding: 15px; border-bottom: 1px solid #eee; display: flex; align-items: flex-start; gap: 15px; background: #fff; transition: background 0.2s; }
+        .result-item:hover { background: #fafafa; }
+        .result-item:last-child { border-bottom: none; }
+        
+        .status-badge { padding: 6px 10px; border-radius: 6px; font-size: 13px; font-weight: bold; white-space: nowrap; display: flex; align-items: center; justify-content: center; min-width: 80px; }
+        .status-closed { background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
+        .status-open { background: #ffebee; color: #c62828; border: 1px solid #ffcdd2; }
+        
+        .msg-content { flex-grow: 1; min-width: 0; }
+        .msg-meta { font-size: 12px; color: #888; margin-bottom: 4px; display: flex; gap: 10px; }
+        .msg-text { font-size: 14px; line-height: 1.5; color: #333; word-wrap: break-word; background: #f5f5f5; padding: 8px; border-radius: 4px; margin: 5px 0; border-left: 3px solid #ccc; }
+        .latest-text { font-size: 12px; color: #d32f2f; margin-top: 6px; background: #fff3e0; padding: 4px 8px; border-radius: 4px; border: 1px dashed #ffa726; }
+        .reason-text { color: #d32f2f; font-size: 13px; margin-top: 4px; font-style: italic; }
+        .reason-success { color: #2e7d32; font-size: 13px; margin-top: 4px; font-style: italic; }
+        .msg-link { text-decoration: none; color: #0088cc; font-size: 13px; display: inline-block; margin-top: 5px; font-weight: 500; }
+        .msg-link:hover { text-decoration: underline; }
+        
+        .summary { font-weight: bold; margin-bottom: 20px; padding: 15px; background: #e3f2fd; border-radius: 6px; border: 1px solid #bbdefb; color: #0d47a1; display: none; }
+        .filter-btn { cursor: pointer; color: #0056b3; text-decoration: underline; margin: 0 5px; }
+        .filter-btn:hover { color: #003d80; }
+        .filter-active { font-weight: 900; color: #d32f2f; text-decoration: none; }
     </style>
 </head>
-<body class="text-slate-800 min-h-screen py-10 px-4">
-    
-    <div class="max-w-3xl mx-auto space-y-6">
+<body>
+    <div class="card">
+        <h1>🔍 稍等关键词闭环检测</h1>
+        <div class="form-group">
+            <label>输入关键词 (例如: 请稍等ART)</label>
+            <input type="text" id="keyword" placeholder="输入要搜索的关键词..." value="请稍等ART">
+        </div>
+        <button onclick="startCheck()" id="btn-search">开始检测 (过去 10 小时)</button>
         
-        <div class="text-center mb-8">
-            <div class="inline-flex items-center justify-center w-12 h-12 rounded-full bg-primary/10 text-primary mb-3">
-                <i class="fa-solid fa-check-double text-xl"></i>
-            </div>
-            <h1 class="text-2xl font-bold text-slate-900">Wait Keyword Loop Check</h1>
-            <p class="text-slate-500 text-sm mt-1">检测稍等关键词的闭环状态（过去10小时）</p>
+        <div id="progress-container">
+            <div id="progress-bar"><div id="progress-fill"></div></div>
+            <div id="status-text">准备就绪...</div>
         </div>
+    </div>
 
-        <div class="bento-card p-6">
-            <div class="flex flex-col gap-4">
-                <div>
-                    <label class="block text-xs font-bold text-slate-500 uppercase mb-2">Keyword</label>
-                    <input type="text" id="keyword" value="请稍等ART" 
-                        class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-sm font-mono focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/10 transition"
-                        placeholder="Enter keyword...">
-                </div>
-                <button onclick="startCheck()" id="btn-search" class="w-full bg-slate-900 hover:bg-black text-white font-bold py-3 rounded-lg transition flex items-center justify-center gap-2">
-                    <i class="fa-solid fa-magnifying-glass"></i> Start Scan
-                </button>
-            </div>
-
-            <div id="progress-container" class="mt-6 hidden">
-                <div class="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
-                    <div id="progress-fill" class="h-full bg-primary transition-all duration-300 w-0"></div>
-                </div>
-                <div id="status-text" class="text-center text-xs text-slate-400 mt-2 font-mono">Initializing...</div>
-            </div>
-        </div>
-
-        <div id="summary-box" class="hidden">
-            <div class="flex gap-2 justify-center">
-                <button onclick="filterResults('all')" class="filter-btn active px-3 py-1.5 rounded-full text-xs font-bold border border-slate-200 bg-white text-slate-600 hover:border-slate-300">
-                    All <span id="count-all" class="ml-1 bg-slate-100 px-1.5 rounded-full text-[10px]">0</span>
-                </button>
-                <button onclick="filterResults('closed')" class="filter-btn px-3 py-1.5 rounded-full text-xs font-bold border border-green-200 bg-green-50 text-green-700 hover:bg-green-100">
-                    Closed <span id="count-closed" class="ml-1 bg-white/50 px-1.5 rounded-full text-[10px]">0</span>
-                </button>
-                <button onclick="filterResults('open')" class="filter-btn px-3 py-1.5 rounded-full text-xs font-bold border border-red-200 bg-red-50 text-red-700 hover:bg-red-100">
-                    Open <span id="count-open" class="ml-1 bg-white/50 px-1.5 rounded-full text-[10px]">0</span>
-                </button>
-            </div>
-        </div>
-
-        <div id="result-list" class="space-y-3 pb-20"></div>
-
+    <div class="card" id="result-card" style="display:none">
+        <div class="summary" id="summary-box"></div>
+        <div class="result-list" id="result-list"></div>
     </div>
 
     <script>
@@ -877,25 +757,28 @@ WAIT_CHECK_HTML = """
 
         async function startCheck() {
             const keyword = document.getElementById('keyword').value.trim();
-            if (!keyword) return alert("Please enter a keyword");
+            if (!keyword) return alert("请输入关键词");
             
             const btn = document.getElementById('btn-search');
             const pContainer = document.getElementById('progress-container');
             const pFill = document.getElementById('progress-fill');
             const pText = document.getElementById('status-text');
-            const summaryBox = document.getElementById('summary-box');
+            const resCard = document.getElementById('result-card');
             const resList = document.getElementById('result-list');
+            const summaryBox = document.getElementById('summary-box');
 
-            btn.disabled = true; btn.classList.add('opacity-50');
-            pContainer.classList.remove('hidden');
+            btn.disabled = true;
+            pContainer.style.display = 'block';
+            resCard.style.display = 'block';
             resList.innerHTML = '';
-            summaryBox.classList.add('hidden');
-            pFill.style.width = '2%';
-            pText.innerText = "Connecting stream...";
+            summaryBox.style.display = 'none';
+            pFill.style.width = '1%';
+            pText.innerText = "正在初始化...";
             
             allResults = [];
 
             try {
+                // 使用流式 API
                 const response = await fetch(`/api/wait_check_stream?keyword=${encodeURIComponent(keyword)}`);
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
@@ -911,37 +794,47 @@ WAIT_CHECK_HTML = """
                         if (!line.trim()) continue;
                         try {
                             const data = JSON.parse(line);
+                            
                             if (data.type === 'progress') {
                                 pFill.style.width = data.percent + '%';
                                 pText.innerText = data.msg;
                             } else if (data.type === 'result') {
                                 allResults.push(data);
-                                pText.innerText = `Found ${allResults.length} items...`;
+                                // [Ver 43.0] Collect all first for sorting
+                                pText.innerText = `已找到 ${allResults.length} 条结果...`;
                             } else if (data.type === 'done') {
                                 pFill.style.width = '100%';
-                                pText.innerText = 'Analysis Complete';
+                                pText.innerText = '检测完成，正在排序...';
                                 
-                                allResults.sort((a, b) => new Date(b.time) - new Date(a.time));
+                                // [Ver 43.0] Sort by time descending (Newest first)
+                                allResults.sort((a, b) => {
+                                    return new Date(b.time) - new Date(a.time);
+                                });
                                 
+                                renderResults(allResults); // Batch render
                                 renderSummary(data.total, data.closed, data.open);
-                                filterResults('all'); // Render
                             }
-                        } catch (e) {}
+                        } catch (e) {
+                            console.error("Parse error", e);
+                        }
                     }
                 }
             } catch (e) {
-                pText.innerText = "Error: " + e.message;
-                pFill.classList.add('bg-red-500');
+                pText.innerText = "发生错误: " + e.message;
             } finally {
-                btn.disabled = false; btn.classList.remove('opacity-50');
+                btn.disabled = false;
             }
         }
 
         function renderSummary(total, closed, open) {
-            document.getElementById('summary-box').classList.remove('hidden');
-            document.getElementById('count-all').innerText = total;
-            document.getElementById('count-closed').innerText = closed;
-            document.getElementById('count-open').innerText = open;
+            const summaryBox = document.getElementById('summary-box');
+            summaryBox.style.display = 'block';
+            summaryBox.innerHTML = `
+                检测完成: 共找到 ${total} 条消息。
+                <span class="filter-btn" onclick="filterResults('closed')">✅ 已闭环: ${closed}</span>
+                <span class="filter-btn" onclick="filterResults('open')">❌ 未闭环: ${open}</span>
+                <span class="filter-btn" onclick="filterResults('all')">📝 显示全部</span>
+            `;
         }
 
         function filterResults(type) {
@@ -951,58 +844,45 @@ WAIT_CHECK_HTML = """
             else if (type === 'closed') filtered = allResults.filter(d => d.is_closed);
             else if (type === 'open') filtered = allResults.filter(d => !d.is_closed);
             
-            renderList(filtered);
+            // [Ver 43.0] Ensure sorted
+            filtered.sort((a, b) => new Date(b.time) - new Date(a.time));
             
-            // Update UI state for buttons (simple implementation)
-            document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('ring-2', 'ring-offset-1', 'ring-slate-400'));
-            const activeBtn = document.querySelector(`button[onclick="filterResults('${type}')"]`);
-            if(activeBtn) activeBtn.classList.add('ring-2', 'ring-offset-1', 'ring-slate-400');
+            renderResults(filtered);
+            
+            // Update active state visual
+            document.querySelectorAll('.filter-btn').forEach(btn => {
+                 if(btn.innerText.includes(type === 'all' ? '全部' : (type === 'closed' ? '已闭环' : '未闭环'))) {
+                     btn.classList.add('filter-active');
+                 } else {
+                     btn.classList.remove('filter-active');
+                 }
+            });
         }
-
-        function renderList(list) {
-            const container = document.getElementById('result-list');
-            container.innerHTML = '';
-            
+        
+        // [Ver 44.1] Added display of latest_text
+        function renderResults(list) {
+            const resList = document.getElementById('result-list');
+            resList.innerHTML = '';
             list.forEach(data => {
-                const el = document.createElement('div');
-                el.className = 'bento-card p-4 flex gap-4 hover:shadow-md transition group';
-                
-                const statusIcon = data.is_closed 
-                    ? '<div class="w-8 h-8 rounded-full bg-green-100 text-green-600 flex items-center justify-center shrink-0"><i class="fa-solid fa-check"></i></div>'
-                    : '<div class="w-8 h-8 rounded-full bg-red-100 text-red-600 flex items-center justify-center shrink-0"><i class="fa-solid fa-xmark"></i></div>';
-                
-                el.innerHTML = `
-                    ${statusIcon}
-                    <div class="flex-1 min-w-0">
-                        <div class="flex justify-between items-start mb-1">
-                            <span class="text-xs font-bold text-slate-500 font-mono">${data.time}</span>
-                            <span class="text-[10px] bg-slate-100 px-2 py-0.5 rounded text-slate-500 truncate max-w-[100px]">${data.group_name}</span>
+                const div = document.createElement('div');
+                div.className = 'result-item';
+                div.innerHTML = `
+                    <div class="status-badge ${data.is_closed ? 'status-closed' : 'status-open'}">
+                        ${data.is_closed ? '✅ 已闭环' : '❌ 未闭环'}
+                    </div>
+                    <div class="msg-content">
+                        <div class="msg-meta">
+                            <span>📅 ${data.time}</span>
+                            <span>📂 ${data.group_name}</span>
                         </div>
-                        <div class="text-sm text-slate-800 font-medium mb-2 break-all bg-slate-50 p-2 rounded border border-slate-100">
-                            "${data.found_text}"
-                        </div>
-                        
-                        ${data.reason ? `<div class="text-xs mb-2 flex items-center gap-1 ${data.is_closed ? 'text-green-600' : 'text-red-500 font-bold'}">
-                            <i class="fa-solid fa-circle-info"></i> ${data.reason}
-                        </div>` : ''}
-
-                        ${!data.is_closed && data.latest_text ? `
-                            <div class="bg-orange-50 border border-orange-100 p-2 rounded text-xs text-orange-800 mb-2">
-                                <span class="font-bold">👀 Latest Msg:</span> ${data.latest_text}
-                            </div>
-                        ` : ''}
-
-                        <a href="${data.link}" target="_blank" class="text-xs text-primary hover:underline font-bold flex items-center gap-1">
-                            View Context <i class="fa-solid fa-arrow-up-right-from-square"></i>
-                        </a>
+                        <div class="msg-text">${data.found_text}</div>
+                        ${data.reason ? `<div class="${data.is_closed ? 'reason-success' : 'reason-text'}">${data.is_closed ? '🤖 ' : '⚠️ '}${data.reason}</div>` : ''}
+                        ${!data.is_closed && data.latest_text ? `<div class="latest-text">👀 判定依据 (最新消息): [${data.latest_text}]</div>` : ''}
+                        <a href="${data.link}" target="_blank" class="msg-link">🔗 跳转消息</a>
                     </div>
                 `;
-                container.appendChild(el);
+                resList.appendChild(div);
             });
-            
-            if(list.length === 0) {
-                 container.innerHTML = '<div class="text-center text-slate-400 py-10">No results in this view</div>';
-            }
         }
     </script>
 </body>
