@@ -26,10 +26,10 @@ DEFAULT_CONFIG = {
             "id": "default_rule",
             "name": "示例规则",
             "groups": [-1002169616907],
-            "check_file": False,          # 是否开启文件检测
-            "keywords": [],               # 普通模式：文本关键词
-            "file_extensions": ["xlsx"],  # 文件模式：后缀
-            "filename_keywords": ["结算"],# 文件模式：文件名关键词
+            "check_file": False,
+            "keywords": [],
+            "file_extensions": ["xlsx"],
+            "filename_keywords": ["结算"],
             "sender_mode": "exclude",
             "sender_prefixes": [],
             "cooldown": 60,
@@ -175,7 +175,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v12</title>
+    <title>Monitor Pro v13</title>
     <script src="https://cdn.staticfile.net/vue/3.3.4/vue.global.prod.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -258,7 +258,7 @@ SETTINGS_HTML = """
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs">
                 <i class="fa-solid fa-bolt"></i>
             </div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v12</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v13</span></span>
         </div>
         <div class="flex items-center gap-3">
             <label class="flex items-center gap-1.5 cursor-pointer select-none bg-slate-50 px-2 py-1 rounded border border-slate-200 hover:border-slate-300 transition-colors">
@@ -410,6 +410,13 @@ SETTINGS_HTML = """
                     <label class="text-[9px] font-bold text-slate-500 uppercase">范围(小时)</label>
                     <input type="number" v-model.number="recovery.hours" class="bento-input px-2 py-1.5 h-8 text-xs text-center font-bold" placeholder="5">
                 </div>
+                <div class="flex flex-col gap-1 w-full md:w-24">
+                    <label class="text-[9px] font-bold text-slate-500 uppercase">间隔(秒)</label>
+                    <div class="flex gap-1">
+                        <input type="number" v-model.number="recovery.min" class="bento-input px-1 py-1.5 h-8 text-xs text-center font-bold w-1/2" placeholder="2">
+                        <input type="number" v-model.number="recovery.max" class="bento-input px-1 py-1.5 h-8 text-xs text-center font-bold w-1/2" placeholder="5">
+                    </div>
+                </div>
                 <div class="flex items-end">
                     <button @click="runRecovery" :disabled="!recovery.search || !recovery.reply" class="h-8 bg-red-500 hover:bg-red-600 disabled:bg-slate-300 text-white px-4 rounded text-xs font-bold transition-colors flex items-center gap-2 shadow-sm whitespace-nowrap">
                         <i class="fa-solid fa-paper-plane"></i> 执行回复
@@ -436,7 +443,8 @@ SETTINGS_HTML = """
         setup() {
             const config = reactive({ enabled: true, rules: [] });
             const toast = reactive({ show: false, msg: '', type: 'success' });
-            const recovery = reactive({ search: '', reply: '', hours: 5 });
+            // Recovery State with defaults
+            const recovery = reactive({ search: '', reply: '', hours: 5, min: 2, max: 5 });
 
             fetch('/tool/monitor_settings_json')
                 .then(r => r.json())
@@ -495,7 +503,9 @@ SETTINGS_HTML = """
             };
             
             const runRecovery = async () => {
-                if(!confirm(`⚠️ 确定要执行批量回复吗？\\n\\n范围: 过去 ${recovery.hours} 小时\\n目标: 我发送的 "${recovery.search}" \\n动作: 追溯回复给【原消息发送者】`)) return;
+                const min = recovery.min || 1;
+                const max = recovery.max || 3;
+                if(!confirm(`⚠️ 确定要执行批量回复吗？\\n\\n范围: 过去 ${recovery.hours} 小时\\n目标: 我发送的 "${recovery.search}" \\n动作: 追溯回复给【原消息发送者】\\n间隔: ${min}-${max} 秒`)) return;
                 
                 try {
                     const res = await fetch('/api/batch_recovery', { 
@@ -610,18 +620,20 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         search_kw = data.get('search')
         reply_kw = data.get('reply')
         hours = float(data.get('hours', 5))
+        min_delay = float(data.get('min', 2.0))
+        max_delay = float(data.get('max', 5.0))
         
         if not search_kw or not reply_kw:
             return jsonify({"success": False, "msg": "参数不完整"}), 200
 
         asyncio.run_coroutine_threadsafe(
-            run_batch_recovery_task(client, search_kw, reply_kw, hours),
+            run_batch_recovery_task(client, search_kw, reply_kw, hours, min_delay, max_delay),
             bot_loop
         )
         return jsonify({"success": True, "msg": "批量回复任务已在后台启动，请留意日志"}), 200
 
-    async def run_batch_recovery_task(cli, search, reply, hours):
-        logger.info(f"🚑 [Reply] 开始执行批量回复 (全局搜索)... 搜索: '{search}', 回复: '{reply}', 范围: {hours}h")
+    async def run_batch_recovery_task(cli, search, reply, hours, min_d, max_d):
+        logger.info(f"🚑 [Reply] 开始执行批量回复... 搜索: '{search}', 回复: '{reply}', 范围: {hours}h, 间隔: {min_d}-{max_d}s")
         
         count = 0
         scanned_count = 0
@@ -639,17 +651,17 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                 try:
                     final_text = format_caption(reply)
                     
-                    # 尝试定位“消息流的第一条消息”（即当前这条机器人消息所回复的对象）
-                    target_id = msg.id # 默认回复自己(兜底)
+                    target_id = msg.id 
                     if msg.is_reply and msg.reply_to_msg_id:
                         target_id = msg.reply_to_msg_id
                     
-                    # 发送消息给原消息
                     await cli.send_message(msg.chat_id, final_text, reply_to=target_id)
                     
                     count += 1
                     logger.info(f"✅ [Reply] 已回复 Group:{msg.chat_id} Origin:{target_id}")
-                    await asyncio.sleep(random.uniform(1.0, 2.5)) 
+                    # 关键修改：使用前端传入的 min/max 间隔
+                    wait_time = random.uniform(min_d, max_d)
+                    await asyncio.sleep(wait_time)
                 except Exception as e:
                     logger.error(f"❌ [Reply] 回复失败 Group:{msg.chat_id}: {e}")
                     
@@ -661,7 +673,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
         if event.text == "/debug":
-            await event.reply("Monitor Debug: Alive v12 Original Reply")
+            await event.reply("Monitor Debug: Alive v13 Configurable Interval")
             return
 
         if not current_config.get("enabled", True): return
@@ -750,4 +762,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             except Exception as e:
                 logger.error(f"❌ [Monitor] 规则执行错误: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v12 (Reply to Original) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v13 (Configurable Interval) 已启动")
