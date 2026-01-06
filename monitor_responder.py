@@ -27,7 +27,11 @@ DEFAULT_CONFIG = {
             "name": "示例规则",
             "groups": [-1002169616907],
             "check_file": False,
-            "keywords": [],
+            # 语法示例：
+            # 1. 基础: "红包雨"
+            # 2. 排除: "红包雨#流水" (包含红包雨，但不含流水)
+            # 3. 组合: "提款&催促" (同时包含提款和催促)
+            "keywords": ["红包雨#流水", "提款&催促"],
             "file_extensions": ["xlsx"],
             "filename_keywords": ["结算"],
             "sender_mode": "exclude",
@@ -35,16 +39,10 @@ DEFAULT_CONFIG = {
             "cooldown": 60,
             "replies": [
                 {
-                    "type": "copy_file", 
-                    "forward_to": -100123456789, 
-                    "text": "#文件转发\n收到一份报表\n时间：{time}",
+                    "type": "text", 
+                    "text": "收到您的反馈，正在处理中... {time}",
                     "min": 1, 
                     "max": 2
-                },
-                {
-                    "type": "preempt_check",
-                    "min": 0.5,
-                    "max": 1.0
                 }
             ]
         }
@@ -121,6 +119,15 @@ def save_config(new_config):
             
             rule["check_file"] = bool(rule.get("check_file", False))
 
+            # 关键词清洗（移除旧的 exclude_keywords 处理，合并到 keywords 逻辑）
+            clean_kws = []
+            raw_kws = rule.get("keywords", [])
+            if isinstance(raw_kws, str): raw_kws = raw_kws.split('\n')
+            for k in raw_kws:
+                k = str(k).strip()
+                if k: clean_kws.append(k)
+            rule["keywords"] = clean_kws
+
             clean_exts = []
             raw_exts = rule.get("file_extensions", [])
             if isinstance(raw_exts, str): raw_exts = raw_exts.split('\n')
@@ -175,7 +182,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v13</title>
+    <title>Monitor Pro v15</title>
     <script src="https://cdn.staticfile.net/vue/3.3.4/vue.global.prod.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -258,7 +265,7 @@ SETTINGS_HTML = """
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs">
                 <i class="fa-solid fa-bolt"></i>
             </div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v13</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v15</span></span>
         </div>
         <div class="flex items-center gap-3">
             <label class="flex items-center gap-1.5 cursor-pointer select-none bg-slate-50 px-2 py-1 rounded border border-slate-200 hover:border-slate-300 transition-colors">
@@ -299,9 +306,12 @@ SETTINGS_HTML = """
                         <div class="relative">
                             <textarea :value="listToString(rule.groups)" @input="stringToIntList($event, rule, 'groups')" rows="1" class="bento-input w-full px-2 py-1.5 resize-none h-8 leading-tight font-mono text-[11px]" placeholder="群ID (换行分隔)"></textarea>
                         </div>
+                        
                         <div v-if="!rule.check_file" class="relative">
-                            <textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')" rows="1" class="bento-input w-full px-2 py-1.5 resize-none h-8 leading-tight font-mono text-[11px]" placeholder="文本关键词 (留空匹配所有)"></textarea>
+                            <textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')" rows="3" class="bento-input w-full px-2 py-1.5 resize-none h-20 leading-tight font-mono text-[11px] placeholder-slate-400" placeholder="红包雨 (普通)&#10;红包雨#流水 (包含前者，排除#后)&#10;提款&催促 (必须同时包含)"></textarea>
+                            <div class="absolute right-2 bottom-2 text-[9px] text-primary/60 bg-white/80 px-1 rounded pointer-events-none">支持 #排除 &且</div>
                         </div>
+                        
                         <div v-else class="grid grid-cols-2 gap-2">
                             <input :value="listToString(rule.file_extensions).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'file_extensions')" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="后缀: xlsx, png">
                             <input :value="listToString(rule.filename_keywords).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'filename_keywords')" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="文件名关键词">
@@ -458,6 +468,8 @@ SETTINGS_HTML = """
                         if(!r.file_extensions) r.file_extensions = [];
                         if(!r.filename_keywords) r.filename_keywords = [];
                         if(!r.sender_prefixes) r.sender_prefixes = [];
+                        // 兼容旧配置
+                        if(!r.keywords) r.keywords = [];
                         return r;
                     });
                 });
@@ -547,6 +559,7 @@ def analyze_message(rule, event, other_cs_ids, sender_name):
     text = (event.text or "").lower()
     
     if check_file:
+        # File Mode
         if not event.message.file: return False, "非文件消息"
         file_exts = rule.get("file_extensions", [])
         if file_exts:
@@ -566,10 +579,41 @@ def analyze_message(rule, event, other_cs_ids, sender_name):
             if not any(k.lower() in filename for k in fn_kws):
                 return False, "文件名关键词不符"
     else:
+        # Text Mode (New Logic with Syntax)
         keywords = rule.get("keywords", [])
-        if keywords:
-            if not any(kw.lower() in text for kw in keywords):
-                return False, "文本关键词不符"
+        match_found = False
+        
+        # 遍历每一行规则
+        for kw_rule in keywords:
+            if not kw_rule: continue
+            kw_rule = kw_rule.lower()
+            
+            # 1. 处理排除逻辑 (#)
+            # 格式: A#B -> A 是需要匹配的，B 是需要排除的
+            parts = kw_rule.split('#')
+            include_part = parts[0]
+            exclude_part = parts[1] if len(parts) > 1 else None
+            
+            # 如果配置了排除词，且消息中包含排除词 -> 跳过此规则
+            if exclude_part and exclude_part.strip() and (exclude_part.strip() in text):
+                continue 
+            
+            # 2. 处理同时匹配逻辑 (&)
+            # 格式: A&B -> A 和 B 必须同时存在
+            and_kws = include_part.split('&')
+            all_matched = True
+            for ak in and_kws:
+                ak = ak.strip()
+                if ak and (ak not in text):
+                    all_matched = False
+                    break
+            
+            if all_matched and and_kws:
+                match_found = True
+                break
+        
+        if not match_found:
+            return False, "文本关键词不符"
 
     sender_mode = rule.get("sender_mode", "exclude")
     prefixes = rule.get("sender_prefixes", [])
@@ -659,7 +703,6 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     
                     count += 1
                     logger.info(f"✅ [Reply] 已回复 Group:{msg.chat_id} Origin:{target_id}")
-                    # 关键修改：使用前端传入的 min/max 间隔
                     wait_time = random.uniform(min_d, max_d)
                     await asyncio.sleep(wait_time)
                 except Exception as e:
@@ -673,7 +716,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
         if event.text == "/debug":
-            await event.reply("Monitor Debug: Alive v13 Configurable Interval")
+            await event.reply("Monitor Debug: Alive v15 Logic Syntax")
             return
 
         if not current_config.get("enabled", True): return
@@ -762,4 +805,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             except Exception as e:
                 logger.error(f"❌ [Monitor] 规则执行错误: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v13 (Configurable Interval) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v15 (Logic Syntax) 已启动")
