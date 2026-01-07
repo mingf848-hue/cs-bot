@@ -21,7 +21,6 @@ global_main_handler = None
 # --- 默认配置 ---
 DEFAULT_CONFIG = {
     "enabled": True,
-    # 全局审批触发词 (领导发的指令)
     "approval_keywords": ["同意", "批准", "ok"],
     "rules": [
         {
@@ -47,7 +46,10 @@ DEFAULT_CONFIG = {
             "approval_action": {
                 "reply_admin": "收到，正在处理",
                 "reply_origin": "✅ 领导已批准，代存已报备",
-                "forward_to": -100123456789
+                "forward_to": -100123456789,
+                # 新增延迟配置
+                "admin_min": 1.0, "admin_max": 3.0, # 回复领导后的延迟
+                "fwd_min": 1.0, "fwd_max": 2.0      # 转发后的延迟
             }
         }
     ]
@@ -104,7 +106,18 @@ def load_config(system_cs_prefixes):
         if "check_file" not in rule: rule["check_file"] = False
         if "enable_approval" not in rule: rule["enable_approval"] = False
         if "filename_keywords" not in rule: rule["filename_keywords"] = []
-        if "approval_action" not in rule: rule["approval_action"] = {"reply_admin": "", "reply_origin": "", "forward_to": ""}
+        if "approval_action" not in rule: rule["approval_action"] = {}
+        
+        # 补全默认延迟参数
+        aa = rule["approval_action"]
+        if "reply_admin" not in aa: aa["reply_admin"] = ""
+        if "reply_origin" not in aa: aa["reply_origin"] = ""
+        if "forward_to" not in aa: aa["forward_to"] = ""
+        if "admin_min" not in aa: aa["admin_min"] = 1.0
+        if "admin_max" not in aa: aa["admin_max"] = 3.0
+        if "fwd_min" not in aa: aa["fwd_min"] = 1.0
+        if "fwd_max" not in aa: aa["fwd_max"] = 2.0
+
         if rule["sender_mode"] == "exclude" and not rule["sender_prefixes"]:
             rule["sender_prefixes"] = list(system_cs_prefixes)
 
@@ -158,8 +171,19 @@ def save_config(new_config):
             rule["filename_keywords"] = clean_fn_kws
             
             if "approval_action" not in rule: rule["approval_action"] = {}
-            rule["approval_action"]["reply_admin"] = str(rule["approval_action"].get("reply_admin", "")).strip()
-            rule["approval_action"]["reply_origin"] = str(rule["approval_action"].get("reply_origin", "")).strip()
+            aa = rule["approval_action"]
+            aa["reply_admin"] = str(aa.get("reply_admin", "")).strip()
+            aa["reply_origin"] = str(aa.get("reply_origin", "")).strip()
+            
+            # Save delay configs
+            try: aa["admin_min"] = float(aa.get("admin_min", 1.0))
+            except: aa["admin_min"] = 1.0
+            try: aa["admin_max"] = float(aa.get("admin_max", 3.0))
+            except: aa["admin_max"] = 3.0
+            try: aa["fwd_min"] = float(aa.get("fwd_min", 1.0))
+            except: aa["fwd_min"] = 1.0
+            try: aa["fwd_max"] = float(aa.get("fwd_max", 2.0))
+            except: aa["fwd_max"] = 2.0
             
             clean_prefixes = []
             raw_prefixes = rule.get("sender_prefixes", [])
@@ -199,7 +223,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v27</title>
+    <title>Monitor Pro v28</title>
     <script src="https://cdn.staticfile.net/vue/3.3.4/vue.global.prod.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -228,7 +252,7 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v27</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v28</span></span>
         </div>
         <div class="flex items-center gap-3">
             <label class="flex items-center gap-1.5 cursor-pointer select-none bg-slate-50 px-2 py-1 rounded border border-slate-200 hover:border-slate-300 transition-colors">
@@ -305,10 +329,18 @@ SETTINGS_HTML = """
                         </label>
                     </div>
                     
-                    <div v-if="rule.enable_approval" class="grid grid-cols-2 gap-2 mt-1 transition-all">
-                        <input v-model="rule.approval_action.reply_admin" class="bento-input w-full px-2 py-1.5 h-6 text-[10px] border-blue-200 focus:border-blue-400" placeholder="回复领导: 请稍等ART">
-                        <input v-model="rule.approval_action.forward_to" class="bento-input w-full px-2 py-1.5 h-6 text-[10px] border-blue-200 focus:border-blue-400 font-mono text-blue-600" placeholder="转发到群ID">
-                        <input v-model="rule.approval_action.reply_origin" class="bento-input w-full px-2 py-1.5 h-6 text-[10px] border-blue-200 focus:border-blue-400 col-span-2" placeholder="回复原消息: ✅ 领导批准，已处理">
+                    <div v-if="rule.enable_approval" class="flex flex-col gap-2 mt-1 transition-all">
+                        <div class="grid grid-cols-2 gap-2">
+                            <input v-model="rule.approval_action.reply_admin" class="bento-input w-full px-2 py-1.5 h-6 text-[10px] border-blue-200 focus:border-blue-400" placeholder="回复领导: 请稍等ART">
+                            <input v-model="rule.approval_action.forward_to" class="bento-input w-full px-2 py-1.5 h-6 text-[10px] border-blue-200 focus:border-blue-400 font-mono text-blue-600" placeholder="转发到群ID">
+                            <input v-model="rule.approval_action.reply_origin" class="bento-input w-full px-2 py-1.5 h-6 text-[10px] border-blue-200 focus:border-blue-400 col-span-2" placeholder="回复原消息: ✅ 领导批准，已处理">
+                        </div>
+                        <div class="flex items-center gap-2 bg-blue-50/50 p-1 rounded border border-blue-100">
+                            <span class="text-[9px] font-bold text-blue-400 ml-1">回复延迟:</span>
+                            <div class="flex items-center w-16 bg-white border border-blue-200 rounded h-5 px-1"><input v-model.number="rule.approval_action.admin_min" class="w-full text-center bg-transparent text-[9px] focus:outline-none" placeholder="min"><span class="text-blue-300 mx-0.5">-</span><input v-model.number="rule.approval_action.admin_max" class="w-full text-center bg-transparent text-[9px] focus:outline-none" placeholder="max"></div>
+                            <span class="text-[9px] font-bold text-blue-400 ml-2">转发延迟:</span>
+                            <div class="flex items-center w-16 bg-white border border-blue-200 rounded h-5 px-1"><input v-model.number="rule.approval_action.fwd_min" class="w-full text-center bg-transparent text-[9px] focus:outline-none" placeholder="min"><span class="text-blue-300 mx-0.5">-</span><input v-model.number="rule.approval_action.fwd_max" class="w-full text-center bg-transparent text-[9px] focus:outline-none" placeholder="max"></div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -355,7 +387,7 @@ SETTINGS_HTML = """
                         if(!r.filename_keywords) r.filename_keywords = [];
                         if(!r.sender_prefixes) r.sender_prefixes = [];
                         if(!r.keywords) r.keywords = [];
-                        if(!r.approval_action) r.approval_action = {reply_admin:'', reply_origin:'', forward_to:''};
+                        if(!r.approval_action) r.approval_action = {reply_admin:'', reply_origin:'', forward_to:'', admin_min:1, admin_max:3, fwd_min:1, fwd_max:2};
                         return r;
                     });
                 });
@@ -376,7 +408,7 @@ SETTINGS_HTML = """
                     name: '新规则 #' + (config.rules.length + 1),
                     groups: [], check_file: false, keywords: [], file_extensions: [], filename_keywords: [],
                     enable_approval: false,
-                    approval_action: {reply_admin:'', reply_origin:'', forward_to:''},
+                    approval_action: {reply_admin:'', reply_origin:'', forward_to:'', admin_min:1, admin_max:3, fwd_min:1, fwd_max:2},
                     sender_mode: 'exclude', sender_prefixes: [], cooldown: 60,
                     replies: [{type:'text', text: '', min: 1, max: 2}]
                 });
@@ -541,7 +573,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v27 Humanized Delay"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v28 Configurable Approval Delays"); return
         if not current_config.get("enabled", True): return
         
         # --- 1. 动态审批逻辑 (优先) ---
@@ -562,16 +594,20 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                 # 1. 回复领导
                                 if action.get("reply_admin"):
                                     await event.reply(format_caption(action["reply_admin"]))
-                                    # 延迟模拟真人
-                                    await asyncio.sleep(random.uniform(1, 3))
+                                    # 延迟1：回复领导后等待
+                                    d_min = float(action.get("admin_min", 1.0))
+                                    d_max = float(action.get("admin_max", 3.0))
+                                    await asyncio.sleep(random.uniform(d_min, d_max))
                                 
                                 # 2. 转发
                                 fwd_tgt = action.get("forward_to")
                                 if fwd_tgt:
                                     try:
                                         await client.forward_messages(int(str(fwd_tgt).strip()), original_msg)
-                                        # 转发后也休息一下
-                                        await asyncio.sleep(random.uniform(1, 2))
+                                        # 延迟2：转发后等待
+                                        f_min = float(action.get("fwd_min", 1.0))
+                                        f_max = float(action.get("fwd_max", 2.0))
+                                        await asyncio.sleep(random.uniform(f_min, f_max))
                                     except Exception as e:
                                         logger.error(f"❌ [Approval] 转发失败: {e}")
 
@@ -650,4 +686,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v27 (Humanized Delay) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v28 Configurable Approval Delays (Full) 已启动")
