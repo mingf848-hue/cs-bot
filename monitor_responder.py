@@ -24,12 +24,11 @@ DEFAULT_CONFIG = {
     "approval_keywords": ["同意", "批准", "ok"],
     "rules": [
         {
-            "id": "default_rule",
-            "name": "示例规则",
+            "id": "deposit_rule",
+            "name": "代存报备",
             "groups": [-1002169616907],
             "check_file": False,
-            "keywords": ["代存#测试#流水"], # 支持多重排除：包含代存，且不含测试，且不含流水
-            "enable_approval": False, 
+            "keywords": ["代存"],
             "file_extensions": [],
             "filename_keywords": [],
             "sender_mode": "exclude",
@@ -39,14 +38,14 @@ DEFAULT_CONFIG = {
                 {
                     "type": "amount_logic", 
                     "forward_to": -100123456789, 
-                    "text": "2000|⚠️ 需审批|✅ 已报备",
+                    "text": "2000|⚠️ 金额过大，需领导审批|✅ 已报备",
                     "min": 1, 
                     "max": 2
                 }
             ],
             "approval_action": {
-                "reply_admin": "收到",
-                "reply_origin": "✅ 已批准",
+                "reply_admin": "收到，正在处理",
+                "reply_origin": "✅ 领导已批准，代存已报备",
                 "forward_to": -100123456789
             }
         }
@@ -199,7 +198,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v25</title>
+    <title>Monitor Pro v26</title>
     <script src="https://cdn.staticfile.net/vue/3.3.4/vue.global.prod.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -228,7 +227,7 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v25</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v26</span></span>
         </div>
         <div class="flex items-center gap-3">
             <label class="flex items-center gap-1.5 cursor-pointer select-none bg-slate-50 px-2 py-1 rounded border border-slate-200 hover:border-slate-300 transition-colors">
@@ -541,7 +540,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v25 Multiple Exclude + Toggle Approval"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v26 Regex Fix"); return
         if not current_config.get("enabled", True): return
         
         # --- 1. 动态审批逻辑 (优先) ---
@@ -610,7 +609,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                             parts = cfg.split('|')
                             if len(parts) >= 3:
                                 thresh = float(parts[0])
-                                amt_match = re.search(r"[:：]?\s*(\d+)", event.text) 
+                                # 核心修复: 严格正则，只提取 "金额" 关键词后面的数字
+                                amt_match = re.search(r"(?:金额|额度|存)[:：]?\s*(\d+(?:\.\d+)?)", event.text) 
+                                
                                 if amt_match:
                                     amt = float(amt_match.group(1))
                                     if amt >= thresh:
@@ -623,6 +624,11 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                         if tgt: 
                                             fwd_msg = await client.forward_messages(int(str(tgt).strip()), event.message)
                                             sent_msgs.append(fwd_msg)
+                                else:
+                                    # Fallback: 如果没找到金额（例如用户没写"金额:"），但关键词匹配了
+                                    # 策略：默认为大额？或者不处理？
+                                    # 安全起见，这里记录日志但不执行分流
+                                    logger.warning(f"⚠️ [Monitor] Amount logic matched text but no specific amount found.")
 
                         elif stype == "preempt_check":
                             if not sent_msgs: continue
@@ -642,4 +648,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v25 (Multiple Exclude & Toggle Approval) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v26 (Regex Strict Fix) 已启动")
