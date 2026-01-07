@@ -24,23 +24,20 @@ DEFAULT_CONFIG = {
     "rules": [
         {
             "id": "default_rule",
-            "name": "示例规则",
+            "name": "报备金额规则",
             "groups": [-1002169616907],
             "check_file": False,
-            # 语法示例：
-            # 1. 基础: "红包雨"
-            # 2. 排除: "红包雨#流水" (包含红包雨，但不含流水)
-            # 3. 组合: "提款&催促" (同时包含提款和催促)
-            "keywords": ["红包雨#流水", "提款&催促"],
-            "file_extensions": ["xlsx"],
-            "filename_keywords": ["结算"],
+            "keywords": ["报备"],
+            "file_extensions": [],
+            "filename_keywords": [],
             "sender_mode": "exclude",
             "sender_prefixes": [],
             "cooldown": 60,
             "replies": [
                 {
-                    "type": "text", 
-                    "text": "收到您的反馈，正在处理中... {time}",
+                    "type": "amount_logic", 
+                    "forward_to": -100123456789, 
+                    "text": "2000|⚠️ 金额过大，需领导同意|✅ 已报备，正在处理",
                     "min": 1, 
                     "max": 2
                 }
@@ -119,7 +116,6 @@ def save_config(new_config):
             
             rule["check_file"] = bool(rule.get("check_file", False))
 
-            # 关键词清洗（移除旧的 exclude_keywords 处理，合并到 keywords 逻辑）
             clean_kws = []
             raw_kws = rule.get("keywords", [])
             if isinstance(raw_kws, str): raw_kws = raw_kws.split('\n')
@@ -175,14 +171,14 @@ def save_config(new_config):
         logger.error(f"❌ [Monitor] 保存失败: {e}")
         return False, str(e)
 
-# --- Web UI (Bento Grid / Linear Style + Typography Pro) ---
+# --- Web UI (Bento Grid) ---
 SETTINGS_HTML = """
 <!DOCTYPE html>
 <html lang="zh-CN" class="bg-[#F3F4F6]">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v15</title>
+    <title>Monitor Pro v19</title>
     <script src="https://cdn.staticfile.net/vue/3.3.4/vue.global.prod.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -265,7 +261,7 @@ SETTINGS_HTML = """
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs">
                 <i class="fa-solid fa-bolt"></i>
             </div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v15</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v19</span></span>
         </div>
         <div class="flex items-center gap-3">
             <label class="flex items-center gap-1.5 cursor-pointer select-none bg-slate-50 px-2 py-1 rounded border border-slate-200 hover:border-slate-300 transition-colors">
@@ -359,6 +355,7 @@ SETTINGS_HTML = """
                                             <option value="text">💬 发送文本</option>
                                             <option value="forward">🔀 直接转发</option>
                                             <option value="copy_file">📂 转发+新文案</option>
+                                            <option value="amount_logic">💰 金额分流</option>
                                             <option value="preempt_check">⚡ 抢答检测 (自删)</option>
                                         </select>
                                         <button @click="rule.replies.splice(rIndex, 1)" class="ml-auto text-slate-300 hover:text-red-400">
@@ -374,6 +371,10 @@ SETTINGS_HTML = """
                                     <template v-if="reply.type === 'copy_file'">
                                         <input v-model="reply.forward_to" class="bento-input w-full px-1.5 py-1 h-6 text-[10px] font-mono text-blue-600 mb-1" placeholder="目标群ID">
                                         <textarea v-model="reply.text" rows="2" class="bento-input w-full px-1.5 py-1 text-[10px] resize-none bg-yellow-50 border-yellow-100 focus:border-yellow-300 font-mono" placeholder="新文案... ({time})"></textarea>
+                                    </template>
+                                    <template v-if="reply.type === 'amount_logic'">
+                                        <input v-model="reply.forward_to" class="bento-input w-full px-1.5 py-1 h-6 text-[10px] font-mono text-blue-600 mb-1" placeholder="小额转发目标群ID">
+                                        <textarea v-model="reply.text" rows="2" class="bento-input w-full px-1.5 py-1 text-[10px] resize-none bg-indigo-50 border-indigo-100 focus:border-indigo-300 font-mono" placeholder="格式: 2000|⚠️ 需审批|✅ 已报备"></textarea>
                                     </template>
                                     <template v-if="reply.type === 'preempt_check'">
                                         <div class="px-1.5 py-1 bg-red-50 text-red-500 rounded text-[10px] font-medium border border-red-100 flex items-center gap-2">
@@ -453,7 +454,6 @@ SETTINGS_HTML = """
         setup() {
             const config = reactive({ enabled: true, rules: [] });
             const toast = reactive({ show: false, msg: '', type: 'success' });
-            // Recovery State with defaults
             const recovery = reactive({ search: '', reply: '', hours: 5, min: 2, max: 5 });
 
             fetch('/tool/monitor_settings_json')
@@ -468,7 +468,6 @@ SETTINGS_HTML = """
                         if(!r.file_extensions) r.file_extensions = [];
                         if(!r.filename_keywords) r.filename_keywords = [];
                         if(!r.sender_prefixes) r.sender_prefixes = [];
-                        // 兼容旧配置
                         if(!r.keywords) r.keywords = [];
                         return r;
                     });
@@ -490,7 +489,8 @@ SETTINGS_HTML = """
                     name: '新规则 #' + (config.rules.length + 1),
                     groups: [], 
                     check_file: false,
-                    keywords: [], file_extensions: [], filename_keywords: [],
+                    keywords: [], 
+                    file_extensions: [], filename_keywords: [],
                     sender_mode: 'exclude', sender_prefixes: [], cooldown: 60,
                     replies: [{type:'text', text: '', min: 1, max: 2}]
                 });
@@ -549,84 +549,34 @@ SETTINGS_HTML = """
 </html>
 """
 
-def analyze_message(rule, event, other_cs_ids, sender_name):
-    if event.chat_id not in rule.get("groups", []): return False, "群组不符"
-    if event.is_reply: return False, "是回复消息"
-    if event.out: return False, "Bot自己发送"
-    if event.sender_id in other_cs_ids: return False, "ID是客服"
+def match_text(text, rule):
+    """通用文本匹配逻辑 (支持 & #)"""
+    keywords = rule.get("keywords", [])
+    if not keywords: return True 
     
-    check_file = rule.get("check_file", False)
-    text = (event.text or "").lower()
-    
-    if check_file:
-        # File Mode
-        if not event.message.file: return False, "非文件消息"
-        file_exts = rule.get("file_extensions", [])
-        if file_exts:
-            ext = (event.message.file.ext or "").lower().replace('.', '')
-            if ext not in file_exts: return False, "后缀不符"
-        fn_kws = rule.get("filename_keywords", [])
-        if fn_kws:
-            filename = ""
-            if event.message.file.name: 
-                filename = event.message.file.name
-            else:
-                for attr in event.message.file.attributes:
-                    if hasattr(attr, 'file_name'):
-                        filename = attr.file_name
-                        break
-            filename = (filename or "").lower()
-            if not any(k.lower() in filename for k in fn_kws):
-                return False, "文件名关键词不符"
-    else:
-        # Text Mode (New Logic with Syntax)
-        keywords = rule.get("keywords", [])
-        match_found = False
+    for kw_rule in keywords:
+        if not kw_rule: continue
+        kw_rule = kw_rule.lower()
+        text_lower = text.lower()
         
-        # 遍历每一行规则
-        for kw_rule in keywords:
-            if not kw_rule: continue
-            kw_rule = kw_rule.lower()
-            
-            # 1. 处理排除逻辑 (#)
-            # 格式: A#B -> A 是需要匹配的，B 是需要排除的
-            parts = kw_rule.split('#')
-            include_part = parts[0]
-            exclude_part = parts[1] if len(parts) > 1 else None
-            
-            # 如果配置了排除词，且消息中包含排除词 -> 跳过此规则
-            if exclude_part and exclude_part.strip() and (exclude_part.strip() in text):
-                continue 
-            
-            # 2. 处理同时匹配逻辑 (&)
-            # 格式: A&B -> A 和 B 必须同时存在
-            and_kws = include_part.split('&')
-            all_matched = True
-            for ak in and_kws:
-                ak = ak.strip()
-                if ak and (ak not in text):
-                    all_matched = False
-                    break
-            
-            if all_matched and and_kws:
-                match_found = True
+        parts = kw_rule.split('#')
+        include_part = parts[0]
+        exclude_part = parts[1] if len(parts) > 1 else None
+        
+        if exclude_part and exclude_part.strip() and (exclude_part.strip() in text_lower):
+            continue 
+        
+        and_kws = include_part.split('&')
+        all_matched = True
+        for ak in and_kws:
+            ak = ak.strip()
+            if ak and (ak not in text_lower):
+                all_matched = False
                 break
         
-        if not match_found:
-            return False, "文本关键词不符"
-
-    sender_mode = rule.get("sender_mode", "exclude")
-    prefixes = rule.get("sender_prefixes", [])
-    match_prefix = any(sender_name.startswith(p) for p in prefixes)
-    if sender_mode == "exclude" and match_prefix: return False, "前缀被排除"
-    elif sender_mode == "include" and not match_prefix: return False, "前缀不在白名单"
-    
-    rule_id = rule.get("id", str(rule.get("groups")))
-    last_time = rule_timers.get(rule_id, 0)
-    now = time.time()
-    if now - last_time < rule.get("cooldown", 60): return False, "冷却中"
-    
-    return True, "✅ 匹配成功"
+        if all_matched and and_kws:
+            return True
+    return False
 
 def format_caption(tpl):
     if not tpl: return ""
@@ -716,7 +666,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
         if event.text == "/debug":
-            await event.reply("Monitor Debug: Alive v15 Logic Syntax")
+            await event.reply("Monitor Debug: Alive v19 Amount Logic")
             return
 
         if not current_config.get("enabled", True): return
@@ -789,6 +739,48 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                             except Exception as e:
                                 logger.error(f"❌ [Monitor] 抢答检测出错: {e}")
 
+                        elif step_type == "amount_logic":
+                            # 智能金额分流逻辑
+                            config_str = step.get("text", "") # 格式: 2000|高额回复|低额回复
+                            forward_target = step.get("forward_to")
+                            
+                            try:
+                                parts = config_str.split('|')
+                                if len(parts) >= 3:
+                                    threshold = float(parts[0])
+                                    high_msg = parts[1]
+                                    low_msg = parts[2]
+                                    
+                                    # 提取金额 (支持中文冒号)
+                                    amt_match = re.search(r"金额[:：]?\s*(\d+)", event.text)
+                                    if amt_match:
+                                        amount = float(amt_match.group(1))
+                                        
+                                        if amount >= threshold:
+                                            # 高额逻辑: 仅回复，不转发
+                                            final_text = format_caption(high_msg)
+                                            sent_msg = await event.reply(final_text)
+                                            sent_msgs.append(sent_msg)
+                                            logger.info(f"💰 [Monitor] Amount {amount} >= {threshold}, Reply Only")
+                                        else:
+                                            # 低额逻辑: 转发 + 回复
+                                            if forward_target:
+                                                try:
+                                                    target_id = int(str(forward_target).strip())
+                                                    await client.forward_messages(target_id, event.message)
+                                                    logger.info(f"➡️ [Monitor] Low Amount Forward -> {target_id}")
+                                                except: pass
+                                            
+                                            final_text = format_caption(low_msg)
+                                            sent_msg = await event.reply(final_text)
+                                            sent_msgs.append(sent_msg)
+                                    else:
+                                        # 未找到金额，默认按高额处理(安全起见)或忽略? 
+                                        # 这里选择忽略特殊逻辑，不执行动作
+                                        logger.warning("⚠️ [Monitor] Amount Logic matched keyword but found no number.")
+                            except Exception as e:
+                                logger.error(f"❌ [Monitor] Amount Logic Error: {e}")
+
                         else:
                             content = step.get("text", "")
                             if not content: continue
@@ -805,4 +797,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             except Exception as e:
                 logger.error(f"❌ [Monitor] 规则执行错误: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v15 (Logic Syntax) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v19 (Amount Logic) 已启动")
