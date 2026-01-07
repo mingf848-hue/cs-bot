@@ -5,25 +5,9 @@ import random
 import json
 import os
 import re
-import io
 from datetime import datetime, timedelta, timezone
 from flask import request, jsonify, Response
 from telethon import events
-
-# 导入 Excel 处理与解密库
-try:
-    import pandas as pd
-    HAS_PANDAS = True
-except ImportError:
-    pd = None
-    HAS_PANDAS = False
-
-try:
-    import msoffcrypto
-    HAS_CRYPTO = True
-except ImportError:
-    msoffcrypto = None
-    HAS_CRYPTO = False
 
 try: import redis
 except ImportError: redis = None
@@ -37,7 +21,7 @@ global_main_handler = None
 # --- 默认配置 ---
 DEFAULT_CONFIG = {
     "enabled": True,
-    # 全局审批触发词
+    # 全局审批触发词 (领导发的指令)
     "approval_keywords": ["同意", "批准", "ok"],
     "rules": [
         {
@@ -48,9 +32,6 @@ DEFAULT_CONFIG = {
             "keywords": ["代存"],
             "file_extensions": [],
             "filename_keywords": [],
-            "excel_password": "",
-            "excel_sheet_name": "",
-            "excel_target_column": "",
             "sender_mode": "exclude",
             "sender_prefixes": [],
             "cooldown": 60,
@@ -63,7 +44,7 @@ DEFAULT_CONFIG = {
                     "max": 2
                 }
             ],
-            # 新增: 规则级审批配置
+            # 规则级审批配置
             "approval_action": {
                 "reply_admin": "收到，正在处理",
                 "reply_origin": "✅ 领导已批准，代存已报备",
@@ -78,9 +59,6 @@ DEFAULT_CONFIG = {
             "keywords": ["加白", "白名单"],
             "file_extensions": [],
             "filename_keywords": [],
-            "excel_password": "",
-            "excel_sheet_name": "",
-            "excel_target_column": "",
             "sender_mode": "exclude",
             "sender_prefixes": [],
             "cooldown": 60,
@@ -96,7 +74,7 @@ DEFAULT_CONFIG = {
             "approval_action": {
                 "reply_admin": "收到，已提交技术",
                 "reply_origin": "✅ 领导已批准，IP加白处理中",
-                "forward_to": -100987654321 # 可以转发给技术群
+                "forward_to": -100987654321
             }
         }
     ]
@@ -152,9 +130,6 @@ def load_config(system_cs_prefixes):
     for rule in current_config["rules"]:
         if "check_file" not in rule: rule["check_file"] = False
         if "filename_keywords" not in rule: rule["filename_keywords"] = []
-        if "excel_password" not in rule: rule["excel_password"] = ""
-        if "excel_sheet_name" not in rule: rule["excel_sheet_name"] = ""
-        if "excel_target_column" not in rule: rule["excel_target_column"] = ""
         if "approval_action" not in rule: rule["approval_action"] = {"reply_admin": "", "reply_origin": "", "forward_to": ""}
         if rule["sender_mode"] == "exclude" and not rule["sender_prefixes"]:
             rule["sender_prefixes"] = list(system_cs_prefixes)
@@ -165,7 +140,6 @@ def save_config(new_config):
         if not isinstance(new_config, dict) or "rules" not in new_config:
             return False, "无效的配置格式"
 
-        # 保存全局审批词
         raw_app_kws = new_config.get("approval_keywords", [])
         if isinstance(raw_app_kws, str):
             new_config["approval_keywords"] = [k.strip() for k in re.split(r'[,\n]', raw_app_kws) if k.strip()]
@@ -208,16 +182,10 @@ def save_config(new_config):
                 if k: clean_fn_kws.append(k)
             rule["filename_keywords"] = clean_fn_kws
             
-            # Excel Config
-            rule["excel_password"] = str(rule.get("excel_password", "")).strip()
-            rule["excel_sheet_name"] = str(rule.get("excel_sheet_name", "")).strip()
-            rule["excel_target_column"] = str(rule.get("excel_target_column", "")).strip()
-            
             # Approval Action Cleaning
             if "approval_action" not in rule: rule["approval_action"] = {}
             rule["approval_action"]["reply_admin"] = str(rule["approval_action"].get("reply_admin", "")).strip()
             rule["approval_action"]["reply_origin"] = str(rule["approval_action"].get("reply_origin", "")).strip()
-            # forward_to can be int or empty string
             
             clean_prefixes = []
             raw_prefixes = rule.get("sender_prefixes", [])
@@ -257,7 +225,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v22</title>
+    <title>Monitor Pro v23</title>
     <script src="https://cdn.staticfile.net/vue/3.3.4/vue.global.prod.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -286,7 +254,7 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v22</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v23</span></span>
         </div>
         <div class="flex items-center gap-3">
             <label class="flex items-center gap-1.5 cursor-pointer select-none bg-slate-50 px-2 py-1 rounded border border-slate-200 hover:border-slate-300 transition-colors">
@@ -321,9 +289,6 @@ SETTINGS_HTML = """
                         <div v-if="!rule.check_file" class="relative"><textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')" rows="2" class="bento-input w-full px-2 py-1.5 resize-none h-16 leading-tight font-mono text-[11px] placeholder-slate-400" placeholder="红包雨 (普通)&#10;红包雨#流水 (包含前者，排除#后)&#10;提款&催促 (必须同时包含)"></textarea></div>
                         <div v-else class="space-y-2">
                             <div class="grid grid-cols-2 gap-2"><input :value="listToString(rule.file_extensions).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'file_extensions')" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="后缀: xlsx, png"><input :value="listToString(rule.filename_keywords).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'filename_keywords')" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="文件名关键词"></div>
-                            <div class="grid grid-cols-2 gap-2"><input v-model="rule.excel_password" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="密码 (可选)"><input v-model="rule.excel_sheet_name" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="Sheet名 (可选)"></div>
-                            <div class="relative"><input v-model="rule.excel_target_column" class="bento-input w-full px-2 py-1.5 h-7 border-green-200 bg-green-50/30 focus:border-green-400 font-mono text-[11px]" placeholder="提取特定列名 (可选,如: 会员账号)"><div class="absolute right-2 top-1.5 text-[9px] text-green-600/60 pointer-events-none">提取列</div></div>
-                            <div class="relative"><textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')" rows="1" class="bento-input w-full px-2 py-1.5 resize-none h-8 leading-tight font-mono text-[11px] border-yellow-200 focus:border-yellow-400" placeholder="Excel 内容匹配 (支持 & # 语法)"></textarea></div>
                         </div>
                     </div>
                     <div class="h-px bg-slate-100"></div>
@@ -347,7 +312,7 @@ SETTINGS_HTML = """
                                         <select v-model="reply.type" class="text-[10px] bg-transparent border-none p-0 text-slate-600 font-bold focus:ring-0 cursor-pointer w-auto font-sans"><option value="text">💬 发送文本</option><option value="forward">🔀 直接转发</option><option value="copy_file">📂 转发+新文案</option><option value="amount_logic">💰 金额分流</option><option value="preempt_check">⚡ 抢答检测 (自删)</option></select>
                                         <button @click="rule.replies.splice(rIndex, 1)" class="ml-auto text-slate-300 hover:text-red-400"><i class="fa-solid fa-xmark text-[10px]"></i></button>
                                     </div>
-                                    <template v-if="reply.type === 'text'"><textarea v-model="reply.text" rows="2" class="bento-input w-full px-1.5 py-1 text-[10px] resize-none border-transparent bg-white focus:border-slate-200 font-mono" placeholder="内容... ({data}插入提取结果)"></textarea></template>
+                                    <template v-if="reply.type === 'text'"><textarea v-model="reply.text" rows="2" class="bento-input w-full px-1.5 py-1 text-[10px] resize-none border-transparent bg-white focus:border-slate-200 font-mono" placeholder="内容... ({time})"></textarea></template>
                                     <template v-if="reply.type === 'forward'"><input v-model="reply.forward_to" class="bento-input w-full px-1.5 py-1 h-6 text-[10px] font-mono text-blue-600" placeholder="目标群ID"></template>
                                     <template v-if="reply.type === 'copy_file'"><input v-model="reply.forward_to" class="bento-input w-full px-1.5 py-1 h-6 text-[10px] font-mono text-blue-600 mb-1" placeholder="目标群ID"><textarea v-model="reply.text" rows="2" class="bento-input w-full px-1.5 py-1 text-[10px] resize-none bg-yellow-50 border-yellow-100 focus:border-yellow-300 font-mono" placeholder="新文案... ({time})"></textarea></template>
                                     <template v-if="reply.type === 'amount_logic'"><input v-model="reply.forward_to" class="bento-input w-full px-1.5 py-1 h-6 text-[10px] font-mono text-blue-600 mb-1" placeholder="小额转发目标群ID"><textarea v-model="reply.text" rows="2" class="bento-input w-full px-1.5 py-1 text-[10px] resize-none bg-indigo-50 border-indigo-100 focus:border-indigo-300 font-mono" placeholder="2000|大额语|小额1;;小额2"></textarea></template>
@@ -412,9 +377,6 @@ SETTINGS_HTML = """
                         if(!r.filename_keywords) r.filename_keywords = [];
                         if(!r.sender_prefixes) r.sender_prefixes = [];
                         if(!r.keywords) r.keywords = [];
-                        if(!r.excel_password) r.excel_password = "";
-                        if(!r.excel_sheet_name) r.excel_sheet_name = "";
-                        if(!r.excel_target_column) r.excel_target_column = "";
                         if(!r.approval_action) r.approval_action = {reply_admin:'', reply_origin:'', forward_to:''};
                         return r;
                     });
@@ -435,7 +397,6 @@ SETTINGS_HTML = """
                 config.rules.push({
                     name: '新规则 #' + (config.rules.length + 1),
                     groups: [], check_file: false, keywords: [], file_extensions: [], filename_keywords: [],
-                    excel_password: '', excel_sheet_name: '', excel_target_column: '',
                     approval_action: {reply_admin:'', reply_origin:'', forward_to:''},
                     sender_mode: 'exclude', sender_prefixes: [], cooldown: 60,
                     replies: [{type:'text', text: '', min: 1, max: 2}]
@@ -496,29 +457,27 @@ def match_text(text, rule):
         if all_matched and and_kws: return True
     return False
 
-def format_caption(tpl, extracted_data=None):
+def format_caption(tpl):
     if not tpl: return ""
     now_str = datetime.now(BJ_TZ).strftime('%Y-%-m-%-d %H:%M') 
     res = tpl.replace('{time}', now_str)
-    if extracted_data: res = res.replace('{data}', extracted_data)
     return res
 
 async def analyze_message(client, rule, event, other_cs_ids, sender_name):
-    if event.chat_id not in rule.get("groups", []): return False, "群组不符", None
-    if event.is_reply: return False, "是回复消息", None
-    if event.out: return False, "Bot自己发送", None
-    if event.sender_id in other_cs_ids: return False, "ID是客服", None
+    if event.chat_id not in rule.get("groups", []): return False, "群组不符"
+    if event.is_reply: return False, "是回复消息"
+    if event.out: return False, "Bot自己发送"
+    if event.sender_id in other_cs_ids: return False, "ID是客服"
     
     check_file = rule.get("check_file", False)
     text = (event.text or "")
-    extracted_data = "" 
     
     if check_file:
-        if not event.message.file: return False, "非文件消息", None
+        if not event.message.file: return False, "非文件消息"
         file_exts = rule.get("file_extensions", [])
         ext = (event.message.file.ext or "").lower().replace('.', '')
         if file_exts:
-            if ext not in file_exts: return False, "后缀不符", None
+            if ext not in file_exts: return False, "后缀不符"
         fn_kws = rule.get("filename_keywords", [])
         filename = ""
         if event.message.file.name: filename = event.message.file.name
@@ -529,65 +488,22 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_name):
                     break
         filename_lower = (filename or "").lower()
         if fn_kws:
-            if not any(k.lower() in filename_lower for k in fn_kws): return False, "文件名关键词不符", None
-        
-        content_kws = rule.get("keywords", [])
-        target_col = rule.get("excel_target_column", "")
-        
-        if (content_kws or target_col) and ext in ['xlsx', 'xls'] and HAS_PANDAS:
-            if event.message.file.size > 10 * 1024 * 1024: 
-                logger.warning(f"⚠️ [Monitor] Excel too large, skip.")
-            else:
-                try:
-                    blob = await client.download_media(event.message, file=bytes)
-                    excel_pass = rule.get("excel_password", "")
-                    source = None
-                    if excel_pass and HAS_CRYPTO:
-                        try:
-                            decrypted = io.BytesIO()
-                            file = msoffcrypto.OfficeFile(io.BytesIO(blob))
-                            file.load_key(password=excel_pass)
-                            file.decrypt(decrypted)
-                            decrypted.seek(0)
-                            source = decrypted
-                        except Exception as e: return False, "解密失败", None
-                    else: source = io.BytesIO(blob)
-                    
-                    target_sheet = rule.get("excel_sheet_name")
-                    sheet_arg = 0
-                    if target_sheet: sheet_arg = target_sheet
-                    with source as f:
-                        df = pd.read_excel(f, sheet_name=sheet_arg)
-                        if target_col:
-                            df.columns = df.columns.astype(str).str.strip()
-                            if target_col in df.columns:
-                                col_data = df[target_col].dropna().astype(str).tolist()
-                                extracted_data = ", ".join(col_data)
-                        excel_text = " ".join(df.astype(str).values.flatten())
-                        if not match_text(excel_text, rule): return False, "Excel内容不匹配", None
-                except Exception as e: return False, "读取Excel失败", None
+            if not any(k.lower() in filename_lower for k in fn_kws): return False, "文件名关键词不符"
     else:
-        if not match_text(text, rule): return False, "文本关键词不符", None
+        if not match_text(text, rule): return False, "文本关键词不符"
 
     sender_mode = rule.get("sender_mode", "exclude")
     prefixes = rule.get("sender_prefixes", [])
     match_prefix = any(sender_name.startswith(p) for p in prefixes)
-    if sender_mode == "exclude" and match_prefix: return False, "前缀被排除", None
-    elif sender_mode == "include" and not match_prefix: return False, "前缀不在白名单", None
+    if sender_mode == "exclude" and match_prefix: return False, "前缀被排除"
+    elif sender_mode == "include" and not match_prefix: return False, "前缀不在白名单"
     
     rule_id = rule.get("id", str(rule.get("groups")))
     last_time = rule_timers.get(rule_id, 0)
     now = time.time()
-    if now - last_time < rule.get("cooldown", 60): return False, "冷却中", None
+    if now - last_time < rule.get("cooldown", 60): return False, "冷却中"
     
-    return True, "✅ 匹配成功", extracted_data
-
-def format_caption(tpl, extracted_data=None):
-    if not tpl: return ""
-    now_str = datetime.now(BJ_TZ).strftime('%Y-%-m-%-d %H:%M') 
-    res = tpl.replace('{time}', now_str)
-    if extracted_data: res = res.replace('{data}', extracted_data)
-    return res
+    return True, "✅ 匹配成功"
 
 def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None):
     global global_main_handler
@@ -631,25 +547,103 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v22 Dynamic Approval"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v23 Clean Lite (Dynamic Approval)"); return
         if not current_config.get("enabled", True): return
         
-        # --- 1. 动态审批逻辑 ---
+        # --- 1. 动态审批逻辑 (优先) ---
         if event.is_reply:
             app_kws = current_config.get("approval_keywords", ["同意", "批准", "ok"])
             if any(k in event.text for k in app_kws):
                 try:
                     original_msg = await event.get_reply_message()
                     if original_msg:
-                        # 重新遍历所有规则，看原消息属于哪一类
                         sender_name = "" 
+                        # 拿着原消息去匹配规则，看它属于哪一类业务
                         for rule in current_config.get("rules", []):
-                            is_match, _, _ = await analyze_message(client, rule, events.NewMessage.Event(original_msg), other_cs_ids, sender_name)
+                            is_match, _ = await analyze_message(client, rule, events.NewMessage.Event(original_msg), other_cs_ids, sender_name)
                             
                             if is_match:
                                 logger.info(f"👮 [Approval] 批准通过! 匹配规则: {rule.get('name')}")
                                 action = rule.get("approval_action", {})
                                 
-                                # 1. 回复领导
                                 if action.get("reply_admin"):
                                     await event.reply(format_caption(action["reply_admin"]))
+                                
+                                fwd_tgt = action.get("forward_to")
+                                if fwd_tgt:
+                                    try:
+                                        await client.forward_messages(int(str(fwd_tgt).strip()), original_msg)
+                                    except Exception as e:
+                                        logger.error(f"❌ [Approval] 转发失败: {e}")
+
+                                if action.get("reply_origin"):
+                                    await original_msg.reply(format_caption(action["reply_origin"]))
+                                
+                                return
+                except Exception as e:
+                    logger.error(f"❌ [Approval] 处理出错: {e}")
+
+        # --- 2. 常规消息监听 ---
+        sender_name = ""
+        try:
+            event.sender = await event.get_sender()
+            sender_name = getattr(event.sender, 'first_name', '') or ''
+        except: pass
+
+        for rule in current_config.get("rules", []):
+            try:
+                is_match, reason = await analyze_message(client, rule, event, other_cs_ids, sender_name)
+                if is_match:
+                    logger.info(f"✅ [Monitor] 规则 '{rule.get('name')}' 触发!")
+                    rule_timers[rule.get("id", str(rule.get("groups")))] = time.time()
+                    sent_msgs = []
+                    for step in rule.get("replies", []):
+                        await asyncio.sleep(random.uniform(step.get("min", 1), step.get("max", 3)))
+                        stype = step.get("type", "text")
+                        
+                        if stype == "forward":
+                            tgt = step.get("forward_to")
+                            if tgt: sent_msgs.append(await client.forward_messages(int(str(tgt).strip()), event.message))
+                        
+                        elif stype == "copy_file":
+                            tgt = step.get("forward_to")
+                            if tgt and event.message.file:
+                                sent_msgs.append(await client.send_file(int(str(tgt).strip()), event.message.file.media, caption=format_caption(step.get("text", ""))))
+                        
+                        elif stype == "amount_logic":
+                            cfg = step.get("text", "")
+                            tgt = step.get("forward_to")
+                            parts = cfg.split('|')
+                            if len(parts) >= 3:
+                                thresh = float(parts[0])
+                                amt_match = re.search(r"[:：]?\s*(\d+)", event.text) 
+                                if amt_match:
+                                    amt = float(amt_match.group(1))
+                                    if amt >= thresh:
+                                        sent_msgs.append(await event.reply(format_caption(parts[1])))
+                                    else:
+                                        for sub_msg in parts[2].split(';;'):
+                                            if sub_msg.strip():
+                                                sent_msgs.append(await event.reply(format_caption(sub_msg)))
+                                                await asyncio.sleep(1)
+                                        if tgt: await client.forward_messages(int(str(tgt).strip()), event.message)
+
+                        elif stype == "preempt_check":
+                            if not sent_msgs: continue
+                            me = await client.get_me()
+                            hist = await client.get_messages(event.chat_id, limit=10, min_id=event.id)
+                            if any(m.sender_id != me.id and m.sender_id != event.sender_id for m in hist):
+                                await client.delete_messages(event.chat_id, sent_msgs)
+                                sent_msgs = []
+                                break
+
+                        else: # text
+                            content = step.get("text", "")
+                            if content: 
+                                sent = await event.reply(format_caption(content))
+                                sent_msgs.append(sent)
+                                if global_main_handler: asyncio.create_task(global_main_handler(events.NewMessage.Event(sent)))
+                    break
+            except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
+
+    logger.info("🛠️ [Monitor] Ultimate UI v23 Clean Lite (Dynamic Approval) 已启动")
