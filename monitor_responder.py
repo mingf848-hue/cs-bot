@@ -626,7 +626,10 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                             if sub_msg.strip():
                                                 sent_msgs.append(await event.reply(format_caption(sub_msg)))
                                                 await asyncio.sleep(1)
-                                        if tgt: await client.forward_messages(int(str(tgt).strip()), event.message)
+                                        if tgt: 
+    # 把转发的消息也加到列表里，这样抢答检测时也能把它删掉
+    fwd_msg = await client.forward_messages(int(str(tgt).strip()), event.message)
+    sent_msgs.append(fwd_msg)
 
                         elif stype == "preempt_check":
                             if not sent_msgs: continue
