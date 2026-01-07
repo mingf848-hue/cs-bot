@@ -21,6 +21,7 @@ global_main_handler = None
 # --- 默认配置 ---
 DEFAULT_CONFIG = {
     "enabled": True,
+    # 全局审批触发词 (领导发的指令)
     "approval_keywords": ["同意", "批准", "ok"],
     "rules": [
         {
@@ -198,7 +199,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v26</title>
+    <title>Monitor Pro v27</title>
     <script src="https://cdn.staticfile.net/vue/3.3.4/vue.global.prod.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -227,7 +228,7 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v26</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v27</span></span>
         </div>
         <div class="flex items-center gap-3">
             <label class="flex items-center gap-1.5 cursor-pointer select-none bg-slate-50 px-2 py-1 rounded border border-slate-200 hover:border-slate-300 transition-colors">
@@ -540,7 +541,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v26 Regex Fix"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v27 Humanized Delay"); return
         if not current_config.get("enabled", True): return
         
         # --- 1. 动态审批逻辑 (优先) ---
@@ -554,21 +555,27 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                         for rule in current_config.get("rules", []):
                             is_match, _, _ = await analyze_message(client, rule, events.NewMessage.Event(original_msg), other_cs_ids, sender_name)
                             
-                            # 只有当规则开启了 enable_approval 时才执行
                             if is_match and rule.get("enable_approval", False):
                                 logger.info(f"👮 [Approval] 批准通过! 匹配规则: {rule.get('name')}")
                                 action = rule.get("approval_action", {})
                                 
+                                # 1. 回复领导
                                 if action.get("reply_admin"):
                                     await event.reply(format_caption(action["reply_admin"]))
+                                    # 延迟模拟真人
+                                    await asyncio.sleep(random.uniform(1, 3))
                                 
+                                # 2. 转发
                                 fwd_tgt = action.get("forward_to")
                                 if fwd_tgt:
                                     try:
                                         await client.forward_messages(int(str(fwd_tgt).strip()), original_msg)
+                                        # 转发后也休息一下
+                                        await asyncio.sleep(random.uniform(1, 2))
                                     except Exception as e:
                                         logger.error(f"❌ [Approval] 转发失败: {e}")
 
+                                # 3. 回复原消息
                                 if action.get("reply_origin"):
                                     await original_msg.reply(format_caption(action["reply_origin"]))
                                 
@@ -609,9 +616,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                             parts = cfg.split('|')
                             if len(parts) >= 3:
                                 thresh = float(parts[0])
-                                # 核心修复: 严格正则，只提取 "金额" 关键词后面的数字
                                 amt_match = re.search(r"(?:金额|额度|存)[:：]?\s*(\d+(?:\.\d+)?)", event.text) 
-                                
                                 if amt_match:
                                     amt = float(amt_match.group(1))
                                     if amt >= thresh:
@@ -625,9 +630,6 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                             fwd_msg = await client.forward_messages(int(str(tgt).strip()), event.message)
                                             sent_msgs.append(fwd_msg)
                                 else:
-                                    # Fallback: 如果没找到金额（例如用户没写"金额:"），但关键词匹配了
-                                    # 策略：默认为大额？或者不处理？
-                                    # 安全起见，这里记录日志但不执行分流
                                     logger.warning(f"⚠️ [Monitor] Amount logic matched text but no specific amount found.")
 
                         elif stype == "preempt_check":
@@ -648,4 +650,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v26 (Regex Strict Fix) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v27 (Humanized Delay) 已启动")
