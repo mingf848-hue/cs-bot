@@ -312,7 +312,7 @@ SETTINGS_HTML = """
                                         <select v-model="reply.type" class="text-[10px] bg-transparent border-none p-0 text-slate-600 font-bold focus:ring-0 cursor-pointer w-auto font-sans"><option value="text">💬 发送文本</option><option value="forward">🔀 直接转发</option><option value="copy_file">📂 转发+新文案</option><option value="amount_logic">💰 金额分流</option><option value="preempt_check">⚡ 抢答检测 (自删)</option></select>
                                         <button @click="rule.replies.splice(rIndex, 1)" class="ml-auto text-slate-300 hover:text-red-400"><i class="fa-solid fa-xmark text-[10px]"></i></button>
                                     </div>
-                                    <template v-if="reply.type === 'text'"><textarea v-model="reply.text" rows="2" class="bento-input w-full px-1.5 py-1 text-[10px] resize-none border-transparent bg-white focus:border-slate-200 font-mono" placeholder="内容... ({time})"></textarea></template>
+                                    <template v-if="reply.type === 'text'"><textarea v-model="reply.text" rows="2" class="bento-input w-full px-1.5 py-1 text-[10px] resize-none border-transparent bg-white focus:border-slate-200 font-mono" placeholder="内容... ({data}插入提取结果)"></textarea></template>
                                     <template v-if="reply.type === 'forward'"><input v-model="reply.forward_to" class="bento-input w-full px-1.5 py-1 h-6 text-[10px] font-mono text-blue-600" placeholder="目标群ID"></template>
                                     <template v-if="reply.type === 'copy_file'"><input v-model="reply.forward_to" class="bento-input w-full px-1.5 py-1 h-6 text-[10px] font-mono text-blue-600 mb-1" placeholder="目标群ID"><textarea v-model="reply.text" rows="2" class="bento-input w-full px-1.5 py-1 text-[10px] resize-none bg-yellow-50 border-yellow-100 focus:border-yellow-300 font-mono" placeholder="新文案... ({time})"></textarea></template>
                                     <template v-if="reply.type === 'amount_logic'"><input v-model="reply.forward_to" class="bento-input w-full px-1.5 py-1 h-6 text-[10px] font-mono text-blue-600 mb-1" placeholder="小额转发目标群ID"><textarea v-model="reply.text" rows="2" class="bento-input w-full px-1.5 py-1 text-[10px] resize-none bg-indigo-50 border-indigo-100 focus:border-indigo-300 font-mono" placeholder="2000|大额语|小额1;;小额2"></textarea></template>
@@ -464,20 +464,20 @@ def format_caption(tpl):
     return res
 
 async def analyze_message(client, rule, event, other_cs_ids, sender_name):
-    if event.chat_id not in rule.get("groups", []): return False, "群组不符"
-    if event.is_reply: return False, "是回复消息"
-    if event.out: return False, "Bot自己发送"
-    if event.sender_id in other_cs_ids: return False, "ID是客服"
+    if event.chat_id not in rule.get("groups", []): return False, "群组不符", None
+    if event.is_reply: return False, "是回复消息", None
+    if event.out: return False, "Bot自己发送", None
+    if event.sender_id in other_cs_ids: return False, "ID是客服", None
     
     check_file = rule.get("check_file", False)
     text = (event.text or "")
     
     if check_file:
-        if not event.message.file: return False, "非文件消息"
+        if not event.message.file: return False, "非文件消息", None
         file_exts = rule.get("file_extensions", [])
         ext = (event.message.file.ext or "").lower().replace('.', '')
         if file_exts:
-            if ext not in file_exts: return False, "后缀不符"
+            if ext not in file_exts: return False, "后缀不符", None
         fn_kws = rule.get("filename_keywords", [])
         filename = ""
         if event.message.file.name: filename = event.message.file.name
@@ -488,22 +488,22 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_name):
                     break
         filename_lower = (filename or "").lower()
         if fn_kws:
-            if not any(k.lower() in filename_lower for k in fn_kws): return False, "文件名关键词不符"
+            if not any(k.lower() in filename_lower for k in fn_kws): return False, "文件名关键词不符", None
     else:
-        if not match_text(text, rule): return False, "文本关键词不符"
+        if not match_text(text, rule): return False, "文本关键词不符", None
 
     sender_mode = rule.get("sender_mode", "exclude")
     prefixes = rule.get("sender_prefixes", [])
     match_prefix = any(sender_name.startswith(p) for p in prefixes)
-    if sender_mode == "exclude" and match_prefix: return False, "前缀被排除"
-    elif sender_mode == "include" and not match_prefix: return False, "前缀不在白名单"
+    if sender_mode == "exclude" and match_prefix: return False, "前缀被排除", None
+    elif sender_mode == "include" and not match_prefix: return False, "前缀不在白名单", None
     
     rule_id = rule.get("id", str(rule.get("groups")))
     last_time = rule_timers.get(rule_id, 0)
     now = time.time()
-    if now - last_time < rule.get("cooldown", 60): return False, "冷却中"
+    if now - last_time < rule.get("cooldown", 60): return False, "冷却中", None
     
-    return True, "✅ 匹配成功"
+    return True, "✅ 匹配成功", None
 
 def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None):
     global global_main_handler
@@ -560,7 +560,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                         sender_name = "" 
                         # 拿着原消息去匹配规则，看它属于哪一类业务
                         for rule in current_config.get("rules", []):
-                            is_match, _ = await analyze_message(client, rule, events.NewMessage.Event(original_msg), other_cs_ids, sender_name)
+                            is_match, _, _ = await analyze_message(client, rule, events.NewMessage.Event(original_msg), other_cs_ids, sender_name)
                             
                             if is_match:
                                 logger.info(f"👮 [Approval] 批准通过! 匹配规则: {rule.get('name')}")
@@ -592,7 +592,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
         for rule in current_config.get("rules", []):
             try:
-                is_match, reason = await analyze_message(client, rule, event, other_cs_ids, sender_name)
+                is_match, reason, extracted_data = await analyze_message(client, rule, event, other_cs_ids, sender_name)
                 if is_match:
                     logger.info(f"✅ [Monitor] 规则 '{rule.get('name')}' 触发!")
                     rule_timers[rule.get("id", str(rule.get("groups")))] = time.time()
@@ -627,9 +627,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                                 sent_msgs.append(await event.reply(format_caption(sub_msg)))
                                                 await asyncio.sleep(1)
                                         if tgt: 
-    # 把转发的消息也加到列表里，这样抢答检测时也能把它删掉
-    fwd_msg = await client.forward_messages(int(str(tgt).strip()), event.message)
-    sent_msgs.append(fwd_msg)
+                                            # Fix: Add forwarded message to sent_msgs list for deletion
+                                            fwd_msg = await client.forward_messages(int(str(tgt).strip()), event.message)
+                                            sent_msgs.append(fwd_msg)
 
                         elif stype == "preempt_check":
                             if not sent_msgs: continue
