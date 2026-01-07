@@ -37,19 +37,15 @@ global_main_handler = None
 # --- 默认配置 ---
 DEFAULT_CONFIG = {
     "enabled": True,
-    # 新增: 审批配置
-    "approval": {
-        "keywords": ["同意", "批准", "ok"],
-        "reply_admin": "请稍等ART",
-        "reply_origin": "✅ 领导已批准，已报备"
-    },
+    # 全局审批触发词
+    "approval_keywords": ["同意", "批准", "ok"],
     "rules": [
         {
-            "id": "default_rule",
-            "name": "示例规则",
+            "id": "deposit_rule",
+            "name": "代存报备",
             "groups": [-1002169616907],
             "check_file": False,
-            "keywords": ["报备"], 
+            "keywords": ["代存"],
             "file_extensions": [],
             "filename_keywords": [],
             "excel_password": "",
@@ -62,11 +58,46 @@ DEFAULT_CONFIG = {
                 {
                     "type": "amount_logic", 
                     "forward_to": -100123456789, 
-                    "text": "2000|⚠️ 需领导同意|请稍等ART;;✅ 已报备",
+                    "text": "2000|⚠️ 金额过大，需领导审批|✅ 已报备",
                     "min": 1, 
                     "max": 2
                 }
-            ]
+            ],
+            # 新增: 规则级审批配置
+            "approval_action": {
+                "reply_admin": "收到，正在处理",
+                "reply_origin": "✅ 领导已批准，代存已报备",
+                "forward_to": -100123456789
+            }
+        },
+        {
+            "id": "ip_rule",
+            "name": "IP加白申请",
+            "groups": [-1002169616907],
+            "check_file": False,
+            "keywords": ["加白", "白名单"],
+            "file_extensions": [],
+            "filename_keywords": [],
+            "excel_password": "",
+            "excel_sheet_name": "",
+            "excel_target_column": "",
+            "sender_mode": "exclude",
+            "sender_prefixes": [],
+            "cooldown": 60,
+            "replies": [
+                {
+                    "type": "text", 
+                    "text": "⚠️ 涉及安全权限，需领导审批",
+                    "min": 1, 
+                    "max": 2
+                }
+            ],
+            # 不同的审批回复
+            "approval_action": {
+                "reply_admin": "收到，已提交技术",
+                "reply_origin": "✅ 领导已批准，IP加白处理中",
+                "forward_to": -100987654321 # 可以转发给技术群
+            }
         }
     ]
 }
@@ -115,9 +146,8 @@ def load_config(system_cs_prefixes):
 
     if not loaded: current_config = DEFAULT_CONFIG.copy()
     
-    # 补全配置
-    if "approval" not in current_config:
-        current_config["approval"] = DEFAULT_CONFIG["approval"]
+    if "approval_keywords" not in current_config:
+        current_config["approval_keywords"] = ["同意", "批准", "ok"]
 
     for rule in current_config["rules"]:
         if "check_file" not in rule: rule["check_file"] = False
@@ -125,6 +155,7 @@ def load_config(system_cs_prefixes):
         if "excel_password" not in rule: rule["excel_password"] = ""
         if "excel_sheet_name" not in rule: rule["excel_sheet_name"] = ""
         if "excel_target_column" not in rule: rule["excel_target_column"] = ""
+        if "approval_action" not in rule: rule["approval_action"] = {"reply_admin": "", "reply_origin": "", "forward_to": ""}
         if rule["sender_mode"] == "exclude" and not rule["sender_prefixes"]:
             rule["sender_prefixes"] = list(system_cs_prefixes)
 
@@ -134,16 +165,11 @@ def save_config(new_config):
         if not isinstance(new_config, dict) or "rules" not in new_config:
             return False, "无效的配置格式"
 
-        # 保存 Approval 配置
-        if "approval" not in new_config:
-            new_config["approval"] = DEFAULT_CONFIG["approval"]
-        
-        # 清洗 Keywords
-        raw_app_kws = new_config["approval"].get("keywords", [])
+        # 保存全局审批词
+        raw_app_kws = new_config.get("approval_keywords", [])
         if isinstance(raw_app_kws, str):
-            # 支持逗号或换行
-            new_config["approval"]["keywords"] = [k.strip() for k in re.split(r'[,\n]', raw_app_kws) if k.strip()]
-
+            new_config["approval_keywords"] = [k.strip() for k in re.split(r'[,\n]', raw_app_kws) if k.strip()]
+        
         for rule in new_config.get("rules", []):
             clean_groups = []
             raw_groups = rule.get("groups", [])
@@ -187,6 +213,12 @@ def save_config(new_config):
             rule["excel_sheet_name"] = str(rule.get("excel_sheet_name", "")).strip()
             rule["excel_target_column"] = str(rule.get("excel_target_column", "")).strip()
             
+            # Approval Action Cleaning
+            if "approval_action" not in rule: rule["approval_action"] = {}
+            rule["approval_action"]["reply_admin"] = str(rule["approval_action"].get("reply_admin", "")).strip()
+            rule["approval_action"]["reply_origin"] = str(rule["approval_action"].get("reply_origin", "")).strip()
+            # forward_to can be int or empty string
+            
             clean_prefixes = []
             raw_prefixes = rule.get("sender_prefixes", [])
             if isinstance(raw_prefixes, str): raw_prefixes = raw_prefixes.split('\n')
@@ -225,7 +257,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v21</title>
+    <title>Monitor Pro v22</title>
     <script src="https://cdn.staticfile.net/vue/3.3.4/vue.global.prod.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -243,7 +275,7 @@ SETTINGS_HTML = """
         .bento-input:focus { background-color: white; border-color: #6366F1; ring: 2px solid rgba(99, 102, 241, 0.1); outline: none; }
         .section-label { font-size: 10px; font-weight: 700; color: #6B7280; text-transform: uppercase; letter-spacing: 0.05em; }
         .recovery-panel { background: linear-gradient(135deg, #FFF1F2 0%, #FFF 100%); border: 1px solid #FECDD3; }
-        .approval-panel { background: linear-gradient(135deg, #F0F9FF 0%, #FFF 100%); border: 1px solid #BAE6FD; }
+        .approval-bg { background-color: #EFF6FF; border-top: 1px solid #DBEAFE; }
     </style>
     <script>
         tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Plus Jakarta Sans"', 'sans-serif'], mono: ['"JetBrains Mono"', 'monospace'], }, colors: { primary: '#6366F1', slate: { 50:'#f9fafb', 100:'#f3f4f6', 200:'#e5e7eb', 800:'#1f2937' } } } } }
@@ -254,7 +286,7 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v21</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v22</span></span>
         </div>
         <div class="flex items-center gap-3">
             <label class="flex items-center gap-1.5 cursor-pointer select-none bg-slate-50 px-2 py-1 rounded border border-slate-200 hover:border-slate-300 transition-colors">
@@ -268,6 +300,11 @@ SETTINGS_HTML = """
 
     <main class="max-w-[1400px] mx-auto px-4 py-6 space-y-6">
         
+        <div class="flex items-center gap-2 mb-2">
+            <span class="text-[10px] font-bold text-slate-400 uppercase">全局审批触发词:</span>
+            <input :value="(config.approval_keywords || []).join(', ')" @input="val => config.approval_keywords = val.target.value.split(/[,，]/).map(s=>s.trim()).filter(s=>s)" class="bento-input px-2 py-1 h-6 text-xs font-mono border-slate-300 w-64" placeholder="同意, 批准, ok">
+        </div>
+
         <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             <div v-for="(rule, index) in config.rules" :key="index" class="bento-card flex flex-col overflow-hidden relative group">
                 <div class="px-3 py-2 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
@@ -281,7 +318,7 @@ SETTINGS_HTML = """
                     <div class="space-y-1.5">
                         <div class="flex items-center justify-between"><span class="section-label"><i class="fa-solid fa-eye mr-1"></i>监听来源</span><label class="flex items-center gap-1 cursor-pointer select-none"><input type="checkbox" v-model="rule.check_file" class="w-3 h-3 text-primary border-slate-300 rounded focus:ring-0"><span class="text-[10px] text-slate-500 font-medium" :class="{'text-primary': rule.check_file}">文件模式</span></label></div>
                         <div class="relative"><textarea :value="listToString(rule.groups)" @input="stringToIntList($event, rule, 'groups')" rows="1" class="bento-input w-full px-2 py-1.5 resize-none h-8 leading-tight font-mono text-[11px]" placeholder="群ID (换行分隔)"></textarea></div>
-                        <div v-if="!rule.check_file" class="relative"><textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')" rows="3" class="bento-input w-full px-2 py-1.5 resize-none h-20 leading-tight font-mono text-[11px] placeholder-slate-400" placeholder="红包雨 (普通)&#10;红包雨#流水 (包含前者，排除#后)&#10;提款&催促 (必须同时包含)"></textarea><div class="absolute right-2 bottom-2 text-[9px] text-primary/60 bg-white/80 px-1 rounded pointer-events-none">支持 #排除 &且</div></div>
+                        <div v-if="!rule.check_file" class="relative"><textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')" rows="2" class="bento-input w-full px-2 py-1.5 resize-none h-16 leading-tight font-mono text-[11px] placeholder-slate-400" placeholder="红包雨 (普通)&#10;红包雨#流水 (包含前者，排除#后)&#10;提款&催促 (必须同时包含)"></textarea></div>
                         <div v-else class="space-y-2">
                             <div class="grid grid-cols-2 gap-2"><input :value="listToString(rule.file_extensions).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'file_extensions')" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="后缀: xlsx, png"><input :value="listToString(rule.filename_keywords).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'filename_keywords')" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="文件名关键词"></div>
                             <div class="grid grid-cols-2 gap-2"><input v-model="rule.excel_password" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="密码 (可选)"><input v-model="rule.excel_sheet_name" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="Sheet名 (可选)"></div>
@@ -320,20 +357,20 @@ SETTINGS_HTML = """
                         </div>
                     </div>
                 </div>
+                
+                <div class="approval-bg p-3 flex flex-col gap-2">
+                    <div class="flex items-center gap-2">
+                        <span class="text-[9px] font-bold text-blue-500 uppercase flex items-center gap-1"><i class="fa-solid fa-user-check"></i> 审批后动作 (Approval)</span>
+                        <div class="h-px bg-blue-100 flex-1"></div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <input v-model="rule.approval_action.reply_admin" class="bento-input w-full px-2 py-1.5 h-6 text-[10px] border-blue-200 focus:border-blue-400" placeholder="回复领导: 请稍等ART">
+                        <input v-model="rule.approval_action.forward_to" class="bento-input w-full px-2 py-1.5 h-6 text-[10px] border-blue-200 focus:border-blue-400 font-mono text-blue-600" placeholder="转发到群ID">
+                        <input v-model="rule.approval_action.reply_origin" class="bento-input w-full px-2 py-1.5 h-6 text-[10px] border-blue-200 focus:border-blue-400 col-span-2" placeholder="回复原消息: ✅ 领导批准，已处理">
+                    </div>
+                </div>
             </div>
             <div @click="addRule" class="border border-dashed border-slate-300 rounded-lg flex flex-col items-center justify-center p-4 cursor-pointer hover:border-primary hover:bg-slate-50 transition-all min-h-[200px] text-slate-400 hover:text-primary group"><div class="w-10 h-10 rounded-full bg-slate-50 flex items-center justify-center mb-2 group-hover:bg-primary/10 transition-colors"><i class="fa-solid fa-plus text-lg"></i></div><span class="text-xs font-bold">新建规则卡片</span></div>
-        </div>
-
-        <div class="bento-card approval-panel p-4 flex flex-col gap-3 shadow-sm hover:shadow-md transition-all">
-            <div class="flex items-center gap-3">
-                <div class="w-10 h-10 bg-blue-100 text-blue-500 rounded-lg flex items-center justify-center text-xl shrink-0"><i class="fa-solid fa-user-check"></i></div>
-                <div><h3 class="text-sm font-bold text-slate-800">审批指令配置 (Approval Listener)</h3><p class="text-[10px] text-slate-500 mt-0.5">当收到"同意"指令时，自动处理之前卡住的"大额申请"</p></div>
-            </div>
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <div class="flex flex-col gap-1"><label class="text-[9px] font-bold text-slate-500 uppercase">触发关键词 (逗号分隔)</label><input :value="(config.approval?.keywords || []).join(', ')" @input="val => config.approval.keywords = val.target.value.split(/[,，]/).map(s=>s.trim()).filter(s=>s)" class="bento-input px-2 py-1.5 h-8 text-xs font-mono border-blue-200 focus:border-blue-400" placeholder="同意, 批准, ok"></div>
-                <div class="flex flex-col gap-1"><label class="text-[9px] font-bold text-slate-500 uppercase">回复领导 (操作人)</label><input v-model="config.approval.reply_admin" class="bento-input px-2 py-1.5 h-8 text-xs font-mono border-blue-200 focus:border-blue-400" placeholder="请稍等ART"></div>
-                <div class="flex flex-col gap-1"><label class="text-[9px] font-bold text-slate-500 uppercase">回复申请人 (原消息)</label><input v-model="config.approval.reply_origin" class="bento-input px-2 py-1.5 h-8 text-xs font-mono border-blue-200 focus:border-blue-400" placeholder="✅ 领导已批准，已报备"></div>
-            </div>
         </div>
 
         <div class="bento-card recovery-panel p-4 flex flex-col md:flex-row gap-4 items-center justify-between shadow-sm hover:shadow-md transition-all">
@@ -357,7 +394,7 @@ SETTINGS_HTML = """
     const { createApp, reactive } = Vue;
     createApp({
         setup() {
-            const config = reactive({ enabled: true, rules: [], approval: {keywords:[], reply_admin:'', reply_origin:''} });
+            const config = reactive({ enabled: true, approval_keywords: [], rules: [] });
             const toast = reactive({ show: false, msg: '', type: 'success' });
             const recovery = reactive({ search: '', reply: '', hours: 5, min: 2, max: 5 });
 
@@ -365,6 +402,9 @@ SETTINGS_HTML = """
                 .then(r => r.json())
                 .then(data => { 
                     config.enabled = data.enabled; 
+                    if(data.approval_keywords) config.approval_keywords = data.approval_keywords;
+                    else config.approval_keywords = ['同意', '批准', 'ok'];
+                    
                     config.rules = (data.rules || []).map(r => {
                         if(r.replies) r.replies = r.replies.map(rep => ({...rep, type: rep.type || 'text'}));
                         if(r.check_file === undefined) r.check_file = false;
@@ -375,10 +415,9 @@ SETTINGS_HTML = """
                         if(!r.excel_password) r.excel_password = "";
                         if(!r.excel_sheet_name) r.excel_sheet_name = "";
                         if(!r.excel_target_column) r.excel_target_column = "";
+                        if(!r.approval_action) r.approval_action = {reply_admin:'', reply_origin:'', forward_to:''};
                         return r;
                     });
-                    if(data.approval) config.approval = data.approval;
-                    else config.approval = {keywords:['同意'], reply_admin:'请稍等ART', reply_origin:'✅ 领导已批准，已报备'};
                 });
 
             const listToString = (list) => (list || []).join('\\n');
@@ -397,6 +436,7 @@ SETTINGS_HTML = """
                     name: '新规则 #' + (config.rules.length + 1),
                     groups: [], check_file: false, keywords: [], file_extensions: [], filename_keywords: [],
                     excel_password: '', excel_sheet_name: '', excel_target_column: '',
+                    approval_action: {reply_admin:'', reply_origin:'', forward_to:''},
                     sender_mode: 'exclude', sender_prefixes: [], cooldown: 60,
                     replies: [{type:'text', text: '', min: 1, max: 2}]
                 });
@@ -591,121 +631,25 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v21 Approval Listener"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v22 Dynamic Approval"); return
         if not current_config.get("enabled", True): return
         
-        # --- 1. 优先检测：是否为领导审批指令 (同意/批准) ---
+        # --- 1. 动态审批逻辑 ---
         if event.is_reply:
-            app_cfg = current_config.get("approval", {})
-            app_kws = app_cfg.get("keywords", [])
-            if app_kws and any(k in event.text for k in app_kws):
-                # 领导发了“同意”，现在去查原消息
+            app_kws = current_config.get("approval_keywords", ["同意", "批准", "ok"])
+            if any(k in event.text for k in app_kws):
                 try:
                     original_msg = await event.get_reply_message()
                     if original_msg:
-                        # 重新用规则扫描一遍原消息，看它本来要去哪
-                        # 为了复用 analyze_message，我们需要模拟 original_msg 的 event
-                        # 但这里我们简化逻辑：直接遍历规则，看谁匹配
-                        sender_name = "" # 原消息发送者名字，暂空
+                        # 重新遍历所有规则，看原消息属于哪一类
+                        sender_name = "" 
                         for rule in current_config.get("rules", []):
-                            # 这里需要 modify analyze_message 接受 message 对象，或者复用逻辑
-                            # 简单起见，我们假设 analyze_message 逻辑够通用
-                            # 注意：我们这里手动模拟一下 check
                             is_match, _, _ = await analyze_message(client, rule, events.NewMessage.Event(original_msg), other_cs_ids, sender_name)
                             
                             if is_match:
-                                # 找到了对应的规则，提取 forward_to
-                                # 只要规则里有任意一个 forward 动作或者 amount_logic 动作，就提取它的 target
-                                target_id = None
-                                for step in rule.get("replies", []):
-                                    if step.get("forward_to"):
-                                        target_id = step.get("forward_to")
-                                        break
+                                logger.info(f"👮 [Approval] 批准通过! 匹配规则: {rule.get('name')}")
+                                action = rule.get("approval_action", {})
                                 
-                                if target_id:
-                                    logger.info(f"👮 [Approval] 批准通过! 原消息ID: {original_msg.id} -> 转发至: {target_id}")
-                                    
-                                    # 1. 回复领导
-                                    if app_cfg.get("reply_admin"):
-                                        await event.reply(format_caption(app_cfg["reply_admin"]))
-                                    
-                                    # 2. 转发原消息到目标群
-                                    try:
-                                        await client.forward_messages(int(str(target_id).strip()), original_msg)
-                                    except Exception as e:
-                                        logger.error(f"❌ [Approval] 转发失败: {e}")
-
-                                    # 3. 回复原消息
-                                    if app_cfg.get("reply_origin"):
-                                        await original_msg.reply(format_caption(app_cfg["reply_origin"]))
-                                    
-                                    # 处理一条规则即可，防止重复
-                                    return 
-                except Exception as e:
-                    logger.error(f"❌ [Approval] 处理出错: {e}")
-
-        # --- 2. 常规消息监听 ---
-        sender_name = ""
-        try:
-            event.sender = await event.get_sender()
-            sender_name = getattr(event.sender, 'first_name', '') or ''
-        except: pass
-
-        for rule in current_config.get("rules", []):
-            try:
-                is_match, reason, extracted_data = await analyze_message(client, rule, event, other_cs_ids, sender_name)
-                if is_match:
-                    logger.info(f"✅ [Monitor] 规则 '{rule.get('name')}' 触发!")
-                    rule_timers[rule.get("id", str(rule.get("groups")))] = time.time()
-                    sent_msgs = []
-                    for step in rule.get("replies", []):
-                        await asyncio.sleep(random.uniform(step.get("min", 1), step.get("max", 3)))
-                        stype = step.get("type", "text")
-                        
-                        if stype == "forward":
-                            tgt = step.get("forward_to")
-                            if tgt: sent_msgs.append(await client.forward_messages(int(str(tgt).strip()), event.message))
-                        
-                        elif stype == "copy_file":
-                            tgt = step.get("forward_to")
-                            if tgt and event.message.file:
-                                sent_msgs.append(await client.send_file(int(str(tgt).strip()), event.message.file.media, caption=format_caption(step.get("text", ""), extracted_data)))
-                        
-                        elif stype == "amount_logic":
-                            cfg = step.get("text", "")
-                            tgt = step.get("forward_to")
-                            parts = cfg.split('|')
-                            if len(parts) >= 3:
-                                thresh = float(parts[0])
-                                amt_match = re.search(r"[:：]?\s*(\d+)", event.text) # 稍微放宽正则
-                                if amt_match:
-                                    amt = float(amt_match.group(1))
-                                    if amt >= thresh:
-                                        sent_msgs.append(await event.reply(format_caption(parts[1], extracted_data)))
-                                    else:
-                                        for sub_msg in parts[2].split(';;'):
-                                            if sub_msg.strip():
-                                                sent_msgs.append(await event.reply(format_caption(sub_msg, extracted_data)))
-                                                await asyncio.sleep(1)
-                                        if tgt: await client.forward_messages(int(str(tgt).strip()), event.message)
-
-                        elif stype == "preempt_check":
-                            if not sent_msgs: continue
-                            me = await client.get_me()
-                            # 简单防撞车：查最近10条，如果有除了我和发送者之外的人说话，就撤回
-                            hist = await client.get_messages(event.chat_id, limit=10, min_id=event.id)
-                            if any(m.sender_id != me.id and m.sender_id != event.sender_id for m in hist):
-                                await client.delete_messages(event.chat_id, sent_msgs)
-                                sent_msgs = []
-                                break
-
-                        else: # text
-                            content = step.get("text", "")
-                            if content: 
-                                sent = await event.reply(format_caption(content, extracted_data))
-                                sent_msgs.append(sent)
-                                if global_main_handler: asyncio.create_task(global_main_handler(events.NewMessage.Event(sent)))
-                    break
-            except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
-
-    logger.info("🛠️ [Monitor] Ultimate UI v21 (Approval Listener) 已启动")
+                                # 1. 回复领导
+                                if action.get("reply_admin"):
+                                    await event.reply(format_caption(action["reply_admin"]))
