@@ -21,15 +21,15 @@ global_main_handler = None
 # --- 默认配置 ---
 DEFAULT_CONFIG = {
     "enabled": True,
-    # 全局审批触发词 (领导发的指令)
     "approval_keywords": ["同意", "批准", "ok"],
     "rules": [
         {
-            "id": "deposit_rule",
-            "name": "代存报备",
+            "id": "default_rule",
+            "name": "示例规则",
             "groups": [-1002169616907],
             "check_file": False,
             "keywords": ["代存"],
+            "enable_approval": False, # 默认不开启审批配置
             "file_extensions": [],
             "filename_keywords": [],
             "sender_mode": "exclude",
@@ -39,42 +39,15 @@ DEFAULT_CONFIG = {
                 {
                     "type": "amount_logic", 
                     "forward_to": -100123456789, 
-                    "text": "2000|⚠️ 金额过大，需领导审批|✅ 已报备",
+                    "text": "2000|⚠️ 需审批|✅ 已报备",
                     "min": 1, 
                     "max": 2
                 }
             ],
-            # 规则级审批配置
             "approval_action": {
-                "reply_admin": "收到，正在处理",
-                "reply_origin": "✅ 领导已批准，代存已报备",
+                "reply_admin": "收到",
+                "reply_origin": "✅ 已批准",
                 "forward_to": -100123456789
-            }
-        },
-        {
-            "id": "ip_rule",
-            "name": "IP加白申请",
-            "groups": [-1002169616907],
-            "check_file": False,
-            "keywords": ["加白", "白名单"],
-            "file_extensions": [],
-            "filename_keywords": [],
-            "sender_mode": "exclude",
-            "sender_prefixes": [],
-            "cooldown": 60,
-            "replies": [
-                {
-                    "type": "text", 
-                    "text": "⚠️ 涉及安全权限，需领导审批",
-                    "min": 1, 
-                    "max": 2
-                }
-            ],
-            # 不同的审批回复
-            "approval_action": {
-                "reply_admin": "收到，已提交技术",
-                "reply_origin": "✅ 领导已批准，IP加白处理中",
-                "forward_to": -100987654321
             }
         }
     ]
@@ -129,6 +102,7 @@ def load_config(system_cs_prefixes):
 
     for rule in current_config["rules"]:
         if "check_file" not in rule: rule["check_file"] = False
+        if "enable_approval" not in rule: rule["enable_approval"] = False
         if "filename_keywords" not in rule: rule["filename_keywords"] = []
         if "approval_action" not in rule: rule["approval_action"] = {"reply_admin": "", "reply_origin": "", "forward_to": ""}
         if rule["sender_mode"] == "exclude" and not rule["sender_prefixes"]:
@@ -157,6 +131,7 @@ def save_config(new_config):
             rule["groups"] = clean_groups
             
             rule["check_file"] = bool(rule.get("check_file", False))
+            rule["enable_approval"] = bool(rule.get("enable_approval", False))
 
             clean_kws = []
             raw_kws = rule.get("keywords", [])
@@ -182,7 +157,6 @@ def save_config(new_config):
                 if k: clean_fn_kws.append(k)
             rule["filename_keywords"] = clean_fn_kws
             
-            # Approval Action Cleaning
             if "approval_action" not in rule: rule["approval_action"] = {}
             rule["approval_action"]["reply_admin"] = str(rule["approval_action"].get("reply_admin", "")).strip()
             rule["approval_action"]["reply_origin"] = str(rule["approval_action"].get("reply_origin", "")).strip()
@@ -225,7 +199,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v23</title>
+    <title>Monitor Pro v24</title>
     <script src="https://cdn.staticfile.net/vue/3.3.4/vue.global.prod.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -254,7 +228,7 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v23</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v24</span></span>
         </div>
         <div class="flex items-center gap-3">
             <label class="flex items-center gap-1.5 cursor-pointer select-none bg-slate-50 px-2 py-1 rounded border border-slate-200 hover:border-slate-300 transition-colors">
@@ -324,11 +298,14 @@ SETTINGS_HTML = """
                 </div>
                 
                 <div class="approval-bg p-3 flex flex-col gap-2">
-                    <div class="flex items-center gap-2">
-                        <span class="text-[9px] font-bold text-blue-500 uppercase flex items-center gap-1"><i class="fa-solid fa-user-check"></i> 审批后动作 (Approval)</span>
-                        <div class="h-px bg-blue-100 flex-1"></div>
+                    <div class="flex items-center justify-between">
+                        <label class="flex items-center gap-1.5 cursor-pointer select-none text-[9px] font-bold text-blue-500 uppercase">
+                            <input type="checkbox" v-model="rule.enable_approval" class="w-3 h-3 text-blue-500 rounded border-blue-200 focus:ring-0">
+                            <i class="fa-solid fa-user-check"></i> 启用审批流 (Approval)
+                        </label>
                     </div>
-                    <div class="grid grid-cols-2 gap-2">
+                    
+                    <div v-if="rule.enable_approval" class="grid grid-cols-2 gap-2 mt-1 transition-all">
                         <input v-model="rule.approval_action.reply_admin" class="bento-input w-full px-2 py-1.5 h-6 text-[10px] border-blue-200 focus:border-blue-400" placeholder="回复领导: 请稍等ART">
                         <input v-model="rule.approval_action.forward_to" class="bento-input w-full px-2 py-1.5 h-6 text-[10px] border-blue-200 focus:border-blue-400 font-mono text-blue-600" placeholder="转发到群ID">
                         <input v-model="rule.approval_action.reply_origin" class="bento-input w-full px-2 py-1.5 h-6 text-[10px] border-blue-200 focus:border-blue-400 col-span-2" placeholder="回复原消息: ✅ 领导批准，已处理">
@@ -373,6 +350,7 @@ SETTINGS_HTML = """
                     config.rules = (data.rules || []).map(r => {
                         if(r.replies) r.replies = r.replies.map(rep => ({...rep, type: rep.type || 'text'}));
                         if(r.check_file === undefined) r.check_file = false;
+                        if(r.enable_approval === undefined) r.enable_approval = false;
                         if(!r.file_extensions) r.file_extensions = [];
                         if(!r.filename_keywords) r.filename_keywords = [];
                         if(!r.sender_prefixes) r.sender_prefixes = [];
@@ -397,6 +375,7 @@ SETTINGS_HTML = """
                 config.rules.push({
                     name: '新规则 #' + (config.rules.length + 1),
                     groups: [], check_file: false, keywords: [], file_extensions: [], filename_keywords: [],
+                    enable_approval: false,
                     approval_action: {reply_admin:'', reply_origin:'', forward_to:''},
                     sender_mode: 'exclude', sender_prefixes: [], cooldown: 60,
                     replies: [{type:'text', text: '', min: 1, max: 2}]
@@ -547,7 +526,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v23 Clean Lite (Dynamic Approval)"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v24 Toggleable Approval"); return
         if not current_config.get("enabled", True): return
         
         # --- 1. 动态审批逻辑 (优先) ---
@@ -558,11 +537,11 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     original_msg = await event.get_reply_message()
                     if original_msg:
                         sender_name = "" 
-                        # 拿着原消息去匹配规则，看它属于哪一类业务
                         for rule in current_config.get("rules", []):
                             is_match, _, _ = await analyze_message(client, rule, events.NewMessage.Event(original_msg), other_cs_ids, sender_name)
                             
-                            if is_match:
+                            # 关键修改: 只有当规则开启了 enable_approval 时才执行审批动作
+                            if is_match and rule.get("enable_approval", False):
                                 logger.info(f"👮 [Approval] 批准通过! 匹配规则: {rule.get('name')}")
                                 action = rule.get("approval_action", {})
                                 
@@ -627,7 +606,6 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                                 sent_msgs.append(await event.reply(format_caption(sub_msg)))
                                                 await asyncio.sleep(1)
                                         if tgt: 
-                                            # Fix: Add forwarded message to sent_msgs list for deletion
                                             fwd_msg = await client.forward_messages(int(str(tgt).strip()), event.message)
                                             sent_msgs.append(fwd_msg)
 
@@ -649,4 +627,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v23 Clean Lite (Dynamic Approval) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v24 Toggleable Approval (Clean) 已启动")
