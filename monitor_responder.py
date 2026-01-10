@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from flask import request, jsonify, Response
 from telethon import events
 
-# 尝试导入 redis，如果没有安装也不会报错
+# 尝试导入 redis
 try: 
     import redis
 except ImportError: 
@@ -21,50 +21,23 @@ CONFIG_FILE = "monitor_config_v2.json"
 REDIS_KEY = "monitor_config"
 global_main_handler = None
 
+# 标记配置来源
+CONFIG_SOURCE = 'DEFAULT' 
+
 # 北京时区
 BJ_TZ = timezone(timedelta(hours=8))
 
-# --- 默认配置 ---
+# --- 没有任何预设规则的空壳配置 ---
+# 既然您数据库里有数据，这个仅仅作为极其罕见的兜底，防止程序报错
 DEFAULT_CONFIG = {
-    "enabled": False, # 默认关闭
+    "enabled": False, 
     "approval_keywords": ["同意", "批准", "ok"],
     "schedule": {
         "active": False,
         "start": "09:00",
         "end": "21:00"
     },
-    "rules": [
-        {
-            "id": "deposit_example",
-            "name": "代存报备(示例)",
-            "groups": [-1002169616907],
-            "check_file": False,
-            "keywords": ["r:(代|带)存|入[金款]"],
-            "enable_approval": False,
-            "file_extensions": [],
-            "filename_keywords": [],
-            "sender_mode": "exclude",
-            "sender_prefixes": [],
-            "cooldown": 60,
-            "replies": [
-                {
-                    "type": "amount_logic", 
-                    "forward_to": -100123456789, 
-                    "text": "2001|⚠️ 金额过大，需领导审批|请稍等ART;;✅ 已报备",
-                    "min": 1, 
-                    "max": 2
-                }
-            ],
-            "approval_action": {
-                "reply_admin": "收到，正在处理",
-                "reply_origin": "✅ 领导已批准，代存已报备",
-                "forward_to": -100123456789,
-                "delay_1_min": 1.0, "delay_1_max": 2.0, 
-                "delay_2_min": 1.0, "delay_2_max": 3.0, 
-                "delay_3_min": 1.0, "delay_3_max": 2.0  
-            }
-        }
-    ]
+    "rules": []  # <--- 这里彻底空了，不会再有任何干扰
 }
 
 current_config = DEFAULT_CONFIG.copy()
@@ -75,75 +48,104 @@ def init_redis_connection():
     global redis_client
     redis_url = os.environ.get("REDIS_URL") or os.environ.get("REDIS_PUBLIC_URL")
     if redis and redis_url:
-        try:
-            redis_client = redis.from_url(redis_url, decode_responses=True)
-            logger.info("✅ [Monitor] Redis 数据库连接成功")
-        except Exception as e:
-            logger.error(f"❌ [Monitor] Redis 连接失败: {e}")
-            redis_client = None
+        for i in range(3):
+            try:
+                redis_client = redis.from_url(redis_url, decode_responses=True)
+                redis_client.ping()
+                logger.info("✅ [Monitor] Redis 数据库连接成功")
+                return
+            except Exception as e:
+                logger.error(f"❌ [Monitor] Redis 连接失败 (第{i+1}次): {e}")
+                time.sleep(2)
+        redis_client = None
 
 def load_config(system_cs_prefixes):
-    global current_config
+    global current_config, CONFIG_SOURCE
     loaded = False
     
+    # 1. 极力尝试从 Redis 读取
     if redis_client:
         try:
-            data = redis_client.get(REDIS_KEY)
-            if data:
-                saved = json.loads(data)
-                if "rules" in saved:
-                    current_config = saved
-                    loaded = True
-                    logger.info("📥 [Monitor] 已从 Redis 加载配置")
+            # 获取原始字符串
+            raw_data = redis_client.get(REDIS_KEY)
+            
+            if raw_data:
+                logger.info(f"🔍 [Monitor] 从 Redis 读到了数据 (长度: {len(raw_data)})")
+                try:
+                    saved = json.loads(raw_data)
+                    # 只要是字典，我们就信任它，不搞严格检查
+                    if isinstance(saved, dict):
+                        current_config = saved
+                        loaded = True
+                        CONFIG_SOURCE = 'REDIS'
+                        logger.info("📥 [Monitor] 成功加载 Redis 配置")
+                    else:
+                        logger.error("❌ [Monitor] Redis 数据格式不对 (不是字典)")
+                except json.JSONDecodeError as je:
+                    logger.error(f"❌ [Monitor] Redis 数据 JSON 解析失败: {je}")
+            else:
+                logger.warning("⚠️ [Monitor] Redis 连接成功，但该 Key 没有数据 (None)")
+                
         except Exception as e:
-            logger.error(f"⚠️ [Monitor] Redis 读取出错: {e}")
+            logger.error(f"⚠️ [Monitor] Redis 读取过程发生未知错误: {e}")
 
+    # 2. 如果 Redis 真的没读到，尝试本地文件
     if not loaded and os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                 saved = json.load(f)
-                if "rules" in saved:
+                if isinstance(saved, dict):
                     current_config = saved
                     loaded = True
+                    CONFIG_SOURCE = 'FILE'
                     logger.info("📂 [Monitor] 已从本地文件加载配置")
         except Exception as e:
             logger.error(f"⚠️ [Monitor] 本地文件读取出错: {e}")
 
+    # 3. 如果依然没有加载成功，保持空壳
     if not loaded: 
         current_config = DEFAULT_CONFIG.copy()
+        CONFIG_SOURCE = 'DEFAULT'
+        logger.warning("⚠️ [Monitor] 未能加载任何配置，系统处于空壳状态")
     
+    # 数据补全 (只补全最基础的字段，不覆盖 rules)
     if "approval_keywords" not in current_config:
         current_config["approval_keywords"] = ["同意", "批准", "ok"]
-    
     if "schedule" not in current_config:
         current_config["schedule"] = DEFAULT_CONFIG["schedule"]
+    if "rules" not in current_config:
+        current_config["rules"] = []
 
-    for rule in current_config["rules"]:
+    # 简单的格式修正，防止旧数据缺少字段报错
+    for rule in current_config.get("rules", []):
         if "check_file" not in rule: rule["check_file"] = False
         if "enable_approval" not in rule: rule["enable_approval"] = False
-        if "filename_keywords" not in rule: rule["filename_keywords"] = []
         if "approval_action" not in rule: rule["approval_action"] = {}
         
+        # 补全延迟参数
         aa = rule["approval_action"]
-        if "reply_admin" not in aa: aa["reply_admin"] = ""
-        if "reply_origin" not in aa: aa["reply_origin"] = ""
-        if "forward_to" not in aa: aa["forward_to"] = ""
-        if "delay_1_min" not in aa: aa["delay_1_min"] = 1.0
-        if "delay_1_max" not in aa: aa["delay_1_max"] = 2.0
-        if "delay_2_min" not in aa: aa["delay_2_min"] = 1.0
-        if "delay_2_max" not in aa: aa["delay_2_max"] = 3.0
-        if "delay_3_min" not in aa: aa["delay_3_min"] = 1.0
-        if "delay_3_max" not in aa: aa["delay_3_max"] = 2.0
+        for k in ["reply_admin", "reply_origin", "forward_to"]:
+            if k not in aa: aa[k] = ""
+        for i in range(1, 4):
+            if f"delay_{i}_min" not in aa: aa[f"delay_{i}_min"] = 1.0
+            if f"delay_{i}_max" not in aa: aa[f"delay_{i}_max"] = 2.0
 
-        if rule["sender_mode"] == "exclude" and not rule["sender_prefixes"]:
+        if rule.get("sender_mode") == "exclude" and not rule.get("sender_prefixes"):
             rule["sender_prefixes"] = list(system_cs_prefixes)
 
-def save_config(new_config):
-    global current_config
+def save_config(new_config, is_auto_save=False):
+    global current_config, CONFIG_SOURCE
     try:
         if not isinstance(new_config, dict) or "rules" not in new_config:
             return False, "无效的配置格式"
 
+        # [铁律] 如果是自动保存(定时任务)，且当前是空壳模式，绝对禁止写入！
+        if is_auto_save and CONFIG_SOURCE == 'DEFAULT':
+            logger.warning("🛡️ [Monitor] 空壳模式下禁止自动保存，防止覆盖您的数据库！")
+            current_config = new_config
+            return True, "内存已更新(未写入DB)"
+
+        # ... (常规数据清洗) ...
         if "schedule" not in new_config:
             new_config["schedule"] = DEFAULT_CONFIG["schedule"]
         else:
@@ -156,6 +158,7 @@ def save_config(new_config):
             new_config["approval_keywords"] = [k.strip() for k in re.split(r'[,\n]', raw_app_kws) if k.strip()]
         
         for rule in new_config.get("rules", []):
+            # 基础清洗
             clean_groups = []
             raw_groups = rule.get("groups", [])
             if isinstance(raw_groups, str): raw_groups = raw_groups.split('\n')
@@ -166,38 +169,26 @@ def save_config(new_config):
                     try: clean_groups.append(int(match.group()))
                     except: pass
             rule["groups"] = clean_groups
-            
             rule["check_file"] = bool(rule.get("check_file", False))
             rule["enable_approval"] = bool(rule.get("enable_approval", False))
 
-            clean_kws = []
-            raw_kws = rule.get("keywords", [])
-            if isinstance(raw_kws, str): raw_kws = raw_kws.split('\n')
-            for k in raw_kws:
-                k = str(k).strip()
-                if k: clean_kws.append(k)
-            rule["keywords"] = clean_kws
-
-            clean_exts = []
-            raw_exts = rule.get("file_extensions", [])
-            if isinstance(raw_exts, str): raw_exts = raw_exts.split('\n')
-            for ext in raw_exts:
-                e = str(ext).strip().lower().replace('.', '')
-                if e: clean_exts.append(e)
-            rule["file_extensions"] = clean_exts
-
-            clean_fn_kws = []
-            raw_fn_kws = rule.get("filename_keywords", [])
-            if isinstance(raw_fn_kws, str): raw_fn_kws = raw_fn_kws.split('\n')
-            for k in raw_fn_kws:
-                k = str(k).strip()
-                if k: clean_fn_kws.append(k)
-            rule["filename_keywords"] = clean_fn_kws
+            # 列表清洗
+            for list_key in ["keywords", "file_extensions", "filename_keywords", "sender_prefixes"]:
+                clean_list = []
+                raw_list = rule.get(list_key, [])
+                if isinstance(raw_list, str):
+                    if ',' in raw_list: raw_list = raw_list.split(',')
+                    else: raw_list = raw_list.split('\n')
+                for item in raw_list:
+                    item_str = str(item).strip()
+                    if item_str: clean_list.append(item_str)
+                rule[list_key] = clean_list
             
+            # 动作参数清洗
             if "approval_action" not in rule: rule["approval_action"] = {}
             aa = rule["approval_action"]
-            aa["reply_admin"] = str(aa.get("reply_admin", "")).strip()
-            aa["reply_origin"] = str(aa.get("reply_origin", "")).strip()
+            for k in ["reply_admin", "reply_origin", "forward_to"]:
+                aa[k] = str(aa.get(k, "")).strip()
             
             for i in range(1, 4):
                 try: aa[f"delay_{i}_min"] = float(aa.get(f"delay_{i}_min", 1.0))
@@ -205,16 +196,9 @@ def save_config(new_config):
                 try: aa[f"delay_{i}_max"] = float(aa.get(f"delay_{i}_max", 2.0))
                 except: aa[f"delay_{i}_max"] = 2.0
             
-            clean_prefixes = []
-            raw_prefixes = rule.get("sender_prefixes", [])
-            if isinstance(raw_prefixes, str): raw_prefixes = raw_prefixes.split('\n')
-            for p in raw_prefixes:
-                p = str(p).strip()
-                if p: clean_prefixes.append(p)
-            rule["sender_prefixes"] = clean_prefixes
-            
             try: rule["cooldown"] = int(rule.get("cooldown", 60))
             except: rule["cooldown"] = 60
+            
             for r in rule.get("replies", []):
                 try: r["min"] = float(r.get("min", 1.0))
                 except: r["min"] = 1.0
@@ -222,33 +206,37 @@ def save_config(new_config):
                 except: r["max"] = 3.0
                 if "type" not in r: r["type"] = "text"
         
+        # 写入 Redis
         if redis_client:
             try: 
+                # ensure_ascii=False 确保中文正常保存
                 redis_client.set(REDIS_KEY, json.dumps(new_config, ensure_ascii=False))
+                CONFIG_SOURCE = 'REDIS' 
+                logger.info("💾 [Monitor] 数据成功写入 Redis")
             except Exception as e:
                 logger.error(f"❌ [Monitor] Redis 保存失败: {e}")
         
+        # 写入本地文件
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(new_config, f, indent=4, ensure_ascii=False)
         
         current_config = new_config
-        logger.info(f"💾 [Monitor] 配置已更新并保存")
         return True, "保存成功"
     except Exception as e:
         logger.error(f"❌ [Monitor] 保存逻辑错误: {e}")
         return False, str(e)
 
-# --- Web UI (Using robust CDNs) ---
+# --- Web UI (稳定 CDN) ---
 SETTINGS_HTML = """
 <!DOCTYPE html>
 <html lang="zh-CN" class="bg-[#F3F4F6]">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v36</title>
-    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <title>Monitor Pro v39</title>
+    <script src="https://lib.baomitu.com/vue/3.3.4/vue.global.prod.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://lib.baomitu.com/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Plus Jakarta Sans', sans-serif; }
@@ -270,11 +258,16 @@ SETTINGS_HTML = """
     </script>
 </head>
 <body class="text-slate-800 antialiased min-h-screen pb-20 font-sans">
-<div id="app">
+<div id="loading-mask" style="position:fixed;top:0;left:0;width:100%;height:100%;background:#F3F4F6;z-index:9999;display:flex;justify-content:center;align-items:center;flex-direction:column;">
+    <div style="font-size:18px;font-weight:bold;margin-bottom:10px;color:#334155;"><i class="fa-solid fa-circle-notch fa-spin"></i> 正在加载资源...</div>
+    <div style="font-size:12px;color:#64748B;">国内高速 CDN 加速中</div>
+</div>
+
+<div id="app" v-cloak>
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v36</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v39</span></span>
         </div>
         
         <div class="flex items-center gap-3 bg-slate-50 px-2 py-1 rounded border border-slate-200 mx-2 hidden md:flex">
@@ -315,6 +308,13 @@ SETTINGS_HTML = """
         <div class="flex items-center gap-2 mb-2">
             <span class="text-[10px] font-bold text-slate-400 uppercase">全局审批触发词:</span>
             <input :value="(config.approval_keywords || []).join(', ')" @input="val => config.approval_keywords = val.target.value.split(/[,，]/).map(s=>s.trim()).filter(s=>s)" class="bento-input px-2 py-1 h-6 text-xs font-mono border-slate-300 w-64" placeholder="同意, 批准, ok">
+        </div>
+
+        <div v-if="config.rules.length === 0" class="text-center py-10">
+            <div class="inline-flex flex-col items-center justify-center p-6 bg-white rounded-lg border border-dashed border-slate-300 text-slate-400">
+                <i class="fa-solid fa-inbox text-4xl mb-2"></i>
+                <span class="text-sm font-medium">还没有规则，点击下方添加</span>
+            </div>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -414,12 +414,16 @@ SETTINGS_HTML = """
 </div>
 
 <script>
-    const { createApp, reactive } = Vue;
+    const { createApp, reactive, onMounted } = Vue;
     createApp({
         setup() {
             const config = reactive({ enabled: false, approval_keywords: [], schedule: {active: false, start: '09:00', end: '21:00'}, rules: [] });
             const toast = reactive({ show: false, msg: '', type: 'success' });
             const recovery = reactive({ search: '', reply: '', hours: 5, min: 2, max: 5 });
+
+            onMounted(() => {
+                document.getElementById('loading-mask').style.display = 'none';
+            });
 
             fetch('/tool/monitor_settings_json')
                 .then(r => r.json())
@@ -600,12 +604,16 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_name):
     
     return True, "✅ 匹配成功", None
 
-# [新增] 自动排班任务
+# [安全改进] 自动排班任务 - 带数据源检查
 async def run_schedule_job():
     while True:
         try:
             await asyncio.sleep(60)
             
+            # 如果配置还没加载成功（用了默认模板），绝对不要执行自动保存
+            if CONFIG_SOURCE == 'DEFAULT':
+                continue
+
             schedule = current_config.get("schedule", {})
             if not schedule.get("active", False):
                 continue
@@ -624,14 +632,15 @@ async def run_schedule_job():
                 if current_time >= start_str or current_time < end_str:
                     is_working_hours = True
             
+            # 只有状态真正改变时，才触发保存（减少DB写入）
             if is_working_hours and not current_config["enabled"]:
                 current_config["enabled"] = True
-                save_config(current_config) 
+                save_config(current_config, is_auto_save=True) # 传入标记
                 logger.info(f"⏰ [Schedule] 上班时间到了 ({start_str})，自动开启监听")
                 
             elif not is_working_hours and current_config["enabled"]:
                 current_config["enabled"] = False
-                save_config(current_config) 
+                save_config(current_config, is_auto_save=True) # 传入标记
                 logger.info(f"💤 [Schedule] 下班时间到了 ({end_str})，自动关闭监听")
                 
         except Exception as e:
@@ -648,11 +657,15 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         try: bot_loop = asyncio.get_event_loop()
         except: bot_loop = asyncio.new_event_loop(); asyncio.set_event_loop(bot_loop)
 
+    # 启动排班任务 (添加保护)
     if bot_loop:
         bot_loop.create_task(run_schedule_job())
 
+    # [修复] 强制使用 UTF-8 编码的 HTML 响应
     @app.route('/zd')
-    def monitor_settings_page(): return Response(SETTINGS_HTML, mimetype='text/html')
+    def monitor_settings_page(): 
+        return Response(SETTINGS_HTML, mimetype='text/html; charset=utf-8')
+        
     @app.route('/tool/monitor_settings_json')
     def monitor_settings_json(): return jsonify(current_config)
     @app.route('/api/monitor_settings', methods=['POST'])
@@ -682,7 +695,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v36 Stable"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v39 Zero-Interference (Direct Read)"); return
         if not current_config.get("enabled", True): return
         
         if event.is_reply:
@@ -799,4 +812,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v36 (CDN Fixed) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v39 (Zero-Interference) 已启动")
