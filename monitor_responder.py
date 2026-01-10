@@ -9,11 +9,8 @@ from datetime import datetime, timedelta, timezone
 from flask import request, jsonify, Response
 from telethon import events
 
-# 尝试导入 redis，如果没有安装也不会报错
-try: 
-    import redis
-except ImportError: 
-    redis = None
+try: import redis
+except ImportError: redis = None
 
 logger = logging.getLogger("BotLogger")
 
@@ -21,26 +18,17 @@ CONFIG_FILE = "monitor_config_v2.json"
 REDIS_KEY = "monitor_config"
 global_main_handler = None
 
-# 北京时区
-BJ_TZ = timezone(timedelta(hours=8))
-
 # --- 默认配置 ---
 DEFAULT_CONFIG = {
-    "enabled": False, # 默认关闭，需手动开启或等待排班
+    "enabled": True,
     "approval_keywords": ["同意", "批准", "ok"],
-    # 自动排班配置
-    "schedule": {
-        "active": False,    # 默认不开启排班
-        "start": "09:00",   # 上班时间
-        "end": "21:00"      # 下班时间
-    },
     "rules": [
         {
-            "id": "deposit_example",
-            "name": "代存报备(示例)",
+            "id": "deposit_rule",
+            "name": "代存报备",
             "groups": [-1002169616907],
             "check_file": False,
-            "keywords": ["r:(代|带)存|入[金款]"],
+            "keywords": ["代存"],
             "enable_approval": False,
             "file_extensions": [],
             "filename_keywords": [],
@@ -51,7 +39,7 @@ DEFAULT_CONFIG = {
                 {
                     "type": "amount_logic", 
                     "forward_to": -100123456789, 
-                    "text": "2001|⚠️ 金额过大，需领导审批|请稍等ART;;✅ 已报备",
+                    "text": "2000|⚠️ 金额过大，需领导审批|✅ 已报备",
                     "min": 1, 
                     "max": 2
                 }
@@ -72,6 +60,9 @@ current_config = DEFAULT_CONFIG.copy()
 rule_timers = {}
 redis_client = None
 
+# 北京时区
+BJ_TZ = timezone(timedelta(hours=8))
+
 def init_redis_connection():
     global redis_client
     redis_url = os.environ.get("REDIS_URL") or os.environ.get("REDIS_PUBLIC_URL")
@@ -86,7 +77,6 @@ def init_redis_connection():
 def load_config(system_cs_prefixes):
     global current_config
     loaded = False
-    
     if redis_client:
         try:
             data = redis_client.get(REDIS_KEY)
@@ -96,8 +86,7 @@ def load_config(system_cs_prefixes):
                     current_config = saved
                     loaded = True
                     logger.info("📥 [Monitor] 已从 Redis 加载配置")
-        except Exception as e:
-            logger.error(f"⚠️ [Monitor] Redis 读取出错: {e}")
+        except: pass
 
     if not loaded and os.path.exists(CONFIG_FILE):
         try:
@@ -107,18 +96,12 @@ def load_config(system_cs_prefixes):
                     current_config = saved
                     loaded = True
                     logger.info("📂 [Monitor] 已从本地文件加载配置")
-        except Exception as e:
-            logger.error(f"⚠️ [Monitor] 本地文件读取出错: {e}")
+        except: pass
 
-    if not loaded: 
-        current_config = DEFAULT_CONFIG.copy()
+    if not loaded: current_config = DEFAULT_CONFIG.copy()
     
-    # 数据结构补全
     if "approval_keywords" not in current_config:
         current_config["approval_keywords"] = ["同意", "批准", "ok"]
-    
-    if "schedule" not in current_config:
-        current_config["schedule"] = DEFAULT_CONFIG["schedule"]
 
     for rule in current_config["rules"]:
         if "check_file" not in rule: rule["check_file"] = False
@@ -145,13 +128,6 @@ def save_config(new_config):
     try:
         if not isinstance(new_config, dict) or "rules" not in new_config:
             return False, "无效的配置格式"
-
-        if "schedule" not in new_config:
-            new_config["schedule"] = DEFAULT_CONFIG["schedule"]
-        else:
-            new_config["schedule"]["active"] = bool(new_config["schedule"].get("active", False))
-            new_config["schedule"]["start"] = str(new_config["schedule"].get("start", "09:00"))
-            new_config["schedule"]["end"] = str(new_config["schedule"].get("end", "21:00"))
 
         raw_app_kws = new_config.get("approval_keywords", [])
         if isinstance(raw_app_kws, str):
@@ -225,10 +201,8 @@ def save_config(new_config):
                 if "type" not in r: r["type"] = "text"
         
         if redis_client:
-            try: 
-                redis_client.set(REDIS_KEY, json.dumps(new_config, ensure_ascii=False))
-            except Exception as e:
-                logger.error(f"❌ [Monitor] Redis 保存失败: {e}")
+            try: redis_client.set(REDIS_KEY, json.dumps(new_config, ensure_ascii=False))
+            except: pass
         
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(new_config, f, indent=4, ensure_ascii=False)
@@ -237,17 +211,17 @@ def save_config(new_config):
         logger.info(f"💾 [Monitor] 配置已更新并保存")
         return True, "保存成功"
     except Exception as e:
-        logger.error(f"❌ [Monitor] 保存逻辑错误: {e}")
+        logger.error(f"❌ [Monitor] 保存失败: {e}")
         return False, str(e)
 
-# --- Web UI (Bento Grid + Compact Inputs) ---
+# --- Web UI (Bento Grid) ---
 SETTINGS_HTML = """
 <!DOCTYPE html>
 <html lang="zh-CN" class="bg-[#F3F4F6]">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v35</title>
+    <title>Monitor Pro v31</title>
     <script src="https://cdn.staticfile.net/vue/3.3.4/vue.global.prod.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -276,26 +250,13 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v35</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v31</span></span>
         </div>
-        
-        <div class="flex items-center gap-3 bg-slate-50 px-2 py-1 rounded border border-slate-200 mx-2 hidden md:flex">
-            <label class="flex items-center gap-1.5 cursor-pointer select-none text-[10px] font-bold text-slate-500 uppercase">
-                <input type="checkbox" v-model="config.schedule.active" class="w-3 h-3 text-primary border-slate-300 rounded focus:ring-0">
-                <span><i class="fa-regular fa-clock mr-1"></i>自动排班</span>
-            </label>
-            <div v-if="config.schedule.active" class="flex items-center gap-1 transition-all">
-                <input type="time" v-model="config.schedule.start" class="bg-white border border-slate-300 rounded px-1 h-6 text-[10px] font-mono">
-                <span class="text-[9px] text-slate-400">至</span>
-                <input type="time" v-model="config.schedule.end" class="bg-white border border-slate-300 rounded px-1 h-6 text-[10px] font-mono">
-            </div>
-        </div>
-
         <div class="flex items-center gap-3">
-            <label class="flex items-center gap-1.5 cursor-pointer select-none bg-slate-50 px-2 py-1 rounded border border-slate-200 hover:border-slate-300 transition-colors" title="手动总开关">
-                <div class="w-2 h-2 rounded-full" :class="config.enabled ? 'bg-green-500' : 'bg-red-500'"></div>
+            <label class="flex items-center gap-1.5 cursor-pointer select-none bg-slate-50 px-2 py-1 rounded border border-slate-200 hover:border-slate-300 transition-colors">
+                <div class="w-2 h-2 rounded-full" :class="config.enabled ? 'bg-green-500' : 'bg-slate-300'"></div>
                 <input type="checkbox" v-model="config.enabled" @change="saveConfig" class="hidden">
-                <span class="text-[11px] font-semibold text-slate-600">{{ config.enabled ? 'Running' : 'Stopped' }}</span>
+                <span class="text-[11px] font-semibold text-slate-600">{{ config.enabled ? 'Active' : 'Paused' }}</span>
             </label>
             <button @click="saveConfig" class="bg-slate-900 hover:bg-black text-white px-3 py-1 rounded text-[11px] font-bold transition-colors flex items-center gap-1.5 shadow-sm"><i class="fa-solid fa-floppy-disk"></i> 保存</button>
         </div>
@@ -303,17 +264,6 @@ SETTINGS_HTML = """
 
     <main class="max-w-[1400px] mx-auto px-4 py-6 space-y-6">
         
-        <div class="md:hidden flex flex-col gap-2 bg-white p-3 rounded-lg border border-slate-200 shadow-sm">
-            <div class="flex items-center justify-between">
-                <span class="text-xs font-bold text-slate-700"><i class="fa-regular fa-clock mr-1"></i>自动排班</span>
-                <input type="checkbox" v-model="config.schedule.active" class="w-4 h-4 text-primary border-slate-300 rounded focus:ring-0">
-            </div>
-            <div v-if="config.schedule.active" class="grid grid-cols-2 gap-2">
-                <div class="flex items-center gap-2"><span class="text-[10px] text-slate-400">开启:</span><input type="time" v-model="config.schedule.start" class="bento-input w-full px-2 py-1 h-8 text-xs font-mono"></div>
-                <div class="flex items-center gap-2"><span class="text-[10px] text-slate-400">关闭:</span><input type="time" v-model="config.schedule.end" class="bento-input w-full px-2 py-1 h-8 text-xs font-mono"></div>
-            </div>
-        </div>
-
         <div class="flex items-center gap-2 mb-2">
             <span class="text-[10px] font-bold text-slate-400 uppercase">全局审批触发词:</span>
             <input :value="(config.approval_keywords || []).join(', ')" @input="val => config.approval_keywords = val.target.value.split(/[,，]/).map(s=>s.trim()).filter(s=>s)" class="bento-input px-2 py-1 h-6 text-xs font-mono border-slate-300 w-64" placeholder="同意, 批准, ok">
@@ -332,10 +282,7 @@ SETTINGS_HTML = """
                     <div class="space-y-1.5">
                         <div class="flex items-center justify-between"><span class="section-label"><i class="fa-solid fa-eye mr-1"></i>监听来源</span><label class="flex items-center gap-1 cursor-pointer select-none"><input type="checkbox" v-model="rule.check_file" class="w-3 h-3 text-primary border-slate-300 rounded focus:ring-0"><span class="text-[10px] text-slate-500 font-medium" :class="{'text-primary': rule.check_file}">文件模式</span></label></div>
                         <div class="relative"><textarea :value="listToString(rule.groups)" @input="stringToIntList($event, rule, 'groups')" rows="1" class="bento-input w-full px-2 py-1.5 resize-none h-8 leading-tight font-mono text-[11px]" placeholder="群ID (换行分隔)"></textarea></div>
-                        <div v-if="!rule.check_file" class="relative">
-                            <textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')" rows="2" class="bento-input w-full px-2 py-1.5 resize-none h-16 leading-tight font-mono text-[11px] placeholder-slate-400" placeholder="普通: 代存&#10;正则: r:(代|带)存|入[金款]"></textarea>
-                            <div class="absolute right-2 bottom-1 text-[9px] text-primary/60 bg-white/80 px-1 rounded pointer-events-none">支持正则 r:...</div>
-                        </div>
+                        <div v-if="!rule.check_file" class="relative"><textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')" rows="2" class="bento-input w-full px-2 py-1.5 resize-none h-16 leading-tight font-mono text-[11px] placeholder-slate-400" placeholder="红包雨 (普通)&#10;红包雨#流水 (包含前者，排除#后)&#10;提款&催促 (必须同时包含)"></textarea></div>
                         <div v-else class="space-y-2">
                             <div class="grid grid-cols-2 gap-2"><input :value="listToString(rule.file_extensions).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'file_extensions')" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="后缀: xlsx, png"><input :value="listToString(rule.filename_keywords).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'filename_keywords')" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="文件名关键词"></div>
                         </div>
@@ -419,7 +366,7 @@ SETTINGS_HTML = """
     const { createApp, reactive } = Vue;
     createApp({
         setup() {
-            const config = reactive({ enabled: false, approval_keywords: [], schedule: {active: false, start: '09:00', end: '21:00'}, rules: [] });
+            const config = reactive({ enabled: true, approval_keywords: [], rules: [] });
             const toast = reactive({ show: false, msg: '', type: 'success' });
             const recovery = reactive({ search: '', reply: '', hours: 5, min: 2, max: 5 });
 
@@ -430,9 +377,6 @@ SETTINGS_HTML = """
                     if(data.approval_keywords) config.approval_keywords = data.approval_keywords;
                     else config.approval_keywords = ['同意', '批准', 'ok'];
                     
-                    if(data.schedule) config.schedule = data.schedule;
-                    else config.schedule = {active: false, start: '09:00', end: '21:00'};
-
                     config.rules = (data.rules || []).map(r => {
                         if(r.replies) r.replies = r.replies.map(rep => ({...rep, type: rep.type || 'text'}));
                         if(r.check_file === undefined) r.check_file = false;
@@ -502,29 +446,21 @@ SETTINGS_HTML = """
 """
 
 def match_text(text, rule):
-    """通用文本匹配逻辑 (支持 & # 和 r:正则)"""
+    """通用文本匹配逻辑 (支持 & #)"""
     keywords = rule.get("keywords", [])
     if not keywords: return True 
     
     for kw_rule in keywords:
         if not kw_rule: continue
-        kw_rule_lower = kw_rule.lower()
+        kw_rule = kw_rule.lower()
         text_lower = text.lower()
         
-        # 0. Regex Mode
-        if kw_rule_lower.startswith('r:'):
-            try:
-                pattern = kw_rule[2:] # Remove 'r:'
-                if re.search(pattern, text, re.IGNORECASE):
-                    return True
-            except: pass
-            continue
-
-        # 1. Normal Mode (Inclusion # Exclusion)
-        parts = kw_rule_lower.split('#')
+        # 1. Split by # (Inclusion # Exclusion1 # Exclusion2 ...)
+        parts = kw_rule.split('#')
         include_part = parts[0]
         exclude_parts = parts[1:] if len(parts) > 1 else []
         
+        # 2. Check Exclusions (Any hit = fail)
         hit_exclusion = False
         for ex in exclude_parts:
             if ex.strip() and (ex.strip() in text_lower):
@@ -532,6 +468,7 @@ def match_text(text, rule):
                 break
         if hit_exclusion: continue
         
+        # 3. Check Inclusions (All must hit)
         and_kws = include_part.split('&')
         all_matched = True
         for ak in and_kws:
@@ -543,19 +480,6 @@ def match_text(text, rule):
         if all_matched and and_kws:
             return True
     return False
-
-def check_sender_allowed(sender_name, rule):
-    if not sender_name: return True
-    sender_mode = rule.get("sender_mode", "exclude")
-    prefixes = rule.get("sender_prefixes", [])
-    match_prefix = False
-    for p in prefixes:
-        if p and sender_name.startswith(p):
-            match_prefix = True
-            break
-    if sender_mode == "exclude" and match_prefix: return False
-    elif sender_mode == "include" and not match_prefix: return False
-    return True
 
 def format_caption(tpl):
     if not tpl: return ""
@@ -569,9 +493,6 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_name):
     if event.out: return False, "Bot自己发送", None
     if event.sender_id in other_cs_ids: return False, "ID是客服", None
     
-    if not check_sender_allowed(sender_name, rule):
-        return False, "发送者被排除", None
-
     check_file = rule.get("check_file", False)
     text = (event.text or "")
     
@@ -594,6 +515,12 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_name):
             if not any(k.lower() in filename_lower for k in fn_kws): return False, "文件名关键词不符", None
     else:
         if not match_text(text, rule): return False, "文本关键词不符", None
+
+    sender_mode = rule.get("sender_mode", "exclude")
+    prefixes = rule.get("sender_prefixes", [])
+    match_prefix = any(sender_name.startswith(p) for p in prefixes)
+    if sender_mode == "exclude" and match_prefix: return False, "前缀被排除", None
+    elif sender_mode == "include" and not match_prefix: return False, "前缀不在白名单", None
     
     rule_id = rule.get("id", str(rule.get("groups")))
     last_time = rule_timers.get(rule_id, 0)
@@ -601,43 +528,6 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_name):
     if now - last_time < rule.get("cooldown", 60): return False, "冷却中", None
     
     return True, "✅ 匹配成功", None
-
-# [新增] 自动排班任务
-async def run_schedule_job():
-    while True:
-        try:
-            await asyncio.sleep(60)
-            
-            schedule = current_config.get("schedule", {})
-            if not schedule.get("active", False):
-                continue
-                
-            start_str = schedule.get("start", "09:00")
-            end_str = schedule.get("end", "21:00")
-            
-            now = datetime.now(BJ_TZ)
-            current_time = now.strftime("%H:%M")
-            
-            is_working_hours = False
-            if start_str < end_str:
-                if start_str <= current_time < end_str:
-                    is_working_hours = True
-            else:
-                if current_time >= start_str or current_time < end_str:
-                    is_working_hours = True
-            
-            if is_working_hours and not current_config["enabled"]:
-                current_config["enabled"] = True
-                save_config(current_config) 
-                logger.info(f"⏰ [Schedule] 上班时间到了 ({start_str})，自动开启监听")
-                
-            elif not is_working_hours and current_config["enabled"]:
-                current_config["enabled"] = False
-                save_config(current_config) 
-                logger.info(f"💤 [Schedule] 下班时间到了 ({end_str})，自动关闭监听")
-                
-        except Exception as e:
-            logger.error(f"❌ [Schedule] Error: {e}")
 
 def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None):
     global global_main_handler
@@ -649,10 +539,6 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     except:
         try: bot_loop = asyncio.get_event_loop()
         except: bot_loop = asyncio.new_event_loop(); asyncio.set_event_loop(bot_loop)
-
-    # 启动排班任务 (添加保护，防止Loop未就绪)
-    if bot_loop:
-        bot_loop.create_task(run_schedule_job())
 
     @app.route('/zd')
     def monitor_settings_page(): return Response(SETTINGS_HTML, mimetype='text/html')
@@ -685,50 +571,48 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v35 Stable"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v31 Compact Delays"); return
         if not current_config.get("enabled", True): return
         
+        # --- 1. 动态审批逻辑 (优先) ---
         if event.is_reply:
             app_kws = current_config.get("approval_keywords", ["同意", "批准", "ok"])
             if any(k in event.text for k in app_kws):
                 try:
-                    approver = await event.get_sender()
-                    approver_name = getattr(approver, 'first_name', '') or ''
-                    
                     original_msg = await event.get_reply_message()
                     if original_msg:
-                        orig_sender = await original_msg.get_sender()
-                        orig_sender_name = getattr(orig_sender, 'first_name', '') or ''
-
+                        sender_name = "" 
                         for rule in current_config.get("rules", []):
-                            if not check_sender_allowed(approver_name, rule):
-                                continue
-
-                            is_match, _, _ = await analyze_message(client, rule, events.NewMessage.Event(original_msg), other_cs_ids, orig_sender_name)
+                            is_match, _, _ = await analyze_message(client, rule, events.NewMessage.Event(original_msg), other_cs_ids, sender_name)
                             
                             if is_match and rule.get("enable_approval", False):
-                                logger.info(f"👮 [Approval] 批准通过! 匹配规则: {rule.get('name')} | 批准人: {approver_name}")
+                                logger.info(f"👮 [Approval] 批准通过! 匹配规则: {rule.get('name')}")
                                 action = rule.get("approval_action", {})
                                 
+                                # 阶段1：同意后等待 -> 回复领导
                                 d1_min = float(action.get("delay_1_min", 1.0))
                                 d1_max = float(action.get("delay_1_max", 2.0))
                                 await asyncio.sleep(random.uniform(d1_min, d1_max))
+                                
                                 if action.get("reply_admin"):
                                     await event.reply(format_caption(action["reply_admin"]))
                                 
+                                # 阶段2：回复领导后等待 -> 转发
                                 d2_min = float(action.get("delay_2_min", 1.0))
                                 d2_max = float(action.get("delay_2_max", 3.0))
                                 await asyncio.sleep(random.uniform(d2_min, d2_max))
+                                
                                 fwd_tgt = action.get("forward_to")
                                 if fwd_tgt:
                                     try:
                                         await client.forward_messages(int(str(fwd_tgt).strip()), original_msg)
+                                        # 阶段3：转发后等待 -> 回复原消息
+                                        d3_min = float(action.get("delay_3_min", 1.0))
+                                        d3_max = float(action.get("delay_3_max", 2.0))
+                                        await asyncio.sleep(random.uniform(d3_min, d3_max))
                                     except Exception as e:
                                         logger.error(f"❌ [Approval] 转发失败: {e}")
 
-                                d3_min = float(action.get("delay_3_min", 1.0))
-                                d3_max = float(action.get("delay_3_max", 2.0))
-                                await asyncio.sleep(random.uniform(d3_min, d3_max))
                                 if action.get("reply_origin"):
                                     await original_msg.reply(format_caption(action["reply_origin"]))
                                 
@@ -736,6 +620,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                 except Exception as e:
                     logger.error(f"❌ [Approval] 处理出错: {e}")
 
+        # --- 2. 常规消息监听 ---
         sender_name = ""
         try:
             event.sender = await event.get_sender()
@@ -802,4 +687,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v35 Stable (Indent Fix) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v31 Compact Delays (Clean) 已启动")
