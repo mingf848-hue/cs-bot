@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from flask import request, jsonify, Response
 from telethon import events
 
+# 尝试导入 redis，如果没有安装也不会报错
 try: 
     import redis
 except ImportError: 
@@ -20,22 +21,22 @@ CONFIG_FILE = "monitor_config_v2.json"
 REDIS_KEY = "monitor_config"
 global_main_handler = None
 
-# 北京时区 (用于定时任务)
+# 北京时区
 BJ_TZ = timezone(timedelta(hours=8))
 
 # --- 默认配置 ---
 DEFAULT_CONFIG = {
-    "enabled": False, # [修改] 默认状态改为关闭 (False)
+    "enabled": False, # 默认关闭，需手动开启或等待排班
     "approval_keywords": ["同意", "批准", "ok"],
-    # [新增] 自动排班配置
+    # 自动排班配置
     "schedule": {
-        "active": False,    # 是否启用定时任务
+        "active": False,    # 默认不开启排班
         "start": "09:00",   # 上班时间
         "end": "21:00"      # 下班时间
     },
     "rules": [
         {
-            "id": "deposit_rule",
+            "id": "deposit_example",
             "name": "代存报备(示例)",
             "groups": [-1002169616907],
             "check_file": False,
@@ -44,13 +45,13 @@ DEFAULT_CONFIG = {
             "file_extensions": [],
             "filename_keywords": [],
             "sender_mode": "exclude",
-            "sender_prefixes": [], 
+            "sender_prefixes": [],
             "cooldown": 60,
             "replies": [
                 {
                     "type": "amount_logic", 
                     "forward_to": -100123456789, 
-                    "text": "2001|⚠️ 需审批|请稍等ART;;✅ 已报备",
+                    "text": "2001|⚠️ 金额过大，需领导审批|请稍等ART;;✅ 已报备",
                     "min": 1, 
                     "max": 2
                 }
@@ -112,11 +113,10 @@ def load_config(system_cs_prefixes):
     if not loaded: 
         current_config = DEFAULT_CONFIG.copy()
     
-    # 补全配置结构
+    # 数据结构补全
     if "approval_keywords" not in current_config:
         current_config["approval_keywords"] = ["同意", "批准", "ok"]
     
-    # [新增] 补全 schedule 配置
     if "schedule" not in current_config:
         current_config["schedule"] = DEFAULT_CONFIG["schedule"]
 
@@ -146,7 +146,6 @@ def save_config(new_config):
         if not isinstance(new_config, dict) or "rules" not in new_config:
             return False, "无效的配置格式"
 
-        # 保存 Schedule 配置
         if "schedule" not in new_config:
             new_config["schedule"] = DEFAULT_CONFIG["schedule"]
         else:
@@ -226,8 +225,10 @@ def save_config(new_config):
                 if "type" not in r: r["type"] = "text"
         
         if redis_client:
-            try: redis_client.set(REDIS_KEY, json.dumps(new_config, ensure_ascii=False))
-            except: pass
+            try: 
+                redis_client.set(REDIS_KEY, json.dumps(new_config, ensure_ascii=False))
+            except Exception as e:
+                logger.error(f"❌ [Monitor] Redis 保存失败: {e}")
         
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(new_config, f, indent=4, ensure_ascii=False)
@@ -236,17 +237,17 @@ def save_config(new_config):
         logger.info(f"💾 [Monitor] 配置已更新并保存")
         return True, "保存成功"
     except Exception as e:
-        logger.error(f"❌ [Monitor] 保存失败: {e}")
+        logger.error(f"❌ [Monitor] 保存逻辑错误: {e}")
         return False, str(e)
 
-# --- Web UI (Bento Grid) ---
+# --- Web UI (Bento Grid + Compact Inputs) ---
 SETTINGS_HTML = """
 <!DOCTYPE html>
 <html lang="zh-CN" class="bg-[#F3F4F6]">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v34</title>
+    <title>Monitor Pro v35</title>
     <script src="https://cdn.staticfile.net/vue/3.3.4/vue.global.prod.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -275,7 +276,7 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v34</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v35</span></span>
         </div>
         
         <div class="flex items-center gap-3 bg-slate-50 px-2 py-1 rounded border border-slate-200 mx-2 hidden md:flex">
@@ -304,7 +305,7 @@ SETTINGS_HTML = """
         
         <div class="md:hidden flex flex-col gap-2 bg-white p-3 rounded-lg border border-slate-200 shadow-sm">
             <div class="flex items-center justify-between">
-                <span class="text-xs font-bold text-slate-700"><i class="fa-regular fa-clock mr-1"></i>自动排班 (Schedule)</span>
+                <span class="text-xs font-bold text-slate-700"><i class="fa-regular fa-clock mr-1"></i>自动排班</span>
                 <input type="checkbox" v-model="config.schedule.active" class="w-4 h-4 text-primary border-slate-300 rounded focus:ring-0">
             </div>
             <div v-if="config.schedule.active" class="grid grid-cols-2 gap-2">
@@ -605,7 +606,6 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_name):
 async def run_schedule_job():
     while True:
         try:
-            # 每60秒检查一次
             await asyncio.sleep(60)
             
             schedule = current_config.get("schedule", {})
@@ -618,26 +618,22 @@ async def run_schedule_job():
             now = datetime.now(BJ_TZ)
             current_time = now.strftime("%H:%M")
             
-            # 判断当前是否在工作时间内
             is_working_hours = False
             if start_str < end_str:
-                # 正常班 (09:00 - 21:00)
                 if start_str <= current_time < end_str:
                     is_working_hours = True
             else:
-                # 跨天班 (22:00 - 02:00)
                 if current_time >= start_str or current_time < end_str:
                     is_working_hours = True
             
-            # 状态切换逻辑
             if is_working_hours and not current_config["enabled"]:
                 current_config["enabled"] = True
-                save_config(current_config) # 保存并同步Redis
+                save_config(current_config) 
                 logger.info(f"⏰ [Schedule] 上班时间到了 ({start_str})，自动开启监听")
                 
             elif not is_working_hours and current_config["enabled"]:
                 current_config["enabled"] = False
-                save_config(current_config) # 保存并同步Redis
+                save_config(current_config) 
                 logger.info(f"💤 [Schedule] 下班时间到了 ({end_str})，自动关闭监听")
                 
         except Exception as e:
@@ -654,8 +650,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         try: bot_loop = asyncio.get_event_loop()
         except: bot_loop = asyncio.new_event_loop(); asyncio.set_event_loop(bot_loop)
 
-    # 启动排班任务
-    bot_loop.create_task(run_schedule_job())
+    # 启动排班任务 (添加保护，防止Loop未就绪)
+    if bot_loop:
+        bot_loop.create_task(run_schedule_job())
 
     @app.route('/zd')
     def monitor_settings_page(): return Response(SETTINGS_HTML, mimetype='text/html')
@@ -688,7 +685,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v34 Scheduler & Auto-Off"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v35 Stable"); return
         if not current_config.get("enabled", True): return
         
         if event.is_reply:
@@ -805,4 +802,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v34 (Scheduler & Auto-Off) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v35 Stable (Indent Fix) 已启动")
