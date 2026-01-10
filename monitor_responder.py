@@ -25,28 +25,28 @@ DEFAULT_CONFIG = {
     "rules": [
         {
             "id": "deposit_rule",
-            "name": "代存报备",
+            "name": "代存报备(示例)",
             "groups": [-1002169616907],
             "check_file": False,
-            "keywords": ["代存"],
+            "keywords": ["r:(代|带)存|入[金款]"], 
             "enable_approval": False,
             "file_extensions": [],
             "filename_keywords": [],
             "sender_mode": "exclude",
-            "sender_prefixes": [],
+            "sender_prefixes": [], # 这里填入 YY_, 值班号 等
             "cooldown": 60,
             "replies": [
                 {
                     "type": "amount_logic", 
                     "forward_to": -100123456789, 
-                    "text": "2000|⚠️ 金额过大，需领导审批|✅ 已报备",
+                    "text": "2001|⚠️ 需审批|请稍等ART;;✅ 已报备",
                     "min": 1, 
                     "max": 2
                 }
             ],
             "approval_action": {
-                "reply_admin": "收到，正在处理",
-                "reply_origin": "✅ 领导已批准，代存已报备",
+                "reply_admin": "收到",
+                "reply_origin": "✅ 已批准",
                 "forward_to": -100123456789,
                 "delay_1_min": 1.0, "delay_1_max": 2.0, 
                 "delay_2_min": 1.0, "delay_2_max": 3.0, 
@@ -221,7 +221,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v31</title>
+    <title>Monitor Pro v33</title>
     <script src="https://cdn.staticfile.net/vue/3.3.4/vue.global.prod.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -250,7 +250,7 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v31</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v33</span></span>
         </div>
         <div class="flex items-center gap-3">
             <label class="flex items-center gap-1.5 cursor-pointer select-none bg-slate-50 px-2 py-1 rounded border border-slate-200 hover:border-slate-300 transition-colors">
@@ -282,7 +282,10 @@ SETTINGS_HTML = """
                     <div class="space-y-1.5">
                         <div class="flex items-center justify-between"><span class="section-label"><i class="fa-solid fa-eye mr-1"></i>监听来源</span><label class="flex items-center gap-1 cursor-pointer select-none"><input type="checkbox" v-model="rule.check_file" class="w-3 h-3 text-primary border-slate-300 rounded focus:ring-0"><span class="text-[10px] text-slate-500 font-medium" :class="{'text-primary': rule.check_file}">文件模式</span></label></div>
                         <div class="relative"><textarea :value="listToString(rule.groups)" @input="stringToIntList($event, rule, 'groups')" rows="1" class="bento-input w-full px-2 py-1.5 resize-none h-8 leading-tight font-mono text-[11px]" placeholder="群ID (换行分隔)"></textarea></div>
-                        <div v-if="!rule.check_file" class="relative"><textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')" rows="2" class="bento-input w-full px-2 py-1.5 resize-none h-16 leading-tight font-mono text-[11px] placeholder-slate-400" placeholder="红包雨 (普通)&#10;红包雨#流水 (包含前者，排除#后)&#10;提款&催促 (必须同时包含)"></textarea></div>
+                        <div v-if="!rule.check_file" class="relative">
+                            <textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')" rows="2" class="bento-input w-full px-2 py-1.5 resize-none h-16 leading-tight font-mono text-[11px] placeholder-slate-400" placeholder="普通: 代存&#10;正则: r:(代|带)存|入[金款]"></textarea>
+                            <div class="absolute right-2 bottom-1 text-[9px] text-primary/60 bg-white/80 px-1 rounded pointer-events-none">支持正则 r:...</div>
+                        </div>
                         <div v-else class="space-y-2">
                             <div class="grid grid-cols-2 gap-2"><input :value="listToString(rule.file_extensions).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'file_extensions')" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="后缀: xlsx, png"><input :value="listToString(rule.filename_keywords).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'filename_keywords')" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="文件名关键词"></div>
                         </div>
@@ -446,21 +449,29 @@ SETTINGS_HTML = """
 """
 
 def match_text(text, rule):
-    """通用文本匹配逻辑 (支持 & #)"""
+    """通用文本匹配逻辑 (支持 & # 和 r:正则)"""
     keywords = rule.get("keywords", [])
     if not keywords: return True 
     
     for kw_rule in keywords:
         if not kw_rule: continue
-        kw_rule = kw_rule.lower()
+        kw_rule_lower = kw_rule.lower()
         text_lower = text.lower()
         
-        # 1. Split by # (Inclusion # Exclusion1 # Exclusion2 ...)
-        parts = kw_rule.split('#')
+        # 0. Regex Mode
+        if kw_rule_lower.startswith('r:'):
+            try:
+                pattern = kw_rule[2:] # Remove 'r:'
+                if re.search(pattern, text, re.IGNORECASE):
+                    return True
+            except: pass
+            continue
+
+        # 1. Normal Mode (Inclusion # Exclusion)
+        parts = kw_rule_lower.split('#')
         include_part = parts[0]
         exclude_parts = parts[1:] if len(parts) > 1 else []
         
-        # 2. Check Exclusions (Any hit = fail)
         hit_exclusion = False
         for ex in exclude_parts:
             if ex.strip() and (ex.strip() in text_lower):
@@ -468,7 +479,6 @@ def match_text(text, rule):
                 break
         if hit_exclusion: continue
         
-        # 3. Check Inclusions (All must hit)
         and_kws = include_part.split('&')
         all_matched = True
         for ak in and_kws:
@@ -480,6 +490,30 @@ def match_text(text, rule):
         if all_matched and and_kws:
             return True
     return False
+
+def check_sender_allowed(sender_name, rule):
+    """
+    检查发送者是否被规则允许。
+    返回 True 表示允许，False 表示被排除。
+    """
+    if not sender_name:
+        return True # 无法获取名字时默认允许，或者按需改成 False
+        
+    sender_mode = rule.get("sender_mode", "exclude")
+    prefixes = rule.get("sender_prefixes", [])
+    
+    match_prefix = False
+    for p in prefixes:
+        if p and sender_name.startswith(p):
+            match_prefix = True
+            break
+            
+    if sender_mode == "exclude" and match_prefix:
+        return False # 被排除
+    elif sender_mode == "include" and not match_prefix:
+        return False # 不在白名单
+        
+    return True
 
 def format_caption(tpl):
     if not tpl: return ""
@@ -493,6 +527,10 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_name):
     if event.out: return False, "Bot自己发送", None
     if event.sender_id in other_cs_ids: return False, "ID是客服", None
     
+    # 检查发送者前缀
+    if not check_sender_allowed(sender_name, rule):
+        return False, "发送者被排除", None
+
     check_file = rule.get("check_file", False)
     text = (event.text or "")
     
@@ -515,12 +553,6 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_name):
             if not any(k.lower() in filename_lower for k in fn_kws): return False, "文件名关键词不符", None
     else:
         if not match_text(text, rule): return False, "文本关键词不符", None
-
-    sender_mode = rule.get("sender_mode", "exclude")
-    prefixes = rule.get("sender_prefixes", [])
-    match_prefix = any(sender_name.startswith(p) for p in prefixes)
-    if sender_mode == "exclude" and match_prefix: return False, "前缀被排除", None
-    elif sender_mode == "include" and not match_prefix: return False, "前缀不在白名单", None
     
     rule_id = rule.get("id", str(rule.get("groups")))
     last_time = rule_timers.get(rule_id, 0)
@@ -571,7 +603,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v31 Compact Delays"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v33 Dual Sender Check"); return
         if not current_config.get("enabled", True): return
         
         # --- 1. 动态审批逻辑 (优先) ---
@@ -579,40 +611,54 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             app_kws = current_config.get("approval_keywords", ["同意", "批准", "ok"])
             if any(k in event.text for k in app_kws):
                 try:
+                    # 获取指令发送人信息
+                    approver = await event.get_sender()
+                    approver_name = getattr(approver, 'first_name', '') or ''
+                    
                     original_msg = await event.get_reply_message()
                     if original_msg:
-                        sender_name = "" 
+                        # 此时不需要 Original Sender Name，因为我们在 analyze_message 里会获取并检查
+                        # 但我们需要 Original Sender Name 传给 analyze_message
+                        # 为了逻辑复用，我们先获取一下原消息发送者
+                        orig_sender = await original_msg.get_sender()
+                        orig_sender_name = getattr(orig_sender, 'first_name', '') or ''
+
                         for rule in current_config.get("rules", []):
-                            is_match, _, _ = await analyze_message(client, rule, events.NewMessage.Event(original_msg), other_cs_ids, sender_name)
+                            # [关键修改]：首先检查“批准人”是否被该规则排除
+                            # 如果批准人是机器人自己或者被排除的号，直接忽略，不执行任何操作
+                            if not check_sender_allowed(approver_name, rule):
+                                # 记录日志方便调试，实际运行可注释
+                                # logger.info(f"🚫 [Approval] Ignored command from excluded sender: {approver_name}")
+                                continue
+
+                            is_match, _, _ = await analyze_message(client, rule, events.NewMessage.Event(original_msg), other_cs_ids, orig_sender_name)
                             
                             if is_match and rule.get("enable_approval", False):
-                                logger.info(f"👮 [Approval] 批准通过! 匹配规则: {rule.get('name')}")
+                                logger.info(f"👮 [Approval] 批准通过! 匹配规则: {rule.get('name')} | 批准人: {approver_name}")
                                 action = rule.get("approval_action", {})
                                 
-                                # 阶段1：同意后等待 -> 回复领导
+                                # 阶段1
                                 d1_min = float(action.get("delay_1_min", 1.0))
                                 d1_max = float(action.get("delay_1_max", 2.0))
                                 await asyncio.sleep(random.uniform(d1_min, d1_max))
-                                
                                 if action.get("reply_admin"):
                                     await event.reply(format_caption(action["reply_admin"]))
                                 
-                                # 阶段2：回复领导后等待 -> 转发
+                                # 阶段2
                                 d2_min = float(action.get("delay_2_min", 1.0))
                                 d2_max = float(action.get("delay_2_max", 3.0))
                                 await asyncio.sleep(random.uniform(d2_min, d2_max))
-                                
                                 fwd_tgt = action.get("forward_to")
                                 if fwd_tgt:
                                     try:
                                         await client.forward_messages(int(str(fwd_tgt).strip()), original_msg)
-                                        # 阶段3：转发后等待 -> 回复原消息
-                                        d3_min = float(action.get("delay_3_min", 1.0))
-                                        d3_max = float(action.get("delay_3_max", 2.0))
-                                        await asyncio.sleep(random.uniform(d3_min, d3_max))
                                     except Exception as e:
                                         logger.error(f"❌ [Approval] 转发失败: {e}")
 
+                                # 阶段3
+                                d3_min = float(action.get("delay_3_min", 1.0))
+                                d3_max = float(action.get("delay_3_max", 2.0))
+                                await asyncio.sleep(random.uniform(d3_min, d3_max))
                                 if action.get("reply_origin"):
                                     await original_msg.reply(format_caption(action["reply_origin"]))
                                 
@@ -687,4 +733,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v31 Compact Delays (Clean) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v33 (Dual Sender Check) 已启动")
