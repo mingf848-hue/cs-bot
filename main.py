@@ -74,7 +74,7 @@ def log_tree(level, msg):
 def normalize(text):
     if not text: return ""
     text = text.lower()
-    # [Ver 34.0] 移除所有标点符号和空白，只保留纯文本
+    # [Ver 34.0] 移除所有标点符号和空白，只保留纯文本啊
     text = re.sub(r'[^\w=]', '', text) 
     return text
 
