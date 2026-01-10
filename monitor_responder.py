@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from flask import request, jsonify, Response
 from telethon import events
 
+# 尝试导入 redis，如果没有安装也不会报错
 try: 
     import redis
 except ImportError: 
@@ -111,9 +112,9 @@ def load_config(system_cs_prefixes):
     if not loaded: 
         current_config = DEFAULT_CONFIG.copy()
     
-    # 补全配置
     if "approval_keywords" not in current_config:
         current_config["approval_keywords"] = ["同意", "批准", "ok"]
+    
     if "schedule" not in current_config:
         current_config["schedule"] = DEFAULT_CONFIG["schedule"]
 
@@ -237,7 +238,7 @@ def save_config(new_config):
         logger.error(f"❌ [Monitor] 保存逻辑错误: {e}")
         return False, str(e)
 
-# --- Web UI (Bento Grid) ---
+# --- Web UI (Using robust CDNs) ---
 SETTINGS_HTML = """
 <!DOCTYPE html>
 <html lang="zh-CN" class="bg-[#F3F4F6]">
@@ -245,9 +246,9 @@ SETTINGS_HTML = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Monitor Pro v36</title>
-    <script src="https://cdn.staticfile.net/vue/3.3.4/vue.global.prod.min.js"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdn.staticfile.net/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Plus Jakarta Sans', sans-serif; }
@@ -542,17 +543,14 @@ def match_text(text, rule):
     return False
 
 def check_sender_allowed(sender_name, rule):
-    """检查发送者是否被允许"""
     if not sender_name: return True
     sender_mode = rule.get("sender_mode", "exclude")
     prefixes = rule.get("sender_prefixes", [])
-    
     match_prefix = False
     for p in prefixes:
         if p and sender_name.startswith(p):
             match_prefix = True
             break
-            
     if sender_mode == "exclude" and match_prefix: return False
     elif sender_mode == "include" and not match_prefix: return False
     return True
@@ -650,15 +648,11 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         try: bot_loop = asyncio.get_event_loop()
         except: bot_loop = asyncio.new_event_loop(); asyncio.set_event_loop(bot_loop)
 
-    # 启动排班任务 (添加保护)
     if bot_loop:
         bot_loop.create_task(run_schedule_job())
 
-    # [修复] 强制使用 UTF-8 编码的 HTML 响应
     @app.route('/zd')
-    def monitor_settings_page(): 
-        return Response(SETTINGS_HTML, mimetype='text/html; charset=utf-8')
-        
+    def monitor_settings_page(): return Response(SETTINGS_HTML, mimetype='text/html')
     @app.route('/tool/monitor_settings_json')
     def monitor_settings_json(): return jsonify(current_config)
     @app.route('/api/monitor_settings', methods=['POST'])
@@ -688,7 +682,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v36 Charset Fixed"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v36 Stable"); return
         if not current_config.get("enabled", True): return
         
         if event.is_reply:
@@ -805,4 +799,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v36 (Charset Fixed) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v36 (CDN Fixed) 已启动")
