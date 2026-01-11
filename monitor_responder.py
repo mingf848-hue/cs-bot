@@ -6,7 +6,7 @@ import json
 import os
 import re
 from datetime import datetime, timedelta, timezone
-from flask import request, jsonify, Response
+from flask import request, jsonify, Response, render_template_string
 from telethon import events
 
 # 尝试导入 redis
@@ -23,6 +23,13 @@ global_main_handler = None
 
 # 北京时区
 BJ_TZ = timezone(timedelta(hours=8))
+
+# 全局存储 OTP 验证码
+latest_otp_storage = {
+    "code": None,
+    "text": None,
+    "time": None
+}
 
 # --- 默认配置 (兜底用) ---
 DEFAULT_CONFIG = {
@@ -518,6 +525,44 @@ SETTINGS_HTML = """
 </html>
 """
 
+OTP_HTML = """
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Telegram 登录验证码</title>
+    <style>
+        body { font-family: -apple-system, system-ui, sans-serif; background: #f0f2f5; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .card { background: white; padding: 2rem; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center; max-width: 400px; width: 90%; }
+        .code { font-size: 2.5rem; font-weight: bold; letter-spacing: 0.5rem; color: #333; margin: 1.5rem 0; background: #f8f9fa; padding: 1rem; border-radius: 8px; border: 1px dashed #cbd5e1; user-select: all; cursor: text; }
+        .time { color: #64748b; font-size: 0.875rem; margin-bottom: 0.5rem; font-family: monospace; }
+        .text { color: #475569; font-size: 0.875rem; text-align: left; background: #f1f5f9; padding: 1rem; border-radius: 6px; margin-top: 1rem; word-break: break-all; line-height: 1.5; }
+        .empty { color: #94a3b8; font-style: italic; margin: 2rem 0; }
+        .refresh { margin-top: 1rem; color: #3b82f6; text-decoration: none; font-size: 0.875rem; display: inline-block; cursor: pointer; border: 1px solid #e2e8f0; padding: 6px 12px; border-radius: 20px; transition: all 0.2s; }
+        .refresh:hover { background: #eff6ff; border-color: #bfdbfe; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h3>🔐 Telegram 验证码</h3>
+        {% if data.code or data.text %}
+            <div class="time">🕒 接收时间: {{ data.time }}</div>
+            {% if data.code %}
+                <div class="code" onclick="document.execCommand('copy');alert('已复制')">{{ data.code }}</div>
+            {% else %}
+                <div class="empty">消息中未提取到纯数字验证码</div>
+            {% endif %}
+            <div class="text">{{ data.text }}</div>
+        {% else %}
+            <div class="empty">暂无最新验证码消息<br><small>等待官方账号 (777000) 推送...</small></div>
+        {% endif %}
+        <div onclick="location.reload()" class="refresh">🔄 刷新页面</div>
+    </div>
+</body>
+</html>
+"""
+
 def match_text(text, rule):
     """通用文本匹配逻辑 (支持 & # 和 r:正则)"""
     keywords = rule.get("keywords", [])
@@ -677,6 +722,11 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     @app.route('/zd')
     def monitor_settings_page(): 
         return Response(SETTINGS_HTML, mimetype='text/html; charset=utf-8')
+    
+    # [NEW] OTP 页面
+    @app.route('/otp')
+    def view_otp_page():
+        return render_template_string(OTP_HTML, data=latest_otp_storage)
         
     @app.route('/tool/monitor_settings_json')
     def monitor_settings_json(): return jsonify(current_config)
@@ -704,6 +754,28 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                 await cli.send_message(msg.chat_id, format_caption(reply), reply_to=target_id)
                 await asyncio.sleep(random.uniform(min_d, max_d))
             except: pass
+            
+    # [NEW] 官方验证码监听器
+    @client.on(events.NewMessage(chats=777000))
+    async def otp_handler(event):
+        try:
+            text = event.message.text or ""
+            # 尝试提取 5位数字 验证码
+            code = ""
+            match = re.search(r'[\s:](\d{5})[\s.]', text)
+            if match:
+                code = match.group(1)
+            else:
+                # 备用：尝试找连续的5位数字
+                match = re.search(r'\b\d{5}\b', text)
+                if match: code = match.group(0)
+
+            latest_otp_storage["code"] = code
+            latest_otp_storage["text"] = text
+            latest_otp_storage["time"] = datetime.now(BJ_TZ).strftime('%Y-%m-%d %H:%M:%S')
+            logger.info(f"🔐 [OTP] 收到官方消息, Code: {code}")
+        except Exception as e:
+            logger.error(f"❌ [OTP] Error: {e}")
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
