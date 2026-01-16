@@ -31,7 +31,7 @@ latest_otp_storage = {
     "time": None
 }
 
-# --- 默认配置 (兜底用) ---
+# --- 默认配置 ---
 DEFAULT_CONFIG = {
     "enabled": True, 
     "approval_keywords": ["同意", "批准", "ok"],
@@ -44,7 +44,7 @@ DEFAULT_CONFIG = {
         {
             "id": "deposit_example",
             "name": "代存报备(默认)",
-            "enabled": True, # [新增] 单规则开关
+            "enabled": True,
             "groups": [-1002169616907],
             "check_file": False,
             "keywords": ["r:(代|带)存|入[金款]"],
@@ -146,9 +146,7 @@ def load_config(system_cs_prefixes):
         current_config["schedule"] = DEFAULT_CONFIG["schedule"]
 
     for rule in current_config["rules"]:
-        # [新增] 默认为开启
         if "enabled" not in rule: rule["enabled"] = True
-        
         if "check_file" not in rule: rule["check_file"] = False
         if "enable_approval" not in rule: rule["enable_approval"] = False
         if "filename_keywords" not in rule: rule["filename_keywords"] = []
@@ -186,7 +184,6 @@ def save_config(new_config):
             new_config["approval_keywords"] = [k.strip() for k in re.split(r'[,\n]', raw_app_kws) if k.strip()]
         
         for rule in new_config.get("rules", []):
-            # [新增] 保存开关状态
             rule["enabled"] = bool(rule.get("enabled", True))
 
             clean_groups = []
@@ -271,14 +268,14 @@ def save_config(new_config):
         logger.error(f"❌ [Monitor] 保存逻辑错误: {e}")
         return False, str(e)
 
-# --- Web UI (Bento Grid + Global CDN + Toggle) ---
+# --- Web UI (Bento Grid + Global CDN + Auto Save) ---
 SETTINGS_HTML = """
 <!DOCTYPE html>
 <html lang="zh-CN" class="bg-[#F3F4F6]">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v41</title>
+    <title>Monitor Pro v42</title>
     <script src="https://unpkg.com/vue@3.3.4/dist/vue.global.prod.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -307,7 +304,7 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v41</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v42</span></span>
         </div>
         
         <div class="flex items-center gap-3 bg-slate-50 px-2 py-1 rounded border border-slate-200 mx-2 hidden md:flex">
@@ -358,7 +355,7 @@ SETTINGS_HTML = """
                         <input v-model="rule.name" class="bg-transparent border-none p-0 text-xs font-bold text-slate-700 focus:ring-0 placeholder-slate-300 w-full font-sans" placeholder="未命名规则">
                     </div>
                     <label class="relative inline-flex items-center cursor-pointer mr-2" :title="rule.enabled ? '规则已开启' : '规则已禁用'">
-                        <input type="checkbox" v-model="rule.enabled" class="sr-only peer">
+                        <input type="checkbox" v-model="rule.enabled" @change="saveConfig" class="sr-only peer">
                         <div class="w-7 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-green-500"></div>
                     </label>
                     <button @click="removeRule(index)" class="text-slate-300 hover:text-red-500 transition-colors px-1" title="删除"><i class="fa-solid fa-trash text-[10px]"></i></button>
@@ -796,7 +793,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v41 Rule Toggles"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v42 Instant Save"); return
         if not current_config.get("enabled", True): return
         
         if event.is_reply:
@@ -919,4 +916,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v41 (Rule Toggles) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v42 (Instant Save) 已启动")
