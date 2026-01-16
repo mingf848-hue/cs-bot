@@ -7,7 +7,8 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 from flask import request, jsonify, Response, render_template_string
-from telethon import events
+from telethon import events, TelegramClient
+from telethon.sessions import StringSession
 
 # 尝试导入 redis
 try: 
@@ -24,12 +25,11 @@ global_main_handler = None
 # 北京时区
 BJ_TZ = timezone(timedelta(hours=8))
 
-# 全局存储 OTP 验证码
-latest_otp_storage = {
-    "code": None,
-    "text": None,
-    "time": None
-}
+# ==========================================
+# [多账号版] 全局存储 OTP 验证码
+# 格式: { "主账号": {code, text, time}, "副账号1": {...} }
+# ==========================================
+latest_otp_storage = {}
 
 # --- 默认配置 ---
 DEFAULT_CONFIG = {
@@ -81,13 +81,11 @@ redis_client = None
 
 def init_redis_connection():
     global redis_client
-    # 兼容 REDIS_URL 和 REDIS_URI
     redis_url = os.environ.get("REDIS_URL") or os.environ.get("REDIS_URI") or os.environ.get("REDIS_PUBLIC_URL")
     
     if redis and redis_url:
         try:
             redis_url = redis_url.strip()
-            # 日志脱敏
             safe_url = re.sub(r':([^@]+)@', ':****@', redis_url)
             logger.info(f"🔗 [Monitor] 尝试连接 Redis: {safe_url}")
 
@@ -109,7 +107,6 @@ def load_config(system_cs_prefixes):
     global current_config
     loaded = False
     
-    # 1. 尝试 Redis
     if redis_client:
         try:
             data = redis_client.get(REDIS_KEY)
@@ -122,7 +119,6 @@ def load_config(system_cs_prefixes):
         except Exception as e:
             logger.error(f"⚠️ [Monitor] Redis 读取出错: {e}")
 
-    # 2. 尝试本地文件
     if not loaded and os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
@@ -134,12 +130,10 @@ def load_config(system_cs_prefixes):
         except Exception as e:
             logger.error(f"⚠️ [Monitor] 本地文件读取出错: {e}")
 
-    # 3. 兜底
     if not loaded: 
         logger.warning("⚠️ [Monitor] 未能加载任何配置，系统使用默认模板启动")
         current_config = DEFAULT_CONFIG.copy()
     
-    # 补全缺失字段
     if "approval_keywords" not in current_config:
         current_config["approval_keywords"] = ["同意", "批准", "ok"]
     if "schedule" not in current_config:
@@ -185,7 +179,7 @@ def save_config(new_config):
         
         for rule in new_config.get("rules", []):
             rule["enabled"] = bool(rule.get("enabled", True))
-
+            
             clean_groups = []
             raw_groups = rule.get("groups", [])
             if isinstance(raw_groups, str): raw_groups = raw_groups.split('\n')
@@ -268,7 +262,7 @@ def save_config(new_config):
         logger.error(f"❌ [Monitor] 保存逻辑错误: {e}")
         return False, str(e)
 
-# --- Web UI (Bento Grid + Global CDN + Auto Save) ---
+# --- Web UI (Bento Grid + Global CDN) ---
 SETTINGS_HTML = """
 <!DOCTYPE html>
 <html lang="zh-CN" class="bg-[#F3F4F6]">
@@ -469,7 +463,7 @@ SETTINGS_HTML = """
                         if(r.replies) r.replies = r.replies.map(rep => ({...rep, type: rep.type || 'text'}));
                         if(r.check_file === undefined) r.check_file = false;
                         if(r.enable_approval === undefined) r.enable_approval = false;
-                        if(r.enabled === undefined) r.enabled = true; // Default enabled
+                        if(r.enabled === undefined) r.enabled = true;
                         if(!r.file_extensions) r.file_extensions = [];
                         if(!r.filename_keywords) r.filename_keywords = [];
                         if(!r.sender_prefixes) r.sender_prefixes = [];
@@ -541,34 +535,55 @@ OTP_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Telegram 登录验证码</title>
+    <title>Telegram 登录验证码 (多账号)</title>
     <style>
-        body { font-family: -apple-system, system-ui, sans-serif; background: #f0f2f5; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-        .card { background: white; padding: 2rem; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center; max-width: 400px; width: 90%; }
-        .code { font-size: 2.5rem; font-weight: bold; letter-spacing: 0.5rem; color: #333; margin: 1.5rem 0; background: #f8f9fa; padding: 1rem; border-radius: 8px; border: 1px dashed #cbd5e1; user-select: all; cursor: text; }
-        .time { color: #64748b; font-size: 0.875rem; margin-bottom: 0.5rem; font-family: monospace; }
-        .text { color: #475569; font-size: 0.875rem; text-align: left; background: #f1f5f9; padding: 1rem; border-radius: 6px; margin-top: 1rem; word-break: break-all; line-height: 1.5; }
-        .empty { color: #94a3b8; font-style: italic; margin: 2rem 0; }
-        .refresh { margin-top: 1rem; color: #3b82f6; text-decoration: none; font-size: 0.875rem; display: inline-block; cursor: pointer; border: 1px solid #e2e8f0; padding: 6px 12px; border-radius: 20px; transition: all 0.2s; }
-        .refresh:hover { background: #eff6ff; border-color: #bfdbfe; }
+        body { font-family: -apple-system, system-ui, sans-serif; background: #f0f2f5; display: flex; flex-direction: column; align-items: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
+        h1 { margin-bottom: 20px; font-size: 1.5rem; color: #1e293b; }
+        .container { display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; width: 100%; max-width: 1200px; }
+        .card { background: white; padding: 1.5rem; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); width: 100%; max-width: 350px; flex: 1 1 300px; display: flex; flex-direction: column; border: 1px solid #e2e8f0; }
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #f1f5f9; }
+        .account-name { font-weight: bold; font-size: 1.1rem; color: #0f172a; }
+        .badge { background: #dbeafe; color: #1e40af; font-size: 0.75rem; padding: 2px 8px; border-radius: 99px; font-weight: 600; }
+        .code { font-size: 2rem; font-weight: bold; letter-spacing: 0.2rem; color: #333; margin: 1rem 0; background: #f8f9fa; padding: 0.75rem; border-radius: 8px; border: 1px dashed #cbd5e1; user-select: all; cursor: pointer; text-align: center; transition: all 0.2s; }
+        .code:hover { background: #f1f5f9; border-color: #94a3b8; }
+        .time { color: #64748b; font-size: 0.75rem; margin-bottom: 0.5rem; font-family: monospace; display: flex; align-items: center; gap: 4px; }
+        .text { color: #475569; font-size: 0.8rem; text-align: left; background: #f8fafc; padding: 0.75rem; border-radius: 6px; margin-top: auto; word-break: break-all; line-height: 1.5; border: 1px solid #f1f5f9; max-height: 150px; overflow-y: auto; }
+        .empty { color: #94a3b8; font-style: italic; margin: 2rem 0; text-align: center; }
+        .refresh-btn { margin-top: 2rem; background: #3b82f6; color: white; border: none; padding: 10px 24px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: all 0.2s; box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3); }
+        .refresh-btn:hover { background: #2563eb; transform: translateY(-1px); }
     </style>
 </head>
 <body>
-    <div class="card">
-        <h3>🔐 Telegram 验证码</h3>
-        {% if data.code or data.text %}
-            <div class="time">🕒 接收时间: {{ data.time }}</div>
-            {% if data.code %}
-                <div class="code" onclick="document.execCommand('copy');alert('已复制')">{{ data.code }}</div>
-            {% else %}
-                <div class="empty">消息中未提取到纯数字验证码</div>
-            {% endif %}
-            <div class="text">{{ data.text }}</div>
+    <h1>🔐 验证码监控面板</h1>
+    
+    <div class="container">
+        {% if otp_list %}
+            {% for name, data in otp_list.items() %}
+            <div class="card">
+                <div class="card-header">
+                    <span class="account-name">{{ name }}</span>
+                    <span class="badge">Online</span>
+                </div>
+                
+                {% if data.code or data.text %}
+                    <div class="time">🕒 {{ data.time }}</div>
+                    {% if data.code %}
+                        <div class="code" onclick="navigator.clipboard.writeText('{{ data.code }}');alert('验证码 {{ data.code }} 已复制')">{{ data.code }}</div>
+                    {% else %}
+                        <div class="empty" style="font-size:0.9rem; margin: 1rem 0;">(未提取到纯数字)</div>
+                    {% endif %}
+                    <div class="text">{{ data.text }}</div>
+                {% else %}
+                    <div class="empty">暂无消息<br><small>等待官方推送...</small></div>
+                {% endif %}
+            </div>
+            {% endfor %}
         {% else %}
-            <div class="empty">暂无最新验证码消息<br><small>等待官方账号 (777000) 推送...</small></div>
+            <div class="empty" style="width:100%">暂无已连接的账号信息</div>
         {% endif %}
-        <div onclick="location.reload()" class="refresh">🔄 刷新页面</div>
     </div>
+
+    <button onclick="location.reload()" class="refresh-btn">🔄 刷新所有验证码</button>
 </body>
 </html>
 """
@@ -736,11 +751,11 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     @app.route('/zd')
     def monitor_settings_page(): 
         return Response(SETTINGS_HTML, mimetype='text/html; charset=utf-8')
-        
-    # [NEW] OTP 页面
+    
+    # [NEW] OTP 页面 - 渲染列表
     @app.route('/otp')
     def view_otp_page():
-        return render_template_string(OTP_HTML, data=latest_otp_storage)
+        return render_template_string(OTP_HTML, otp_list=latest_otp_storage)
         
     @app.route('/tool/monitor_settings_json')
     def monitor_settings_json(): return jsonify(current_config)
@@ -768,32 +783,62 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                 await cli.send_message(msg.chat_id, format_caption(reply), reply_to=target_id)
                 await asyncio.sleep(random.uniform(min_d, max_d))
             except: pass
-            
-    # [NEW] 官方验证码监听器
-    @client.on(events.NewMessage(chats=777000))
-    async def otp_handler(event):
-        try:
-            text = event.message.text or ""
-            # 尝试提取 5位数字 验证码
-            code = ""
-            match = re.search(r'[\s:](\d{5})[\s.]', text)
-            if match:
-                code = match.group(1)
-            else:
-                # 备用：尝试找连续的5位数字
-                match = re.search(r'\b\d{5}\b', text)
-                if match: code = match.group(0)
 
-            latest_otp_storage["code"] = code
-            latest_otp_storage["text"] = text
-            latest_otp_storage["time"] = datetime.now(BJ_TZ).strftime('%Y-%m-%d %H:%M:%S')
-            logger.info(f"🔐 [OTP] 收到官方消息, Code: {code}")
-        except Exception as e:
-            logger.error(f"❌ [OTP] Error: {e}")
+    # --- OTP 处理器工厂函数 ---
+    def create_otp_handler(account_name):
+        async def otp_handler(event):
+            try:
+                text = event.message.text or ""
+                # 尝试提取 5位数字 验证码
+                code = ""
+                match = re.search(r'[\s:](\d{5})[\s.]', text)
+                if match:
+                    code = match.group(1)
+                else:
+                    match = re.search(r'\b\d{5}\b', text)
+                    if match: code = match.group(0)
+
+                # 存入全局字典，Key 为账号名称
+                latest_otp_storage[account_name] = {
+                    "code": code,
+                    "text": text,
+                    "time": datetime.now(BJ_TZ).strftime('%Y-%m-%d %H:%M:%S')
+                }
+                logger.info(f"🔐 [OTP] {account_name} 收到官方消息, Code: {code}")
+            except Exception as e:
+                logger.error(f"❌ [OTP] Error ({account_name}): {e}")
+        return otp_handler
+
+    # 1. 为【主账号】(SESSION_STRING) 添加监听器
+    client.add_event_handler(create_otp_handler("主账号"), events.NewMessage(chats=777000))
+
+    # 2. 为【其他账号】启动新的客户端并监听
+    # 从环境变量 EXTRA_SESSION_STRINGS 读取，分号分隔
+    extra_sessions_env = os.environ.get("EXTRA_SESSION_STRINGS", "")
+    api_id = int(os.environ.get("API_ID", 0))
+    api_hash = os.environ.get("API_HASH", "")
+
+    if extra_sessions_env and api_id and api_hash:
+        session_list = [s.strip() for s in extra_sessions_env.split(';') if s.strip()]
+        for i, sess_str in enumerate(session_list):
+            try:
+                # 初始化额外的 Client，不创建新 session 文件，直接用 StringSession
+                # 注意：这里我们使用同一个 bot_loop
+                acc_name = f"副账号 {i+1}"
+                logger.info(f"🔄 [OTP] 正在启动 {acc_name} 的监听客户端...")
+                
+                extra_client = TelegramClient(StringSession(sess_str), api_id, api_hash, loop=bot_loop)
+                extra_client.add_event_handler(create_otp_handler(acc_name), events.NewMessage(chats=777000))
+                
+                # 启动客户端 (异步)
+                bot_loop.create_task(extra_client.start())
+                
+            except Exception as e:
+                logger.error(f"❌ [OTP] 启动 {acc_name} 失败: {e}")
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v42 Instant Save"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v42 Multi-Account OTP"); return
         if not current_config.get("enabled", True): return
         
         if event.is_reply:
@@ -855,7 +900,6 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
         for rule in current_config.get("rules", []):
             try:
-                # analyze_message 内部已经检查了 enabled，但这里为了保险和性能再查一次
                 if not rule.get("enabled", True): continue
 
                 is_match, reason, extracted_data = await analyze_message(client, rule, event, other_cs_ids, sender_name)
@@ -916,4 +960,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v42 (Instant Save) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v42 (Instant Save + Multi-OTP) 已启动")
