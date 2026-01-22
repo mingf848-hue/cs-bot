@@ -29,11 +29,10 @@ REDIS_KEY = "monitor_config"
 global_main_handler = None
 
 # ==========================================
-# [配置区] 时区设置 - 迪拜 (Dubai)
+# [配置区] 时区设置 - 北京时间 (UTC+8)
 # ==========================================
-# 保持您要求的迪拜时区 (UTC+4)
 BJ_TZ = timezone(timedelta(hours=8))
-TZ_NAME = "Beijing"
+TZ_NAME = "北京时间"
 
 # ==========================================
 # [多账号版] 全局存储 OTP 验证码
@@ -279,7 +278,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v46</title>
+    <title>Monitor Pro v47</title>
     <script src="https://unpkg.com/vue@3.3.4/dist/vue.global.prod.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -308,7 +307,7 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v46</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v47</span></span>
         </div>
         
         <div class="flex items-center gap-3 bg-slate-50 px-2 py-1 rounded border border-slate-200 mx-2 hidden md:flex">
@@ -545,106 +544,178 @@ OTP_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>验证码监控面板 (Telegram + Google)</title>
+    <title>验证码监控</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <style>
-        body { font-family: -apple-system, system-ui, sans-serif; background: #f0f2f5; display: flex; flex-direction: column; align-items: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
-        h1 { margin-bottom: 20px; font-size: 1.5rem; color: #1e293b; }
-        .section-title { width: 100%; max-width: 1200px; font-size: 0.9rem; font-weight: bold; color: #64748b; margin: 20px 0 10px 0; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 2px solid #e2e8f0; padding-bottom: 8px; }
-        .container { display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; width: 100%; max-width: 1200px; }
-        .card { background: white; padding: 1.5rem; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); width: 100%; max-width: 350px; flex: 1 1 300px; display: flex; flex-direction: column; border: 1px solid #e2e8f0; }
-        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #f1f5f9; }
-        .account-name { font-weight: bold; font-size: 1.1rem; color: #0f172a; }
-        .badge { background: #dbeafe; color: #1e40af; font-size: 0.75rem; padding: 2px 8px; border-radius: 99px; font-weight: 600; }
-        .badge-google { background: #fce7f3; color: #9d174d; }
-        .code { font-size: 2rem; font-weight: bold; letter-spacing: 0.2rem; color: #333; margin: 1rem 0; background: #f8f9fa; padding: 0.75rem; border-radius: 8px; border: 1px dashed #cbd5e1; user-select: all; cursor: pointer; text-align: center; transition: all 0.2s; }
-        .code:hover { background: #f1f5f9; border-color: #94a3b8; }
-        .time { color: #64748b; font-size: 0.75rem; margin-bottom: 0.5rem; font-family: monospace; display: flex; align-items: center; gap: 4px; }
-        .text { color: #475569; font-size: 0.8rem; text-align: left; background: #f8fafc; padding: 0.75rem; border-radius: 6px; margin-top: auto; word-break: break-all; line-height: 1.5; border: 1px solid #f1f5f9; max-height: 150px; overflow-y: auto; }
-        .empty { color: #94a3b8; font-style: italic; margin: 2rem 0; text-align: center; }
-        .refresh-btn { margin-top: 2rem; background: #3b82f6; color: white; border: none; padding: 10px 24px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: all 0.2s; box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3); }
-        .refresh-btn:hover { background: #2563eb; transform: translateY(-1px); }
-        .timer-bar { height: 4px; background: #e2e8f0; border-radius: 2px; margin-top: 10px; overflow: hidden; }
-        .timer-fill { height: 100%; background: #22c55e; width: 0%; transition: width 1s linear; }
-    </style>
-    <script>
-    document.addEventListener("DOMContentLoaded", function() {
-        const items = document.querySelectorAll('.google-item');
+        :root { --bg-color: #f3f4f6; --text-color: #1f2937; --card-bg: #ffffff; }
+        body { font-family: -apple-system, system-ui, "Microsoft YaHei", sans-serif; background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
         
-        setInterval(() => {
-            let reloadNeeded = false;
-            items.forEach(item => {
-                let ttl = parseFloat(item.getAttribute('data-ttl'));
-                ttl -= 0.1; 
-                
-                if (ttl <= 0) {
-                    reloadNeeded = true;
-                } else {
-                    item.setAttribute('data-ttl', ttl.toFixed(1));
-                    // Update text
-                    const txt = item.querySelector('.ttl-text');
-                    if(txt) txt.innerText = Math.floor(ttl) + 's 后过期';
-                    // Update bar
-                    const bar = item.querySelector('.timer-fill');
-                    if(bar) bar.style.width = ((ttl / 30) * 100) + '%';
-                }
-            });
-            
-            if (reloadNeeded) {
-                location.reload();
-            }
-        }, 100); 
-    });
-    </script>
+        .header { text-align: center; margin-bottom: 30px; }
+        .header h1 { font-size: 24px; font-weight: 800; margin: 0; color: #374151; letter-spacing: -0.5px; }
+        .header span { font-size: 13px; color: #9ca3af; font-weight: 500; background: #e5e7eb; padding: 2px 8px; border-radius: 99px; margin-left: 8px; vertical-align: middle; }
+
+        .grid-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; width: 100%; max-width: 1200px; margin-bottom: 40px; }
+        
+        .card { background: var(--card-bg); border-radius: 16px; padding: 20px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03); border: 1px solid #f3f4f6; transition: transform 0.2s; position: relative; overflow: hidden; }
+        .card:hover { transform: translateY(-2px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05); }
+        
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+        .platform-icon { font-size: 20px; margin-right: 8px; }
+        .account-name { font-weight: 700; font-size: 15px; color: #111827; }
+        .status-badge { font-size: 11px; padding: 2px 8px; border-radius: 6px; font-weight: 600; text-transform: uppercase; }
+        
+        /* Telegram Style */
+        .tg-style .platform-icon { color: #24A1DE; }
+        .tg-style .status-badge { background: #e0f2fe; color: #0284c7; }
+        .tg-style .code-box { background: #f0f9ff; color: #0369a1; border: 1px dashed #bae6fd; }
+        
+        /* Google Style */
+        .ga-style .platform-icon { color: #EA4335; }
+        .ga-style .status-badge { background: #fff1f2; color: #e11d48; }
+        .ga-style .code-box { background: #fff5f5; color: #be123c; border: 1px dashed #fecdd3; }
+
+        .code-box { font-family: 'SF Mono', 'Menlo', monospace; font-size: 32px; font-weight: 700; letter-spacing: 4px; text-align: center; padding: 16px; border-radius: 12px; margin: 12px 0; cursor: pointer; user-select: all; transition: all 0.2s; }
+        .code-box:active { transform: scale(0.98); background-color: #e5e7eb; }
+        
+        .meta-info { font-size: 12px; color: #6b7280; display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-weight: 500; }
+        
+        .progress-track { height: 6px; background: #f3f4f6; border-radius: 3px; overflow: hidden; margin-top: 15px; }
+        .progress-fill { height: 100%; border-radius: 3px; transition: width 0.1s linear; }
+        .ga-style .progress-fill { background: linear-gradient(90deg, #f43f5e, #e11d48); }
+
+        .empty-state { text-align: center; padding: 40px; color: #9ca3af; font-size: 14px; background: white; border-radius: 16px; border: 2px dashed #e5e7eb; width: 100%; max-width: 600px; }
+        
+        .section-label { font-size: 12px; font-weight: 700; color: #9ca3af; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; width: 100%; max-width: 1200px; }
+        
+        .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #1f2937; color: white; padding: 8px 16px; border-radius: 20px; font-size: 12px; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+        .toast.show { opacity: 1; }
+    </style>
 </head>
 <body>
-    <h1>🔐 验证码监控面板 <span style="font-size: 0.8rem; font-weight: normal; color: #666; vertical-align: middle; margin-left: 10px;">({{ tz_name }})</span></h1>
-    
-    <div class="section-title"><i class="fa-brands fa-telegram"></i> Telegram Login Codes</div>
-    <div class="container">
-        {% if otp_list %}
-            {% for name, data in otp_list.items() %}
-            <div class="card">
-                <div class="card-header">
-                    <span class="account-name">{{ name }}</span>
-                    <span class="badge">Online</span>
-                </div>
-                
-                {% if data.code or data.text %}
-                    <div class="time">🕒 {{ data.time }}</div>
-                    {% if data.code %}
-                        <div class="code" onclick="navigator.clipboard.writeText('{{ data.code }}');alert('Telegram 验证码 {{ data.code }} 已复制')">{{ data.code }}</div>
-                    {% else %}
-                        <div class="empty" style="font-size:0.9rem; margin: 1rem 0;">(未提取到纯数字)</div>
-                    {% endif %}
-                    <div class="text">{{ data.text }}</div>
-                {% else %}
-                    <div class="empty">暂无消息<br><small>等待官方推送...</small></div>
-                {% endif %}
-            </div>
-            {% endfor %}
-        {% else %}
-            <div class="empty" style="width:100%">暂无已连接的 Telegram 账号</div>
-        {% endif %}
+    <div class="header">
+        <h1>验证码监控 <span>{{ tz_name }}</span></h1>
     </div>
 
-    {% if google_list %}
-    <div class="section-title" style="margin-top: 40px;"><i class="fa-brands fa-google"></i> Google Authenticator (2FA)</div>
-    <div class="container">
-        {% for item in google_list %}
-        <div class="card google-item" data-ttl="{{ item.ttl }}">
+    {% if otp_list %}
+    <div class="section-label">Telegram 登录码</div>
+    <div class="grid-container">
+        {% for name, data in otp_list.items() %}
+        <div class="card tg-style">
             <div class="card-header">
-                <span class="account-name">{{ item.name }}</span>
-                <span class="badge badge-google">2FA</span>
+                <div style="display:flex; align-items:center;">
+                    <i class="fa-brands fa-telegram platform-icon"></i>
+                    <span class="account-name">{{ name }}</span>
+                </div>
+                <span class="status-badge">已连接</span>
             </div>
-            <div class="code" style="letter-spacing: 0.1rem; color: #be123c; border-color: #fecdd3; background: #fff1f2;" onclick="navigator.clipboard.writeText('{{ item.code }}');alert('谷歌验证码 {{ item.code }} 已复制')">{{ item.code }}</div>
-            <div class="ttl-text" style="text-align:center; color:#881337; font-size:0.8rem; font-weight:bold;">{{ item.ttl }}s 后过期</div>
-            <div class="timer-bar"><div class="timer-fill" style="width: {{ (item.ttl / 30) * 100 }}%"></div></div>
+            {% if data.code %}
+                <div class="code-box" onclick="copyToClip('{{ data.code }}')">{{ data.code }}</div>
+                <div class="meta-info">
+                    <span><i class="fa-regular fa-clock"></i> {{ data.time.split(' ')[1] }} 接收</span>
+                    <span style="color:#0ea5e9; font-size:10px;">点击复制</span>
+                </div>
+            {% else %}
+                <div style="padding: 24px 0; text-align: center; color: #9ca3af; font-size: 13px; font-style: italic;">
+                    等待验证码...
+                </div>
+            {% endif %}
+            <div class="meta-info" style="margin-top:10px; border-top:1px solid #f3f4f6; padding-top:8px;">
+                <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">{{ data.text[:30] }}...</span>
+            </div>
         </div>
         {% endfor %}
     </div>
     {% endif %}
 
-    <button onclick="location.reload()" class="refresh-btn">🔄 刷新所有验证码</button>
+    {% if google_list %}
+    <div class="section-label">Google 身份验证器 (2FA)</div>
+    <div class="grid-container">
+        {% for item in google_list %}
+        <div class="card ga-style google-item" data-ttl="{{ item.ttl }}">
+            <div class="card-header">
+                <div style="display:flex; align-items:center;">
+                    <i class="fa-brands fa-google platform-icon"></i>
+                    <span class="account-name">{{ item.name }}</span>
+                </div>
+                <span class="status-badge ttl-text">{{ item.ttl }}s</span>
+            </div>
+            <div class="code-box" onclick="copyToClip('{{ item.code }}')">{{ item.code }}</div>
+            <div class="progress-track">
+                <div class="progress-fill" style="width: {{ (item.ttl / 30) * 100 }}%"></div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if not otp_list and not google_list %}
+    <div class="empty-state">
+        <i class="fa-solid fa-ghost" style="font-size: 32px; margin-bottom: 10px;"></i><br>
+        暂无已配置的账号
+    </div>
+    {% endif %}
+
+    <div id="toast" class="toast">已复制到剪贴板</div>
+
+    <script>
+    function copyToClip(text) {
+        if(!text) return;
+        const input = document.createElement('input');
+        input.setAttribute('value', text);
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand('copy');
+        document.body.removeChild(input);
+        
+        const toast = document.getElementById('toast');
+        toast.textContent = text + ' 已复制';
+        toast.classList.add('show');
+        setTimeout(() => toast.classList.remove('show'), 2000);
+    }
+
+    document.addEventListener("DOMContentLoaded", function() {
+        const items = document.querySelectorAll('.google-item');
+        
+        setInterval(() => {
+            let needsReload = false;
+            
+            items.forEach(item => {
+                let ttl = parseFloat(item.getAttribute('data-ttl'));
+                // 每次减少 0.1 秒
+                ttl -= 0.1;
+                
+                if (ttl <= 0) {
+                    needsReload = true;
+                } else {
+                    // 更新属性
+                    item.setAttribute('data-ttl', ttl.toFixed(1));
+                    
+                    // 更新右上角文字
+                    const badge = item.querySelector('.ttl-text');
+                    if(badge) badge.innerText = Math.ceil(ttl) + 's';
+                    
+                    // 更新进度条
+                    const fill = item.querySelector('.progress-fill');
+                    if(fill) {
+                        const pct = (ttl / 30) * 100;
+                        fill.style.width = pct + '%';
+                        
+                        // 颜色变化提醒
+                        if(ttl < 5) fill.style.background = '#ef4444'; // Red
+                        else fill.style.background = 'linear-gradient(90deg, #f43f5e, #e11d48)';
+                    }
+                }
+            });
+
+            // 关键修复：如果任何一个验证码过期，等待 1.5 秒后刷新页面
+            // 这样可以防止在 0s 时疯狂刷新
+            if (needsReload) {
+                console.log("Token expired, refreshing in 1.5s...");
+                setTimeout(() => location.reload(), 1500);
+            }
+        }, 100); 
+    });
+    </script>
 </body>
 </html>
 """
@@ -710,7 +781,7 @@ def check_sender_allowed(sender_name, rule):
 
 def format_caption(tpl):
     if not tpl: return ""
-    now_str = datetime.now(MY_TZ).strftime('%Y-%-m-%-d %H:%M') 
+    now_str = datetime.now(BJ_TZ).strftime('%Y-%-m-%-d %H:%M') 
     res = tpl.replace('{time}', now_str)
     return res
 
@@ -770,7 +841,7 @@ async def run_schedule_job():
             start_str = schedule.get("start", "09:00")
             end_str = schedule.get("end", "21:00")
             
-            now = datetime.now(MY_TZ)
+            now = datetime.now(BJ_TZ)
             current_time = now.strftime("%H:%M")
             
             is_working_hours = False
@@ -892,7 +963,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                 latest_otp_storage[account_name] = {
                     "code": code,
                     "text": text,
-                    "time": datetime.now(MY_TZ).strftime('%Y-%m-%d %H:%M:%S')
+                    "time": datetime.now(BJ_TZ).strftime('%Y-%m-%d %H:%M:%S')
                 }
                 logger.info(f"🔐 [OTP] {account_name} 收到官方消息, Code: {code}")
             except Exception as e:
@@ -937,7 +1008,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v46 (Auto-Refresh + Anim + Dubai)"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v47 (New UI + Beijing Time)"); return
         if not current_config.get("enabled", True): return
         
         if event.is_reply:
@@ -1058,4 +1129,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v46 (Auto-Refresh + Anim + Dubai) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v47 (New UI + Beijing Time) 已启动")
