@@ -10,13 +10,13 @@ from flask import request, jsonify, Response, render_template_string
 from telethon import events, TelegramClient
 from telethon.sessions import StringSession
 
-# [新增] 导入 pyotp 用于计算谷歌验证码
+# [依赖] 导入 pyotp 用于计算谷歌验证码
 try:
     import pyotp
 except ImportError:
     pyotp = None
 
-# 尝试导入 redis
+# [依赖] 尝试导入 redis
 try: 
     import redis
 except ImportError: 
@@ -28,12 +28,15 @@ CONFIG_FILE = "monitor_config_v2.json"
 REDIS_KEY = "monitor_config"
 global_main_handler = None
 
-# 北京时区
+# ==========================================
+# [配置区] 时区设置 - 迪拜 (Dubai)
+# ==========================================
+# 保持您要求的迪拜时区 (UTC+4)
 BJ_TZ = timezone(timedelta(hours=8))
+TZ_NAME = "Beijing"
 
 # ==========================================
 # [多账号版] 全局存储 OTP 验证码
-# 格式: { "主账号": {code, text, time}, "副账号1": {...} }
 # ==========================================
 latest_otp_storage = {}
 
@@ -92,6 +95,7 @@ def init_redis_connection():
     if redis and redis_url:
         try:
             redis_url = redis_url.strip()
+            # 日志脱敏
             safe_url = re.sub(r':([^@]+)@', ':****@', redis_url)
             logger.info(f"🔗 [Monitor] 尝试连接 Redis: {safe_url}")
 
@@ -275,7 +279,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v43</title>
+    <title>Monitor Pro v46</title>
     <script src="https://unpkg.com/vue@3.3.4/dist/vue.global.prod.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -304,7 +308,7 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v43</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v46</span></span>
         </div>
         
         <div class="flex items-center gap-3 bg-slate-50 px-2 py-1 rounded border border-slate-200 mx-2 hidden md:flex">
@@ -562,9 +566,38 @@ OTP_HTML = """
         .timer-bar { height: 4px; background: #e2e8f0; border-radius: 2px; margin-top: 10px; overflow: hidden; }
         .timer-fill { height: 100%; background: #22c55e; width: 0%; transition: width 1s linear; }
     </style>
+    <script>
+    document.addEventListener("DOMContentLoaded", function() {
+        const items = document.querySelectorAll('.google-item');
+        
+        setInterval(() => {
+            let reloadNeeded = false;
+            items.forEach(item => {
+                let ttl = parseFloat(item.getAttribute('data-ttl'));
+                ttl -= 0.1; 
+                
+                if (ttl <= 0) {
+                    reloadNeeded = true;
+                } else {
+                    item.setAttribute('data-ttl', ttl.toFixed(1));
+                    // Update text
+                    const txt = item.querySelector('.ttl-text');
+                    if(txt) txt.innerText = Math.floor(ttl) + 's 后过期';
+                    // Update bar
+                    const bar = item.querySelector('.timer-fill');
+                    if(bar) bar.style.width = ((ttl / 30) * 100) + '%';
+                }
+            });
+            
+            if (reloadNeeded) {
+                location.reload();
+            }
+        }, 100); 
+    });
+    </script>
 </head>
 <body>
-    <h1>🔐 验证码监控面板</h1>
+    <h1>🔐 验证码监控面板 <span style="font-size: 0.8rem; font-weight: normal; color: #666; vertical-align: middle; margin-left: 10px;">({{ tz_name }})</span></h1>
     
     <div class="section-title"><i class="fa-brands fa-telegram"></i> Telegram Login Codes</div>
     <div class="container">
@@ -598,13 +631,13 @@ OTP_HTML = """
     <div class="section-title" style="margin-top: 40px;"><i class="fa-brands fa-google"></i> Google Authenticator (2FA)</div>
     <div class="container">
         {% for item in google_list %}
-        <div class="card">
+        <div class="card google-item" data-ttl="{{ item.ttl }}">
             <div class="card-header">
                 <span class="account-name">{{ item.name }}</span>
                 <span class="badge badge-google">2FA</span>
             </div>
             <div class="code" style="letter-spacing: 0.1rem; color: #be123c; border-color: #fecdd3; background: #fff1f2;" onclick="navigator.clipboard.writeText('{{ item.code }}');alert('谷歌验证码 {{ item.code }} 已复制')">{{ item.code }}</div>
-            <div style="text-align:center; color:#881337; font-size:0.8rem; font-weight:bold;">{{ item.ttl }}s 后过期</div>
+            <div class="ttl-text" style="text-align:center; color:#881337; font-size:0.8rem; font-weight:bold;">{{ item.ttl }}s 后过期</div>
             <div class="timer-bar"><div class="timer-fill" style="width: {{ (item.ttl / 30) * 100 }}%"></div></div>
         </div>
         {% endfor %}
@@ -677,7 +710,7 @@ def check_sender_allowed(sender_name, rule):
 
 def format_caption(tpl):
     if not tpl: return ""
-    now_str = datetime.now(BJ_TZ).strftime('%Y-%-m-%-d %H:%M') 
+    now_str = datetime.now(MY_TZ).strftime('%Y-%-m-%-d %H:%M') 
     res = tpl.replace('{time}', now_str)
     return res
 
@@ -737,7 +770,7 @@ async def run_schedule_job():
             start_str = schedule.get("start", "09:00")
             end_str = schedule.get("end", "21:00")
             
-            now = datetime.now(BJ_TZ)
+            now = datetime.now(MY_TZ)
             current_time = now.strftime("%H:%M")
             
             is_working_hours = False
@@ -798,6 +831,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                         name, secret = p.split(':', 1)
                         name = name.strip()
                         secret = secret.strip()
+                        if not secret: continue
                         try:
                             totp = pyotp.TOTP(secret)
                             code = totp.now()
@@ -811,7 +845,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                         except Exception as e:
                             logger.error(f"❌ [GoogleAuth] 计算失败 ({name}): {e}")
 
-        return render_template_string(OTP_HTML, otp_list=tg_data, google_list=ga_data)
+        return render_template_string(OTP_HTML, otp_list=tg_data, google_list=ga_data, tz_name=TZ_NAME)
         
     @app.route('/tool/monitor_settings_json')
     def monitor_settings_json(): return jsonify(current_config)
@@ -858,7 +892,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                 latest_otp_storage[account_name] = {
                     "code": code,
                     "text": text,
-                    "time": datetime.now(BJ_TZ).strftime('%Y-%m-%d %H:%M:%S')
+                    "time": datetime.now(MY_TZ).strftime('%Y-%m-%d %H:%M:%S')
                 }
                 logger.info(f"🔐 [OTP] {account_name} 收到官方消息, Code: {code}")
             except Exception as e:
@@ -868,31 +902,42 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     # 1. 为【主账号】(SESSION_STRING) 添加监听器
     client.add_event_handler(create_otp_handler("主账号"), events.NewMessage(chats=777000))
 
-    # 2. 为【其他账号】启动新的客户端并监听
+    # 2. 为【其他账号】启动新的客户端并监听 (FIXED: 使用 wrapper 解决 create_task 报错)
     extra_sessions_env = os.environ.get("EXTRA_SESSION_STRINGS", "")
     api_id = int(os.environ.get("API_ID", 0))
     api_hash = os.environ.get("API_HASH", "")
+
+    # 定义一个异步包装函数，确保 create_task 接收到的是 coroutine
+    async def _start_extra_client(cli, name):
+        try:
+            # await cli.start() 在这里可以正常工作，因为它是在 loop 运行时被调用的
+            await cli.start()
+            logger.info(f"✅ [OTP] {name} 启动成功")
+            # 保持连接活跃
+            await cli.run_until_disconnected()
+        except Exception as e:
+            logger.error(f"❌ [OTP] {name} 启动/运行失败: {e}")
 
     if extra_sessions_env and api_id and api_hash:
         session_list = [s.strip() for s in extra_sessions_env.split(';') if s.strip()]
         for i, sess_str in enumerate(session_list):
             try:
-                # 初始化额外的 Client
                 acc_name = f"副账号 {i+1}"
-                logger.info(f"🔄 [OTP] 正在启动 {acc_name} 的监听客户端...")
+                logger.info(f"🔄 [OTP] 正在准备 {acc_name}...")
                 
+                # 初始化客户端（注意：此时并未连接）
                 extra_client = TelegramClient(StringSession(sess_str), api_id, api_hash, loop=bot_loop)
                 extra_client.add_event_handler(create_otp_handler(acc_name), events.NewMessage(chats=777000))
                 
-                # 启动客户端 (异步)
-                bot_loop.create_task(extra_client.start())
+                # 将启动任务提交给事件循环 (使用包装函数)
+                bot_loop.create_task(_start_extra_client(extra_client, acc_name))
                 
             except Exception as e:
-                logger.error(f"❌ [OTP] 启动 {acc_name} 失败: {e}")
+                logger.error(f"❌ [OTP] 初始化 {acc_name} 失败: {e}")
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v43 (Multi-OTP + GoogleAuth)"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v46 (Auto-Refresh + Anim + Dubai)"); return
         if not current_config.get("enabled", True): return
         
         if event.is_reply:
@@ -1013,4 +1058,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v43 (Multi-OTP + GoogleAuth) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v46 (Auto-Refresh + Anim + Dubai) 已启动")
