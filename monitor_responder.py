@@ -10,6 +10,12 @@ from flask import request, jsonify, Response, render_template_string
 from telethon import events, TelegramClient
 from telethon.sessions import StringSession
 
+# [新增] 导入 pyotp 用于计算谷歌验证码
+try:
+    import pyotp
+except ImportError:
+    pyotp = None
+
 # 尝试导入 redis
 try: 
     import redis
@@ -269,7 +275,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v42</title>
+    <title>Monitor Pro v43</title>
     <script src="https://unpkg.com/vue@3.3.4/dist/vue.global.prod.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -298,7 +304,7 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v42</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v43</span></span>
         </div>
         
         <div class="flex items-center gap-3 bg-slate-50 px-2 py-1 rounded border border-slate-200 mx-2 hidden md:flex">
@@ -535,15 +541,17 @@ OTP_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Telegram 登录验证码 (多账号)</title>
+    <title>验证码监控面板 (Telegram + Google)</title>
     <style>
         body { font-family: -apple-system, system-ui, sans-serif; background: #f0f2f5; display: flex; flex-direction: column; align-items: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
         h1 { margin-bottom: 20px; font-size: 1.5rem; color: #1e293b; }
+        .section-title { width: 100%; max-width: 1200px; font-size: 0.9rem; font-weight: bold; color: #64748b; margin: 20px 0 10px 0; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 2px solid #e2e8f0; padding-bottom: 8px; }
         .container { display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; width: 100%; max-width: 1200px; }
         .card { background: white; padding: 1.5rem; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); width: 100%; max-width: 350px; flex: 1 1 300px; display: flex; flex-direction: column; border: 1px solid #e2e8f0; }
         .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #f1f5f9; }
         .account-name { font-weight: bold; font-size: 1.1rem; color: #0f172a; }
         .badge { background: #dbeafe; color: #1e40af; font-size: 0.75rem; padding: 2px 8px; border-radius: 99px; font-weight: 600; }
+        .badge-google { background: #fce7f3; color: #9d174d; }
         .code { font-size: 2rem; font-weight: bold; letter-spacing: 0.2rem; color: #333; margin: 1rem 0; background: #f8f9fa; padding: 0.75rem; border-radius: 8px; border: 1px dashed #cbd5e1; user-select: all; cursor: pointer; text-align: center; transition: all 0.2s; }
         .code:hover { background: #f1f5f9; border-color: #94a3b8; }
         .time { color: #64748b; font-size: 0.75rem; margin-bottom: 0.5rem; font-family: monospace; display: flex; align-items: center; gap: 4px; }
@@ -551,11 +559,14 @@ OTP_HTML = """
         .empty { color: #94a3b8; font-style: italic; margin: 2rem 0; text-align: center; }
         .refresh-btn { margin-top: 2rem; background: #3b82f6; color: white; border: none; padding: 10px 24px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: all 0.2s; box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3); }
         .refresh-btn:hover { background: #2563eb; transform: translateY(-1px); }
+        .timer-bar { height: 4px; background: #e2e8f0; border-radius: 2px; margin-top: 10px; overflow: hidden; }
+        .timer-fill { height: 100%; background: #22c55e; width: 0%; transition: width 1s linear; }
     </style>
 </head>
 <body>
     <h1>🔐 验证码监控面板</h1>
     
+    <div class="section-title"><i class="fa-brands fa-telegram"></i> Telegram Login Codes</div>
     <div class="container">
         {% if otp_list %}
             {% for name, data in otp_list.items() %}
@@ -568,7 +579,7 @@ OTP_HTML = """
                 {% if data.code or data.text %}
                     <div class="time">🕒 {{ data.time }}</div>
                     {% if data.code %}
-                        <div class="code" onclick="navigator.clipboard.writeText('{{ data.code }}');alert('验证码 {{ data.code }} 已复制')">{{ data.code }}</div>
+                        <div class="code" onclick="navigator.clipboard.writeText('{{ data.code }}');alert('Telegram 验证码 {{ data.code }} 已复制')">{{ data.code }}</div>
                     {% else %}
                         <div class="empty" style="font-size:0.9rem; margin: 1rem 0;">(未提取到纯数字)</div>
                     {% endif %}
@@ -579,9 +590,26 @@ OTP_HTML = """
             </div>
             {% endfor %}
         {% else %}
-            <div class="empty" style="width:100%">暂无已连接的账号信息</div>
+            <div class="empty" style="width:100%">暂无已连接的 Telegram 账号</div>
         {% endif %}
     </div>
+
+    {% if google_list %}
+    <div class="section-title" style="margin-top: 40px;"><i class="fa-brands fa-google"></i> Google Authenticator (2FA)</div>
+    <div class="container">
+        {% for item in google_list %}
+        <div class="card">
+            <div class="card-header">
+                <span class="account-name">{{ item.name }}</span>
+                <span class="badge badge-google">2FA</span>
+            </div>
+            <div class="code" style="letter-spacing: 0.1rem; color: #be123c; border-color: #fecdd3; background: #fff1f2;" onclick="navigator.clipboard.writeText('{{ item.code }}');alert('谷歌验证码 {{ item.code }} 已复制')">{{ item.code }}</div>
+            <div style="text-align:center; color:#881337; font-size:0.8rem; font-weight:bold;">{{ item.ttl }}s 后过期</div>
+            <div class="timer-bar"><div class="timer-fill" style="width: {{ (item.ttl / 30) * 100 }}%"></div></div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
 
     <button onclick="location.reload()" class="refresh-btn">🔄 刷新所有验证码</button>
 </body>
@@ -752,10 +780,38 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     def monitor_settings_page(): 
         return Response(SETTINGS_HTML, mimetype='text/html; charset=utf-8')
     
-    # [NEW] OTP 页面 - 渲染列表
+    # [NEW] OTP 页面 - 渲染列表 (包含 Telegram 和 Google Auth)
     @app.route('/otp')
     def view_otp_page():
-        return render_template_string(OTP_HTML, otp_list=latest_otp_storage)
+        # 1. 准备 Telegram OTP (从全局变量读取)
+        tg_data = latest_otp_storage
+        
+        # 2. 准备 Google Auth OTP (实时计算)
+        ga_data = []
+        if pyotp:
+            # 从环境变量读取密钥: "Name1:Secret1;Name2:Secret2"
+            raw_secrets = os.environ.get("GA_SECRETS", "")
+            if raw_secrets:
+                pairs = raw_secrets.split(';')
+                for p in pairs:
+                    if ':' in p:
+                        name, secret = p.split(':', 1)
+                        name = name.strip()
+                        secret = secret.strip()
+                        try:
+                            totp = pyotp.TOTP(secret)
+                            code = totp.now()
+                            # 计算剩余时间 (30秒周期)
+                            time_remaining = totp.interval - datetime.now().timestamp() % totp.interval
+                            ga_data.append({
+                                "name": name,
+                                "code": code,
+                                "ttl": int(time_remaining)
+                            })
+                        except Exception as e:
+                            logger.error(f"❌ [GoogleAuth] 计算失败 ({name}): {e}")
+
+        return render_template_string(OTP_HTML, otp_list=tg_data, google_list=ga_data)
         
     @app.route('/tool/monitor_settings_json')
     def monitor_settings_json(): return jsonify(current_config)
@@ -813,7 +869,6 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     client.add_event_handler(create_otp_handler("主账号"), events.NewMessage(chats=777000))
 
     # 2. 为【其他账号】启动新的客户端并监听
-    # 从环境变量 EXTRA_SESSION_STRINGS 读取，分号分隔
     extra_sessions_env = os.environ.get("EXTRA_SESSION_STRINGS", "")
     api_id = int(os.environ.get("API_ID", 0))
     api_hash = os.environ.get("API_HASH", "")
@@ -822,8 +877,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         session_list = [s.strip() for s in extra_sessions_env.split(';') if s.strip()]
         for i, sess_str in enumerate(session_list):
             try:
-                # 初始化额外的 Client，不创建新 session 文件，直接用 StringSession
-                # 注意：这里我们使用同一个 bot_loop
+                # 初始化额外的 Client
                 acc_name = f"副账号 {i+1}"
                 logger.info(f"🔄 [OTP] 正在启动 {acc_name} 的监听客户端...")
                 
@@ -838,7 +892,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v42 Multi-Account OTP"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v43 (Multi-OTP + GoogleAuth)"); return
         if not current_config.get("enabled", True): return
         
         if event.is_reply:
@@ -854,7 +908,6 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                         orig_sender_name = getattr(orig_sender, 'first_name', '') or ''
 
                         for rule in current_config.get("rules", []):
-                            # [新增] 检查规则是否开启
                             if not rule.get("enabled", True): continue
 
                             if not check_sender_allowed(approver_name, rule):
@@ -960,4 +1013,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v42 (Instant Save + Multi-OTP) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v43 (Multi-OTP + GoogleAuth) 已启动")
