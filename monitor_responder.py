@@ -278,7 +278,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v52</title>
+    <title>Monitor Pro v53</title>
     <script src="https://unpkg.com/vue@3.3.4/dist/vue.global.prod.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -307,7 +307,7 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v52</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v53</span></span>
         </div>
         
         <div class="flex items-center gap-3 bg-slate-50 px-2 py-1 rounded border border-slate-200 mx-2 hidden md:flex">
@@ -725,46 +725,59 @@ OTP_HTML = """
 """
 
 def match_text(text, rule):
-    """通用文本匹配逻辑 (支持 & # 和 r:正则)"""
+    """通用文本匹配逻辑 (支持 & # 和 r:正则)
+       v53更新: 正则模式也支持 # 排除 (例如: r:abc.*def # exclude)
+    """
     keywords = rule.get("keywords", [])
     if not keywords: return True 
     
+    text_lower = text.lower()
+    
     for kw_rule in keywords:
         if not kw_rule: continue
-        kw_rule_lower = kw_rule.lower()
-        text_lower = text.lower()
         
-        # 0. Regex Mode
-        if kw_rule_lower.startswith('r:'):
-            try:
-                pattern = kw_rule[2:] # Remove 'r:'
-                if re.search(pattern, text, re.IGNORECASE):
-                    return True
-            except: pass
-            continue
-
-        # 1. Normal Mode (Inclusion # Exclusion)
-        parts = kw_rule_lower.split('#')
-        include_part = parts[0]
-        exclude_parts = parts[1:] if len(parts) > 1 else []
+        # 1. 统一分割排除词 (Separator: #)
+        # 注意：这里使用原始 kw_rule 分割，保留正则部分的大小写（虽然有 re.IGNORECASE）
+        parts = kw_rule.split('#')
         
+        # 主匹配部分 (Rule Part)
+        include_part = parts[0].strip()
+        
+        # 排除部分 (Exclusion Part) - 统一转小写比对
+        exclude_parts = [p.strip().lower() for p in parts[1:] if p.strip()]
+        
+        # 2. 检查排除词 (Hit Exclusion)
+        # 如果包含任何排除词，直接跳过此规则
         hit_exclusion = False
         for ex in exclude_parts:
-            if ex.strip() and (ex.strip() in text_lower):
+            if ex in text_lower:
                 hit_exclusion = True
                 break
         if hit_exclusion: continue
         
-        and_kws = include_part.split('&')
-        all_matched = True
-        for ak in and_kws:
-            ak = ak.strip()
-            if ak and (ak not in text_lower):
-                all_matched = False
-                break
+        # 3. 执行主匹配 (正则 OR 普通)
+        include_part_lower = include_part.lower()
         
-        if all_matched and and_kws:
-            return True
+        if include_part_lower.startswith('r:'):
+            # Regex Mode
+            try:
+                pattern = include_part[2:] # 去掉 'r:'
+                if re.search(pattern, text, re.IGNORECASE):
+                    return True
+            except: pass
+        else:
+            # Normal Mode (Inclusion & Logic)
+            and_kws = include_part_lower.split('&')
+            all_matched = True
+            for ak in and_kws:
+                ak = ak.strip()
+                if ak and (ak not in text_lower):
+                    all_matched = False
+                    break
+            
+            if all_matched and and_kws:
+                return True
+                
     return False
 
 def get_sender_name(sender):
@@ -1037,7 +1050,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v52 (Fixed Match Text)"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v53 (Regex Exclusion Fix)"); return
         if not current_config.get("enabled", True): return
         
         if event.is_reply:
@@ -1090,7 +1103,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                 except Exception as e:
                     logger.error(f"❌ [Approval] 处理出错: {e}")
 
-        # [修正] 增强的名字获取逻辑 (v49/v50通用)
+        # [修正] 增强的名字获取逻辑
         sender_name = ""
         try:
             event.sender = await event.get_sender()
@@ -1163,4 +1176,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v52 (Fixed Match Text) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v53 (Regex Exclusion Fix) 已启动")
