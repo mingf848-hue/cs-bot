@@ -278,7 +278,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v51</title>
+    <title>Monitor Pro v52</title>
     <script src="https://unpkg.com/vue@3.3.4/dist/vue.global.prod.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -307,7 +307,7 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v51</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v52</span></span>
         </div>
         
         <div class="flex items-center gap-3 bg-slate-50 px-2 py-1 rounded border border-slate-200 mx-2 hidden md:flex">
@@ -724,6 +724,49 @@ OTP_HTML = """
 </html>
 """
 
+def match_text(text, rule):
+    """通用文本匹配逻辑 (支持 & # 和 r:正则)"""
+    keywords = rule.get("keywords", [])
+    if not keywords: return True 
+    
+    for kw_rule in keywords:
+        if not kw_rule: continue
+        kw_rule_lower = kw_rule.lower()
+        text_lower = text.lower()
+        
+        # 0. Regex Mode
+        if kw_rule_lower.startswith('r:'):
+            try:
+                pattern = kw_rule[2:] # Remove 'r:'
+                if re.search(pattern, text, re.IGNORECASE):
+                    return True
+            except: pass
+            continue
+
+        # 1. Normal Mode (Inclusion # Exclusion)
+        parts = kw_rule_lower.split('#')
+        include_part = parts[0]
+        exclude_parts = parts[1:] if len(parts) > 1 else []
+        
+        hit_exclusion = False
+        for ex in exclude_parts:
+            if ex.strip() and (ex.strip() in text_lower):
+                hit_exclusion = True
+                break
+        if hit_exclusion: continue
+        
+        and_kws = include_part.split('&')
+        all_matched = True
+        for ak in and_kws:
+            ak = ak.strip()
+            if ak and (ak not in text_lower):
+                all_matched = False
+                break
+        
+        if all_matched and and_kws:
+            return True
+    return False
+
 def get_sender_name(sender):
     """统一提取发送者名称 (User/Channel/Chat)"""
     if not sender: return "Unknown"
@@ -794,6 +837,7 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_name):
         if fn_kws:
             if not any(k.lower() in filename_lower for k in fn_kws): return False, "文件名关键词不符", None
     else:
+        # [Fix] Call match_text here
         if not match_text(text, rule): return False, "文本关键词不符", None
     
     rule_id = rule.get("id", str(rule.get("groups")))
@@ -993,7 +1037,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v51 (New UI + Input Fix)"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v52 (Fixed Match Text)"); return
         if not current_config.get("enabled", True): return
         
         if event.is_reply:
@@ -1119,4 +1163,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v51 (New UI + Input Fix) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v52 (Fixed Match Text) 已启动")
