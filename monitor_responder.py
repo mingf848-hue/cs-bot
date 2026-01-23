@@ -278,7 +278,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v47</title>
+    <title>Monitor Pro v51</title>
     <script src="https://unpkg.com/vue@3.3.4/dist/vue.global.prod.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -307,7 +307,7 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v47</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v51</span></span>
         </div>
         
         <div class="flex items-center gap-3 bg-slate-50 px-2 py-1 rounded border border-slate-200 mx-2 hidden md:flex">
@@ -366,13 +366,13 @@ SETTINGS_HTML = """
                 <div class="p-3 flex flex-col gap-3" :class="{'opacity-50 grayscale pointer-events-none': !rule.enabled}">
                     <div class="space-y-1.5">
                         <div class="flex items-center justify-between"><span class="section-label"><i class="fa-solid fa-eye mr-1"></i>监听来源</span><label class="flex items-center gap-1 cursor-pointer select-none"><input type="checkbox" v-model="rule.check_file" class="w-3 h-3 text-primary border-slate-300 rounded focus:ring-0"><span class="text-[10px] text-slate-500 font-medium" :class="{'text-primary': rule.check_file}">文件模式</span></label></div>
-                        <div class="relative"><textarea :value="listToString(rule.groups)" @input="stringToIntList($event, rule, 'groups')" rows="1" class="bento-input w-full px-2 py-1.5 resize-none h-8 leading-tight font-mono text-[11px]" placeholder="群ID (换行分隔)"></textarea></div>
+                        <div class="relative"><textarea :value="listToString(rule.groups)" @change="stringToIntList($event, rule, 'groups')" rows="1" class="bento-input w-full px-2 py-1.5 resize-none h-8 leading-tight font-mono text-[11px]" placeholder="群ID (换行分隔)"></textarea></div>
                         <div v-if="!rule.check_file" class="relative">
-                            <textarea :value="listToString(rule.keywords)" @input="stringToList($event, rule, 'keywords')" rows="2" class="bento-input w-full px-2 py-1.5 resize-none h-16 leading-tight font-mono text-[11px] placeholder-slate-400" placeholder="普通: 代存&#10;正则: r:(代|带)存|入[金款]"></textarea>
+                            <textarea :value="listToString(rule.keywords)" @change="stringToList($event, rule, 'keywords')" rows="2" class="bento-input w-full px-2 py-1.5 resize-none h-16 leading-tight font-mono text-[11px] placeholder-slate-400" placeholder="普通: 代存&#10;正则: r:(代|带)存|入[金款]"></textarea>
                             <div class="absolute right-2 bottom-1 text-[9px] text-primary/60 bg-white/80 px-1 rounded pointer-events-none">支持正则 r:...</div>
                         </div>
                         <div v-else class="space-y-2">
-                            <div class="grid grid-cols-2 gap-2"><input :value="listToString(rule.file_extensions).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'file_extensions')" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="后缀: xlsx, png"><input :value="listToString(rule.filename_keywords).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'filename_keywords')" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="文件名关键词"></div>
+                            <div class="grid grid-cols-2 gap-2"><input :value="listToString(rule.file_extensions).replace(/\\n/g, ', ')" @change="stringToList($event, rule, 'file_extensions')" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="后缀: xlsx, png"><input :value="listToString(rule.filename_keywords).replace(/\\n/g, ', ')" @change="stringToList($event, rule, 'filename_keywords')" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="文件名关键词"></div>
                         </div>
                     </div>
                     <div class="h-px bg-slate-100"></div>
@@ -380,7 +380,7 @@ SETTINGS_HTML = """
                         <div class="section-label"><i class="fa-solid fa-filter mr-1"></i>过滤与冷却</div>
                         <div class="grid grid-cols-5 gap-2">
                             <div class="col-span-2"><select v-model="rule.sender_mode" class="bento-input w-full px-1 py-0 h-7 text-[10px] font-sans font-medium"><option value="exclude">🚫 排除前缀</option><option value="include">✅ 只许前缀</option></select></div>
-                            <div class="col-span-3"><input :value="listToString(rule.sender_prefixes).replace(/\\n/g, ', ')" @input="stringToList($event, rule, 'sender_prefixes')" class="bento-input w-full px-2 py-1.5 h-7 truncate font-mono text-[11px]" placeholder="前缀: YY, AA"></div>
+                            <div class="col-span-3"><input :value="listToString(rule.sender_prefixes).replace(/\\n/g, ', ')" @change="stringToList($event, rule, 'sender_prefixes')" class="bento-input w-full px-2 py-1.5 h-7 truncate font-mono text-[11px]" placeholder="前缀: YY, AA"></div>
                             <div class="col-span-5 relative flex items-center gap-2 mt-0.5"><span class="text-[10px] text-slate-400 font-medium">冷却CD:</span><input type="number" v-model.number="rule.cooldown" class="bento-input w-16 px-1 py-0 h-6 text-center text-[10px] font-mono font-bold"><span class="text-[10px] text-slate-400 font-medium">秒</span></div>
                         </div>
                     </div>
@@ -484,11 +484,15 @@ SETTINGS_HTML = """
 
             const listToString = (list) => (list || []).join('\\n');
             const stringToList = (e, rule, key) => { 
-                const val = e.target.value;
+                let val = e.target.value;
+                // [Fix] Support Chinese comma
+                val = val.replace(/，/g, ',');
+                
                 if (val.includes(',')) {
                     rule[key] = val.split(',').map(x=>x.trim()).filter(x=>x);
                 } else {
-                    rule[key] = val.split('\\n').map(x=>x.trim()).filter(x=>x);
+                    // Split by newline
+                    rule[key] = val.split(/[\\r\\n]+/).map(x=>x.trim()).filter(x=>x);
                 }
             };
             const stringToIntList = (e, rule, key) => { rule[key] = e.target.value.split('\\n').map(x=>x.trim()).filter(x=>x); };
@@ -597,7 +601,7 @@ OTP_HTML = """
     </div>
 
     {% if otp_list %}
-    <div class="section-label">Telegram 登录码</div>
+    <div class="section-label">Telegram 登录验证码</div>
     <div class="grid-container">
         {% for name, data in otp_list.items() %}
         <div class="card tg-style">
@@ -628,7 +632,7 @@ OTP_HTML = """
     {% endif %}
 
     {% if google_list %}
-    <div class="section-label">Google 身份验证器 (2FA)</div>
+    <div class="section-label">谷歌验证码 (2FA)</div>
     <div class="grid-container">
         {% for item in google_list %}
         <div class="card ga-style google-item" data-ttl="{{ item.ttl }}">
@@ -720,63 +724,34 @@ OTP_HTML = """
 </html>
 """
 
-def match_text(text, rule):
-    """通用文本匹配逻辑 (支持 & # 和 r:正则)"""
-    keywords = rule.get("keywords", [])
-    if not keywords: return True 
-    
-    for kw_rule in keywords:
-        if not kw_rule: continue
-        kw_rule_lower = kw_rule.lower()
-        text_lower = text.lower()
-        
-        # 0. Regex Mode
-        if kw_rule_lower.startswith('r:'):
-            try:
-                pattern = kw_rule[2:] # Remove 'r:'
-                if re.search(pattern, text, re.IGNORECASE):
-                    return True
-            except: pass
-            continue
-
-        # 1. Normal Mode (Inclusion # Exclusion)
-        parts = kw_rule_lower.split('#')
-        include_part = parts[0]
-        exclude_parts = parts[1:] if len(parts) > 1 else []
-        
-        hit_exclusion = False
-        for ex in exclude_parts:
-            if ex.strip() and (ex.strip() in text_lower):
-                hit_exclusion = True
-                break
-        if hit_exclusion: continue
-        
-        and_kws = include_part.split('&')
-        all_matched = True
-        for ak in and_kws:
-            ak = ak.strip()
-            if ak and (ak not in text_lower):
-                all_matched = False
-                break
-        
-        if all_matched and and_kws:
-            return True
-    return False
+def get_sender_name(sender):
+    """统一提取发送者名称 (User/Channel/Chat)"""
+    if not sender: return "Unknown"
+    # 1. 尝试 Channel/Group 名 (用于匿名管理员或频道身份)
+    title = getattr(sender, 'title', '')
+    if title: return title
+    # 2. 尝试 User 名
+    fname = getattr(sender, 'first_name', '')
+    lname = getattr(sender, 'last_name', '')
+    if fname or lname:
+        return f"{fname} {lname}".strip()
+    return "Unknown"
 
 def check_sender_allowed(sender_name, rule):
-    """检查发送者是否被允许"""
+    """检查发送者是否被允许 (支持包含匹配)"""
     if not sender_name: return True
     sender_mode = rule.get("sender_mode", "exclude")
     prefixes = rule.get("sender_prefixes", [])
     
-    match_prefix = False
+    match_found = False
     for p in prefixes:
-        if p and sender_name.startswith(p):
-            match_prefix = True
+        # [修改] 改为包含匹配 (contains)，不仅仅是前缀 (startswith)
+        if p and (p in sender_name):
+            match_found = True
             break
             
-    if sender_mode == "exclude" and match_prefix: return False
-    elif sender_mode == "include" and not match_prefix: return False
+    if sender_mode == "exclude" and match_found: return False
+    elif sender_mode == "include" and not match_found: return False
     return True
 
 def format_caption(tpl):
@@ -971,7 +946,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         return otp_handler
 
     # 1. 为【主账号】(SESSION_STRING) 添加监听器
-    client.add_event_handler(create_otp_handler("主账号"), events.NewMessage(chats=777000))
+    main_name = os.environ.get("MAIN_SESSION_NAME", "主账号")
+    client.add_event_handler(create_otp_handler(main_name), events.NewMessage(chats=777000))
 
     # 2. 为【其他账号】启动新的客户端并监听 (FIXED: 使用 wrapper 解决 create_task 报错)
     extra_sessions_env = os.environ.get("EXTRA_SESSION_STRINGS", "")
@@ -990,10 +966,19 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             logger.error(f"❌ [OTP] {name} 启动/运行失败: {e}")
 
     if extra_sessions_env and api_id and api_hash:
-        session_list = [s.strip() for s in extra_sessions_env.split(';') if s.strip()]
-        for i, sess_str in enumerate(session_list):
+        # Split by ; first
+        raw_items = [x.strip() for x in extra_sessions_env.split(';') if x.strip()]
+        for i, item in enumerate(raw_items):
             try:
-                acc_name = f"副账号 {i+1}"
+                # Support "Name=Session" format
+                if '=' in item:
+                    c_name, c_sess = item.split('=', 1)
+                    acc_name = c_name.strip()
+                    sess_str = c_sess.strip()
+                else:
+                    acc_name = f"副账号 {i+1}"
+                    sess_str = item
+                
                 logger.info(f"🔄 [OTP] 正在准备 {acc_name}...")
                 
                 # 初始化客户端（注意：此时并未连接）
@@ -1008,7 +993,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v47 (New UI + Beijing Time)"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v51 (New UI + Input Fix)"); return
         if not current_config.get("enabled", True): return
         
         if event.is_reply:
@@ -1016,12 +1001,12 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             if any(k in event.text for k in app_kws):
                 try:
                     approver = await event.get_sender()
-                    approver_name = getattr(approver, 'first_name', '') or ''
+                    approver_name = get_sender_name(approver)
                     
                     original_msg = await event.get_reply_message()
                     if original_msg:
                         orig_sender = await original_msg.get_sender()
-                        orig_sender_name = getattr(orig_sender, 'first_name', '') or ''
+                        orig_sender_name = get_sender_name(orig_sender)
 
                         for rule in current_config.get("rules", []):
                             if not rule.get("enabled", True): continue
@@ -1061,11 +1046,16 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                 except Exception as e:
                     logger.error(f"❌ [Approval] 处理出错: {e}")
 
+        # [修正] 增强的名字获取逻辑 (v49/v50通用)
         sender_name = ""
         try:
             event.sender = await event.get_sender()
-            sender_name = getattr(event.sender, 'first_name', '') or ''
-        except: pass
+            sender_name = get_sender_name(event.sender)
+            
+            # 日志记录，方便调试
+            logger.info(f"🔍 [Check] Sender: {sender_name} | ID: {event.sender_id}")
+        except: 
+            pass
 
         for rule in current_config.get("rules", []):
             try:
@@ -1129,4 +1119,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v47 (New UI + Beijing Time) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v51 (New UI + Input Fix) 已启动")
