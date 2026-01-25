@@ -1009,15 +1009,15 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         except Exception as e:
             logger.error(f"❌ [OTP] {name} 启动/运行失败: {e}")
 
-    # [新增] 每日 04:00 定时保活任务 (v56)
+    # [新增] 每日 09:00 定时保活任务 (v56)
     async def keep_alive_loop(cli, name):
         while cli.is_connected():
             try:
-                # 1. 计算距离下一个 04:00 AM (BJ_TZ) 的秒数
+                # 1. 计算距离下一个 09:00 AM (BJ_TZ) 的秒数
                 now = datetime.now(BJ_TZ)
-                target = now.replace(hour=4, minute=0, second=0, microsecond=0)
+                target = now.replace(hour=9, minute=25, second=17, microsecond=0)
                 
-                # 如果当前时间已经过了今天的 04:00，则目标是明天的 04:00
+                # 如果当前时间已经过了今天的 09:00，则目标是明天的 09:00
                 if now >= target:
                     target += timedelta(days=1)
                 
