@@ -7,7 +7,7 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 from flask import request, jsonify, Response, render_template_string
-from telethon import events, TelegramClient
+from telethon import events, TelegramClient, functions
 from telethon.sessions import StringSession
 
 # [依赖] 导入 pyotp 用于计算谷歌验证码
@@ -278,7 +278,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v53</title>
+    <title>Monitor Pro v57</title>
     <script src="https://unpkg.com/vue@3.3.4/dist/vue.global.prod.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -307,7 +307,7 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v53</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v57</span></span>
         </div>
         
         <div class="flex items-center gap-3 bg-slate-50 px-2 py-1 rounded border border-slate-200 mx-2 hidden md:flex">
@@ -403,29 +403,6 @@ SETTINGS_HTML = """
                                     <template v-if="reply.type === 'preempt_check'"><div class="px-1.5 py-1 bg-red-50 text-red-500 rounded text-[10px] font-medium border border-red-100 flex items-center gap-2"><i class="fa-solid fa-user-ninja"></i><span>检测到中间有人插话则删除自己</span></div></template>
                                 </div>
                             </div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="approval-bg p-3 flex flex-col gap-2">
-                    <div class="flex items-center justify-between">
-                        <label class="flex items-center gap-1.5 cursor-pointer select-none text-[9px] font-bold text-blue-500 uppercase">
-                            <input type="checkbox" v-model="rule.enable_approval" class="w-3 h-3 text-blue-500 rounded border-blue-200 focus:ring-0">
-                            <i class="fa-solid fa-user-check"></i> 启用审批流 (Approval)
-                        </label>
-                    </div>
-                    <div v-if="rule.enable_approval" class="flex flex-col gap-2 mt-1 transition-all">
-                        <div class="flex items-center gap-2">
-                            <div class="flex items-center w-14 bg-white border border-blue-200 rounded h-6 px-1 shrink-0" title="同意后延迟"><i class="fa-regular fa-clock text-[9px] text-blue-300 mr-0.5"></i><input v-model.number="rule.approval_action.delay_1_min" class="w-3.5 text-center bg-transparent text-[9px] font-mono focus:outline-none p-0" placeholder="1"><span class="text-blue-200 text-[9px] mx-0.5">-</span><input v-model.number="rule.approval_action.delay_1_max" class="w-3.5 text-center bg-transparent text-[9px] font-mono focus:outline-none p-0" placeholder="2"></div>
-                            <input v-model="rule.approval_action.reply_admin" class="bento-input flex-1 px-2 py-1.5 h-6 text-[10px] border-blue-200 focus:border-blue-400" placeholder="步骤1: 回复领导 (请稍等ART)">
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <div class="flex items-center w-14 bg-white border border-blue-200 rounded h-6 px-1 shrink-0" title="回复后延迟"><i class="fa-regular fa-clock text-[9px] text-blue-300 mr-0.5"></i><input v-model.number="rule.approval_action.delay_2_min" class="w-3.5 text-center bg-transparent text-[9px] font-mono focus:outline-none p-0" placeholder="1"><span class="text-blue-200 text-[9px] mx-0.5">-</span><input v-model.number="rule.approval_action.delay_2_max" class="w-3.5 text-center bg-transparent text-[9px] font-mono focus:outline-none p-0" placeholder="3"></div>
-                            <input v-model="rule.approval_action.forward_to" class="bento-input flex-1 px-2 py-1.5 h-6 text-[10px] border-blue-200 focus:border-blue-400 font-mono text-blue-600" placeholder="步骤2: 转发到群ID">
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <div class="flex items-center w-14 bg-white border border-blue-200 rounded h-6 px-1 shrink-0" title="转发后延迟"><i class="fa-regular fa-clock text-[9px] text-blue-300 mr-0.5"></i><input v-model.number="rule.approval_action.delay_3_min" class="w-3.5 text-center bg-transparent text-[9px] font-mono focus:outline-none p-0" placeholder="1"><span class="text-blue-200 text-[9px] mx-0.5">-</span><input v-model.number="rule.approval_action.delay_3_max" class="w-3.5 text-center bg-transparent text-[9px] font-mono focus:outline-none p-0" placeholder="2"></div>
-                            <input v-model="rule.approval_action.reply_origin" class="bento-input flex-1 px-2 py-1.5 h-6 text-[10px] border-blue-200 focus:border-blue-400" placeholder="步骤3: 回复原消息 (✅ 已处理)">
                         </div>
                     </div>
                 </div>
@@ -915,7 +892,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     @app.route('/zd')
     def monitor_settings_page(): 
         return Response(SETTINGS_HTML, mimetype='text/html; charset=utf-8')
-    
+        
     # [NEW] OTP 页面 - 渲染列表 (包含 Telegram 和 Google Auth)
     @app.route('/otp')
     def view_otp_page():
@@ -1015,12 +992,62 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     async def _start_extra_client(cli, name):
         try:
             # await cli.start() 在这里可以正常工作，因为它是在 loop 运行时被调用的
-            await cli.start()
+            await cli.connect()
+            if not await cli.is_user_authorized():
+                logger.error(f"❌ [OTP] {name} 身份验证失败: Session String 无效或已过期。请重新获取 Session。")
+                await cli.disconnect()
+                return
+            
+            # 只有验证成功才启动
+            await cli.start() 
             logger.info(f"✅ [OTP] {name} 启动成功")
-            # 保持连接活跃
+            
+            # [新增] 启动每日定时保活任务
+            asyncio.create_task(keep_alive_loop(cli, name))
+            
             await cli.run_until_disconnected()
         except Exception as e:
             logger.error(f"❌ [OTP] {name} 启动/运行失败: {e}")
+
+    # [新增] 每日 04:00 定时保活任务 (v56)
+    async def keep_alive_loop(cli, name):
+        while cli.is_connected():
+            try:
+                # 1. 计算距离下一个 04:00 AM (BJ_TZ) 的秒数
+                now = datetime.now(BJ_TZ)
+                target = now.replace(hour=4, minute=0, second=0, microsecond=0)
+                
+                # 如果当前时间已经过了今天的 04:00，则目标是明天的 04:00
+                if now >= target:
+                    target += timedelta(days=1)
+                
+                wait_seconds = (target - now).total_seconds()
+                
+                logger.info(f"⏳ [OTP] {name} 下次保活时间: {target.strftime('%Y-%m-%d %H:%M:%S')} (等待 {int(wait_seconds)}秒)")
+                
+                # 挂起等待
+                await asyncio.sleep(wait_seconds)
+                
+                # 2. 醒来后检查连接
+                if not cli.is_connected(): break
+                
+                # 3. 执行保活操作
+                await cli(functions.account.UpdateStatusRequest(offline=False))
+                msg = await cli.send_message('me', f"💓 Daily Keep-Alive: {datetime.now(BJ_TZ).strftime('%Y-%m-%d %H:%M:%S')}")
+                
+                # 4. 稍等片刻后删除消息
+                await asyncio.sleep(5)
+                await msg.delete()
+                
+                logger.info(f"💓 [OTP] {name} 每日保活执行成功")
+                
+                # 5. 为了防止逻辑错误导致瞬间死循环，强制等待 1 分钟再进入下一轮计算
+                await asyncio.sleep(60)
+
+            except Exception as e:
+                logger.warning(f"⚠️ [OTP] {name} 保活失败: {e}")
+                # 出错后等待 5 分钟再重试
+                await asyncio.sleep(300)
 
     if extra_sessions_env and api_id and api_hash:
         # Split by ; first
@@ -1029,9 +1056,16 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             try:
                 # Support "Name=Session" format
                 if '=' in item:
-                    c_name, c_sess = item.split('=', 1)
-                    acc_name = c_name.strip()
-                    sess_str = c_sess.strip()
+                    # 尝试分割
+                    parts = item.split('=', 1)
+                    # 如果左边部分太长(例如超过30字符)，或者包含非名字字符，可能它本身就是个带=的SessionString
+                    if len(parts[0]) > 30: 
+                        # 视为没有名字的 Session String
+                        acc_name = f"副账号 {i+1}"
+                        sess_str = item
+                    else:
+                        acc_name = parts[0].strip()
+                        sess_str = parts[1].strip()
                 else:
                     acc_name = f"副账号 {i+1}"
                     sess_str = item
@@ -1050,7 +1084,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v53 (Regex Exclusion Fix)"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v57 (Final Stable)"); return
         if not current_config.get("enabled", True): return
         
         if event.is_reply:
@@ -1176,4 +1210,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v53 (Regex Exclusion Fix) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v57 (Final Stable) 已启动")
