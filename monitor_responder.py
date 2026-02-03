@@ -108,24 +108,27 @@ def check_sender_allowed(sender_name, rule):
     """检查发送者是否被允许 (支持包含匹配 + 忽略大小写)"""
     sender_mode = rule.get("sender_mode", "exclude")
     
+    # 安全加固：如果是白名单模式，但名字获取失败(为空)，直接拦截
     if not sender_name and sender_mode == "include":
         return False
     
-    if not sender_name: return True
+    if not sender_name: return True # Exclude模式下，不知道名字默认放行
     
     sender_name_lower = sender_name.lower()
     prefixes = rule.get("sender_prefixes", [])
     
     match_found = False
     for p in prefixes:
+        # 统一转小写比对
         if p and (p.lower() in sender_name_lower):
             match_found = True
             break
             
     if sender_mode == "exclude" and match_found: 
+        logger.info(f"🛡️ [Filter] 黑名单拦截: '{sender_name}' 命中 '{p}'")
         return False
     elif sender_mode == "include" and not match_found: 
-        return False
+        return False # 白名单未命中，拦截
         
     return True
 
@@ -178,7 +181,12 @@ def init_redis_connection():
             redis_url = redis_url.strip()
             safe_url = re.sub(r':([^@]+)@', ':****@', redis_url)
             logger.info(f"🔗 [Monitor] 尝试连接 Redis: {safe_url}")
-            redis_client = redis.from_url(redis_url, decode_responses=True, socket_timeout=5, socket_connect_timeout=5)
+            redis_client = redis.from_url(
+                redis_url, 
+                decode_responses=True, 
+                socket_timeout=5, 
+                socket_connect_timeout=5
+            )
             redis_client.ping()
             logger.info("✅ [Monitor] Redis 数据库连接成功!")
         except Exception as e:
@@ -353,7 +361,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v66</title>
+    <title>Monitor Pro v68</title>
     <script src="https://unpkg.com/vue@3.3.4/dist/vue.global.prod.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -382,7 +390,7 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v66</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v68</span></span>
         </div>
         
         <div class="flex items-center gap-3 bg-slate-50 px-2 py-1 rounded border border-slate-200 mx-2 hidden md:flex">
@@ -447,7 +455,7 @@ SETTINGS_HTML = """
                             <div class="absolute right-2 bottom-1 text-[9px] text-primary/60 bg-white/80 px-1 rounded pointer-events-none">支持正则 r:...</div>
                         </div>
                         <div v-else class="space-y-2">
-                            <div class="grid grid-cols-2 gap-2"><textarea :value="listToString(rule.file_extensions)" @change="stringToList($event, rule, 'file_extensions')" rows="2" class="bento-input w-full px-2 py-1.5 resize-none bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="后缀 (换行):&#10;xlsx&#10;png"></textarea><textarea :value="listToString(rule.filename_keywords)" @change="stringToList($event, rule, 'filename_keywords')" rows="2" class="bento-input w-full px-2 py-1.5 resize-none bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="关键词 (换行):&#10;提款&#10;充值"></textarea></div>
+                            <div class="grid grid-cols-2 gap-2"><input :value="listToString(rule.file_extensions).replace(/\\n/g, ', ')" @change="stringToList($event, rule, 'file_extensions')" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="后缀: xlsx, png"><input :value="listToString(rule.filename_keywords).replace(/\\n/g, ', ')" @change="stringToList($event, rule, 'filename_keywords')" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="文件名关键词"></div>
                         </div>
                     </div>
                     <div class="h-px bg-slate-100"></div>
@@ -614,30 +622,44 @@ OTP_HTML = """
     <style>
         :root { --bg-color: #f3f4f6; --text-color: #1f2937; --card-bg: #ffffff; }
         body { font-family: -apple-system, system-ui, "Microsoft YaHei", sans-serif; background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+        
         .header { text-align: center; margin-bottom: 30px; }
         .header h1 { font-size: 24px; font-weight: 800; margin: 0; color: #374151; letter-spacing: -0.5px; }
         .header span { font-size: 13px; color: #9ca3af; font-weight: 500; background: #e5e7eb; padding: 2px 8px; border-radius: 99px; margin-left: 8px; vertical-align: middle; }
+
         .grid-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; width: 100%; max-width: 1200px; margin-bottom: 40px; }
+        
         .card { background: var(--card-bg); border-radius: 16px; padding: 20px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03); border: 1px solid #f3f4f6; transition: transform 0.2s; position: relative; overflow: hidden; }
         .card:hover { transform: translateY(-2px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05); }
+        
         .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
         .platform-icon { font-size: 20px; margin-right: 8px; }
         .account-name { font-weight: 700; font-size: 15px; color: #111827; }
         .status-badge { font-size: 11px; padding: 2px 8px; border-radius: 6px; font-weight: 600; text-transform: uppercase; }
+        
+        /* Telegram Style */
         .tg-style .platform-icon { color: #24A1DE; }
         .tg-style .status-badge { background: #e0f2fe; color: #0284c7; }
         .tg-style .code-box { background: #f0f9ff; color: #0369a1; border: 1px dashed #bae6fd; }
+        
+        /* Google Style */
         .ga-style .platform-icon { color: #EA4335; }
         .ga-style .status-badge { background: #fff1f2; color: #e11d48; }
         .ga-style .code-box { background: #fff5f5; color: #be123c; border: 1px dashed #fecdd3; }
+
         .code-box { font-family: 'SF Mono', 'Menlo', monospace; font-size: 32px; font-weight: 700; letter-spacing: 4px; text-align: center; padding: 16px; border-radius: 12px; margin: 12px 0; cursor: pointer; user-select: all; transition: all 0.2s; }
         .code-box:active { transform: scale(0.98); background-color: #e5e7eb; }
+        
         .meta-info { font-size: 12px; color: #6b7280; display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-weight: 500; }
+        
         .progress-track { height: 6px; background: #f3f4f6; border-radius: 3px; overflow: hidden; margin-top: 15px; }
         .progress-fill { height: 100%; border-radius: 3px; transition: width 0.1s linear; }
         .ga-style .progress-fill { background: linear-gradient(90deg, #f43f5e, #e11d48); }
+
         .empty-state { text-align: center; padding: 40px; color: #9ca3af; font-size: 14px; background: white; border-radius: 16px; border: 2px dashed #e5e7eb; width: 100%; max-width: 600px; }
+        
         .section-label { font-size: 12px; font-weight: 700; color: #9ca3af; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; width: 100%; max-width: 1200px; }
+        
         .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #1f2937; color: white; padding: 8px 16px; border-radius: 20px; font-size: 12px; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
         .toast.show { opacity: 1; }
     </style>
@@ -646,6 +668,7 @@ OTP_HTML = """
     <div class="header">
         <h1>验证码监控 <span>{{ tz_name }}</span></h1>
     </div>
+
     {% if otp_list %}
     <div class="section-label">Telegram 登录验证码</div>
     <div class="grid-container">
@@ -665,7 +688,9 @@ OTP_HTML = """
                     <span style="color:#0ea5e9; font-size:10px;">点击复制</span>
                 </div>
             {% else %}
-                <div style="padding: 24px 0; text-align: center; color: #9ca3af; font-size: 13px; font-style: italic;">等待验证码...</div>
+                <div style="padding: 24px 0; text-align: center; color: #9ca3af; font-size: 13px; font-style: italic;">
+                    等待验证码...
+                </div>
             {% endif %}
             <div class="meta-info" style="margin-top:10px; border-top:1px solid #f3f4f6; padding-top:8px;">
                 <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">{{ data.text[:30] }}...</span>
@@ -674,6 +699,7 @@ OTP_HTML = """
         {% endfor %}
     </div>
     {% endif %}
+
     {% if google_list %}
     <div class="section-label">谷歌验证码 (2FA)</div>
     <div class="grid-container">
@@ -694,10 +720,16 @@ OTP_HTML = """
         {% endfor %}
     </div>
     {% endif %}
+
     {% if not otp_list and not google_list %}
-    <div class="empty-state"><i class="fa-solid fa-ghost" style="font-size: 32px; margin-bottom: 10px;"></i><br>暂无已配置的账号</div>
+    <div class="empty-state">
+        <i class="fa-solid fa-ghost" style="font-size: 32px; margin-bottom: 10px;"></i><br>
+        暂无已配置的账号
+    </div>
     {% endif %}
+
     <div id="toast" class="toast">已复制到剪贴板</div>
+
     <script>
     function copyToClip(text) {
         if(!text) return;
@@ -707,31 +739,53 @@ OTP_HTML = """
         input.select();
         document.execCommand('copy');
         document.body.removeChild(input);
+        
         const toast = document.getElementById('toast');
         toast.textContent = text + ' 已复制';
         toast.classList.add('show');
         setTimeout(() => toast.classList.remove('show'), 2000);
     }
+
     document.addEventListener("DOMContentLoaded", function() {
         const items = document.querySelectorAll('.google-item');
+        
         setInterval(() => {
             let needsReload = false;
+            
             items.forEach(item => {
                 let ttl = parseFloat(item.getAttribute('data-ttl'));
+                // 每次减少 0.1 秒
                 ttl -= 0.1;
-                if (ttl <= 0) { needsReload = true; } else {
+                
+                if (ttl <= 0) {
+                    needsReload = true;
+                } else {
+                    // 更新属性
                     item.setAttribute('data-ttl', ttl.toFixed(1));
+                    
+                    // 更新右上角文字
                     const badge = item.querySelector('.ttl-text');
                     if(badge) badge.innerText = Math.ceil(ttl) + 's';
+                    
+                    // 更新进度条
                     const fill = item.querySelector('.progress-fill');
                     if(fill) {
                         const pct = (ttl / 30) * 100;
                         fill.style.width = pct + '%';
-                        if(ttl < 5) fill.style.background = '#ef4444'; else fill.style.background = 'linear-gradient(90deg, #f43f5e, #e11d48)';
+                        
+                        // 颜色变化提醒
+                        if(ttl < 5) fill.style.background = '#ef4444'; // Red
+                        else fill.style.background = 'linear-gradient(90deg, #f43f5e, #e11d48)';
                     }
                 }
             });
-            if (needsReload) { setTimeout(() => location.reload(), 1500); }
+
+            // 关键修复：如果任何一个验证码过期，等待 1.5 秒后刷新页面
+            // 这样可以防止在 0s 时疯狂刷新
+            if (needsReload) {
+                console.log("Token expired, refreshing in 1.5s...");
+                setTimeout(() => location.reload(), 1500);
+            }
         }, 100); 
     });
     </script>
@@ -740,6 +794,7 @@ OTP_HTML = """
 """
 
 async def analyze_message(client, rule, event, other_cs_ids, sender_name):
+    # [新增] 检查规则开关状态
     if not rule.get("enabled", True): 
         return False, "规则已关闭", None
 
@@ -748,6 +803,7 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_name):
     if event.out: return False, "Bot自己发送", None
     if event.sender_id in other_cs_ids: return False, "ID是客服", None
     
+    # [修正] 将 "黑名单检查" 移到 analyze_message 内部最前端
     if not check_sender_allowed(sender_name, rule):
         return False, "发送者被排除", None
 
@@ -772,6 +828,7 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_name):
         if fn_kws:
             if not any(k.lower() in filename_lower for k in fn_kws): return False, "文件名关键词不符", None
     else:
+        # [Fix] Call match_text here
         if not match_text(text, rule): return False, "文本关键词不符", None
     
     rule_id = rule.get("id", str(rule.get("groups")))
@@ -781,29 +838,40 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_name):
     
     return True, "✅ 匹配成功", None
 
+# [新增] 自动排班任务
 async def run_schedule_job():
     while True:
         try:
             await asyncio.sleep(60)
+            
             schedule = current_config.get("schedule", {})
-            if not schedule.get("active", False): continue
+            if not schedule.get("active", False):
+                continue
+                
             start_str = schedule.get("start", "09:00")
             end_str = schedule.get("end", "21:00")
+            
             now = datetime.now(BJ_TZ)
             current_time = now.strftime("%H:%M")
+            
             is_working_hours = False
             if start_str < end_str:
-                if start_str <= current_time < end_str: is_working_hours = True
+                if start_str <= current_time < end_str:
+                    is_working_hours = True
             else:
-                if current_time >= start_str or current_time < end_str: is_working_hours = True
+                if current_time >= start_str or current_time < end_str:
+                    is_working_hours = True
+            
             if is_working_hours and not current_config["enabled"]:
                 current_config["enabled"] = True
                 save_config(current_config) 
                 logger.info(f"⏰ [Schedule] 上班时间到了 ({start_str})，自动开启监听")
+                
             elif not is_working_hours and current_config["enabled"]:
                 current_config["enabled"] = False
                 save_config(current_config) 
                 logger.info(f"💤 [Schedule] 下班时间到了 ({end_str})，自动关闭监听")
+                
         except Exception as e:
             logger.error(f"❌ [Schedule] Error: {e}")
 
@@ -818,6 +886,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         try: bot_loop = asyncio.get_event_loop()
         except: bot_loop = asyncio.new_event_loop(); asyncio.set_event_loop(bot_loop)
 
+    # 启动排班任务 (添加保护)
     if bot_loop:
         bot_loop.create_task(run_schedule_job())
 
@@ -825,11 +894,16 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     def monitor_settings_page(): 
         return Response(SETTINGS_HTML, mimetype='text/html; charset=utf-8')
         
+    # [NEW] OTP 页面 - 渲染列表 (包含 Telegram 和 Google Auth)
     @app.route('/otp')
     def view_otp_page():
+        # 1. 准备 Telegram OTP (从全局变量读取)
         tg_data = latest_otp_storage
+        
+        # 2. 准备 Google Auth OTP (实时计算)
         ga_data = []
         if pyotp:
+            # 从环境变量读取密钥: "Name1:Secret1;Name2:Secret2"
             raw_secrets = os.environ.get("GA_SECRETS", "")
             if raw_secrets:
                 pairs = raw_secrets.split(';')
@@ -842,16 +916,23 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                         try:
                             totp = pyotp.TOTP(secret)
                             code = totp.now()
+                            # 计算剩余时间 (30秒周期)
                             time_remaining = totp.interval - datetime.now().timestamp() % totp.interval
-                            ga_data.append({"name": name, "code": code, "ttl": int(time_remaining)})
+                            ga_data.append({
+                                "name": name,
+                                "code": code,
+                                "ttl": int(time_remaining)
+                            })
                         except Exception as e:
                             logger.error(f"❌ [GoogleAuth] 计算失败 ({name}): {e}")
+
         return render_template_string(OTP_HTML, otp_list=tg_data, google_list=ga_data, tz_name=TZ_NAME)
         
     @app.route('/tool/monitor_settings_json')
     def monitor_settings_json():
         data = current_config.copy()
-        data["available_accounts"] = list(global_clients.keys()) # v65: Inject available accounts
+        # v67: Filter out MAIN_NAME from available_accounts to avoid duplicates in UI
+        data["available_accounts"] = [k for k in global_clients.keys() if k != MAIN_NAME]
         return jsonify(data)
 
     @app.route('/api/monitor_settings', methods=['POST'])
@@ -879,23 +960,32 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                 await asyncio.sleep(random.uniform(min_d, max_d))
             except: pass
 
+    # --- OTP 处理器工厂函数 ---
     def create_otp_handler(account_name):
         async def otp_handler(event):
             try:
                 text = event.message.text or ""
+                # 尝试提取 5位数字 验证码
                 code = ""
                 match = re.search(r'[\s:](\d{5})[\s.]', text)
-                if match: code = match.group(1)
+                if match:
+                    code = match.group(1)
                 else:
                     match = re.search(r'\b\d{5}\b', text)
                     if match: code = match.group(0)
-                latest_otp_storage[account_name] = {"code": code, "text": text, "time": datetime.now(BJ_TZ).strftime('%Y-%m-%d %H:%M:%S')}
+
+                # 存入全局字典，Key 为账号名称
+                latest_otp_storage[account_name] = {
+                    "code": code,
+                    "text": text,
+                    "time": datetime.now(BJ_TZ).strftime('%Y-%m-%d %H:%M:%S')
+                }
                 logger.info(f"🔐 [OTP] {account_name} 收到官方消息, Code: {code}")
             except Exception as e:
                 logger.error(f"❌ [OTP] Error ({account_name}): {e}")
         return otp_handler
 
-    # Main Account
+    # 1. 为【主账号】(SESSION_STRING) 添加监听器
     main_name = os.environ.get("MAIN_SESSION_NAME", "主账号")
     global MAIN_NAME
     MAIN_NAME = main_name # Set global main name
@@ -903,65 +993,94 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     client.add_event_handler(create_otp_handler(main_name), events.NewMessage(chats=777000))
     global_clients[main_name] = client # v65: Register main client
 
-    # Extra Accounts
+    # 2. 为【其他账号】启动新的客户端并监听
     extra_sessions_env = os.environ.get("EXTRA_SESSION_STRINGS", "")
     api_id = int(os.environ.get("API_ID", 0))
     api_hash = os.environ.get("API_HASH", "")
 
+    # 定义一个异步包装函数，确保 create_task 接收到的是 coroutine
     async def _start_extra_client(cli, name):
         try:
+            # await cli.start() 在这里可以正常工作，因为它是在 loop 运行时被调用的
             await cli.connect()
             if not await cli.is_user_authorized():
-                logger.error(f"❌ [OTP] {name} 身份验证失败: Session String 无效或已过期")
+                logger.error(f"❌ [OTP] {name} 身份验证失败: Session String 无效或已过期。请重新获取 Session。")
                 await cli.disconnect()
                 return
             
+            # [新增] 启动时主动获取一次身份信息，用于验证 Session 是否有效
             me = await cli.get_me()
             logger.info(f"✅ [OTP] {name} 启动成功 | 登录身份: {me.first_name} ({me.id})")
             
-            # v65: Register extra client to global pool
-            global_clients[name] = cli
-
+            # [新增] 主动拉取最后一条 777000 消息，防止错过
             try:
                 history = await cli.get_messages(777000, limit=1)
                 if history:
+                    # 手动触发一次 handler 逻辑
                     await create_otp_handler(name)(events.NewMessage.Event(history[0]))
                     logger.info(f"📥 [OTP] {name} 已自动加载最新一条验证码")
             except Exception as e:
                 logger.warning(f"⚠️ [OTP] {name} 无法获取历史消息: {e}")
 
+            # 启动每日定时保活任务
             asyncio.create_task(keep_alive_loop(cli, name))
+            
             await cli.run_until_disconnected()
         except Exception as e:
             logger.error(f"❌ [OTP] {name} 启动/运行失败: {e}")
 
+    # [新增] 每日 12:13:47 定时保活任务 (v61/62)
     async def keep_alive_loop(cli, name):
         while cli.is_connected():
             try:
+                # 1. 计算距离下一个 12:13:47 (BJ_TZ) 的秒数
                 now = datetime.now(BJ_TZ)
                 target = now.replace(hour=12, minute=13, second=47, microsecond=0)
-                if now >= target: target += timedelta(days=1)
+                
+                # 如果当前时间已经过了今天的目标时间，则目标是明天
+                if now >= target:
+                    target += timedelta(days=1)
+                
                 wait_seconds = (target - now).total_seconds()
+                
                 logger.info(f"⏳ [OTP] {name} 下次保活时间: {target.strftime('%Y-%m-%d %H:%M:%S')} (等待 {int(wait_seconds)}秒)")
+                
+                # 挂起等待
                 await asyncio.sleep(wait_seconds)
+                
+                # 2. 醒来后检查连接
                 if not cli.is_connected(): break
+                
+                # 3. 执行保活操作
                 await cli(functions.account.UpdateStatusRequest(offline=False))
                 msg = await cli.send_message('me', f"💓 Daily Keep-Alive: {datetime.now(BJ_TZ).strftime('%Y-%m-%d %H:%M:%S')}")
+                
+                # 4. 稍等片刻后删除消息
                 await asyncio.sleep(5)
                 await msg.delete()
+                
                 logger.info(f"💓 [OTP] {name} 每日保活执行成功")
+                
+                # 5. 为了防止逻辑错误导致瞬间死循环，强制等待 1 分钟再进入下一轮计算
                 await asyncio.sleep(60)
+
             except Exception as e:
                 logger.warning(f"⚠️ [OTP] {name} 保活失败: {e}")
+                # 出错后等待 5 分钟再重试
                 await asyncio.sleep(300)
 
     if extra_sessions_env and api_id and api_hash:
+        # Split by ; first
         raw_items = [x.strip() for x in extra_sessions_env.split(';') if x.strip()]
         for i, item in enumerate(raw_items):
             try:
+                # Support "Name=Session" format
                 if '=' in item:
+                    # 尝试分割
                     parts = item.split('=', 1)
+                    # 如果左边部分太长(例如超过30字符)，或者包含非名字字符，可能它本身就是个带=的SessionString
                     if len(parts[0]) > 30: 
+                        # 视为没有名字的 Session String
                         acc_name = f"副账号 {i+1}"
                         sess_str = item
                     else:
@@ -972,15 +1091,24 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     sess_str = item
                 
                 logger.info(f"🔄 [OTP] 正在准备 {acc_name}...")
+                
+                # 初始化客户端（注意：此时并未连接）
                 extra_client = TelegramClient(StringSession(sess_str), api_id, api_hash, loop=bot_loop)
+                
+                # v67: Register IMMEDIATELY so UI shows it before connection completes
+                global_clients[acc_name] = extra_client
+                
                 extra_client.add_event_handler(create_otp_handler(acc_name), events.NewMessage(chats=777000))
+                
+                # 将启动任务提交给事件循环 (使用包装函数)
                 bot_loop.create_task(_start_extra_client(extra_client, acc_name))
+                
             except Exception as e:
                 logger.error(f"❌ [OTP] 初始化 {acc_name} 失败: {e}")
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v66 (Default to Main)"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v68 (Full Verbose Mode)"); return
         if not current_config.get("enabled", True): return
         
         # Approval Logic
@@ -990,16 +1118,22 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                 try:
                     approver = await event.get_sender()
                     approver_name = get_sender_name(approver)
+                    
                     original_msg = await event.get_reply_message()
                     if original_msg:
                         orig_sender = await original_msg.get_sender()
                         orig_sender_name = get_sender_name(orig_sender)
+
                         for rule in current_config.get("rules", []):
                             if not rule.get("enabled", True): continue
-                            if not check_sender_allowed(approver_name, rule): continue
+
+                            if not check_sender_allowed(approver_name, rule):
+                                continue
+
                             is_match, _, _ = await analyze_message(client, rule, events.NewMessage.Event(original_msg), other_cs_ids, orig_sender_name)
+                            
                             if is_match and rule.get("enable_approval", False):
-                                logger.info(f"👮 [Approval] 批准通过! 匹配规则: {rule.get('name')}")
+                                logger.info(f"👮 [Approval] 批准通过! 匹配规则: {rule.get('name')} | 批准人: {approver_name}")
                                 action = rule.get("approval_action", {})
                                 
                                 # v66: Reply routing for approval
@@ -1011,32 +1145,43 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                     replier_client = global_clients[target_name]
 
                                 await asyncio.sleep(random.uniform(float(action.get("delay_1_min", 1.0)), float(action.get("delay_1_max", 2.0))))
-                                if action.get("reply_admin"): await event.reply(format_caption(action["reply_admin"]))
+                                if action.get("reply_admin"):
+                                    await event.reply(format_caption(action["reply_admin"]))
                                 
                                 await asyncio.sleep(random.uniform(float(action.get("delay_2_min", 1.0)), float(action.get("delay_2_max", 3.0))))
                                 fwd_tgt = action.get("forward_to")
                                 if fwd_tgt:
-                                    try: await replier_client.forward_messages(int(str(fwd_tgt).strip()), original_msg)
-                                    except Exception as e: logger.error(f"❌ [Approval] 转发失败: {e}")
+                                    try:
+                                        await replier_client.forward_messages(int(str(fwd_tgt).strip()), original_msg)
+                                    except Exception as e:
+                                        logger.error(f"❌ [Approval] 转发失败: {e}")
 
                                 await asyncio.sleep(random.uniform(float(action.get("delay_3_min", 1.0)), float(action.get("delay_3_max", 2.0))))
                                 if action.get("reply_origin"):
-                                    try: await replier_client.send_message(original_msg.chat_id, format_caption(action["reply_origin"]), reply_to=original_msg.id)
-                                    except: await original_msg.reply(format_caption(action["reply_origin"])) 
+                                    try: 
+                                        await replier_client.send_message(original_msg.chat_id, format_caption(action["reply_origin"]), reply_to=original_msg.id)
+                                    except: 
+                                        await original_msg.reply(format_caption(action["reply_origin"])) 
+                                
                                 return
-                except Exception as e: logger.error(f"❌ [Approval] 处理出错: {e}")
+                except Exception as e:
+                    logger.error(f"❌ [Approval] 处理出错: {e}")
 
         # Monitor Logic
         sender_name = ""
         try:
             event.sender = await event.get_sender()
             sender_name = get_sender_name(event.sender)
+            
+            # 日志记录，方便调试
             logger.info(f"🔍 [Check] Sender: {sender_name} | ID: {event.sender_id}")
-        except: pass
+        except: 
+            pass
 
         for rule in current_config.get("rules", []):
             try:
                 if not rule.get("enabled", True): continue
+
                 is_match, reason, extracted_data = await analyze_message(client, rule, event, other_cs_ids, sender_name)
                 if is_match:
                     logger.info(f"✅ [Monitor] 规则 '{rule.get('name')}' 触发!")
@@ -1048,7 +1193,6 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     
                     if not target_name: 
                         target_name = MAIN_NAME # Force Default Main
-                        # If current client IS main, no need to switch, but to be safe:
                     
                     if target_name in global_clients:
                         target_client = global_clients[target_name]
@@ -1088,6 +1232,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                         if tgt: 
                                             fwd_msg = await target_client.forward_messages(int(str(tgt).strip()), event.message)
                                             sent_msgs.append(fwd_msg)
+                                else:
+                                    logger.warning(f"⚠️ [Monitor] Amount logic matched text but no specific amount found.")
 
                         elif stype == "preempt_check":
                             if not sent_msgs: continue
@@ -1107,4 +1253,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v66 (Default to Main) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v68 (Full Verbose Mode) 已启动")
