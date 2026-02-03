@@ -42,7 +42,8 @@ TZ_NAME = "北京时间"
 # [全局存储] 
 # ==========================================
 latest_otp_storage = {}
-global_clients = {}  # v65新增: 存储所有活跃的客户端实例 {name: client}
+global_clients = {}  # 存储所有活跃的客户端实例 {name: client}
+MAIN_NAME = "主账号" # 全局记录主账号名称
 
 # --- 核心工具函数 ---
 
@@ -152,7 +153,7 @@ DEFAULT_CONFIG = {
             "check_file": False,
             "keywords": [],
             "enable_approval": False,
-            "reply_account": "", # v65新增: 指定回话账号
+            "reply_account": "", 
             "file_extensions": [],
             "filename_keywords": [],
             "sender_mode": "exclude",
@@ -226,7 +227,7 @@ def load_config(system_cs_prefixes):
         if "enabled" not in rule: rule["enabled"] = True
         if "check_file" not in rule: rule["check_file"] = False
         if "enable_approval" not in rule: rule["enable_approval"] = False
-        if "reply_account" not in rule: rule["reply_account"] = "" # v65 init
+        if "reply_account" not in rule: rule["reply_account"] = "" 
         
         if "filename_keywords" not in rule: rule["filename_keywords"] = []
         if "approval_action" not in rule: rule["approval_action"] = {}
@@ -235,7 +236,6 @@ def load_config(system_cs_prefixes):
         if "reply_admin" not in aa: aa["reply_admin"] = ""
         if "reply_origin" not in aa: aa["reply_origin"] = ""
         if "forward_to" not in aa: aa["forward_to"] = ""
-        # 补全 delay 参数...
         for i in range(1, 4):
             if f"delay_{i}_min" not in aa: aa[f"delay_{i}_min"] = 1.0
             if f"delay_{i}_max" not in aa: aa[f"delay_{i}_max"] = 2.0
@@ -262,7 +262,7 @@ def save_config(new_config):
         
         for rule in new_config.get("rules", []):
             rule["enabled"] = bool(rule.get("enabled", True))
-            rule["reply_account"] = str(rule.get("reply_account", "")).strip() # v65 save
+            rule["reply_account"] = str(rule.get("reply_account", "")).strip() 
             
             clean_groups = []
             raw_groups = rule.get("groups", [])
@@ -307,7 +307,6 @@ def save_config(new_config):
             aa["reply_admin"] = str(aa.get("reply_admin", "")).strip()
             aa["reply_origin"] = str(aa.get("reply_origin", "")).strip()
             
-            # Save delay params...
             for i in range(1, 4):
                 try: aa[f"delay_{i}_min"] = float(aa.get(f"delay_{i}_min", 1.0))
                 except: aa[f"delay_{i}_min"] = 1.0
@@ -354,7 +353,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v65</title>
+    <title>Monitor Pro v66</title>
     <script src="https://unpkg.com/vue@3.3.4/dist/vue.global.prod.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -383,7 +382,7 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v65</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v66</span></span>
         </div>
         
         <div class="flex items-center gap-3 bg-slate-50 px-2 py-1 rounded border border-slate-200 mx-2 hidden md:flex">
@@ -448,7 +447,7 @@ SETTINGS_HTML = """
                             <div class="absolute right-2 bottom-1 text-[9px] text-primary/60 bg-white/80 px-1 rounded pointer-events-none">支持正则 r:...</div>
                         </div>
                         <div v-else class="space-y-2">
-                            <div class="grid grid-cols-2 gap-2"><input :value="listToString(rule.file_extensions).replace(/\\n/g, ', ')" @change="stringToList($event, rule, 'file_extensions')" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="后缀: xlsx, png"><input :value="listToString(rule.filename_keywords).replace(/\\n/g, ', ')" @change="stringToList($event, rule, 'filename_keywords')" class="bento-input w-full px-2 py-1.5 h-7 bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="文件名关键词"></div>
+                            <div class="grid grid-cols-2 gap-2"><textarea :value="listToString(rule.file_extensions)" @change="stringToList($event, rule, 'file_extensions')" rows="2" class="bento-input w-full px-2 py-1.5 resize-none bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="后缀 (换行):&#10;xlsx&#10;png"></textarea><textarea :value="listToString(rule.filename_keywords)" @change="stringToList($event, rule, 'filename_keywords')" rows="2" class="bento-input w-full px-2 py-1.5 resize-none bg-yellow-50/50 border-yellow-200 focus:border-yellow-400 font-mono text-[11px]" placeholder="关键词 (换行):&#10;提款&#10;充值"></textarea></div>
                         </div>
                     </div>
                     <div class="h-px bg-slate-100"></div>
@@ -466,7 +465,7 @@ SETTINGS_HTML = """
                         <div class="flex items-center gap-2 mb-2 bg-indigo-50 border border-indigo-100 p-1.5 rounded">
                             <span class="text-[9px] font-bold text-indigo-500 uppercase"><i class="fa-solid fa-user-tag mr-1"></i>选择回复账号:</span>
                             <select v-model="rule.reply_account" class="flex-1 text-[10px] bg-transparent border-none p-0 text-indigo-700 font-bold focus:ring-0 cursor-pointer h-4">
-                                <option value="">🔄 跟随收到消息的账号 (默认)</option>
+                                <option value="">👤 主账号 (默认)</option>
                                 <option v-for="acc in available_accounts" :value="acc">{{ acc }}</option>
                             </select>
                         </div>
@@ -898,6 +897,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     # Main Account
     main_name = os.environ.get("MAIN_SESSION_NAME", "主账号")
+    global MAIN_NAME
+    MAIN_NAME = main_name # Set global main name
+    
     client.add_event_handler(create_otp_handler(main_name), events.NewMessage(chats=777000))
     global_clients[main_name] = client # v65: Register main client
 
@@ -978,7 +980,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v65 (Multi-Account Routing)"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v66 (Default to Main)"); return
         if not current_config.get("enabled", True): return
         
         # Approval Logic
@@ -1000,10 +1002,13 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                 logger.info(f"👮 [Approval] 批准通过! 匹配规则: {rule.get('name')}")
                                 action = rule.get("approval_action", {})
                                 
-                                # v65: Determine replier client for approval actions
+                                # v66: Reply routing for approval
                                 replier_client = client
-                                if rule.get("reply_account") and rule["reply_account"] in global_clients:
-                                    replier_client = global_clients[rule["reply_account"]]
+                                target_name = rule.get("reply_account")
+                                if not target_name: target_name = MAIN_NAME # Force Default Main
+                                
+                                if target_name in global_clients:
+                                    replier_client = global_clients[target_name]
 
                                 await asyncio.sleep(random.uniform(float(action.get("delay_1_min", 1.0)), float(action.get("delay_1_max", 2.0))))
                                 if action.get("reply_admin"): await event.reply(format_caption(action["reply_admin"]))
@@ -1016,9 +1021,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
                                 await asyncio.sleep(random.uniform(float(action.get("delay_3_min", 1.0)), float(action.get("delay_3_max", 2.0))))
                                 if action.get("reply_origin"):
-                                    # Reply to original using specific client
                                     try: await replier_client.send_message(original_msg.chat_id, format_caption(action["reply_origin"]), reply_to=original_msg.id)
-                                    except: await original_msg.reply(format_caption(action["reply_origin"])) # Fallback
+                                    except: await original_msg.reply(format_caption(action["reply_origin"])) 
                                 return
                 except Exception as e: logger.error(f"❌ [Approval] 处理出错: {e}")
 
@@ -1038,11 +1042,18 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     logger.info(f"✅ [Monitor] 规则 '{rule.get('name')}' 触发!")
                     rule_timers[rule.get("id", str(rule.get("groups")))] = time.time()
                     
-                    # v65: Determine which account should reply
-                    target_client = client # Default to main (or whoever received if shared logic)
-                    if rule.get("reply_account") and rule["reply_account"] in global_clients:
-                        target_client = global_clients[rule["reply_account"]]
-                        logger.info(f"🔀 [Routing] 使用指定账号回复: {rule['reply_account']}")
+                    # v66: Default to Main Account logic
+                    target_client = client 
+                    target_name = rule.get("reply_account")
+                    
+                    if not target_name: 
+                        target_name = MAIN_NAME # Force Default Main
+                        # If current client IS main, no need to switch, but to be safe:
+                    
+                    if target_name in global_clients:
+                        target_client = global_clients[target_name]
+                        if target_name != MAIN_NAME:
+                            logger.info(f"🔀 [Routing] 使用指定账号回复: {target_name}")
 
                     sent_msgs = []
                     for step in rule.get("replies", []):
@@ -1059,7 +1070,6 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                 sent_msgs.append(await target_client.send_file(int(str(tgt).strip()), event.message.file.media, caption=format_caption(step.get("text", ""))))
                         
                         elif stype == "amount_logic":
-                            # Amount logic needs special handling for reply
                             cfg = step.get("text", "")
                             tgt = step.get("forward_to")
                             parts = cfg.split('|')
@@ -1091,11 +1101,10 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                         else: # text
                             content = step.get("text", "")
                             if content: 
-                                # Use send_message with reply_to to force specific client
                                 sent = await target_client.send_message(event.chat_id, format_caption(content), reply_to=event.id)
                                 sent_msgs.append(sent)
                                 if global_main_handler: asyncio.create_task(global_main_handler(events.NewMessage.Event(sent)))
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v65 (Multi-Account Routing) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v66 (Default to Main) 已启动")
