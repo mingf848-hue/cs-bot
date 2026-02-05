@@ -57,12 +57,10 @@ def match_text(text, rule):
     for kw_rule in keywords:
         if not kw_rule: continue
         
-        # 1. 统一分割排除词 (Separator: #)
         parts = kw_rule.split('#')
         include_part = parts[0].strip()
         exclude_parts = [p.strip().lower() for p in parts[1:] if p.strip()]
         
-        # 2. 检查排除词
         hit_exclusion = False
         for ex in exclude_parts:
             if ex in text_lower:
@@ -70,7 +68,6 @@ def match_text(text, rule):
                 break
         if hit_exclusion: continue
         
-        # 3. 执行主匹配
         include_part_lower = include_part.lower()
         
         if include_part_lower.startswith('r:'):
@@ -92,7 +89,7 @@ def match_text(text, rule):
     return False
 
 def get_sender_name(sender):
-    """(仅用于日志显示) 统一提取发送者名称"""
+    """统一提取发送者名称"""
     if not sender: return "Unknown"
     title = getattr(sender, 'title', '')
     if title: return title
@@ -104,38 +101,23 @@ def get_sender_name(sender):
         return f"{fullname} (@{uname})".strip()
     return fullname or "Unknown"
 
-# [v69 核心修改] 严格模式：只检测 Username
 def check_sender_allowed(sender_obj, rule):
-    """
-    检查发送者是否被允许
-    逻辑：完全忽略名字，只检查 @username
-    """
+    """检查发送者是否被允许 (只检测 Username)"""
     sender_mode = rule.get("sender_mode", "exclude")
     prefixes = rule.get("sender_prefixes", [])
     
-    # 获取发送者的 Username (可能为 None)
     current_username = getattr(sender_obj, 'username', None)
     
-    # 情况1: 发送者没有设置 Username
     if not current_username:
-        # 如果是白名单模式(Include)，必须有用户名才能通过，否则直接拦截
-        if sender_mode == "include":
-            # logger.debug("🚫 [Filter] 拦截: 用户未设置 Username")
-            return False
-        # 如果是黑名单模式(Exclude)，没用户名无法比对黑名单，默认放行
+        if sender_mode == "include": return False
         return True 
 
-    # 统一转小写进行比对
     current_username = current_username.lower()
     match_found = False
     
     for p in prefixes:
         if not p: continue
-        # 清理配置项: 去掉 @ 符号，转小写
-        # 比如用户填 "@xy_cszb"，这里变成 "xy_cszb"
         clean_p = p.strip().lstrip('@').lower()
-        
-        # 包含匹配: 只要 username 里包含这个词就算命中
         if clean_p and (clean_p in current_username):
             match_found = True
             break
@@ -144,7 +126,7 @@ def check_sender_allowed(sender_obj, rule):
         logger.info(f"🛡️ [Filter] 黑名单拦截 (Username): @{current_username} 命中 '{clean_p}'")
         return False
     elif sender_mode == "include" and not match_found: 
-        return False # 白名单未命中，拦截
+        return False
         
     return True
 
@@ -153,6 +135,45 @@ def format_caption(tpl):
     now_str = datetime.now(BJ_TZ).strftime('%Y-%-m-%-d %H:%M') 
     res = tpl.replace('{time}', now_str)
     return res
+
+# [v70 新增] 智能提取金额函数
+def parse_smart_amount(text):
+    """
+    从文本中提取金额，支持 k/w/万 等单位
+    返回: (found_bool, amount_float)
+    """
+    # 匹配模式：数字 + 可选的小数点 + 可选的单位(k/w/万)
+    # 排除前面的无关字符，寻找类似 "金额: 2w" 或 "2000" 的结构
+    # 优先匹配带有明确关键词附近的数字，或者整句中看起来像金额的
+    
+    # 1. 尝试寻找明确带有单位的数字 (如 2w, 3.5k)
+    unit_pattern = re.search(r'(\d+(?:\.\d+)?)\s*([wWkK万千])', text)
+    if unit_pattern:
+        num = float(unit_pattern.group(1))
+        unit = unit_pattern.group(2).lower()
+        if unit in ['w', '万']:
+            return True, num * 10000
+        elif unit in ['k', '千']:
+            return True, num * 1000
+            
+    # 2. 如果没有单位，寻找关键词后面的纯数字 (如 金额: 2000)
+    # 关键词包括：金额, 额度, 存, 代存, 入款, U, USDT
+    keyword_pattern = re.search(r'(?:金额|额度|存|款|U)\D{0,5}?(\d+(?:\.\d+)?)', text)
+    if keyword_pattern:
+        return True, float(keyword_pattern.group(1))
+        
+    # 3. 保底：如果整句就很短，且包含数字，尝试提取最大的那个数字
+    # 例如用户只发了 "2000" 或 "2000u"
+    simple_nums = re.findall(r'\d+(?:\.\d+)?', text)
+    if simple_nums:
+        # 取最长的数字串通常比较保险，或者取第一个
+        # 这里取数值最大的，防止把日期当金额
+        try:
+            max_num = max([float(n) for n in simple_nums])
+            return True, max_num
+        except: pass
+
+    return False, 0.0
 
 # --- 默认配置 ---
 DEFAULT_CONFIG = {
@@ -197,12 +218,7 @@ def init_redis_connection():
             redis_url = redis_url.strip()
             safe_url = re.sub(r':([^@]+)@', ':****@', redis_url)
             logger.info(f"🔗 [Monitor] 尝试连接 Redis: {safe_url}")
-            redis_client = redis.from_url(
-                redis_url, 
-                decode_responses=True, 
-                socket_timeout=5, 
-                socket_connect_timeout=5
-            )
+            redis_client = redis.from_url(redis_url, decode_responses=True, socket_timeout=5, socket_connect_timeout=5)
             redis_client.ping()
             logger.info("✅ [Monitor] Redis 数据库连接成功!")
         except Exception as e:
@@ -377,7 +393,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v69</title>
+    <title>Monitor Pro v70</title>
     <script src="https://unpkg.com/vue@3.3.4/dist/vue.global.prod.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -406,7 +422,7 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v69</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v70</span></span>
         </div>
         
         <div class="flex items-center gap-3 bg-slate-50 px-2 py-1 rounded border border-slate-200 mx-2 hidden md:flex">
@@ -623,142 +639,6 @@ SETTINGS_HTML = """
         }
     }).mount('#app');
 </script>
-</body>
-</html>
-"""
-
-OTP_HTML = """
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>验证码监控</title>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <style>
-        :root { --bg-color: #f3f4f6; --text-color: #1f2937; --card-bg: #ffffff; }
-        body { font-family: -apple-system, system-ui, "Microsoft YaHei", sans-serif; background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
-        .header { text-align: center; margin-bottom: 30px; }
-        .header h1 { font-size: 24px; font-weight: 800; margin: 0; color: #374151; letter-spacing: -0.5px; }
-        .header span { font-size: 13px; color: #9ca3af; font-weight: 500; background: #e5e7eb; padding: 2px 8px; border-radius: 99px; margin-left: 8px; vertical-align: middle; }
-        .grid-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; width: 100%; max-width: 1200px; margin-bottom: 40px; }
-        .card { background: var(--card-bg); border-radius: 16px; padding: 20px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03); border: 1px solid #f3f4f6; transition: transform 0.2s; position: relative; overflow: hidden; }
-        .card:hover { transform: translateY(-2px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05); }
-        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-        .platform-icon { font-size: 20px; margin-right: 8px; }
-        .account-name { font-weight: 700; font-size: 15px; color: #111827; }
-        .status-badge { font-size: 11px; padding: 2px 8px; border-radius: 6px; font-weight: 600; text-transform: uppercase; }
-        .tg-style .platform-icon { color: #24A1DE; }
-        .tg-style .status-badge { background: #e0f2fe; color: #0284c7; }
-        .tg-style .code-box { background: #f0f9ff; color: #0369a1; border: 1px dashed #bae6fd; }
-        .ga-style .platform-icon { color: #EA4335; }
-        .ga-style .status-badge { background: #fff1f2; color: #e11d48; }
-        .ga-style .code-box { background: #fff5f5; color: #be123c; border: 1px dashed #fecdd3; }
-        .code-box { font-family: 'SF Mono', 'Menlo', monospace; font-size: 32px; font-weight: 700; letter-spacing: 4px; text-align: center; padding: 16px; border-radius: 12px; margin: 12px 0; cursor: pointer; user-select: all; transition: all 0.2s; }
-        .code-box:active { transform: scale(0.98); background-color: #e5e7eb; }
-        .meta-info { font-size: 12px; color: #6b7280; display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-weight: 500; }
-        .progress-track { height: 6px; background: #f3f4f6; border-radius: 3px; overflow: hidden; margin-top: 15px; }
-        .progress-fill { height: 100%; border-radius: 3px; transition: width 0.1s linear; }
-        .ga-style .progress-fill { background: linear-gradient(90deg, #f43f5e, #e11d48); }
-        .empty-state { text-align: center; padding: 40px; color: #9ca3af; font-size: 14px; background: white; border-radius: 16px; border: 2px dashed #e5e7eb; width: 100%; max-width: 600px; }
-        .section-label { font-size: 12px; font-weight: 700; color: #9ca3af; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; width: 100%; max-width: 1200px; }
-        .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #1f2937; color: white; padding: 8px 16px; border-radius: 20px; font-size: 12px; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
-        .toast.show { opacity: 1; }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>验证码监控 <span>{{ tz_name }}</span></h1>
-    </div>
-    {% if otp_list %}
-    <div class="section-label">Telegram 登录验证码</div>
-    <div class="grid-container">
-        {% for name, data in otp_list.items() %}
-        <div class="card tg-style">
-            <div class="card-header">
-                <div style="display:flex; align-items:center;">
-                    <i class="fa-brands fa-telegram platform-icon"></i>
-                    <span class="account-name">{{ name }}</span>
-                </div>
-                <span class="status-badge">已连接</span>
-            </div>
-            {% if data.code %}
-                <div class="code-box" onclick="copyToClip('{{ data.code }}')">{{ data.code }}</div>
-                <div class="meta-info">
-                    <span><i class="fa-regular fa-clock"></i> {{ data.time.split(' ')[1] }} 接收</span>
-                    <span style="color:#0ea5e9; font-size:10px;">点击复制</span>
-                </div>
-            {% else %}
-                <div style="padding: 24px 0; text-align: center; color: #9ca3af; font-size: 13px; font-style: italic;">等待验证码...</div>
-            {% endif %}
-            <div class="meta-info" style="margin-top:10px; border-top:1px solid #f3f4f6; padding-top:8px;">
-                <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">{{ data.text[:30] }}...</span>
-            </div>
-        </div>
-        {% endfor %}
-    </div>
-    {% endif %}
-    {% if google_list %}
-    <div class="section-label">谷歌验证码 (2FA)</div>
-    <div class="grid-container">
-        {% for item in google_list %}
-        <div class="card ga-style google-item" data-ttl="{{ item.ttl }}">
-            <div class="card-header">
-                <div style="display:flex; align-items:center;">
-                    <i class="fa-brands fa-google platform-icon"></i>
-                    <span class="account-name">{{ item.name }}</span>
-                </div>
-                <span class="status-badge ttl-text">{{ item.ttl }}s</span>
-            </div>
-            <div class="code-box" onclick="copyToClip('{{ item.code }}')">{{ item.code }}</div>
-            <div class="progress-track">
-                <div class="progress-fill" style="width: {{ (item.ttl / 30) * 100 }}%"></div>
-            </div>
-        </div>
-        {% endfor %}
-    </div>
-    {% endif %}
-    {% if not otp_list and not google_list %}
-    <div class="empty-state"><i class="fa-solid fa-ghost" style="font-size: 32px; margin-bottom: 10px;"></i><br>暂无已配置的账号</div>
-    {% endif %}
-    <div id="toast" class="toast">已复制到剪贴板</div>
-    <script>
-    function copyToClip(text) {
-        if(!text) return;
-        const input = document.createElement('input');
-        input.setAttribute('value', text);
-        document.body.appendChild(input);
-        input.select();
-        document.execCommand('copy');
-        document.body.removeChild(input);
-        const toast = document.getElementById('toast');
-        toast.textContent = text + ' 已复制';
-        toast.classList.add('show');
-        setTimeout(() => toast.classList.remove('show'), 2000);
-    }
-    document.addEventListener("DOMContentLoaded", function() {
-        const items = document.querySelectorAll('.google-item');
-        setInterval(() => {
-            let needsReload = false;
-            items.forEach(item => {
-                let ttl = parseFloat(item.getAttribute('data-ttl'));
-                ttl -= 0.1;
-                if (ttl <= 0) { needsReload = true; } else {
-                    item.setAttribute('data-ttl', ttl.toFixed(1));
-                    const badge = item.querySelector('.ttl-text');
-                    if(badge) badge.innerText = Math.ceil(ttl) + 's';
-                    const fill = item.querySelector('.progress-fill');
-                    if(fill) {
-                        const pct = (ttl / 30) * 100;
-                        fill.style.width = pct + '%';
-                        if(ttl < 5) fill.style.background = '#ef4444'; else fill.style.background = 'linear-gradient(90deg, #f43f5e, #e11d48)';
-                    }
-                }
-            });
-            if (needsReload) { setTimeout(() => location.reload(), 1500); }
-        }, 100); 
-    });
-    </script>
 </body>
 </html>
 """
@@ -1003,7 +883,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v69 (Strict Username Mode)"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v70 (Smart Amount & Verbose)"); return
         if not current_config.get("enabled", True): return
         
         # Approval Logic
@@ -1018,7 +898,6 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     original_msg = await event.get_reply_message()
                     if original_msg:
                         orig_sender = await original_msg.get_sender()
-                        # orig_sender_name = get_sender_name(orig_sender) # Removed, use obj
                         
                         for rule in current_config.get("rules", []):
                             if not rule.get("enabled", True): continue
@@ -1095,19 +974,25 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                             parts = cfg.split('|')
                             if len(parts) >= 3:
                                 thresh = float(parts[0])
-                                amt_match = re.search(r"(?:金额|额度|存)[:：]?\s*(\d+(?:\.\d+)?)", event.text) 
-                                if amt_match:
-                                    amt = float(amt_match.group(1))
+                                # v70: Use smart amount parsing
+                                found, amt = parse_smart_amount(event.text)
+                                
+                                if found:
+                                    logger.info(f"💰 [Amount] 识别到金额: {amt}")
                                     if amt >= thresh:
                                         sent_msgs.append(await target_client.send_message(event.chat_id, format_caption(parts[1]), reply_to=event.id))
                                     else:
+                                        # Low amount logic
                                         for sub_msg in parts[2].split(';;'):
                                             if sub_msg.strip():
                                                 sent_msgs.append(await target_client.send_message(event.chat_id, format_caption(sub_msg), reply_to=event.id))
-                                                await asyncio.sleep(1)
+                                                # v70: Add delay between messages
+                                                await asyncio.sleep(random.uniform(1.5, 3.0)) 
                                         if tgt: 
                                             fwd_msg = await target_client.forward_messages(int(str(tgt).strip()), event.message)
                                             sent_msgs.append(fwd_msg)
+                                else:
+                                    logger.warning(f"⚠️ [Monitor] Amount logic matched text but no specific amount found.")
 
                         elif stype == "preempt_check":
                             if not sent_msgs: continue
@@ -1127,4 +1012,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v69 (Strict Username Mode) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v70 (Smart Amount & Verbose) 已启动")
