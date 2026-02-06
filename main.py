@@ -14,14 +14,12 @@ from flask import Flask, render_template_string, Response, request, stream_with_
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import AuthKeyDuplicatedError
-
 # [Ver 43.7] 确保引入统计模块
 try:
     from work_stats import init_stats_blueprint
 except ImportError:
     init_stats_blueprint = None
-
-# [New] 引入独立监控模块 (适配 Monitor Pro v77)
+# [New] 引入独立监控模块
 try:
     from monitor_responder import init_monitor
 except ImportError:
@@ -76,7 +74,7 @@ def log_tree(level, msg):
 def normalize(text):
     if not text: return ""
     text = text.lower()
-    # [Ver 34.0] 移除所有标点符号和空白，只保留纯文本
+    # [Ver 34.0] 移除所有标点符号和空白，只保留纯文本啊
     text = re.sub(r'[^\w=]', '', text) 
     return text
 
@@ -588,11 +586,11 @@ LOG_VIEWER_HTML = """
 
         function parseLogs(text) {
             // [Fix JS Escaping] Use double backslash for python string
-            const rawLines = text.split(/\r?\n/);
+            const rawLines = text.split(/\\r?\\n/);
             parsedLogs = [];
             let currentEntry = null;
-            // [Fix JS Escaping] Escape \d and \s for JS regex
-            const timeRegex = /^(\d{4}-\d{2}-\d{2}\s+)?(\d{2}:\d{2}:\d{2})(.*)/;
+            // [Fix JS Escaping] Escape \\d and \\s for JS regex
+            const timeRegex = /^(\\d{4}-\\d{2}-\\d{2}\\s+)?(\\d{2}:\\d{2}:\\d{2})(.*)/;
             
             rawLines.forEach(line => {
                 if(!line.trim()) return;
@@ -602,8 +600,8 @@ LOG_VIEWER_HTML = """
                     // match[2] is time, match[3] is content
                     currentEntry = { time: match[2], raw: match[3], content: match[3].trim(), fullText: match[3] };
                 } else {
-                    // [Fix JS Escaping] Use \n for literal newline char in JS string
-                    if (currentEntry) { currentEntry.fullText += '\n' + line; currentEntry.content += '\n' + line; }
+                    // [Fix JS Escaping] Use \\n for literal newline char in JS string
+                    if (currentEntry) { currentEntry.fullText += '\\n' + line; currentEntry.content += '\\n' + line; }
                 }
             });
             if (currentEntry) parsedLogs.push(currentEntry);
@@ -616,8 +614,8 @@ LOG_VIEWER_HTML = """
                 let content = entry.content;
                 let raw = entry.raw || "";
                 let ids = [];
-                // [Fix JS Escaping] Escape \d and \s for JS regex
-                const idRegex = /(Msg|User|Thread|流|归属|用户)[:=]?\s?(\d+)/g;
+                // [Fix JS Escaping] Escape \\d and \\s for JS regex
+                const idRegex = /(Msg|User|Thread|流|归属|用户)[:=]?\\s?(\\d+)/g;
                 let match;
                 while ((match = idRegex.exec(content)) !== null) { ids.push(match[2]); }
                 let idsStr = ids.join(',');
@@ -628,9 +626,9 @@ LOG_VIEWER_HTML = """
                 else if (raw.includes('👮') || raw.includes('[AUDIT]')) { type = 'audit'; }
                 else if (raw.includes('┣━━') || raw.includes('┗━━')) { type = 'sys'; }
 
-                // [Fix JS Escaping] Escape \d, \s and quotes inside replacement string
-                content = content.replace(/(Msg[:=]?\s?)(\d+)/g, '$1<span class="pill" onclick="searchId(\'$2\')">$2</span>');
-                content = content.replace(/(User|用户|归属)[:=]?\s?(\d+)/g, '$1<span class="pill" onclick="searchId(\'$2\')">$2</span>');
+                // [Fix JS Escaping] Escape \\d, \\s and quotes inside replacement string
+                content = content.replace(/(Msg[:=]?\\s?)(\\d+)/g, '$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
+                content = content.replace(/(User|用户|归属)[:=]?\\s?(\\d+)/g, '$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
                 
                 let actionBtn = '';
                 // [Ver 43.4 Fix] Fixed string interpolation for reportBug by removing extra escaping
@@ -672,12 +670,12 @@ LOG_VIEWER_HTML = """
         function reportBug(type, idsStr) {
             const ids = idsStr.split(',');
             if (ids.length === 0) return;
-            let report = `=== ${type}反馈报告 ===\n`;
-            report += `类型: ${type}\n涉及 ID: ${idsStr}\n\n-- 关键日志流 --\n`;
+            let report = `=== ${type}反馈报告 ===\\n`;
+            report += `类型: ${type}\\n涉及 ID: ${idsStr}\\n\\n-- 关键日志流 --\\n`;
             parsedLogs.forEach(entry => {
                 let hit = false;
                 for (let id of ids) { if (entry.raw.includes(id)) { hit = true; break; } }
-                if (hit) { report += `[${entry.time}] ${entry.content}\n`; }
+                if (hit) { report += `[${entry.time}] ${entry.content}\\n`; }
             });
             navigator.clipboard.writeText(report).then(() => { alert(`✅ [${type}] 详情已复制！请直接粘贴发送。`); });
         }
@@ -790,7 +788,7 @@ WAIT_CHECK_HTML = """
                     if (done) break;
                     
                     const chunk = decoder.decode(value, {stream: true});
-                    const lines = chunk.split('\n');
+                    const lines = chunk.split('\\n');
                     
                     for (const line of lines) {
                         if (!line.trim()) continue;
@@ -2055,7 +2053,7 @@ async def handler(event):
                                  should_monitor = False
                              else:
                                  self_reply_dedup.append(grouped_id)
-                          
+                         
                          if should_monitor:
                              # [Ver 43.3] Context Check: Only monitor if WAIT keyword exists in recent history (Thread-Aware)
                              has_wait = await check_wait_in_history(chat_id, current_thread_id)
@@ -2135,10 +2133,9 @@ if __name__ == '__main__':
         if init_stats_blueprint:
             init_stats_blueprint(app, client, bot_loop, CS_GROUP_IDS)
             
-        # [New Feature] 挂载关键词监控模块 (适配 v77)
+        # [New Feature] 挂载关键词监控模块
         if init_monitor:
             # ↓↓↓↓↓ 注意这里最后多传了一个 handler ↓↓↓↓↓
-            # init_monitor 内部会自动调用 init_redis_connection
             init_monitor(client, app, OTHER_CS_IDS, CS_NAME_PREFIXES, handler)
             
         # 启动 Web 服务
