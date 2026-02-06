@@ -123,7 +123,7 @@ def check_sender_allowed(sender_obj, rule):
             break
             
     if sender_mode == "exclude" and match_found: 
-        logger.info(f"🛡️ [Filter] 黑名单拦截 (Username): @{current_username} 命中 '{clean_p}'")
+        # logger.info(f"🛡️ [Filter] 黑名单拦截: @{current_username}")
         return False
     elif sender_mode == "include" and not match_found: 
         return False
@@ -380,7 +380,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v72</title>
+    <title>Monitor Pro v73</title>
     <script src="https://unpkg.com/vue@3.3.4/dist/vue.global.prod.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -409,7 +409,7 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v72</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v73</span></span>
         </div>
         
         <div class="flex items-center gap-3">
@@ -645,6 +645,142 @@ SETTINGS_HTML = """
 </html>
 """
 
+OTP_HTML = """
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>验证码监控</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        :root { --bg-color: #f3f4f6; --text-color: #1f2937; --card-bg: #ffffff; }
+        body { font-family: -apple-system, system-ui, "Microsoft YaHei", sans-serif; background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+        .header { text-align: center; margin-bottom: 30px; }
+        .header h1 { font-size: 24px; font-weight: 800; margin: 0; color: #374151; letter-spacing: -0.5px; }
+        .header span { font-size: 13px; color: #9ca3af; font-weight: 500; background: #e5e7eb; padding: 2px 8px; border-radius: 99px; margin-left: 8px; vertical-align: middle; }
+        .grid-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; width: 100%; max-width: 1200px; margin-bottom: 40px; }
+        .card { background: var(--card-bg); border-radius: 16px; padding: 20px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03); border: 1px solid #f3f4f6; transition: transform 0.2s; position: relative; overflow: hidden; }
+        .card:hover { transform: translateY(-2px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05); }
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+        .platform-icon { font-size: 20px; margin-right: 8px; }
+        .account-name { font-weight: 700; font-size: 15px; color: #111827; }
+        .status-badge { font-size: 11px; padding: 2px 8px; border-radius: 6px; font-weight: 600; text-transform: uppercase; }
+        .tg-style .platform-icon { color: #24A1DE; }
+        .tg-style .status-badge { background: #e0f2fe; color: #0284c7; }
+        .tg-style .code-box { background: #f0f9ff; color: #0369a1; border: 1px dashed #bae6fd; }
+        .ga-style .platform-icon { color: #EA4335; }
+        .ga-style .status-badge { background: #fff1f2; color: #e11d48; }
+        .ga-style .code-box { background: #fff5f5; color: #be123c; border: 1px dashed #fecdd3; }
+        .code-box { font-family: 'SF Mono', 'Menlo', monospace; font-size: 32px; font-weight: 700; letter-spacing: 4px; text-align: center; padding: 16px; border-radius: 12px; margin: 12px 0; cursor: pointer; user-select: all; transition: all 0.2s; }
+        .code-box:active { transform: scale(0.98); background-color: #e5e7eb; }
+        .meta-info { font-size: 12px; color: #6b7280; display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-weight: 500; }
+        .progress-track { height: 6px; background: #f3f4f6; border-radius: 3px; overflow: hidden; margin-top: 15px; }
+        .progress-fill { height: 100%; border-radius: 3px; transition: width 0.1s linear; }
+        .ga-style .progress-fill { background: linear-gradient(90deg, #f43f5e, #e11d48); }
+        .empty-state { text-align: center; padding: 40px; color: #9ca3af; font-size: 14px; background: white; border-radius: 16px; border: 2px dashed #e5e7eb; width: 100%; max-width: 600px; }
+        .section-label { font-size: 12px; font-weight: 700; color: #9ca3af; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; width: 100%; max-width: 1200px; }
+        .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #1f2937; color: white; padding: 8px 16px; border-radius: 20px; font-size: 12px; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+        .toast.show { opacity: 1; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>验证码监控 <span>{{ tz_name }}</span></h1>
+    </div>
+    {% if otp_list %}
+    <div class="section-label">Telegram 登录验证码</div>
+    <div class="grid-container">
+        {% for name, data in otp_list.items() %}
+        <div class="card tg-style">
+            <div class="card-header">
+                <div style="display:flex; align-items:center;">
+                    <i class="fa-brands fa-telegram platform-icon"></i>
+                    <span class="account-name">{{ name }}</span>
+                </div>
+                <span class="status-badge">已连接</span>
+            </div>
+            {% if data.code %}
+                <div class="code-box" onclick="copyToClip('{{ data.code }}')">{{ data.code }}</div>
+                <div class="meta-info">
+                    <span><i class="fa-regular fa-clock"></i> {{ data.time.split(' ')[1] }} 接收</span>
+                    <span style="color:#0ea5e9; font-size:10px;">点击复制</span>
+                </div>
+            {% else %}
+                <div style="padding: 24px 0; text-align: center; color: #9ca3af; font-size: 13px; font-style: italic;">等待验证码...</div>
+            {% endif %}
+            <div class="meta-info" style="margin-top:10px; border-top:1px solid #f3f4f6; padding-top:8px;">
+                <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">{{ data.text[:30] }}...</span>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+    {% if google_list %}
+    <div class="section-label">谷歌验证码 (2FA)</div>
+    <div class="grid-container">
+        {% for item in google_list %}
+        <div class="card ga-style google-item" data-ttl="{{ item.ttl }}">
+            <div class="card-header">
+                <div style="display:flex; align-items:center;">
+                    <i class="fa-brands fa-google platform-icon"></i>
+                    <span class="account-name">{{ item.name }}</span>
+                </div>
+                <span class="status-badge ttl-text">{{ item.ttl }}s</span>
+            </div>
+            <div class="code-box" onclick="copyToClip('{{ item.code }}')">{{ item.code }}</div>
+            <div class="progress-track">
+                <div class="progress-fill" style="width: {{ (item.ttl / 30) * 100 }}%"></div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+    {% if not otp_list and not google_list %}
+    <div class="empty-state"><i class="fa-solid fa-ghost" style="font-size: 32px; margin-bottom: 10px;"></i><br>暂无已配置的账号</div>
+    {% endif %}
+    <div id="toast" class="toast">已复制到剪贴板</div>
+    <script>
+    function copyToClip(text) {
+        if(!text) return;
+        const input = document.createElement('input');
+        input.setAttribute('value', text);
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand('copy');
+        document.body.removeChild(input);
+        const toast = document.getElementById('toast');
+        toast.textContent = text + ' 已复制';
+        toast.classList.add('show');
+        setTimeout(() => toast.classList.remove('show'), 2000);
+    }
+    document.addEventListener("DOMContentLoaded", function() {
+        const items = document.querySelectorAll('.google-item');
+        setInterval(() => {
+            let needsReload = false;
+            items.forEach(item => {
+                let ttl = parseFloat(item.getAttribute('data-ttl'));
+                ttl -= 0.1;
+                if (ttl <= 0) { needsReload = true; } else {
+                    item.setAttribute('data-ttl', ttl.toFixed(1));
+                    const badge = item.querySelector('.ttl-text');
+                    if(badge) badge.innerText = Math.ceil(ttl) + 's';
+                    const fill = item.querySelector('.progress-fill');
+                    if(fill) {
+                        const pct = (ttl / 30) * 100;
+                        fill.style.width = pct + '%';
+                        if(ttl < 5) fill.style.background = '#ef4444'; else fill.style.background = 'linear-gradient(90deg, #f43f5e, #e11d48)';
+                    }
+                }
+            });
+            if (needsReload) { setTimeout(() => location.reload(), 1500); }
+        }, 100); 
+    });
+    </script>
+</body>
+</html>
+"""
+
 async def analyze_message(client, rule, event, other_cs_ids, sender_obj):
     if not rule.get("enabled", True): 
         return False, "规则已关闭", None
@@ -654,6 +790,7 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_obj):
     if event.out: return False, "Bot自己发送", None
     if event.sender_id in other_cs_ids: return False, "ID是客服", None
     
+    # v69: Pass sender object, not name string
     if not check_sender_allowed(sender_obj, rule):
         return False, "发送者被排除", None
 
@@ -884,7 +1021,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v72 (Strict Pause Mode)"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v73 (Bug Fix)"); return
         if not current_config.get("enabled", True): return
         
         # Approval Logic
@@ -893,8 +1030,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             if any(k in event.text for k in app_kws):
                 try:
                     approver = await event.get_sender()
-                    # v69: Approval also checks username strictly
-                    if not check_sender_allowed(approver, rule): return 
+                    # REMOVED: Premature check causing 'rule' not defined error
 
                     original_msg = await event.get_reply_message()
                     if original_msg:
@@ -902,10 +1038,15 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                         
                         for rule in current_config.get("rules", []):
                             if not rule.get("enabled", True): continue
-                            # v69: Pass sender object
+                            
+                            # 1. Check if original message matches rule
                             is_match, _, _ = await analyze_message(client, rule, events.NewMessage.Event(original_msg), other_cs_ids, orig_sender)
                             
                             if is_match and rule.get("enable_approval", False):
+                                # 2. [Fixed] Check if APPROVER is allowed for THIS rule
+                                if not check_sender_allowed(approver, rule):
+                                    continue # Skip if approver is not in whitelist
+
                                 logger.info(f"👮 [Approval] 批准通过! 匹配规则: {rule.get('name')}")
                                 action = rule.get("approval_action", {})
                                 
@@ -916,7 +1057,6 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                 extra_on = current_config.get("extra_enabled", True)
                                 if not target_name: target_name = MAIN_NAME 
                                 
-                                # If target is NOT main, and extra is OFF -> STOP (Don't reply)
                                 if target_name != MAIN_NAME and not extra_on:
                                     logger.info(f"⏸️ [Approval] 副号开关已关，规则已暂停")
                                     return
@@ -1031,4 +1171,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v72 (Strict Pause Mode) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v73 (Bug Fix) 已启动")
