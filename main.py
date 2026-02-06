@@ -733,23 +733,18 @@ WAIT_CHECK_HTML = """
 </head>
 <body>
     <div class="card">
-    <h1>🔍 消息检测工具</h1>
-    <div class="hint-box" style="background: #fff8e1; padding: 10px; border-radius: 6px; font-size: 13px; color: #856404; margin-bottom: 15px; border: 1px solid #ffeeba;">
-        💡 <b>模式说明：</b><br>
-        1. 输入普通关键词（如“稍等”）：搜索包含该词的消息并检查其是否已闭环。<br>
-        2. 输入 <b>“全体”</b>：全量扫描过去10小时内<b>所有被遗漏的消息</b>（客户发了消息但无人回复）。
+        <h1>🔍 稍等关键词闭环检测</h1>
+        <div class="form-group">
+            <label>输入关键词 (例如: 请稍等ART)</label>
+            <input type="text" id="keyword" placeholder="输入要搜索的关键词..." value="请稍等ART">
+        </div>
+        <button onclick="startCheck()" id="btn-search">开始检测 (过去 10 小时)</button>
+        
+        <div id="progress-container">
+            <div id="progress-bar"><div id="progress-fill"></div></div>
+            <div id="status-text">准备就绪...</div>
+        </div>
     </div>
-    <div class="form-group">
-        <label>输入关键词</label>
-        <input type="text" id="keyword" placeholder="输入关键词 或 '全体'..." value="全体">
-    </div>
-    <button onclick="startCheck()" id="btn-search">开始检测 (过去 10 小时)</button>
-    
-    <div id="progress-container">
-        <div id="progress-bar"><div id="progress-fill"></div></div>
-        <div id="status-text">准备就绪...</div>
-    </div>
-</div>
 
     <div class="card" id="result-card" style="display:none">
         <div class="summary" id="summary-box"></div>
@@ -1017,147 +1012,180 @@ async def _check_is_closed_logic(latest_msg):
     is_closed = False
     reason = ""
     
-    last_sender_is_cs = await is_official_cs(latest_msg)
+    # 检查最新消息的发送者
+    last_sender_id = latest_msg.sender_id
+    last_sender_is_cs = False
+    if last_sender_id in ([MY_ID] + OTHER_CS_IDS):
+         last_sender_is_cs = True
+    else:
+         try:
+             s = await latest_msg.get_sender()
+             if s and getattr(s, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)):
+                 last_sender_is_cs = True
+         except: pass
     
     if not last_sender_is_cs:
-        # 最后一条是客户：如果是纯媒体则忽略，否则走 AI 判断
+        # 最后是客户发言 -> AI 检测
         if not latest_msg.text or not latest_msg.text.strip():
-            is_closed = True 
-            reason = "最后是客户[纯媒体/贴纸] (自动忽略)"
+            is_closed = False
+            reason = "最后是客户[媒体/贴纸]"
         else:
+            # 使用同步执行器调用 AI
             need_reply, ai_reason = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: _ai_check_reply_needed(latest_msg.text)
             )
-            is_closed = not need_reply
-            reason = f"AI判定{'已' if is_closed else '需'}回复：{ai_reason}"
+            if not need_reply:
+                is_closed = True
+                reason = f"AI判定已闭环：{ai_reason}"
+            else:
+                is_closed = False
+                reason = f"AI判定需回复：{ai_reason}"
     else:
-        # 最后一条是客服：检查是否为“稍等”或“跟进”词
+        # 最后是客服发言 -> 检查内容是否仍包含等待词/跟进词
         last_text_norm = normalize(latest_msg.text or "")
+        
+        # 稍等词 (Wait): 保持包含匹配 (Inclusion) 以兼容 "请稍等一下"
         is_wait = any(k in last_text_norm for k in WAIT_SIGNATURES)
+        
+        # 跟进词 (Keep): 使用精确匹配 (Exact Match)
+        # [Ver 45.1 Fix] 复用 Keep Keyword 强制精确逻辑
         is_keep = last_text_norm in KEEP_SIGNATURES
         
         if is_wait or is_keep:
             is_closed = False
-            reason = f"最后结果仍为：客服发送{'稍等' if is_wait else '跟进'}词"
+            reason = f"客服最后仍回复{'稍等' if is_wait else '跟进'}词"
+            
+            # [Ver 44.0] 豁免逻辑：如果客户删除了原消息，视为已闭环（无法回复）
+            if latest_msg.reply_to:
+                try:
+                    replied_obj = await latest_msg.get_reply_message()
+                    if not replied_obj: 
+                        is_closed = True
+                        reason = "客户已删消息 (自动豁免)"
+                except: pass
         else:
-            # 客服发了其他内容（如“已处理”），判定为已闭环
             is_closed = True
-            reason = "客服已提供最终结果"
             
     return is_closed, reason
 
-# [Ver 46.0] 增强版：支持“全体”遗漏扫描模式
 async def check_wait_keyword_logic(keyword, result_queue):
+    """
+    搜索过去10小时内包含 `keyword` 的消息，并检查闭环。
+    将结果推送到 result_queue。
+    """
     try:
         cutoff_time = datetime.now(timezone.utc) - timedelta(hours=10)
         total_groups = len(CS_GROUP_IDS)
-        EXCLUDED_GROUPS = [-1002807120955, -1002169616907]
-        # 匹配纯 @ 用户名（支持多个 @），如 "@user1 @user2"
-        mention_pattern = re.compile(r'^(@[\w\d_]+\s*)+$') 
         
-        is_all_mode = (keyword == "全体")
+        # 定义不参与检查的黑名单群组
+        EXCLUDED_GROUPS = [-1002807120955, -1002169616907]
+        
         found_count = 0
         closed_count = 0
 
         for idx, chat_id in enumerate(CS_GROUP_IDS):
             if chat_id in EXCLUDED_GROUPS: continue
             
+            # 推送进度
+            percent = int((idx / total_groups) * 100)
             result_queue.put(json.dumps({
-                "type": "progress", "percent": int((idx / total_groups) * 100), 
-                "msg": f"正在扫描 {chat_id}..."
+                "type": "progress", "percent": percent, 
+                "msg": f"正在扫描群组 {chat_id} ({idx+1}/{total_groups})..."
             }))
 
             try:
+                # 1. 抓取该群组最近10小时的消息
                 history = []
+                # 限制3000条或时间截止
                 async for m in client.iter_messages(chat_id, limit=3000):
                     if m.date and m.date < cutoff_time: break
                     history.append(m)
                 
-                # --- 第一阶段：建立接待状态映射表 ---
-                msg_by_id = {m.id: m for m in history}
-                attended_thread_ids = set() # 已有客服回复的线程 ID
-                replied_grouped_ids = set() # 已有客服回复的相册 ID
-                
-                # 倒序扫描（从旧到新），记录客服的所有动作
+                # 2. 建立 Thread 状态表
+                thread_latest_msg = {}
                 for m in history:
-                    if await is_official_cs(m):
-                        # 记录客服所在的线程（TopID 或被回复的 MsgID）
+                    t_id = None
+                    if m.reply_to:
+                        t_id = m.reply_to.reply_to_top_id 
+                        if not t_id: t_id = m.reply_to.reply_to_msg_id
+                    if not t_id: t_id = m.id
+                    if t_id not in thread_latest_msg:
+                        thread_latest_msg[t_id] = m
+
+                # 3. 在历史中查找包含 keyword 的消息
+                for m in history:
+                    if not m.text: continue
+                    if keyword in m.text: # 只要包含关键词
+                        found_count += 1
+                        
+                        t_id = None
                         if m.reply_to:
-                            t_id = m.reply_to.reply_to_top_id or m.reply_to.reply_to_msg_id
-                            attended_thread_ids.add(t_id)
-                            # 记录该客服回复的消息是否属于某个相册
-                            orig = msg_by_id.get(m.reply_to.reply_to_msg_id)
-                            if orig and orig.grouped_id:
-                                replied_grouped_ids.add(orig.grouped_id)
-
-                # --- 第二阶段：筛选目标 ---
-                targets = []
-                if is_all_mode:
-                    # 全体模式：找完全没有客服回复痕迹的客户消息
-                    thread_processed = set()
-                    for m in reversed(history): # 从旧到新，只取客户发起的起始消息
-                        if await is_official_cs(m): continue
+                            t_id = m.reply_to.reply_to_top_id 
+                            if not t_id: t_id = m.reply_to.reply_to_msg_id
+                        if not t_id: t_id = m.id
                         
-                        # 1. 过滤纯 @ 消息
-                        if m.text and mention_pattern.match(m.text.strip()): continue
+                        latest_msg = thread_latest_msg.get(t_id, m)
                         
-                        # 2. 判定该消息所属线程是否已被接待
-                        t_id = m.reply_to.reply_to_top_id if m.reply_to else (m.reply_to.reply_to_msg_id if m.reply_to else m.id)
-                        if t_id in attended_thread_ids: continue # 只要客服回过该线程，跳过
-                        if m.grouped_id and m.grouped_id in replied_grouped_ids: continue # 已回相册，跳过
+                        # [Ver 42.0] 调用统一闭环判断逻辑 (Consistency Fix)
+                        is_closed, reason = await _check_is_closed_logic(latest_msg)
                         
-                        if t_id not in thread_processed:
-                            targets.append(m)
-                            thread_processed.add(t_id)
-                else:
-                    # 关键词模式：搜索指定词，并追踪该线程的“最终闭环状态”
-                    for m in history:
-                        if m.text and keyword in m.text:
-                            targets.append(m)
+                        if is_closed: closed_count += 1
 
-                # --- 第三阶段：判定结果并推送 ---
-                for m in targets:
-                    # 找到该线程的绝对最新消息
-                    t_id = m.reply_to.reply_to_top_id if m.reply_to else (m.reply_to.reply_to_msg_id if m.reply_to else m.id)
-                    latest_m = m
-                    for x in history:
-                        xt_id = x.reply_to.reply_to_top_id if x.reply_to else (x.reply_to.reply_to_msg_id if x.reply_to else x.id)
-                        if xt_id == t_id:
-                            latest_m = x # 历史消息列表中第一条匹配的就是最新的
-                            break
-                    
-                    is_closed, reason = await _check_is_closed_logic(latest_m)
-                    
-                    # 在“全体”模式下，所有通过筛选的都是“未接待”
-                    if is_all_mode: is_closed, reason = False, "客服未接待遗漏"
-                    
-                    if is_closed:
-                        closed_count += 1
-                        continue # 关键词模式下已闭环的不展示
+                        # 构建结果并推送
+                        group_name = str(chat_id)
+                        try:
+                            g = await client.get_entity(chat_id)
+                            group_name = g.title
+                        except: pass
+                        
+                        safe_text = (m.text or "")[:100].replace('\n', ' ')
+                        beijing_time = m.date.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
+                        
+                        # [Link Fix] 链接逻辑优化
+                        target_msg_for_link = latest_msg if not is_closed else m
+                        
+                        link = ""
+                        real_chat_id = str(chat_id).replace('-100', '')
+                        url_thread_id = None
+                        
+                        if "(客户删消息)" not in reason:
+                            if target_msg_for_link.reply_to:
+                                url_thread_id = target_msg_for_link.reply_to.reply_to_top_id
+                                if not url_thread_id:
+                                    url_thread_id = target_msg_for_link.reply_to.reply_to_msg_id
+                        
+                        if url_thread_id:
+                             link = f"https://t.me/c/{real_chat_id}/{target_msg_for_link.id}?thread={url_thread_id}"
+                        else:
+                             link = f"https://t.me/c/{real_chat_id}/{target_msg_for_link.id}"
+                        
+                        # [Ver 44.1] 添加最新消息内容到结果中，方便用户排查
+                        latest_content = (latest_msg.text or "[媒体]")[:60].replace('\n', ' ')
 
-                    found_count += 1
-                    g_name = "未知群组"
-                    try: g_name = (await client.get_entity(chat_id)).title
-                    except: pass
-                    
-                    beijing_time = m.date.astimezone(timezone(timedelta(hours=8))).strftime('%m-%d %H:%M')
-                    real_chat_id = str(chat_id).replace('-100', '')
-                    link = f"https://t.me/c/{real_chat_id}/{m.id}"
+                        result_queue.put(json.dumps({
+                            "type": "result",
+                            "is_closed": is_closed,
+                            "reason": reason,
+                            "time": beijing_time,
+                            "group_name": group_name,
+                            "found_text": safe_text,
+                            "latest_text": latest_content, # New field
+                            "link": link
+                        }))
 
-                    result_queue.put(json.dumps({
-                        "type": "result", "is_closed": is_closed, "reason": reason,
-                        "time": beijing_time, "group_name": g_name,
-                        "found_text": (m.text or "[媒体/文件]")[:80].replace('\n', ' '),
-                        "latest_text": (latest_m.text or "[媒体]")[:50],
-                        "link": link
-                    }))
             except Exception as e:
-                logger.error(f"Scan Error Chat {chat_id}: {e}")
+                logger.error(f"Group {chat_id} check failed: {e}")
 
-        result_queue.put(json.dumps({"type": "done", "total": found_count, "closed": closed_count, "open": found_count}))
-        result_queue.put(None)
+        result_queue.put(json.dumps({
+            "type": "done", 
+            "total": found_count, 
+            "closed": closed_count, 
+            "open": found_count - closed_count
+        }))
+        result_queue.put(None) # Sentinel
+
     except Exception as e:
-        logger.error(f"Logic Error: {e}")
+        logger.error(f"Check Task Logic Error: {e}")
         result_queue.put(None)
 
 # [Ver 42.8 Fix] Restore missing route
