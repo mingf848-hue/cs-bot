@@ -1017,34 +1017,20 @@ async def _check_is_closed_logic(latest_msg):
     is_closed = False
     reason = ""
     
-    # 检查最新消息的发送者
-    last_sender_id = latest_msg.sender_id
-    last_sender_is_cs = False
-    if last_sender_id in ([MY_ID] + OTHER_CS_IDS):
-         last_sender_is_cs = True
-    else:
-         try:
-             s = await latest_msg.get_sender()
-             if s and getattr(s, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)):
-                 last_sender_is_cs = True
-         except: pass
+    last_sender_is_cs = await is_official_cs(latest_msg)
     
     if not last_sender_is_cs:
-        # 最后是客户发言 -> AI 检测
         if not latest_msg.text or not latest_msg.text.strip():
-            is_closed = False
-            reason = "最后是客户[媒体/贴纸]"
+            # [修复] 针对纯媒体/贴纸，如果它们是对话的最后一条且无文字，
+            # 通常是礼貌表情或截图证据，可默认视为已闭环，减少误报
+            is_closed = True
+            reason = "最后是客户[媒体/贴纸] (自动闭环)"
         else:
-            # 使用同步执行器调用 AI
             need_reply, ai_reason = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: _ai_check_reply_needed(latest_msg.text)
             )
-            if not need_reply:
-                is_closed = True
-                reason = f"AI判定已闭环：{ai_reason}"
-            else:
-                is_closed = False
-                reason = f"AI判定需回复：{ai_reason}"
+            is_closed = not need_reply
+            reason = f"AI判定{'已' if is_closed else '需'}回复：{ai_reason}"
     else:
         # 最后是客服发言 -> 检查内容是否仍包含等待词/跟进词
         last_text_norm = normalize(latest_msg.text or "")
@@ -1075,16 +1061,9 @@ async def _check_is_closed_logic(latest_msg):
 
 # [Ver 46.0] 增强版：支持“全体”遗漏扫描模式
 async def check_wait_keyword_logic(keyword, result_queue):
-    """
-    搜索过去10小时内的消息。
-    如果 keyword == "全体"，则进入【全量遗漏扫描】模式：找出所有客户发送但客服未回复的消息。
-    否则进入【关键词闭环】模式：搜索包含关键词的消息并检查其后续闭环情况。
-    """
     try:
         cutoff_time = datetime.now(timezone.utc) - timedelta(hours=10)
         total_groups = len(CS_GROUP_IDS)
-        
-        # 定义不参与检查的黑名单群组
         EXCLUDED_GROUPS = [-1002807120955, -1002169616907]
         
         is_all_mode = (keyword == "全体")
@@ -1094,45 +1073,49 @@ async def check_wait_keyword_logic(keyword, result_queue):
         for idx, chat_id in enumerate(CS_GROUP_IDS):
             if chat_id in EXCLUDED_GROUPS: continue
             
-            # 推送进度
-            percent = int((idx / total_groups) * 100)
             result_queue.put(json.dumps({
-                "type": "progress", "percent": percent, 
-                "msg": f"正在{'扫描遗漏' if is_all_mode else '搜索关键词'} {chat_id} ({idx+1}/{total_groups})..."
+                "type": "progress", "percent": int((idx / total_groups) * 100), 
+                "msg": f"正在{'扫描遗漏' if is_all_mode else '搜索关键词'} {chat_id}..."
             }))
 
             try:
-                # 1. 抓取该群组最近10小时的消息
                 history = []
                 async for m in client.iter_messages(chat_id, limit=3000):
                     if m.date and m.date < cutoff_time: break
                     history.append(m)
                 
-                # 2. 建立 Thread 状态表 (找到每个对话流的最后一条消息)
+                # --- [新增] 建立消息索引和相册回复记录 ---
+                msg_by_id = {m.id: m for m in history}
+                replied_grouped_ids = set()
+                for m in history:
+                    if await is_official_cs(m) and m.reply_to:
+                        orig = msg_by_id.get(m.reply_to.reply_to_msg_id)
+                        if orig and orig.grouped_id:
+                            replied_grouped_ids.add(orig.grouped_id)
+                # ---------------------------------------
+
                 thread_latest_msg = {}
                 for m in history:
-                    t_id = None
-                    if m.reply_to:
-                        t_id = m.reply_to.reply_to_top_id or m.reply_to.reply_to_msg_id
-                    if not t_id: t_id = m.id
-                    if t_id not in thread_latest_msg:
-                        thread_latest_msg[t_id] = m
+                    # [修复] 如果该相册已有回复，则跳过检测
+                    if m.grouped_id and m.grouped_id in replied_grouped_ids:
+                        continue
 
-                # 3. 处理逻辑
+                    t_id = m.reply_to.reply_to_top_id if m.reply_to else None
+                    if not t_id and m.reply_to: t_id = m.reply_to.reply_to_msg_id
+                    if not t_id: t_id = m.id
+                    if t_id not in thread_latest_msg: thread_latest_msg[t_id] = m
+
                 targets = []
                 if is_all_mode:
-                    # 【全量遗漏模式】：遍历所有线程，看最新一条是不是客户发的
                     for t_id, latest_m in thread_latest_msg.items():
-                        # 如果最新消息不是客服发的，则视为潜在遗漏
                         if not await is_official_cs(latest_m):
-                            targets.append((latest_m, latest_m)) # (触发点, 最新点)
+                            targets.append((latest_m, latest_m))
                 else:
-                    # 【关键词模式】：找出包含关键词的消息，并看它所属线程的最新状态
+                    # 关键词模式逻辑保持不变
                     for m in history:
                         if m.text and keyword in m.text:
-                            t_id = None
-                            if m.reply_to:
-                                t_id = m.reply_to.reply_to_top_id or m.reply_to.reply_to_msg_id
+                            t_id = m.reply_to.reply_to_top_id if m.reply_to else None
+                            if not t_id and m.reply_to: t_id = m.reply_to.reply_to_msg_id
                             if not t_id: t_id = m.id
                             latest_m = thread_latest_msg.get(t_id, m)
                             targets.append((m, latest_m))
