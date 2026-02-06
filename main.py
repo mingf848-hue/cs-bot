@@ -1020,10 +1020,10 @@ async def _check_is_closed_logic(latest_msg):
     last_sender_is_cs = await is_official_cs(latest_msg)
     
     if not last_sender_is_cs:
+        # 最后一条是客户：如果是纯媒体则忽略，否则走 AI 判断
         if not latest_msg.text or not latest_msg.text.strip():
-            # 针对全体模式：如果最后是客户发的媒体/贴纸，且完全没客服回过，标记为未接待
-            is_closed = False
-            reason = "最后是客户[媒体/贴纸] 且无客服响应"
+            is_closed = True 
+            reason = "最后是客户[纯媒体/贴纸] (自动忽略)"
         else:
             need_reply, ai_reason = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: _ai_check_reply_needed(latest_msg.text)
@@ -1031,30 +1031,18 @@ async def _check_is_closed_logic(latest_msg):
             is_closed = not need_reply
             reason = f"AI判定{'已' if is_closed else '需'}回复：{ai_reason}"
     else:
-        # 最后是客服发言 -> 检查内容是否仍包含等待词/跟进词
+        # 最后一条是客服：检查是否为“稍等”或“跟进”词
         last_text_norm = normalize(latest_msg.text or "")
-        
-        # 稍等词 (Wait): 保持包含匹配 (Inclusion) 以兼容 "请稍等一下"
         is_wait = any(k in last_text_norm for k in WAIT_SIGNATURES)
-        
-        # 跟进词 (Keep): 使用精确匹配 (Exact Match)
-        # [Ver 45.1 Fix] 复用 Keep Keyword 强制精确逻辑
         is_keep = last_text_norm in KEEP_SIGNATURES
         
         if is_wait or is_keep:
             is_closed = False
-            reason = f"客服最后仍回复{'稍等' if is_wait else '跟进'}词"
-            
-            # [Ver 44.0] 豁免逻辑：如果客户删除了原消息，视为已闭环（无法回复）
-            if latest_msg.reply_to:
-                try:
-                    replied_obj = await latest_msg.get_reply_message()
-                    if not replied_obj: 
-                        is_closed = True
-                        reason = "客户已删消息 (自动豁免)"
-                except: pass
+            reason = f"最后结果仍为：客服发送{'稍等' if is_wait else '跟进'}词"
         else:
+            # 客服发了其他内容（如“已处理”），判定为已闭环
             is_closed = True
+            reason = "客服已提供最终结果"
             
     return is_closed, reason
 
@@ -1064,6 +1052,8 @@ async def check_wait_keyword_logic(keyword, result_queue):
         cutoff_time = datetime.now(timezone.utc) - timedelta(hours=10)
         total_groups = len(CS_GROUP_IDS)
         EXCLUDED_GROUPS = [-1002807120955, -1002169616907]
+        # 匹配纯 @ 用户名（支持多个 @），如 "@user1 @user2"
+        mention_pattern = re.compile(r'^(@[\w\d_]+\s*)+$') 
         
         is_all_mode = (keyword == "全体")
         found_count = 0
@@ -1074,7 +1064,7 @@ async def check_wait_keyword_logic(keyword, result_queue):
             
             result_queue.put(json.dumps({
                 "type": "progress", "percent": int((idx / total_groups) * 100), 
-                "msg": f"正在{'扫描遗漏' if is_all_mode else '搜索关键词'} {chat_id}..."
+                "msg": f"正在扫描 {chat_id}..."
             }))
 
             try:
@@ -1083,67 +1073,67 @@ async def check_wait_keyword_logic(keyword, result_queue):
                     if m.date and m.date < cutoff_time: break
                     history.append(m)
                 
-                # --- 核心逻辑：分析接待状态 ---
+                # --- 第一阶段：建立接待状态映射表 ---
                 msg_by_id = {m.id: m for m in history}
-                thread_has_cs = set()        # 记录有客服说话的线程 ID
-                replied_grouped_ids = set()  # 记录已回复的相册 ID
+                attended_thread_ids = set() # 已有客服回复的线程 ID
+                replied_grouped_ids = set() # 已有客服回复的相册 ID
                 
-                # 遍历历史记录，找出哪些流已经被客服接待过
+                # 倒序扫描（从旧到新），记录客服的所有动作
                 for m in history:
-                    is_cs = await is_official_cs(m)
-                    t_id = m.reply_to.reply_to_top_id if m.reply_to else (m.reply_to.reply_to_msg_id if m.reply_to else m.id)
-                    
-                    if is_cs:
-                        thread_has_cs.add(t_id)
-                        # 如果客服回复的是某个相册中的消息，记录该相册已回复
+                    if await is_official_cs(m):
+                        # 记录客服所在的线程（TopID 或被回复的 MsgID）
                         if m.reply_to:
+                            t_id = m.reply_to.reply_to_top_id or m.reply_to.reply_to_msg_id
+                            attended_thread_ids.add(t_id)
+                            # 记录该客服回复的消息是否属于某个相册
                             orig = msg_by_id.get(m.reply_to.reply_to_msg_id)
                             if orig and orig.grouped_id:
                                 replied_grouped_ids.add(orig.grouped_id)
 
-                # --- 筛选目标 ---
+                # --- 第二阶段：筛选目标 ---
                 targets = []
                 if is_all_mode:
-                    # 全体模式：找完全没客服回复过的客户消息
-                    processed_threads = set() # 每个流只报一次最旧的那条
-                    for m in reversed(history): # 从旧到新看，找到客户发起的点
+                    # 全体模式：找完全没有客服回复痕迹的客户消息
+                    thread_processed = set()
+                    for m in reversed(history): # 从旧到新，只取客户发起的起始消息
                         if await is_official_cs(m): continue
                         
+                        # 1. 过滤纯 @ 消息
+                        if m.text and mention_pattern.match(m.text.strip()): continue
+                        
+                        # 2. 判定该消息所属线程是否已被接待
                         t_id = m.reply_to.reply_to_top_id if m.reply_to else (m.reply_to.reply_to_msg_id if m.reply_to else m.id)
-                        if t_id in thread_has_cs: continue # 只要客服回过一句话，就算“已接待”，排除
-                        if m.grouped_id and m.grouped_id in replied_grouped_ids: continue # 已回相册排除
+                        if t_id in attended_thread_ids: continue # 只要客服回过该线程，跳过
+                        if m.grouped_id and m.grouped_id in replied_grouped_ids: continue # 已回相册，跳过
                         
-                        # 过滤纯 @用户名的消息 (例如: @dalawa88 或 @user1 @user2)
-                        txt = (m.text or "").strip()
-                        if txt and re.fullmatch(r'(@\w+\s*)+', txt): continue
-                        
-                        if t_id not in processed_threads:
+                        if t_id not in thread_processed:
                             targets.append(m)
-                            processed_threads.add(t_id)
+                            thread_processed.add(t_id)
                 else:
-                    # 关键词模式：保持原逻辑（搜词 + 闭环检测）
+                    # 关键词模式：搜索指定词，并追踪该线程的“最终闭环状态”
                     for m in history:
                         if m.text and keyword in m.text:
                             targets.append(m)
 
-                # --- 推送结果 ---
+                # --- 第三阶段：判定结果并推送 ---
                 for m in targets:
-                    # 只有关键词模式需要跑闭环逻辑，全体模式直接列出所有 target
-                    is_closed, reason = (False, "客服未接待")
-                    if not is_all_mode:
-                        # 关键词模式下需找到该 Thread 的最新消息判断闭环
-                        t_id = m.reply_to.reply_to_top_id if m.reply_to else (m.reply_to.reply_to_msg_id if m.reply_to else m.id)
-                        latest_m = m # 默认
-                        for x in history:
-                            xt_id = x.reply_to.reply_to_top_id if x.reply_to else (x.reply_to.reply_to_msg_id if x.reply_to else x.id)
-                            if xt_id == t_id:
-                                latest_m = x
-                                break
-                        is_closed, reason = await _check_is_closed_logic(latest_m)
+                    # 找到该线程的绝对最新消息
+                    t_id = m.reply_to.reply_to_top_id if m.reply_to else (m.reply_to.reply_to_msg_id if m.reply_to else m.id)
+                    latest_m = m
+                    for x in history:
+                        xt_id = x.reply_to.reply_to_top_id if x.reply_to else (x.reply_to.reply_to_msg_id if x.reply_to else x.id)
+                        if xt_id == t_id:
+                            latest_m = x # 历史消息列表中第一条匹配的就是最新的
+                            break
                     
-                    if is_closed: 
+                    is_closed, reason = await _check_is_closed_logic(latest_m)
+                    
+                    # 在“全体”模式下，所有通过筛选的都是“未接待”
+                    if is_all_mode: is_closed, reason = False, "客服未接待遗漏"
+                    
+                    if is_closed:
                         closed_count += 1
-                        continue
+                        continue # 关键词模式下已闭环的不展示
 
                     found_count += 1
                     g_name = "未知群组"
@@ -1158,11 +1148,11 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         "type": "result", "is_closed": is_closed, "reason": reason,
                         "time": beijing_time, "group_name": g_name,
                         "found_text": (m.text or "[媒体/文件]")[:80].replace('\n', ' '),
+                        "latest_text": (latest_m.text or "[媒体]")[:50],
                         "link": link
                     }))
-
             except Exception as e:
-                logger.error(f"Group {chat_id} scan failed: {e}")
+                logger.error(f"Scan Error Chat {chat_id}: {e}")
 
         result_queue.put(json.dumps({"type": "done", "total": found_count, "closed": closed_count, "open": found_count}))
         result_queue.put(None)
