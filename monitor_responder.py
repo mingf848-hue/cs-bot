@@ -947,12 +947,23 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     logger.info(f"✅ [Monitor] 规则 '{rule.get('name')}' 触发!")
                     rule_timers[rule.get("id", str(rule.get("groups")))] = time.time()
                     
+                   # v70.1: Routing with Sub-Account Switch
                     target_client = client 
                     target_name = rule.get("reply_account")
-                    if not target_name: target_name = MAIN_NAME 
+                    
+                    # 读取副账号总开关 (默认为 True)
+                    extra_on = current_config.get("extra_enabled", True)
+
+                    # 如果没指定账号，或者(指定了副账号 但 开关被关了)，强制用主账号
+                    if not target_name or (target_name != MAIN_NAME and not extra_on):
+                        target_name = MAIN_NAME 
+                        if not extra_on and rule.get("reply_account"):
+                            logger.info(f"⚠️ [Routing] 副账号开关已关，强制切换回主账号回复")
+                    
                     if target_name in global_clients:
                         target_client = global_clients[target_name]
-                        if target_name != MAIN_NAME: logger.info(f"🔀 [Routing] 使用指定账号回复: {target_name}")
+                        if target_name != MAIN_NAME:
+                            logger.info(f"🔀 [Routing] 使用指定账号回复: {target_name}")
 
                     sent_msgs = []
                     for step in rule.get("replies", []):
