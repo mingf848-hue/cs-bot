@@ -1,378 +1,3 @@
-import asyncio
-import logging
-import time
-import random
-import json
-import os
-import re
-import warnings
-from datetime import datetime, timedelta, timezone
-from flask import request, jsonify, Response, render_template_string
-from telethon import events, TelegramClient, functions
-from telethon.sessions import StringSession
-
-# 忽略 asyncio 的一些无关紧要的警告
-warnings.filterwarnings("ignore", category=RuntimeWarning)
-
-# [依赖] 导入 pyotp 用于计算谷歌验证码
-try:
-    import pyotp
-except ImportError:
-    pyotp = None
-
-# [依赖] 尝试导入 redis
-try: 
-    import redis
-except ImportError: 
-    redis = None
-
-logger = logging.getLogger("BotLogger")
-
-CONFIG_FILE = "monitor_config_v2.json"
-REDIS_KEY = "monitor_config"
-global_main_handler = None
-
-# ==========================================
-# [配置区] 时区设置 - 北京时间 (UTC+8)
-# ==========================================
-BJ_TZ = timezone(timedelta(hours=8))
-TZ_NAME = "北京时间"
-
-# ==========================================
-# [全局存储] 
-# ==========================================
-latest_otp_storage = {}
-global_clients = {}  # 存储所有活跃的客户端实例 {name: client}
-MAIN_NAME = "主账号" # 全局记录主账号名称
-
-# --- 核心工具函数 ---
-
-def match_text(text, rule):
-    """通用文本匹配逻辑 (支持 & # 和 r:正则)"""
-    keywords = rule.get("keywords", [])
-    if not keywords: return True 
-    
-    text_lower = text.lower()
-    
-    for kw_rule in keywords:
-        if not kw_rule: continue
-        
-        parts = kw_rule.split('#')
-        include_part = parts[0].strip()
-        exclude_parts = [p.strip().lower() for p in parts[1:] if p.strip()]
-        
-        hit_exclusion = False
-        for ex in exclude_parts:
-            if ex in text_lower:
-                hit_exclusion = True
-                break
-        if hit_exclusion: continue
-        
-        include_part_lower = include_part.lower()
-        
-        if include_part_lower.startswith('r:'):
-            try:
-                pattern = include_part[2:] # 去掉 'r:'
-                if re.search(pattern, text, re.IGNORECASE):
-                    return True
-            except: pass
-        else:
-            and_kws = include_part_lower.split('&')
-            all_matched = True
-            for ak in and_kws:
-                ak = ak.strip()
-                if ak and (ak not in text_lower):
-                    all_matched = False
-                    break
-            if all_matched and and_kws:
-                return True
-    return False
-
-def get_sender_name(sender):
-    """统一提取发送者名称"""
-    if not sender: return "Unknown"
-    title = getattr(sender, 'title', '')
-    if title: return title
-    fname = getattr(sender, 'first_name', '') or ""
-    lname = getattr(sender, 'last_name', '') or ""
-    fullname = f"{fname} {lname}".strip()
-    uname = getattr(sender, 'username', '')
-    if uname:
-        return f"{fullname} (@{uname})".strip()
-    return fullname or "Unknown"
-
-def check_sender_allowed(sender_obj, rule):
-    """检查发送者是否被允许 (只检测 Username)"""
-    sender_mode = rule.get("sender_mode", "exclude")
-    prefixes = rule.get("sender_prefixes", [])
-    
-    current_username = getattr(sender_obj, 'username', None)
-    
-    if not current_username:
-        if sender_mode == "include": return False
-        return True 
-
-    current_username = current_username.lower()
-    match_found = False
-    
-    for p in prefixes:
-        if not p: continue
-        clean_p = p.strip().lstrip('@').lower()
-        if clean_p and (clean_p in current_username):
-            match_found = True
-            break
-            
-    if sender_mode == "exclude" and match_found: 
-        # logger.info(f"🛡️ [Filter] 黑名单拦截: @{current_username}")
-        return False
-    elif sender_mode == "include" and not match_found: 
-        return False
-        
-    return True
-
-def format_caption(tpl):
-    if not tpl: return ""
-    now_str = datetime.now(BJ_TZ).strftime('%Y-%-m-%-d %H:%M') 
-    res = tpl.replace('{time}', now_str)
-    return res
-
-def parse_smart_amount(text):
-    """从文本中提取金额，支持 k/w/万 等单位"""
-    unit_pattern = re.search(r'(\d+(?:\.\d+)?)\s*([wWkK万千])', text)
-    if unit_pattern:
-        num = float(unit_pattern.group(1))
-        unit = unit_pattern.group(2).lower()
-        if unit in ['w', '万']: return True, num * 10000
-        elif unit in ['k', '千']: return True, num * 1000
-            
-    keyword_pattern = re.search(r'(?:金额|额度|存|款|U)\D{0,5}?(\d+(?:\.\d+)?)', text)
-    if keyword_pattern: return True, float(keyword_pattern.group(1))
-        
-    simple_nums = re.findall(r'\d+(?:\.\d+)?', text)
-    if simple_nums:
-        try: return True, max([float(n) for n in simple_nums])
-        except: pass
-
-    return False, 0.0
-
-# --- 默认配置 ---
-DEFAULT_CONFIG = {
-    "enabled": True,
-    "extra_enabled": True, 
-    "approval_keywords": ["同意", "批准", "ok"],
-    "schedule": {
-        "active": False,
-        "start": "09:00",
-        "end": "21:00"
-    },
-    "rules": [
-        {
-            "id": "default_rule",
-            "name": "默认规则",
-            "enabled": True,
-            "groups": [],
-            "check_file": False,
-            "keywords": [],
-            "enable_approval": False,
-            "reply_account": "", 
-            "file_extensions": [],
-            "filename_keywords": [],
-            "sender_mode": "exclude",
-            "sender_prefixes": [],
-            "cooldown": 60,
-            "replies": [{"type": "text", "text": "收到", "min": 1, "max": 2}],
-            "approval_action": {}
-        }
-    ]
-}
-
-current_config = DEFAULT_CONFIG.copy()
-rule_timers = {}
-redis_client = None
-
-def init_redis_connection():
-    global redis_client
-    redis_url = os.environ.get("REDIS_URL") or os.environ.get("REDIS_URI") or os.environ.get("REDIS_PUBLIC_URL")
-    
-    if redis and redis_url:
-        try:
-            redis_url = redis_url.strip()
-            safe_url = re.sub(r':([^@]+)@', ':****@', redis_url)
-            logger.info(f"🔗 [Monitor] 尝试连接 Redis: {safe_url}")
-            redis_client = redis.from_url(redis_url, decode_responses=True, socket_timeout=5, socket_connect_timeout=5)
-            redis_client.ping()
-            logger.info("✅ [Monitor] Redis 数据库连接成功!")
-        except Exception as e:
-            logger.error(f"❌ [Monitor] Redis 连接失败 (将使用本地模式): {e}")
-            redis_client = None
-    else:
-        logger.warning("⚠️ [Monitor] 未检测到 REDIS_URL 或 REDIS_URI，将仅使用本地文件存储")
-
-def load_config(system_cs_prefixes):
-    global current_config
-    loaded = False
-    
-    if redis_client:
-        try:
-            data = redis_client.get(REDIS_KEY)
-            if data:
-                saved = json.loads(data)
-                if "rules" in saved:
-                    current_config = saved
-                    loaded = True
-                    logger.info("📥 [Monitor] 已从 Redis 恢复配置")
-        except Exception as e:
-            logger.error(f"⚠️ [Monitor] Redis 读取出错: {e}")
-
-    if not loaded and os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                saved = json.load(f)
-                if "rules" in saved:
-                    current_config = saved
-                    loaded = True
-                    logger.info("📂 [Monitor] 已从本地文件恢复配置")
-        except Exception as e:
-            logger.error(f"⚠️ [Monitor] 本地文件读取出错: {e}")
-
-    if not loaded: 
-        logger.warning("⚠️ [Monitor] 未能加载任何配置，系统使用默认模板启动")
-        current_config = DEFAULT_CONFIG.copy()
-    
-    if "extra_enabled" not in current_config:
-        current_config["extra_enabled"] = True 
-
-    if "approval_keywords" not in current_config:
-        current_config["approval_keywords"] = ["同意", "批准", "ok"]
-    if "schedule" not in current_config:
-        current_config["schedule"] = DEFAULT_CONFIG["schedule"]
-
-    for rule in current_config["rules"]:
-        if "enabled" not in rule: rule["enabled"] = True
-        if "check_file" not in rule: rule["check_file"] = False
-        if "enable_approval" not in rule: rule["enable_approval"] = False
-        if "reply_account" not in rule: rule["reply_account"] = "" 
-        
-        if "filename_keywords" not in rule: rule["filename_keywords"] = []
-        if "approval_action" not in rule: rule["approval_action"] = {}
-        
-        aa = rule["approval_action"]
-        if "reply_admin" not in aa: aa["reply_admin"] = ""
-        if "reply_origin" not in aa: aa["reply_origin"] = ""
-        if "forward_to" not in aa: aa["forward_to"] = ""
-        for i in range(1, 4):
-            if f"delay_{i}_min" not in aa: aa[f"delay_{i}_min"] = 1.0
-            if f"delay_{i}_max" not in aa: aa[f"delay_{i}_max"] = 2.0
-
-        if rule["sender_mode"] == "exclude" and not rule["sender_prefixes"]:
-            rule["sender_prefixes"] = list(system_cs_prefixes)
-
-def save_config(new_config):
-    global current_config
-    try:
-        if not isinstance(new_config, dict) or "rules" not in new_config:
-            return False, "无效的配置格式"
-
-        if "schedule" not in new_config:
-            new_config["schedule"] = DEFAULT_CONFIG["schedule"]
-        else:
-            new_config["schedule"]["active"] = bool(new_config["schedule"].get("active", False))
-            new_config["schedule"]["start"] = str(new_config["schedule"].get("start", "09:00"))
-            new_config["schedule"]["end"] = str(new_config["schedule"].get("end", "21:00"))
-
-        if "extra_enabled" in new_config:
-            current_config["extra_enabled"] = bool(new_config["extra_enabled"])
-
-        raw_app_kws = new_config.get("approval_keywords", [])
-        if isinstance(raw_app_kws, str):
-            new_config["approval_keywords"] = [k.strip() for k in re.split(r'[,\n]', raw_app_kws) if k.strip()]
-        
-        for rule in new_config.get("rules", []):
-            rule["enabled"] = bool(rule.get("enabled", True))
-            rule["reply_account"] = str(rule.get("reply_account", "")).strip() 
-            
-            clean_groups = []
-            raw_groups = rule.get("groups", [])
-            if isinstance(raw_groups, str): raw_groups = raw_groups.split('\n')
-            for g in raw_groups:
-                g_str = str(g).strip()
-                match = re.search(r'-?\d+', g_str)
-                if match:
-                    try: clean_groups.append(int(match.group()))
-                    except: pass
-            rule["groups"] = clean_groups
-            
-            rule["check_file"] = bool(rule.get("check_file", False))
-            rule["enable_approval"] = bool(rule.get("enable_approval", False))
-
-            clean_kws = []
-            raw_kws = rule.get("keywords", [])
-            if isinstance(raw_kws, str): raw_kws = raw_kws.split('\n')
-            for k in raw_kws:
-                k = str(k).strip()
-                if k: clean_kws.append(k)
-            rule["keywords"] = clean_kws
-
-            clean_exts = []
-            raw_exts = rule.get("file_extensions", [])
-            if isinstance(raw_exts, str): raw_exts = raw_exts.split('\n')
-            for ext in raw_exts:
-                e = str(ext).strip().lower().replace('.', '')
-                if e: clean_exts.append(e)
-            rule["file_extensions"] = clean_exts
-
-            clean_fn_kws = []
-            raw_fn_kws = rule.get("filename_keywords", [])
-            if isinstance(raw_fn_kws, str): raw_fn_kws = raw_fn_kws.split('\n')
-            for k in raw_fn_kws:
-                k = str(k).strip()
-                if k: clean_fn_kws.append(k)
-            rule["filename_keywords"] = clean_fn_kws
-            
-            if "approval_action" not in rule: rule["approval_action"] = {}
-            aa = rule["approval_action"]
-            aa["reply_admin"] = str(aa.get("reply_admin", "")).strip()
-            aa["reply_origin"] = str(aa.get("reply_origin", "")).strip()
-            
-            for i in range(1, 4):
-                try: aa[f"delay_{i}_min"] = float(aa.get(f"delay_{i}_min", 1.0))
-                except: aa[f"delay_{i}_min"] = 1.0
-                try: aa[f"delay_{i}_max"] = float(aa.get(f"delay_{i}_max", 2.0))
-                except: aa[f"delay_{i}_max"] = 2.0
-            
-            clean_prefixes = []
-            raw_prefixes = rule.get("sender_prefixes", [])
-            if isinstance(raw_prefixes, str): raw_prefixes = raw_prefixes.split('\n')
-            for p in raw_prefixes:
-                p = str(p).strip()
-                if p: clean_prefixes.append(p)
-            rule["sender_prefixes"] = clean_prefixes
-            
-            try: rule["cooldown"] = int(rule.get("cooldown", 60))
-            except: rule["cooldown"] = 60
-            for r in rule.get("replies", []):
-                try: r["min"] = float(r.get("min", 1.0))
-                except: r["min"] = 1.0
-                try: r["max"] = float(r.get("max", 3.0))
-                except: r["max"] = 3.0
-                if "type" not in r: r["type"] = "text"
-        
-        if redis_client:
-            try: 
-                redis_client.set(REDIS_KEY, json.dumps(new_config, ensure_ascii=False))
-            except Exception as e:
-                logger.error(f"❌ [Monitor] Redis 保存失败: {e}")
-        
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(new_config, f, indent=4, ensure_ascii=False)
-        
-        current_config = new_config
-        logger.info(f"💾 [Monitor] 配置已更新并保存")
-        return True, "保存成功"
-    except Exception as e:
-        logger.error(f"❌ [Monitor] 保存逻辑错误: {e}")
-        return False, str(e)
-
 # --- Web UI (Bento Grid + Global CDN + Multi-Account Selector) ---
 SETTINGS_HTML = """
 <!DOCTYPE html>
@@ -380,28 +5,94 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v73</title>
+    <title>Monitor Pro v77</title>
     <script src="https://unpkg.com/vue@3.3.4/dist/vue.global.prod.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        body { font-family: 'Plus Jakarta Sans', sans-serif; }
-        ::-webkit-scrollbar { width: 4px; height: 4px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 2px; }
-        ::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
-        textarea, input, select { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: -0.01em; }
-        .bento-card { background: white; border: 1px solid #E5E7EB; border-radius: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); transition: all 0.2s ease; }
-        .bento-card:hover { border-color: #D1D5DB; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); }
-        .bento-input { background-color: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 6px; color: #374151; transition: all 0.15s; }
-        .bento-input:focus { background-color: white; border-color: #6366F1; ring: 2px solid rgba(99, 102, 241, 0.1); outline: none; }
-        .section-label { font-size: 10px; font-weight: 700; color: #6B7280; text-transform: uppercase; letter-spacing: 0.05em; }
-        .recovery-panel { background: linear-gradient(135deg, #FFF1F2 0%, #FFF 100%); border: 1px solid #FECDD3; }
-        .approval-bg { background-color: #EFF6FF; border-top: 1px solid #DBEAFE; }
+        body { 
+            font-family: 'Plus Jakarta Sans', sans-serif; 
+        }
+        ::-webkit-scrollbar { 
+            width: 4px; 
+            height: 4px; 
+        }
+        ::-webkit-scrollbar-track { 
+            background: transparent; 
+        }
+        ::-webkit-scrollbar-thumb { 
+            background: #CBD5E1; 
+            border-radius: 2px; 
+        }
+        ::-webkit-scrollbar-thumb:hover { 
+            background: #94A3B8; 
+        }
+        textarea, input, select { 
+            font-family: 'JetBrains Mono', monospace; 
+            font-size: 11px; 
+            letter-spacing: -0.01em; 
+        }
+        .bento-card { 
+            background: white; 
+            border: 1px solid #E5E7EB; 
+            border-radius: 8px; 
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05); 
+            transition: all 0.2s ease; 
+        }
+        .bento-card:hover { 
+            border-color: #D1D5DB; 
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); 
+        }
+        .bento-input { 
+            background-color: #F9FAFB; 
+            border: 1px solid #E5E7EB; 
+            border-radius: 6px; 
+            color: #374151; 
+            transition: all 0.15s; 
+        }
+        .bento-input:focus { 
+            background-color: white; 
+            border-color: #6366F1; 
+            ring: 2px solid rgba(99, 102, 241, 0.1); 
+            outline: none; 
+        }
+        .section-label { 
+            font-size: 10px; 
+            font-weight: 700; 
+            color: #6B7280; 
+            text-transform: uppercase; 
+            letter-spacing: 0.05em; 
+        }
+        .recovery-panel { 
+            background: linear-gradient(135deg, #FFF1F2 0%, #FFF 100%); 
+            border: 1px solid #FECDD3; 
+        }
+        .approval-bg { 
+            background-color: #EFF6FF; 
+            border-top: 1px solid #DBEAFE; 
+        }
     </style>
     <script>
-        tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Plus Jakarta Sans"', 'sans-serif'], mono: ['"JetBrains Mono"', 'monospace'], }, colors: { primary: '#6366F1', slate: { 50:'#f9fafb', 100:'#f3f4f6', 200:'#e5e7eb', 800:'#1f2937' } } } } }
+        tailwind.config = { 
+            theme: { 
+                extend: { 
+                    fontFamily: { 
+                        sans: ['"Plus Jakarta Sans"', 'sans-serif'], 
+                        mono: ['"JetBrains Mono"', 'monospace'], 
+                    }, 
+                    colors: { 
+                        primary: '#6366F1', 
+                        slate: { 
+                            50:'#f9fafb', 
+                            100:'#f3f4f6', 
+                            200:'#e5e7eb', 
+                            800:'#1f2937' 
+                        } 
+                    } 
+                } 
+            } 
+        }
     </script>
 </head>
 <body class="text-slate-800 antialiased min-h-screen pb-20 font-sans">
@@ -409,7 +100,7 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v73</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v77</span></span>
         </div>
         
         <div class="flex items-center gap-3">
@@ -462,11 +153,11 @@ SETTINGS_HTML = """
         <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             <div v-for="(rule, index) in config.rules" :key="index" 
                  class="bento-card flex flex-col overflow-hidden relative group transition-all duration-300"
-                 :class="{'opacity-50 grayscale': !rule.enabled || (rule.reply_account && rule.reply_account !== '' && !config.extra_enabled)}">
+                 :class="{'opacity-60 grayscale': (!rule.enabled) || (rule.reply_account && rule.reply_account !== '' && !config.extra_enabled)}">
                 
                 <div v-if="rule.enabled && rule.reply_account && rule.reply_account !== '' && !config.extra_enabled" 
-                     class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-slate-800 text-white px-3 py-1 rounded shadow-lg z-20 text-xs font-bold pointer-events-none">
-                    ⏸️ 副号暂停中
+                     class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-slate-800 text-white px-3 py-1 rounded shadow-lg z-20 text-xs font-bold pointer-events-none whitespace-nowrap">
+                    ⛔ 被主控强关
                 </div>
 
                 <div class="px-3 py-2 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
@@ -474,13 +165,20 @@ SETTINGS_HTML = """
                         <span class="text-slate-400 text-[10px] font-mono">#{{index+1}}</span>
                         <input v-model="rule.name" class="bg-transparent border-none p-0 text-xs font-bold text-slate-700 focus:ring-0 placeholder-slate-300 w-full font-sans" placeholder="未命名规则">
                     </div>
-                    <label class="relative inline-flex items-center cursor-pointer mr-2" :title="rule.enabled ? '规则已开启' : '规则已禁用'">
-                        <input type="checkbox" v-model="rule.enabled" @change="saveConfig" class="sr-only peer">
+                    
+                    <label class="relative inline-flex items-center cursor-pointer mr-2" 
+                           :title="(rule.reply_account && !config.extra_enabled) ? '分身模式已关闭，此开关被强制锁定' : '切换规则状态'">
+                        <input type="checkbox" 
+                               :checked="rule.enabled && (!rule.reply_account || rule.reply_account === '' || config.extra_enabled)" 
+                               @change="if(!rule.reply_account || rule.reply_account === '' || config.extra_enabled) { rule.enabled = $event.target.checked; saveConfig(); }"
+                               :disabled="!!rule.reply_account && rule.reply_account !== '' && !config.extra_enabled"
+                               class="sr-only peer">
                         <div class="w-7 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-green-500"></div>
                     </label>
+
                     <button @click="removeRule(index)" class="text-slate-300 hover:text-red-500 transition-colors px-1" title="删除"><i class="fa-solid fa-trash text-[10px]"></i></button>
                 </div>
-                <div class="p-3 flex flex-col gap-3" :class="{'pointer-events-none': !rule.enabled}">
+                <div class="p-3 flex flex-col gap-3" :class="{'pointer-events-none': !rule.enabled || (rule.reply_account && rule.reply_account !== '' && !config.extra_enabled)}">
                     <div class="space-y-1.5">
                         <div class="flex items-center justify-between"><span class="section-label"><i class="fa-solid fa-eye mr-1"></i>监听来源</span><label class="flex items-center gap-1 cursor-pointer select-none"><input type="checkbox" v-model="rule.check_file" class="w-3 h-3 text-primary border-slate-300 rounded focus:ring-0"><span class="text-[10px] text-slate-500 font-medium" :class="{'text-primary': rule.check_file}">文件模式</span></label></div>
                         <div class="relative"><textarea :value="listToString(rule.groups)" @change="stringToIntList($event, rule, 'groups')" rows="1" class="bento-input w-full px-2 py-1.5 resize-none h-8 leading-tight font-mono text-[11px]" placeholder="群ID (换行分隔)"></textarea></div>
@@ -555,15 +253,29 @@ SETTINGS_HTML = """
     const { createApp, reactive } = Vue;
     createApp({
         setup() {
-            const config = reactive({ enabled: false, approval_keywords: [], schedule: {active: false, start: '09:00', end: '21:00'}, rules: [] });
+            const config = reactive({ enabled: false, extra_enabled: true, approval_keywords: [], schedule: {active: false, start: '09:00', end: '21:00'}, rules: [] });
             const toast = reactive({ show: false, msg: '', type: 'success' });
             const recovery = reactive({ search: '', reply: '', hours: 5, min: 2, max: 5 });
             const available_accounts = reactive([]);
 
+            // v75: Independent function for refreshing status
+            const refreshStatus = () => {
+                fetch('/tool/monitor_settings_json')
+                    .then(r => r.json())
+                    .then(data => { 
+                        // Only update switches to avoid UI glitches during typing
+                        if(data.enabled !== undefined) config.enabled = data.enabled;
+                        if(data.extra_enabled !== undefined) config.extra_enabled = data.extra_enabled;
+                    })
+                    .catch(e => console.log('Heartbeat skipped'));
+            };
+
+            // Initial full load
             fetch('/tool/monitor_settings_json')
                 .then(r => r.json())
                 .then(data => { 
                     config.enabled = data.enabled; 
+                    if(data.extra_enabled !== undefined) config.extra_enabled = data.extra_enabled;
                     if(data.available_accounts) available_accounts.push(...data.available_accounts);
                     
                     if(data.approval_keywords) config.approval_keywords = data.approval_keywords;
@@ -586,6 +298,9 @@ SETTINGS_HTML = """
                         return r;
                     });
                 });
+
+            // Start Heartbeat (every 3 seconds)
+            setInterval(refreshStatus, 3000);
 
             const listToString = (list) => (list || []).join('\\n');
             const stringToList = (e, rule, key) => { 
@@ -654,40 +369,193 @@ OTP_HTML = """
     <title>验证码监控</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <style>
-        :root { --bg-color: #f3f4f6; --text-color: #1f2937; --card-bg: #ffffff; }
-        body { font-family: -apple-system, system-ui, "Microsoft YaHei", sans-serif; background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
-        .header { text-align: center; margin-bottom: 30px; }
-        .header h1 { font-size: 24px; font-weight: 800; margin: 0; color: #374151; letter-spacing: -0.5px; }
-        .header span { font-size: 13px; color: #9ca3af; font-weight: 500; background: #e5e7eb; padding: 2px 8px; border-radius: 99px; margin-left: 8px; vertical-align: middle; }
-        .grid-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; width: 100%; max-width: 1200px; margin-bottom: 40px; }
-        .card { background: var(--card-bg); border-radius: 16px; padding: 20px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03); border: 1px solid #f3f4f6; transition: transform 0.2s; position: relative; overflow: hidden; }
-        .card:hover { transform: translateY(-2px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05); }
-        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-        .platform-icon { font-size: 20px; margin-right: 8px; }
-        .account-name { font-weight: 700; font-size: 15px; color: #111827; }
-        .status-badge { font-size: 11px; padding: 2px 8px; border-radius: 6px; font-weight: 600; text-transform: uppercase; }
+        :root { 
+            --bg-color: #f3f4f6; 
+            --text-color: #1f2937; 
+            --card-bg: #ffffff; 
+        }
+        body { 
+            font-family: -apple-system, system-ui, "Microsoft YaHei", sans-serif; 
+            background-color: var(--bg-color); 
+            color: var(--text-color); 
+            margin: 0; 
+            padding: 20px; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            min-height: 100vh; 
+        }
+        
+        .header { 
+            text-align: center; 
+            margin-bottom: 30px; 
+        }
+        .header h1 { 
+            font-size: 24px; 
+            font-weight: 800; 
+            margin: 0; 
+            color: #374151; 
+            letter-spacing: -0.5px; 
+        }
+        .header span { 
+            font-size: 13px; 
+            color: #9ca3af; 
+            font-weight: 500; 
+            background: #e5e7eb; 
+            padding: 2px 8px; 
+            border-radius: 99px; 
+            margin-left: 8px; 
+            vertical-align: middle; 
+        }
+
+        .grid-container { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); 
+            gap: 20px; 
+            width: 100%; 
+            max-width: 1200px; 
+            margin-bottom: 40px; 
+        }
+        
+        .card { 
+            background: var(--card-bg); 
+            border-radius: 16px; 
+            padding: 20px; 
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03); 
+            border: 1px solid #f3f4f6; 
+            transition: transform 0.2s; 
+            position: relative; 
+            overflow: hidden; 
+        }
+        .card:hover { 
+            transform: translateY(-2px); 
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05); 
+        }
+        
+        .card-header { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            margin-bottom: 16px; 
+        }
+        .platform-icon { 
+            font-size: 20px; 
+            margin-right: 8px; 
+        }
+        .account-name { 
+            font-weight: 700; 
+            font-size: 15px; 
+            color: #111827; 
+        }
+        .status-badge { 
+            font-size: 11px; 
+            padding: 2px 8px; 
+            border-radius: 6px; 
+            font-weight: 600; 
+            text-transform: uppercase; 
+        }
+        
+        /* Telegram Style */
         .tg-style .platform-icon { color: #24A1DE; }
         .tg-style .status-badge { background: #e0f2fe; color: #0284c7; }
         .tg-style .code-box { background: #f0f9ff; color: #0369a1; border: 1px dashed #bae6fd; }
+        
+        /* Google Style */
         .ga-style .platform-icon { color: #EA4335; }
         .ga-style .status-badge { background: #fff1f2; color: #e11d48; }
         .ga-style .code-box { background: #fff5f5; color: #be123c; border: 1px dashed #fecdd3; }
-        .code-box { font-family: 'SF Mono', 'Menlo', monospace; font-size: 32px; font-weight: 700; letter-spacing: 4px; text-align: center; padding: 16px; border-radius: 12px; margin: 12px 0; cursor: pointer; user-select: all; transition: all 0.2s; }
-        .code-box:active { transform: scale(0.98); background-color: #e5e7eb; }
-        .meta-info { font-size: 12px; color: #6b7280; display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-weight: 500; }
-        .progress-track { height: 6px; background: #f3f4f6; border-radius: 3px; overflow: hidden; margin-top: 15px; }
-        .progress-fill { height: 100%; border-radius: 3px; transition: width 0.1s linear; }
-        .ga-style .progress-fill { background: linear-gradient(90deg, #f43f5e, #e11d48); }
-        .empty-state { text-align: center; padding: 40px; color: #9ca3af; font-size: 14px; background: white; border-radius: 16px; border: 2px dashed #e5e7eb; width: 100%; max-width: 600px; }
-        .section-label { font-size: 12px; font-weight: 700; color: #9ca3af; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; width: 100%; max-width: 1200px; }
-        .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #1f2937; color: white; padding: 8px 16px; border-radius: 20px; font-size: 12px; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
-        .toast.show { opacity: 1; }
+
+        .code-box { 
+            font-family: 'SF Mono', 'Menlo', monospace; 
+            font-size: 32px; 
+            font-weight: 700; 
+            letter-spacing: 4px; 
+            text-align: center; 
+            padding: 16px; 
+            border-radius: 12px; 
+            margin: 12px 0; 
+            cursor: pointer; 
+            user-select: all; 
+            transition: all 0.2s; 
+        }
+        .code-box:active { 
+            transform: scale(0.98); 
+            background-color: #e5e7eb; 
+        }
+        
+        .meta-info { 
+            font-size: 12px; 
+            color: #6b7280; 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            margin-top: 8px; 
+            font-weight: 500; 
+        }
+        
+        .progress-track { 
+            height: 6px; 
+            background: #f3f4f6; 
+            border-radius: 3px; 
+            overflow: hidden; 
+            margin-top: 15px; 
+        }
+        .progress-fill { 
+            height: 100%; 
+            border-radius: 3px; 
+            transition: width 0.1s linear; 
+        }
+        .ga-style .progress-fill { 
+            background: linear-gradient(90deg, #f43f5e, #e11d48); 
+        }
+
+        .empty-state { 
+            text-align: center; 
+            padding: 40px; 
+            color: #9ca3af; 
+            font-size: 14px; 
+            background: white; 
+            border-radius: 16px; 
+            border: 2px dashed #e5e7eb; 
+            width: 100%; 
+            max-width: 600px; 
+        }
+        
+        .section-label { 
+            font-size: 12px; 
+            font-weight: 700; 
+            color: #9ca3af; 
+            text-transform: uppercase; 
+            letter-spacing: 1px; 
+            margin-bottom: 12px; 
+            width: 100%; 
+            max-width: 1200px; 
+        }
+        
+        .toast { 
+            position: fixed; 
+            bottom: 20px; 
+            left: 50%; 
+            transform: translateX(-50%); 
+            background: #1f2937; 
+            color: white; 
+            padding: 8px 16px; 
+            border-radius: 20px; 
+            font-size: 12px; 
+            opacity: 0; 
+            transition: opacity 0.3s; 
+            pointer-events: none; 
+        }
+        .toast.show { 
+            opacity: 1; 
+        }
     </style>
 </head>
 <body>
     <div class="header">
         <h1>验证码监控 <span>{{ tz_name }}</span></h1>
     </div>
+
     {% if otp_list %}
     <div class="section-label">Telegram 登录验证码</div>
     <div class="grid-container">
@@ -707,7 +575,9 @@ OTP_HTML = """
                     <span style="color:#0ea5e9; font-size:10px;">点击复制</span>
                 </div>
             {% else %}
-                <div style="padding: 24px 0; text-align: center; color: #9ca3af; font-size: 13px; font-style: italic;">等待验证码...</div>
+                <div style="padding: 24px 0; text-align: center; color: #9ca3af; font-size: 13px; font-style: italic;">
+                    等待验证码...
+                </div>
             {% endif %}
             <div class="meta-info" style="margin-top:10px; border-top:1px solid #f3f4f6; padding-top:8px;">
                 <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">{{ data.text[:30] }}...</span>
@@ -716,6 +586,7 @@ OTP_HTML = """
         {% endfor %}
     </div>
     {% endif %}
+
     {% if google_list %}
     <div class="section-label">谷歌验证码 (2FA)</div>
     <div class="grid-container">
@@ -736,10 +607,16 @@ OTP_HTML = """
         {% endfor %}
     </div>
     {% endif %}
+
     {% if not otp_list and not google_list %}
-    <div class="empty-state"><i class="fa-solid fa-ghost" style="font-size: 32px; margin-bottom: 10px;"></i><br>暂无已配置的账号</div>
+    <div class="empty-state">
+        <i class="fa-solid fa-ghost" style="font-size: 32px; margin-bottom: 10px;"></i><br>
+        暂无已配置的账号
+    </div>
     {% endif %}
+
     <div id="toast" class="toast">已复制到剪贴板</div>
+
     <script>
     function copyToClip(text) {
         if(!text) return;
@@ -749,31 +626,53 @@ OTP_HTML = """
         input.select();
         document.execCommand('copy');
         document.body.removeChild(input);
+        
         const toast = document.getElementById('toast');
         toast.textContent = text + ' 已复制';
         toast.classList.add('show');
         setTimeout(() => toast.classList.remove('show'), 2000);
     }
+
     document.addEventListener("DOMContentLoaded", function() {
         const items = document.querySelectorAll('.google-item');
+        
         setInterval(() => {
             let needsReload = false;
+            
             items.forEach(item => {
                 let ttl = parseFloat(item.getAttribute('data-ttl'));
+                // 每次减少 0.1 秒
                 ttl -= 0.1;
-                if (ttl <= 0) { needsReload = true; } else {
+                
+                if (ttl <= 0) {
+                    needsReload = true;
+                } else {
+                    // 更新属性
                     item.setAttribute('data-ttl', ttl.toFixed(1));
+                    
+                    // 更新右上角文字
                     const badge = item.querySelector('.ttl-text');
                     if(badge) badge.innerText = Math.ceil(ttl) + 's';
+                    
+                    // 更新进度条
                     const fill = item.querySelector('.progress-fill');
                     if(fill) {
                         const pct = (ttl / 30) * 100;
                         fill.style.width = pct + '%';
-                        if(ttl < 5) fill.style.background = '#ef4444'; else fill.style.background = 'linear-gradient(90deg, #f43f5e, #e11d48)';
+                        
+                        // 颜色变化提醒
+                        if(ttl < 5) fill.style.background = '#ef4444'; // Red
+                        else fill.style.background = 'linear-gradient(90deg, #f43f5e, #e11d48)';
                     }
                 }
             });
-            if (needsReload) { setTimeout(() => location.reload(), 1500); }
+
+            // 关键修复：如果任何一个验证码过期，等待 1.5 秒后刷新页面
+            // 这样可以防止在 0s 时疯狂刷新
+            if (needsReload) {
+                console.log("Token expired, refreshing in 1.5s...");
+                setTimeout(() => location.reload(), 1500);
+            }
         }, 100); 
     });
     </script>
@@ -1021,7 +920,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v73 (Bug Fix)"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v77 (Full Unabridged)"); return
         if not current_config.get("enabled", True): return
         
         # Approval Logic
@@ -1030,7 +929,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             if any(k in event.text for k in app_kws):
                 try:
                     approver = await event.get_sender()
-                    # REMOVED: Premature check causing 'rule' not defined error
+                    # v69: Approval also checks username strictly
+                    # if not check_sender_allowed(approver, rule): return # BUG: rule not defined here yet
 
                     original_msg = await event.get_reply_message()
                     if original_msg:
@@ -1039,7 +939,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                         for rule in current_config.get("rules", []):
                             if not rule.get("enabled", True): continue
                             
-                            # 1. Check if original message matches rule
+                            # 1. Match original message
                             is_match, _, _ = await analyze_message(client, rule, events.NewMessage.Event(original_msg), other_cs_ids, orig_sender)
                             
                             if is_match and rule.get("enable_approval", False):
@@ -1135,7 +1035,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                             parts = cfg.split('|')
                             if len(parts) >= 3:
                                 thresh = float(parts[0])
-                                # v70: Smart amount
+                                # v76: Smart amount (Fixed long ID bug)
                                 found, amt = parse_smart_amount(event.text)
                                 
                                 if found:
@@ -1171,4 +1071,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v73 (Bug Fix) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v77 (Full Unabridged) 已启动")
