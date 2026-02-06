@@ -1021,10 +1021,9 @@ async def _check_is_closed_logic(latest_msg):
     
     if not last_sender_is_cs:
         if not latest_msg.text or not latest_msg.text.strip():
-            # [修复] 针对纯媒体/贴纸，如果它们是对话的最后一条且无文字，
-            # 通常是礼貌表情或截图证据，可默认视为已闭环，减少误报
-            is_closed = True
-            reason = "最后是客户[媒体/贴纸] (自动闭环)"
+            # 针对全体模式：如果最后是客户发的媒体/贴纸，且完全没客服回过，标记为未接待
+            is_closed = False
+            reason = "最后是客户[媒体/贴纸] 且无客服响应"
         else:
             need_reply, ai_reason = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: _ai_check_reply_needed(latest_msg.text)
@@ -1084,95 +1083,91 @@ async def check_wait_keyword_logic(keyword, result_queue):
                     if m.date and m.date < cutoff_time: break
                     history.append(m)
                 
-                # --- [新增] 建立消息索引和相册回复记录 ---
+                # --- 核心逻辑：分析接待状态 ---
                 msg_by_id = {m.id: m for m in history}
-                replied_grouped_ids = set()
+                thread_has_cs = set()        # 记录有客服说话的线程 ID
+                replied_grouped_ids = set()  # 记录已回复的相册 ID
+                
+                # 遍历历史记录，找出哪些流已经被客服接待过
                 for m in history:
-                    if await is_official_cs(m) and m.reply_to:
-                        orig = msg_by_id.get(m.reply_to.reply_to_msg_id)
-                        if orig and orig.grouped_id:
-                            replied_grouped_ids.add(orig.grouped_id)
-                # ---------------------------------------
+                    is_cs = await is_official_cs(m)
+                    t_id = m.reply_to.reply_to_top_id if m.reply_to else (m.reply_to.reply_to_msg_id if m.reply_to else m.id)
+                    
+                    if is_cs:
+                        thread_has_cs.add(t_id)
+                        # 如果客服回复的是某个相册中的消息，记录该相册已回复
+                        if m.reply_to:
+                            orig = msg_by_id.get(m.reply_to.reply_to_msg_id)
+                            if orig and orig.grouped_id:
+                                replied_grouped_ids.add(orig.grouped_id)
 
-                thread_latest_msg = {}
-                for m in history:
-                    # [修复] 如果该相册已有回复，则跳过检测
-                    if m.grouped_id and m.grouped_id in replied_grouped_ids:
-                        continue
-
-                    t_id = m.reply_to.reply_to_top_id if m.reply_to else None
-                    if not t_id and m.reply_to: t_id = m.reply_to.reply_to_msg_id
-                    if not t_id: t_id = m.id
-                    if t_id not in thread_latest_msg: thread_latest_msg[t_id] = m
-
+                # --- 筛选目标 ---
                 targets = []
                 if is_all_mode:
-                    for t_id, latest_m in thread_latest_msg.items():
-                        if not await is_official_cs(latest_m):
-                            targets.append((latest_m, latest_m))
+                    # 全体模式：找完全没客服回复过的客户消息
+                    processed_threads = set() # 每个流只报一次最旧的那条
+                    for m in reversed(history): # 从旧到新看，找到客户发起的点
+                        if await is_official_cs(m): continue
+                        
+                        t_id = m.reply_to.reply_to_top_id if m.reply_to else (m.reply_to.reply_to_msg_id if m.reply_to else m.id)
+                        if t_id in thread_has_cs: continue # 只要客服回过一句话，就算“已接待”，排除
+                        if m.grouped_id and m.grouped_id in replied_grouped_ids: continue # 已回相册排除
+                        
+                        # 过滤纯 @用户名的消息 (例如: @dalawa88 或 @user1 @user2)
+                        txt = (m.text or "").strip()
+                        if txt and re.fullmatch(r'(@\w+\s*)+', txt): continue
+                        
+                        if t_id not in processed_threads:
+                            targets.append(m)
+                            processed_threads.add(t_id)
                 else:
-                    # 关键词模式逻辑保持不变
+                    # 关键词模式：保持原逻辑（搜词 + 闭环检测）
                     for m in history:
                         if m.text and keyword in m.text:
-                            t_id = m.reply_to.reply_to_top_id if m.reply_to else None
-                            if not t_id and m.reply_to: t_id = m.reply_to.reply_to_msg_id
-                            if not t_id: t_id = m.id
-                            latest_m = thread_latest_msg.get(t_id, m)
-                            targets.append((m, latest_m))
+                            targets.append(m)
 
-                # 4. 判定并推送结果
-                for origin_m, latest_m in targets:
-                    found_count += 1
-                    is_closed, reason = await _check_is_closed_logic(latest_m)
+                # --- 推送结果 ---
+                for m in targets:
+                    # 只有关键词模式需要跑闭环逻辑，全体模式直接列出所有 target
+                    is_closed, reason = (False, "客服未接待")
+                    if not is_all_mode:
+                        # 关键词模式下需找到该 Thread 的最新消息判断闭环
+                        t_id = m.reply_to.reply_to_top_id if m.reply_to else (m.reply_to.reply_to_msg_id if m.reply_to else m.id)
+                        latest_m = m # 默认
+                        for x in history:
+                            xt_id = x.reply_to.reply_to_top_id if x.reply_to else (x.reply_to.reply_to_msg_id if x.reply_to else x.id)
+                            if xt_id == t_id:
+                                latest_m = x
+                                break
+                        is_closed, reason = await _check_is_closed_logic(latest_m)
                     
-                    if is_closed:
+                    if is_closed: 
                         closed_count += 1
-                        if is_all_mode: continue # 全量扫描模式下，已闭环的不再展示，只看遗漏
+                        continue
 
-                    # 获取群组名称
-                    group_name = str(chat_id)
-                    try:
-                        g = await client.get_entity(chat_id)
-                        group_name = g.title
+                    found_count += 1
+                    g_name = "未知群组"
+                    try: g_name = (await client.get_entity(chat_id)).title
                     except: pass
                     
-                    safe_text = (origin_m.text or "[媒体/文件]")[:100].replace('\n', ' ')
-                    beijing_time = origin_m.date.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
-                    latest_content = (latest_m.text or "[媒体]")[:60].replace('\n', ' ')
-
-                    # 生成链接
+                    beijing_time = m.date.astimezone(timezone(timedelta(hours=8))).strftime('%m-%d %H:%M')
                     real_chat_id = str(chat_id).replace('-100', '')
-                    url_thread_id = None
-                    if latest_m.reply_to:
-                        url_thread_id = latest_m.reply_to.reply_to_top_id or latest_m.reply_to.reply_to_msg_id
-                    
-                    link = f"https://t.me/c/{real_chat_id}/{latest_m.id}"
-                    if url_thread_id: link += f"?thread={url_thread_id}"
+                    link = f"https://t.me/c/{real_chat_id}/{m.id}"
 
                     result_queue.put(json.dumps({
-                        "type": "result",
-                        "is_closed": is_closed,
-                        "reason": reason,
-                        "time": beijing_time,
-                        "group_name": group_name,
-                        "found_text": safe_text,
-                        "latest_text": latest_content,
+                        "type": "result", "is_closed": is_closed, "reason": reason,
+                        "time": beijing_time, "group_name": g_name,
+                        "found_text": (m.text or "[媒体/文件]")[:80].replace('\n', ' '),
                         "link": link
                     }))
 
             except Exception as e:
-                logger.error(f"Group {chat_id} check failed: {e}")
+                logger.error(f"Group {chat_id} scan failed: {e}")
 
-        result_queue.put(json.dumps({
-            "type": "done", 
-            "total": found_count, 
-            "closed": closed_count, 
-            "open": found_count - closed_count
-        }))
+        result_queue.put(json.dumps({"type": "done", "total": found_count, "closed": closed_count, "open": found_count}))
         result_queue.put(None)
-
     except Exception as e:
-        logger.error(f"Check Task Logic Error: {e}")
+        logger.error(f"Logic Error: {e}")
         result_queue.put(None)
 
 # [Ver 42.8 Fix] Restore missing route
