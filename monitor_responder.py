@@ -136,48 +136,29 @@ def format_caption(tpl):
     res = tpl.replace('{time}', now_str)
     return res
 
-# [v70 新增] 智能提取金额函数
 def parse_smart_amount(text):
-    """
-    从文本中提取金额，支持 k/w/万 等单位
-    返回: (found_bool, amount_float)
-    """
-    # 匹配模式：数字 + 可选的小数点 + 可选的单位(k/w/万)
-    # 排除前面的无关字符，寻找类似 "金额: 2w" 或 "2000" 的结构
-    # 优先匹配带有明确关键词附近的数字，或者整句中看起来像金额的
-    
-    # 1. 尝试寻找明确带有单位的数字 (如 2w, 3.5k)
+    """从文本中提取金额，支持 k/w/万 等单位"""
     unit_pattern = re.search(r'(\d+(?:\.\d+)?)\s*([wWkK万千])', text)
     if unit_pattern:
         num = float(unit_pattern.group(1))
         unit = unit_pattern.group(2).lower()
-        if unit in ['w', '万']:
-            return True, num * 10000
-        elif unit in ['k', '千']:
-            return True, num * 1000
+        if unit in ['w', '万']: return True, num * 10000
+        elif unit in ['k', '千']: return True, num * 1000
             
-    # 2. 如果没有单位，寻找关键词后面的纯数字 (如 金额: 2000)
-    # 关键词包括：金额, 额度, 存, 代存, 入款, U, USDT
     keyword_pattern = re.search(r'(?:金额|额度|存|款|U)\D{0,5}?(\d+(?:\.\d+)?)', text)
-    if keyword_pattern:
-        return True, float(keyword_pattern.group(1))
+    if keyword_pattern: return True, float(keyword_pattern.group(1))
         
-    # 3. 保底：如果整句就很短，且包含数字，尝试提取最大的那个数字
-    # 例如用户只发了 "2000" 或 "2000u"
     simple_nums = re.findall(r'\d+(?:\.\d+)?', text)
     if simple_nums:
-        # 取最长的数字串通常比较保险，或者取第一个
-        # 这里取数值最大的，防止把日期当金额
-        try:
-            max_num = max([float(n) for n in simple_nums])
-            return True, max_num
+        try: return True, max([float(n) for n in simple_nums])
         except: pass
 
     return False, 0.0
 
 # --- 默认配置 ---
 DEFAULT_CONFIG = {
-    "enabled": True, 
+    "enabled": True,
+    "extra_enabled": True, 
     "approval_keywords": ["同意", "批准", "ok"],
     "schedule": {
         "active": False,
@@ -258,6 +239,9 @@ def load_config(system_cs_prefixes):
         logger.warning("⚠️ [Monitor] 未能加载任何配置，系统使用默认模板启动")
         current_config = DEFAULT_CONFIG.copy()
     
+    if "extra_enabled" not in current_config:
+        current_config["extra_enabled"] = True 
+
     if "approval_keywords" not in current_config:
         current_config["approval_keywords"] = ["同意", "批准", "ok"]
     if "schedule" not in current_config:
@@ -295,6 +279,9 @@ def save_config(new_config):
             new_config["schedule"]["active"] = bool(new_config["schedule"].get("active", False))
             new_config["schedule"]["start"] = str(new_config["schedule"].get("start", "09:00"))
             new_config["schedule"]["end"] = str(new_config["schedule"].get("end", "21:00"))
+
+        if "extra_enabled" in new_config:
+            current_config["extra_enabled"] = bool(new_config["extra_enabled"])
 
         raw_app_kws = new_config.get("approval_keywords", [])
         if isinstance(raw_app_kws, str):
@@ -393,7 +380,7 @@ SETTINGS_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Monitor Pro v70</title>
+    <title>Monitor Pro v72</title>
     <script src="https://unpkg.com/vue@3.3.4/dist/vue.global.prod.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -422,18 +409,25 @@ SETTINGS_HTML = """
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
-            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v70</span></span>
+            <span class="font-bold text-sm tracking-tight text-slate-900">Monitor <span class="text-xs text-primary font-medium bg-primary/10 px-1.5 py-0.5 rounded">Pro v72</span></span>
         </div>
         
-        <div class="flex items-center gap-3 bg-slate-50 px-2 py-1 rounded border border-slate-200 mx-2 hidden md:flex">
-            <label class="flex items-center gap-1.5 cursor-pointer select-none text-[10px] font-bold text-slate-500 uppercase">
-                <input type="checkbox" v-model="config.schedule.active" class="w-3 h-3 text-primary border-slate-300 rounded focus:ring-0">
-                <span><i class="fa-regular fa-clock mr-1"></i>自动排班</span>
-            </label>
-            <div v-if="config.schedule.active" class="flex items-center gap-1 transition-all">
-                <input type="time" v-model="config.schedule.start" class="bg-white border border-slate-300 rounded px-1 h-6 text-[10px] font-mono">
-                <span class="text-[9px] text-slate-400">至</span>
-                <input type="time" v-model="config.schedule.end" class="bg-white border border-slate-300 rounded px-1 h-6 text-[10px] font-mono">
+        <div class="flex items-center gap-3">
+            <div class="hidden md:flex items-center gap-1.5 px-2 py-1 bg-slate-50 rounded border border-slate-200">
+                <span class="text-[10px] font-bold text-slate-500 uppercase">分身模式:</span>
+                <span class="text-[10px] font-bold" :class="config.extra_enabled ? 'text-green-500' : 'text-slate-400'">{{ config.extra_enabled ? '✅ ON' : '⛔ OFF' }}</span>
+            </div>
+
+            <div class="flex items-center gap-3 bg-slate-50 px-2 py-1 rounded border border-slate-200 mx-2 hidden md:flex">
+                <label class="flex items-center gap-1.5 cursor-pointer select-none text-[10px] font-bold text-slate-500 uppercase">
+                    <input type="checkbox" v-model="config.schedule.active" class="w-3 h-3 text-primary border-slate-300 rounded focus:ring-0">
+                    <span><i class="fa-regular fa-clock mr-1"></i>自动排班</span>
+                </label>
+                <div v-if="config.schedule.active" class="flex items-center gap-1 transition-all">
+                    <input type="time" v-model="config.schedule.start" class="bg-white border border-slate-300 rounded px-1 h-6 text-[10px] font-mono">
+                    <span class="text-[9px] text-slate-400">至</span>
+                    <input type="time" v-model="config.schedule.end" class="bg-white border border-slate-300 rounded px-1 h-6 text-[10px] font-mono">
+                </div>
             </div>
         </div>
 
@@ -466,7 +460,15 @@ SETTINGS_HTML = """
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            <div v-for="(rule, index) in config.rules" :key="index" class="bento-card flex flex-col overflow-hidden relative group">
+            <div v-for="(rule, index) in config.rules" :key="index" 
+                 class="bento-card flex flex-col overflow-hidden relative group transition-all duration-300"
+                 :class="{'opacity-50 grayscale': !rule.enabled || (rule.reply_account && rule.reply_account !== '' && !config.extra_enabled)}">
+                
+                <div v-if="rule.enabled && rule.reply_account && rule.reply_account !== '' && !config.extra_enabled" 
+                     class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-slate-800 text-white px-3 py-1 rounded shadow-lg z-20 text-xs font-bold pointer-events-none">
+                    ⏸️ 副号暂停中
+                </div>
+
                 <div class="px-3 py-2 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
                     <div class="flex items-center gap-2 flex-1">
                         <span class="text-slate-400 text-[10px] font-mono">#{{index+1}}</span>
@@ -478,7 +480,7 @@ SETTINGS_HTML = """
                     </label>
                     <button @click="removeRule(index)" class="text-slate-300 hover:text-red-500 transition-colors px-1" title="删除"><i class="fa-solid fa-trash text-[10px]"></i></button>
                 </div>
-                <div class="p-3 flex flex-col gap-3" :class="{'opacity-50 grayscale pointer-events-none': !rule.enabled}">
+                <div class="p-3 flex flex-col gap-3" :class="{'pointer-events-none': !rule.enabled}">
                     <div class="space-y-1.5">
                         <div class="flex items-center justify-between"><span class="section-label"><i class="fa-solid fa-eye mr-1"></i>监听来源</span><label class="flex items-center gap-1 cursor-pointer select-none"><input type="checkbox" v-model="rule.check_file" class="w-3 h-3 text-primary border-slate-300 rounded focus:ring-0"><span class="text-[10px] text-slate-500 font-medium" :class="{'text-primary': rule.check_file}">文件模式</span></label></div>
                         <div class="relative"><textarea :value="listToString(rule.groups)" @change="stringToIntList($event, rule, 'groups')" rows="1" class="bento-input w-full px-2 py-1.5 resize-none h-8 leading-tight font-mono text-[11px]" placeholder="群ID (换行分隔)"></textarea></div>
@@ -652,7 +654,6 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_obj):
     if event.out: return False, "Bot自己发送", None
     if event.sender_id in other_cs_ids: return False, "ID是客服", None
     
-    # v69: Pass sender object, not name string
     if not check_sender_allowed(sender_obj, rule):
         return False, "发送者被排除", None
 
@@ -883,7 +884,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
-        if event.text == "/debug": await event.reply("Monitor Debug: Alive v70 (Smart Amount & Verbose)"); return
+        if event.text == "/debug": await event.reply("Monitor Debug: Alive v72 (Strict Pause Mode)"); return
         if not current_config.get("enabled", True): return
         
         # Approval Logic
@@ -910,7 +911,16 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                 
                                 replier_client = client
                                 target_name = rule.get("reply_account")
+                                
+                                # v72: Strict Pause Logic
+                                extra_on = current_config.get("extra_enabled", True)
                                 if not target_name: target_name = MAIN_NAME 
+                                
+                                # If target is NOT main, and extra is OFF -> STOP (Don't reply)
+                                if target_name != MAIN_NAME and not extra_on:
+                                    logger.info(f"⏸️ [Approval] 副号开关已关，规则已暂停")
+                                    return
+
                                 if target_name in global_clients:
                                     replier_client = global_clients[target_name]
 
@@ -947,23 +957,23 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     logger.info(f"✅ [Monitor] 规则 '{rule.get('name')}' 触发!")
                     rule_timers[rule.get("id", str(rule.get("groups")))] = time.time()
                     
-                   # v70.1: Routing with Sub-Account Switch
+                    # v72: Strict Routing (No Fallback)
                     target_client = client 
                     target_name = rule.get("reply_account")
-                    
-                    # 读取副账号总开关 (默认为 True)
                     extra_on = current_config.get("extra_enabled", True)
 
-                    # 如果没指定账号，或者(指定了副账号 但 开关被关了)，强制用主账号
-                    if not target_name or (target_name != MAIN_NAME and not extra_on):
-                        target_name = MAIN_NAME 
-                        if not extra_on and rule.get("reply_account"):
-                            logger.info(f"⚠️ [Routing] 副账号开关已关，强制切换回主账号回复")
-                    
+                    # 1. Determine Target
+                    if not target_name: target_name = MAIN_NAME
+
+                    # 2. Check Permission (Strict Pause)
+                    if target_name != MAIN_NAME and not extra_on:
+                        logger.info(f"⏸️ [Routing] 副号开关已关，规则 '{rule.get('name')}' 已暂停 (不转交给主号)")
+                        break # Stop checking other rules, effectively ignoring this message
+
+                    # 3. Assign Client
                     if target_name in global_clients:
                         target_client = global_clients[target_name]
-                        if target_name != MAIN_NAME:
-                            logger.info(f"🔀 [Routing] 使用指定账号回复: {target_name}")
+                        if target_name != MAIN_NAME: logger.info(f"🔀 [Routing] 使用指定账号回复: {target_name}")
 
                     sent_msgs = []
                     for step in rule.get("replies", []):
@@ -985,7 +995,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                             parts = cfg.split('|')
                             if len(parts) >= 3:
                                 thresh = float(parts[0])
-                                # v70: Use smart amount parsing
+                                # v70: Smart amount
                                 found, amt = parse_smart_amount(event.text)
                                 
                                 if found:
@@ -993,11 +1003,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                     if amt >= thresh:
                                         sent_msgs.append(await target_client.send_message(event.chat_id, format_caption(parts[1]), reply_to=event.id))
                                     else:
-                                        # Low amount logic
                                         for sub_msg in parts[2].split(';;'):
                                             if sub_msg.strip():
                                                 sent_msgs.append(await target_client.send_message(event.chat_id, format_caption(sub_msg), reply_to=event.id))
-                                                # v70: Add delay between messages
                                                 await asyncio.sleep(random.uniform(1.5, 3.0)) 
                                         if tgt: 
                                             fwd_msg = await target_client.forward_messages(int(str(tgt).strip()), event.message)
@@ -1023,4 +1031,4 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
-    logger.info("🛠️ [Monitor] Ultimate UI v70 (Smart Amount & Verbose) 已启动")
+    logger.info("🛠️ [Monitor] Ultimate UI v72 (Strict Pause Mode) 已启动")
