@@ -303,7 +303,7 @@ DASHBOARD_HTML = """
 </head>
 <body>
     <div class="header">
-        <h1>⚡️ 实时监控 (Ver 45.5)</h1>
+        <h1>⚡️ 实时监控 (Ver 45.7)</h1>
         <div class="status-grp">
             <span class="audio-btn" onclick="toggleAudio()" title="开启/关闭报警音">🔇</span>
             <a href="#" onclick="ctrl(1)" class="ctrl-btn">上班</a>
@@ -334,7 +334,7 @@ DASHBOARD_HTML = """
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
     <a href="/tool/work_stats" target="_blank" class="btn" style="margin-top:10px;background:#6a1b9a">📊 工作量统计 & Google同步</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.5 (Wait Check: Scan Orphaned Messages)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.7 (Wait Check: Strict Orphan Scan & Copy Link)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -719,6 +719,8 @@ WAIT_CHECK_HTML = """
         .reason-success { color: #2e7d32; font-size: 13px; margin-top: 4px; font-style: italic; }
         .msg-link { text-decoration: none; color: #0088cc; font-size: 13px; display: inline-block; margin-top: 5px; font-weight: 500; }
         .msg-link:hover { text-decoration: underline; }
+        .copy-btn { cursor: pointer; background: #e0f7fa; padding: 2px 6px; border-radius: 4px; border: 1px solid #b2ebf2; }
+        .copy-btn:hover { background: #b2ebf2; }
         
         .summary { font-weight: bold; margin-bottom: 20px; padding: 15px; background: #e3f2fd; border-radius: 6px; border: 1px solid #bbdefb; color: #0d47a1; display: none; }
         .filter-btn { cursor: pointer; color: #0056b3; text-decoration: underline; margin: 0 5px; }
@@ -854,7 +856,7 @@ WAIT_CHECK_HTML = """
             });
         }
         
-        // [Ver 44.1] Added display of latest_text
+        // [Ver 45.7] Update: Added copy link functionality
         function renderResults(list) {
             const resList = document.getElementById('result-list');
             resList.innerHTML = '';
@@ -873,10 +875,19 @@ WAIT_CHECK_HTML = """
                         <div class="msg-text">${data.found_text}</div>
                         ${data.reason ? `<div class="${data.is_closed ? 'reason-success' : 'reason-text'}">${data.is_closed ? '🤖 ' : '⚠️ '}${data.reason}</div>` : ''}
                         ${!data.is_closed && data.latest_text ? `<div class="latest-text">👀 判定依据 (最新消息): [${data.latest_text}]</div>` : ''}
-                        <a href="${data.link}" target="_blank" class="msg-link">🔗 跳转消息</a>
+                        <span class="msg-link copy-btn" onclick="copyLink('${data.link}')">🔗 点击复制链接</span>
                     </div>
                 `;
                 resList.appendChild(div);
+            });
+        }
+        
+        function copyLink(link) {
+            navigator.clipboard.writeText(link).then(() => {
+                alert("✅ 链接已复制到剪贴板！");
+            }).catch(err => {
+                console.error('Failed to copy: ', err);
+                alert("❌ 复制失败，请手动复制");
             });
         }
     </script>
@@ -1100,18 +1111,17 @@ async def check_wait_keyword_logic(keyword, result_queue):
                     if m.date and m.date < cutoff_time: break
                     history.append(m)
                 
-                # [Ver 45.5] 全体模式：查找无人回复的“孤儿消息”
-                if keyword == "全体":
-                    replied_ids = set()
-                    # 第一遍：收集所有被引用的ID
+                # [Ver 45.7] 全体模式 (Full Check): 严格的孤立消息检测 (Strict Orphan Scan)
+                if keyword in ["全体", "全体检测"]:
+                    # 1. 构建 reply_to 集合 (找出所有作为父消息存在的ID)
+                    replied_to_ids = set()
                     for m in history:
-                        if m.reply_to:
-                            # 收集 reply_to_msg_id (直接回复对象)
-                            replied_ids.add(m.reply_to.reply_to_msg_id)
+                        if m.reply_to and m.reply_to.reply_to_msg_id:
+                            replied_to_ids.add(m.reply_to.reply_to_msg_id)
                     
-                    # 第二遍：检查每一条消息
+                    # 2. 遍历检查每条消息
                     for m in history:
-                        # 跳过客服消息
+                        # 过滤掉客服消息
                         is_cs = False
                         if m.sender_id in ([MY_ID] + OTHER_CS_IDS): is_cs = True
                         else:
@@ -1120,12 +1130,15 @@ async def check_wait_keyword_logic(keyword, result_queue):
                                 if s and getattr(s, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)):
                                     is_cs = True
                             except: pass
-                        
                         if is_cs: continue
 
-                        # 检查是否被回复
-                        if m.id not in replied_ids:
-                            # 这是一个没人回复的消息
+                        # 过滤掉已经是回复的消息 (它属于某个流，不是孤立的)
+                        if m.reply_to and m.reply_to.reply_to_msg_id:
+                            continue
+
+                        # 核心检查: 它是Top-Level消息，但没有任何人引用它 (replied_to_ids)
+                        if m.id not in replied_to_ids:
+                            # 这是一个没人理会的孤立消息
                             found_count += 1
                             
                             group_name = str(chat_id)
@@ -1143,16 +1156,15 @@ async def check_wait_keyword_logic(keyword, result_queue):
                             result_queue.put(json.dumps({
                                 "type": "result",
                                 "is_closed": False,
-                                "reason": "未开启Thread (无人回复)",
+                                "reason": "孤立无回复 (No Quote Reply)",
                                 "time": beijing_time,
                                 "group_name": group_name,
                                 "found_text": safe_text,
-                                "latest_text": "无回复",
+                                "latest_text": "无人引用回复",
                                 "link": link
                             }))
                             
-                    # 跳过后续的常规关键词检查逻辑
-                    continue 
+                    continue # 跳过后续常规逻辑
 
                 # 2. 建立 Thread 状态表 (常规逻辑)
                 thread_latest_msg = {}
@@ -1168,7 +1180,7 @@ async def check_wait_keyword_logic(keyword, result_queue):
                 # 3. 在历史中查找包含 keyword 的消息
                 for m in history:
                     if not m.text: continue
-                    if keyword in m.text: # 只要包含关键词
+                    if keyword in m.text: 
                         found_count += 1
                         
                         t_id = None
@@ -1179,7 +1191,7 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         
                         latest_msg = thread_latest_msg.get(t_id, m)
                         
-                        # [Ver 42.0] 调用统一闭环判断逻辑 (Consistency Fix)
+                        # [Ver 42.0] 调用统一闭环判断逻辑
                         is_closed, reason = await _check_is_closed_logic(latest_msg)
                         
                         if is_closed: closed_count += 1
@@ -1212,7 +1224,6 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         else:
                              link = f"https://t.me/c/{real_chat_id}/{target_msg_for_link.id}"
                         
-                        # [Ver 44.1] 添加最新消息内容到结果中，方便用户排查
                         latest_content = (latest_msg.text or "[媒体]")[:60].replace('\n', ' ')
 
                         result_queue.put(json.dumps({
@@ -1222,7 +1233,7 @@ async def check_wait_keyword_logic(keyword, result_queue):
                             "time": beijing_time,
                             "group_name": group_name,
                             "found_text": safe_text,
-                            "latest_text": latest_content, # New field
+                            "latest_text": latest_content, 
                             "link": link
                         }))
 
@@ -2170,7 +2181,7 @@ if __name__ == '__main__':
             
         Thread(target=run_web).start()
         # [Ver 43.5] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 45.5 Wait Check: Scan Orphaned Messages)")
+        log_tree(0, "✅ 系统启动 (Ver 45.7 Wait Check: Strict Orphan Scan & Copy Link)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
