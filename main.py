@@ -303,7 +303,7 @@ DASHBOARD_HTML = """
 </head>
 <body>
     <div class="header">
-        <h1>⚡️ 实时监控 (Ver 45.7)</h1>
+        <h1>⚡️ 实时监控 (Ver 45.8)</h1>
         <div class="status-grp">
             <span class="audio-btn" onclick="toggleAudio()" title="开启/关闭报警音">🔇</span>
             <a href="#" onclick="ctrl(1)" class="ctrl-btn">上班</a>
@@ -334,7 +334,7 @@ DASHBOARD_HTML = """
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
     <a href="/tool/work_stats" target="_blank" class="btn" style="margin-top:10px;background:#6a1b9a">📊 工作量统计 & Google同步</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.7 (Wait Check: Strict Orphan Scan & Copy Link)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.8 (Wait Check: Grouped Media Support)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -1111,15 +1111,28 @@ async def check_wait_keyword_logic(keyword, result_queue):
                     if m.date and m.date < cutoff_time: break
                     history.append(m)
                 
-                # [Ver 45.7] 全体模式 (Full Check): 严格的孤立消息检测 (Strict Orphan Scan)
+                # [Ver 45.8] 全体模式 (Full Check): 严格的孤立消息检测 (Strict Orphan Scan)
                 if keyword in ["全体", "全体检测"]:
-                    # 1. 构建 reply_to 集合 (找出所有作为父消息存在的ID)
+                    # 1. 预处理：建立 ID -> GroupedID 映射
+                    msg_grouped_map = {}
+                    for m in history:
+                        if m.grouped_id:
+                            msg_grouped_map[m.id] = m.grouped_id
+
+                    # 2. 构建 reply_to 集合 (找出所有作为父消息存在的ID)
                     replied_to_ids = set()
                     for m in history:
                         if m.reply_to and m.reply_to.reply_to_msg_id:
                             replied_to_ids.add(m.reply_to.reply_to_msg_id)
                     
-                    # 2. 遍历检查每条消息
+                    # 3. 构建被回复的 GroupID 集合 (Group Awareness)
+                    # 如果消息A被回复了，且A属于Group X，那么Group X内所有消息都视为“已触达”
+                    replied_grouped_ids = set()
+                    for mid in replied_to_ids:
+                        if mid in msg_grouped_map:
+                            replied_grouped_ids.add(msg_grouped_map[mid])
+
+                    # 4. 遍历检查每条消息
                     for m in history:
                         # 过滤掉客服消息
                         is_cs = False
@@ -1136,8 +1149,19 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         if m.reply_to and m.reply_to.reply_to_msg_id:
                             continue
 
-                        # 核心检查: 它是Top-Level消息，但没有任何人引用它 (replied_to_ids)
-                        if m.id not in replied_to_ids:
+                        # 核心检查: 
+                        # 1. 它是Top-Level消息 (没有父消息)
+                        # 2. 它没有被直接引用 (ID不在 replied_to_ids)
+                        # 3. 它所属的图集也没有被引用 (GroupedID不在 replied_grouped_ids)
+                        
+                        is_orphan = True
+                        
+                        if m.id in replied_to_ids: 
+                            is_orphan = False
+                        elif m.grouped_id and m.grouped_id in replied_grouped_ids: 
+                            is_orphan = False
+                            
+                        if is_orphan:
                             # 这是一个没人理会的孤立消息
                             found_count += 1
                             
@@ -2181,7 +2205,7 @@ if __name__ == '__main__':
             
         Thread(target=run_web).start()
         # [Ver 43.5] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 45.7 Wait Check: Strict Orphan Scan & Copy Link)")
+        log_tree(0, "✅ 系统启动 (Ver 45.8 Wait Check: Grouped Media Support)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
