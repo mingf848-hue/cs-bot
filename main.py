@@ -19,11 +19,6 @@ try:
     from work_stats import init_stats_blueprint
 except ImportError:
     init_stats_blueprint = None
-# [New] 引入独立监控模块
-try:
-    from monitor_responder import init_monitor
-except ImportError:
-    init_monitor = None
 
 # ==========================================
 # 模块 0: 北京时间树状日志系统
@@ -74,7 +69,7 @@ def log_tree(level, msg):
 def normalize(text):
     if not text: return ""
     text = text.lower()
-    # [Ver 34.0] 移除所有标点符号和空白，只保留纯文本啊
+    # [Ver 34.0] 移除所有标点符号和空白，只保留纯文本
     text = re.sub(r'[^\w=]', '', text) 
     return text
 
@@ -308,7 +303,7 @@ DASHBOARD_HTML = """
 </head>
 <body>
     <div class="header">
-        <h1>⚡️ 实时监控 (Ver 45.2)</h1>
+        <h1>⚡️ 实时监控 (Ver 45.5)</h1>
         <div class="status-grp">
             <span class="audio-btn" onclick="toggleAudio()" title="开启/关闭报警音">🔇</span>
             <a href="#" onclick="ctrl(1)" class="ctrl-btn">上班</a>
@@ -338,8 +333,8 @@ DASHBOARD_HTML = """
     {% endfor %}
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
-    <a href="/tool/work_stats" target="_blank" class="btn" style="margin-top:10px;background:#6a1b9a">📊 工作量统计</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.2 (Strict Thread Cancellation)</div>
+    <a href="/tool/work_stats" target="_blank" class="btn" style="margin-top:10px;background:#6a1b9a">📊 工作量统计 & Google同步</a>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.5 (Wait Check: Scan Orphaned Messages)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -735,8 +730,8 @@ WAIT_CHECK_HTML = """
     <div class="card">
         <h1>🔍 稍等关键词闭环检测</h1>
         <div class="form-group">
-            <label>输入关键词 (例如: 请稍等ART)</label>
-            <input type="text" id="keyword" placeholder="输入要搜索的关键词..." value="请稍等ART">
+            <label>输入关键词 (输入"全体"可扫描漏回)</label>
+            <input type="text" id="keyword" placeholder="输入关键词 (例如: 请稍等ART，或输入 '全体')" value="请稍等ART">
         </div>
         <button onclick="startCheck()" id="btn-search">开始检测 (过去 10 小时)</button>
         
@@ -945,7 +940,13 @@ def _ai_check_reply_needed(text):
     """
     log_prefix = f"🤖 [AI-Audit] Text='{text[:20]}...' | "
     
-    # 1. 基础鉴权检查 (已移除，直接使用 Proxy URL)
+    # [Ver 45.3] 网络异常时的本地兜底策略
+    # 如果内容很短且像结束语，或者是纯符号/数字，则判定为闭环，避免因AI挂了导致大量误报
+    simple_text = normalize(text)
+    if len(simple_text) <= 2 or simple_text.isdigit(): # 如 "1", "=", "ok"
+         return (False, f"网络异常(本地兜底): 内容极简[{simple_text}]")
+    if simple_text in IGNORE_SIGNATURES:
+         return (False, f"网络异常(本地兜底): 命中忽略词")
     
     # 2. 构造请求
     # [Ver 40.0] URL 优化：移除末尾斜杠并直接请求，不带 API KEY 参数
@@ -961,8 +962,6 @@ def _ai_check_reply_needed(text):
     1. 如果包含明确的问题、投诉、未解决的诉求、需要确认的操作，返回 TRUE。
     2. 如果只是礼貌性的结束语（如“好的”、“谢谢”、“收到”、“明白了”、“ok”、“辛苦了”）、单纯的情绪表达（如“哈哈”）、或者表示话题已结束，返回 FALSE。
     3. 仅仅是“好的谢谢”这种组合，绝对是 FALSE。
-    4. 如果只回复了“1”，代表明白，返回 FALSE。
-    5. 如果客户最后回复是“稍等”、“我去核实一下”、类似的客户自己去核实，但后续没有新信息提供的情况下，无需主动跟进，返回 FALSE。
     
     请输出 JSON 格式: {{"reason": "思考过程...", "need_reply": true/false}}
     """
@@ -1101,7 +1100,61 @@ async def check_wait_keyword_logic(keyword, result_queue):
                     if m.date and m.date < cutoff_time: break
                     history.append(m)
                 
-                # 2. 建立 Thread 状态表
+                # [Ver 45.5] 全体模式：查找无人回复的“孤儿消息”
+                if keyword == "全体":
+                    replied_ids = set()
+                    # 第一遍：收集所有被引用的ID
+                    for m in history:
+                        if m.reply_to:
+                            # 收集 reply_to_msg_id (直接回复对象)
+                            replied_ids.add(m.reply_to.reply_to_msg_id)
+                    
+                    # 第二遍：检查每一条消息
+                    for m in history:
+                        # 跳过客服消息
+                        is_cs = False
+                        if m.sender_id in ([MY_ID] + OTHER_CS_IDS): is_cs = True
+                        else:
+                            try:
+                                s = m.sender 
+                                if s and getattr(s, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)):
+                                    is_cs = True
+                            except: pass
+                        
+                        if is_cs: continue
+
+                        # 检查是否被回复
+                        if m.id not in replied_ids:
+                            # 这是一个没人回复的消息
+                            found_count += 1
+                            
+                            group_name = str(chat_id)
+                            try:
+                                g = await client.get_entity(chat_id)
+                                group_name = g.title
+                            except: pass
+
+                            safe_text = (m.text or "[媒体/空]")[:100].replace('\n', ' ')
+                            beijing_time = m.date.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
+                            
+                            real_chat_id = str(chat_id).replace('-100', '')
+                            link = f"https://t.me/c/{real_chat_id}/{m.id}"
+                            
+                            result_queue.put(json.dumps({
+                                "type": "result",
+                                "is_closed": False,
+                                "reason": "未开启Thread (无人回复)",
+                                "time": beijing_time,
+                                "group_name": group_name,
+                                "found_text": safe_text,
+                                "latest_text": "无回复",
+                                "link": link
+                            }))
+                            
+                    # 跳过后续的常规关键词检查逻辑
+                    continue 
+
+                # 2. 建立 Thread 状态表 (常规逻辑)
                 thread_latest_msg = {}
                 for m in history:
                     t_id = None
@@ -1232,40 +1285,26 @@ def _post_request(url, payload):
 
 async def send_alert(text, link, extra_log=""):
     if not BOT_TOKEN: return
-    # 提取第一行作为摘要/标题
     summary = text.splitlines()[1] if len(text.splitlines()) > 1 else '通知'
-    
     log_tree(3, f"{extra_log} [ALERT] 发送报警 -> 全文:\n{text}")
-    
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     loop = asyncio.get_event_loop()
     tasks = []
-    
-    # --- [原有] Telegram 推送 ---
     for chat_id in ALERT_GROUP_IDS:
         payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": True}
         tasks.append(loop.run_in_executor(None, lambda p=payload: _post_request(url, p)))
-
-    # --- [新增] NTFY 推送 (cs_help_vip_888) ---
-    def _push_ntfy():
-        try:
-            ntfy_url = "https://ntfy.sh/cs_help_vip_888"
-            # 发送 POST 请求，body 为消息内容，Header 中带上标题
-            # 这里的 .encode('utf-8') 确保中文不会乱码
-            requests.post(
-                ntfy_url, 
-                data=text.encode('utf-8'), 
-                headers={"Title": summary.encode('utf-8'), "Priority": "high"},
-                timeout=10
-            )
-        except Exception as e:
-            log_tree(9, f"NTFY推送异常: {e}")
-
-    # 将 NTFY 任务也加入到异步队列中，避免阻塞主程序
-    tasks.append(loop.run_in_executor(None, _push_ntfy))
-    # ----------------------------------------
-
     if tasks: await asyncio.gather(*tasks)
+
+async def check_msg_exists(channel_id, msg_id):
+    try:
+        msg = await client.get_messages(channel_id, ids=msg_id)
+        if not msg: 
+            log_tree(2, f"❌ 检查发现消息 {msg_id} 已物理删除")
+            return False 
+        return True
+    except Exception as e:
+        log_tree(2, f"⚠️ 网络检测失败 ({e}) -> 强制防漏报")
+        return True 
 
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
@@ -1542,9 +1581,10 @@ def check_recent_activity_safe(chat_id, task_start_time, user_ids=None, thread_i
 # ==========================================
 # 模块 7: 倒计时任务
 # ==========================================
-# [Ver 41.0] 所有倒计时任务增加 trigger_timestamp 参数
+# [Ver 45.4] 修复竞态清理问题 (Identity Check)
 async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, user_ids_list, trigger_timestamp, thread_id=None):
     try:
+        current_task = asyncio.current_task() # 获取当前任务对象
         ids_str = f"Msg={key_id}"
         if user_ids_list: ids_str += " " + " ".join([f"User={u}" for u in user_ids_list])
         
@@ -1559,12 +1599,6 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
         await asyncio.sleep(WAIT_TIMEOUT)
         
         if not IS_WORKING: return
-
-        # [Safety Check] 醒来后再次检查目标消息是否在“已删除缓存”中
-        if key_id in deleted_cache:
-            log_tree(2, f"🛡️ 拦截已删除消息超时 [稍等] Msg={key_id}")
-            return
-
         if my_msg_id and not await check_msg_exists(chat_id, my_msg_id): return
 
         # 醒来后，使用触发时的消息时间戳去对比活动日志
@@ -1581,8 +1615,6 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
         await asyncio.sleep(CRITICAL_TIMEOUT)
         
         if not IS_WORKING: return
-        # Check again
-        if key_id in deleted_cache: return
         if my_msg_id and not await check_msg_exists(chat_id, my_msg_id): return
 
         is_safe_2, safe_reason_2 = check_recent_activity_safe(chat_id, trigger_timestamp, user_ids_list, thread_id)
@@ -1603,13 +1635,17 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
 
     except asyncio.CancelledError: pass 
     finally:
-        if key_id in wait_tasks: del wait_tasks[key_id]
-        if key_id in wait_timers: del wait_timers[key_id]
-        if my_msg_id in wait_msg_map: del wait_msg_map[my_msg_id]
-        for uid in user_ids_list: remove_task_record(chat_id, uid, key_id, thread_id)
+        # [Ver 45.4 Fix] 仅当自己是当前活跃任务时，才清理资源
+        # 这防止了旧任务（被取消时）误删除了新任务（刚启动）的倒计时数据
+        if key_id in wait_tasks and wait_tasks[key_id] == current_task:
+            del wait_tasks[key_id]
+            if key_id in wait_timers: del wait_timers[key_id]
+            if my_msg_id in wait_msg_map: del wait_msg_map[my_msg_id]
+            for uid in user_ids_list: remove_task_record(chat_id, uid, key_id, thread_id)
 
 async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, user_ids_list, trigger_timestamp, thread_id=None):
     try:
+        current_task = asyncio.current_task()
         ids_str = f"Msg={key_id}"
         if user_ids_list: ids_str += " " + " ".join([f"User={u}" for u in user_ids_list])
 
@@ -1620,12 +1656,6 @@ async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_
 
         await asyncio.sleep(FOLLOWUP_TIMEOUT)
         if not IS_WORKING: return
-
-        # [Safety Check]
-        if key_id in deleted_cache:
-            log_tree(2, f"🛡️ 拦截已删除消息超时 [跟进] Msg={key_id}")
-            return
-
         if my_msg_id and not await check_msg_exists(chat_id, my_msg_id): return
 
         is_safe, safe_reason = check_recent_activity_safe(chat_id, trigger_timestamp, user_ids_list, thread_id)
@@ -1637,13 +1667,16 @@ async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_
         await send_alert(f"📩 消息: `{original_text.replace('`', '')}`\n🚨 **跟进-超时预警**\n👤 客服: {agent_name}\n⚠️ 状态: **反馈核实内容超时未跟进回复** ({FOLLOWUP_TIMEOUT // 60} 分钟)\n🔗 [点击处理]({link})", link, ids_str)
     except asyncio.CancelledError: pass
     finally:
-        if key_id in followup_tasks: del followup_tasks[key_id]
-        if key_id in followup_timers: del followup_timers[key_id]
-        if my_msg_id in followup_msg_map: del followup_msg_map[my_msg_id]
-        for uid in user_ids_list: remove_task_record(chat_id, uid, key_id, thread_id)
+        # [Ver 45.4 Fix] Identity Check
+        if key_id in followup_tasks and followup_tasks[key_id] == current_task:
+            del followup_tasks[key_id]
+            if key_id in followup_timers: del followup_timers[key_id]
+            if my_msg_id in followup_msg_map: del followup_msg_map[my_msg_id]
+            for uid in user_ids_list: remove_task_record(chat_id, uid, key_id, thread_id)
 
 async def task_reply_timeout(trigger_msg_id, sender_name, content, link, chat_id, user_id, target_name, trigger_timestamp, thread_id=None):
     try:
+        current_task = asyncio.current_task()
         ids_str = f"Msg={trigger_msg_id} User={user_id}"
         log_tree(1, f"启动 [漏回] 监控 (5m) {ids_str} | Target={target_name} | Thread={thread_id}")
         
@@ -1658,13 +1691,16 @@ async def task_reply_timeout(trigger_msg_id, sender_name, content, link, chat_id
         await send_alert(f"📩 内容: `{content.replace('`', '')}`\n🔔 **漏回消息提醒**\n👤 用户: {sender_name} 回复了客服 {target_name}\n⚠️ 状态: 已 {REPLY_TIMEOUT // 60} 分钟未回复\n🔗 [点击回复]({link})", link, ids_str)
     except asyncio.CancelledError: pass 
     finally:
-        if trigger_msg_id in reply_tasks: del reply_tasks[trigger_msg_id]
-        if trigger_msg_id in reply_timers: del reply_timers[trigger_msg_id]
-        remove_task_record(chat_id, user_id, trigger_msg_id, thread_id)
+        # [Ver 45.4 Fix] Identity Check
+        if trigger_msg_id in reply_tasks and reply_tasks[trigger_msg_id] == current_task:
+            del reply_tasks[trigger_msg_id]
+            if trigger_msg_id in reply_timers: del reply_timers[trigger_msg_id]
+            remove_task_record(chat_id, user_id, trigger_msg_id, thread_id)
 
 # [Ver 39.3] 自回检测任务 - 竞态条件修复
 async def task_self_reply_timeout(trigger_msg_id, user_name, content, link, chat_id, user_id, trigger_timestamp, thread_id=None):
     try:
+        current_task = asyncio.current_task()
         ids_str = f"Msg={trigger_msg_id} User={user_id}"
         log_tree(1, f"启动 [自回] 监控 (3m) {ids_str} | Thread={thread_id}")
         
@@ -1686,7 +1722,12 @@ async def task_self_reply_timeout(trigger_msg_id, user_name, content, link, chat
         log_tree(2, f"触发 [自回] 报警 Msg={trigger_msg_id}")
         await send_alert(f"📩 内容: `{content.replace('`', '')}`\n🔔 **自回防漏监测**\n👤 用户: {user_name} (自行追加消息)\n⚠️ 状态: 已 {SELF_REPLY_TIMEOUT // 60} 分钟未处理\n🔗 [点击回复]({link})", link, ids_str)
     except asyncio.CancelledError: pass 
-    # 资源清理工作由 handler 中的 done_callback 负责，这里无需 finally
+    finally:
+        # [Ver 45.4 Fix] Identity Check
+        if trigger_msg_id in self_reply_tasks and self_reply_tasks[trigger_msg_id] == current_task:
+             del self_reply_tasks[trigger_msg_id]
+             if trigger_msg_id in self_reply_timers: del self_reply_timers[trigger_msg_id]
+             remove_task_record(chat_id, user_id, trigger_msg_id, thread_id)
 
 # ==========================================
 # 模块 8: 客户端与逻辑增强
@@ -1976,12 +2017,6 @@ async def handler(event):
                     related_users = [real_customer_id]
 
                 if related_users:
-                    # [Safety Fix] 在创建任务前，强制检查目标消息是否已在删除缓存中
-                    # 防止因为网络延迟/事件重放导致给已删除的消息创建僵尸任务
-                    if reply_to_msg_id in deleted_cache:
-                        log_tree(1, f"🛡️ 拦截僵尸任务(已删) Msg={reply_to_msg_id}")
-                        return # 直接终止任务创建
-
                     # [Ver 41.6] 逻辑回调：按关键词触发任务
                     if is_keep_cmd:
                         # [Fix] 前置检查：只有历史中有明确的 WAIT 关键词（属于我的任务），才开启跟进监控
@@ -2129,23 +2164,15 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         
-        # [Ver 43.5] 功能挂载 (工作量统计)
+        # [Ver 43.5] 功能挂载
         if init_stats_blueprint:
             init_stats_blueprint(app, client, bot_loop, CS_GROUP_IDS)
             
-        # [New Feature] 挂载关键词监控模块
-        if init_monitor:
-            # ↓↓↓↓↓ 注意这里最后多传了一个 handler ↓↓↓↓↓
-            init_monitor(client, app, OTHER_CS_IDS, CS_NAME_PREFIXES, handler)
-            
-        # 启动 Web 服务
         Thread(target=run_web).start()
-        
         # [Ver 43.5] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 45.2 Strict Thread Cancellation)")
+        log_tree(0, "✅ 系统启动 (Ver 45.5 Wait Check: Scan Orphaned Messages)")
         client.start()
         client.run_until_disconnected()
-        
     except AuthKeyDuplicatedError:
         logger.critical("🚨 严重错误: SESSION_STRING 已失效！检测到多地登录冲突。")
         logger.critical("👉 请重新生成 SESSION_STRING 并更新环境变量。")
