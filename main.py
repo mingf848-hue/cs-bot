@@ -303,7 +303,7 @@ DASHBOARD_HTML = """
 </head>
 <body>
     <div class="header">
-        <h1>⚡️ 实时监控 (Ver 45.8)</h1>
+        <h1>⚡️ 实时监控 (Ver 45.9)</h1>
         <div class="status-grp">
             <span class="audio-btn" onclick="toggleAudio()" title="开启/关闭报警音">🔇</span>
             <a href="#" onclick="ctrl(1)" class="ctrl-btn">上班</a>
@@ -334,7 +334,7 @@ DASHBOARD_HTML = """
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
     <a href="/tool/work_stats" target="_blank" class="btn" style="margin-top:10px;background:#6a1b9a">📊 工作量统计 & Google同步</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.8 (Wait Check: Grouped Media Support)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.9 (Wait Check: No Alert & No Service Msg)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -856,7 +856,7 @@ WAIT_CHECK_HTML = """
             });
         }
         
-        // [Ver 45.7] Update: Added copy link functionality
+        // [Ver 45.9] Update: Added copy link functionality without alert
         function renderResults(list) {
             const resList = document.getElementById('result-list');
             resList.innerHTML = '';
@@ -875,19 +875,20 @@ WAIT_CHECK_HTML = """
                         <div class="msg-text">${data.found_text}</div>
                         ${data.reason ? `<div class="${data.is_closed ? 'reason-success' : 'reason-text'}">${data.is_closed ? '🤖 ' : '⚠️ '}${data.reason}</div>` : ''}
                         ${!data.is_closed && data.latest_text ? `<div class="latest-text">👀 判定依据 (最新消息): [${data.latest_text}]</div>` : ''}
-                        <span class="msg-link copy-btn" onclick="copyLink('${data.link}')">🔗 点击复制链接</span>
+                        <span class="msg-link copy-btn" onclick="copyLink('${data.link}', this)">🔗 点击复制链接</span>
                     </div>
                 `;
                 resList.appendChild(div);
             });
         }
         
-        function copyLink(link) {
+        function copyLink(link, btnElement) {
             navigator.clipboard.writeText(link).then(() => {
-                alert("✅ 链接已复制到剪贴板！");
+                const originalText = btnElement.innerText;
+                btnElement.innerText = "✅ 已复制";
+                setTimeout(() => { btnElement.innerText = originalText; }, 1500);
             }).catch(err => {
                 console.error('Failed to copy: ', err);
-                alert("❌ 复制失败，请手动复制");
             });
         }
     </script>
@@ -1888,6 +1889,10 @@ async def handler(event):
         global MY_ID
         if not MY_ID: MY_ID = (await client.get_me()).id
         if not IS_WORKING: return
+        
+        # [Ver 45.9] 过滤服务消息 (如有人加入群聊、置顶消息等)
+        if event.message.action:
+            return 
 
         # [Ver 41.0] 获取消息的确切物理时间戳（UTC -> Timestamp）
         msg_timestamp = event.date.timestamp()
@@ -2205,7 +2210,7 @@ if __name__ == '__main__':
             
         Thread(target=run_web).start()
         # [Ver 43.5] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 45.8 Wait Check: Grouped Media Support)")
+        log_tree(0, "✅ 系统启动 (Ver 45.9 Wait Check: No Alert & No Service Msg)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
