@@ -303,7 +303,7 @@ DASHBOARD_HTML = """
 </head>
 <body>
     <div class="header">
-        <h1>⚡️ 实时监控 (Ver 45.10)</h1>
+        <h1>⚡️ 实时监控 (Ver 45.11)</h1>
         <div class="status-grp">
             <span class="audio-btn" onclick="toggleAudio()" title="开启/关闭报警音">🔇</span>
             <a href="#" onclick="ctrl(1)" class="ctrl-btn">上班</a>
@@ -334,7 +334,7 @@ DASHBOARD_HTML = """
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
     <a href="/tool/work_stats" target="_blank" class="btn" style="margin-top:10px;background:#6a1b9a">📊 工作量统计 & Google同步</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.10 (Wait Check: Context Aware Orphan Detection)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.11 (Wait Check: Show AI Skipped Reasons)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -1020,11 +1020,11 @@ def _ai_check_reply_needed(text):
 
 def _ai_check_orphan_context(target_text, context_text_list):
     """
-    [Sync Function] [Ver 45.10]
+    [Sync Function] [Ver 45.11]
     Detect if an orphan message is just context noise / slip-up
-    Returns True if it IS a slip-up (should be ignored), False if it is a real orphan.
+    Returns (is_slip_up: bool, reason: str).
     """
-    if not target_text or len(target_text) < 2: return True # Ignore very short/empty
+    if not target_text or len(target_text) < 2: return (True, "Ignore very short/empty") 
     
     context_str = "\n".join(context_text_list)
     log_prefix = f"🤖 [AI-Orphan] Text='{target_text[:15]}...' | "
@@ -1063,13 +1063,14 @@ def _ai_check_orphan_context(target_text, context_text_list):
             raw_content = res_json.get('candidates', [])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
             decision = json.loads(raw_content)
             is_slip_up = decision.get("is_slip_up", False)
-            log_tree(2, log_prefix + f"✅ AI判定: 忽略={is_slip_up} | {decision.get('reason', '')}")
-            return is_slip_up
+            reason = decision.get("reason", "AI Decision")
+            log_tree(2, log_prefix + f"✅ AI判定: 忽略={is_slip_up} | {reason}")
+            return (is_slip_up, reason)
         else:
-            return False # Fail safe: report it
+            return (False, f"API Error {resp.status_code}") # Fail safe
     except Exception as e:
         log_tree(9, log_prefix + f"❌ AI Check Failed: {e}")
-        return False # Fail safe
+        return (False, f"Exception {str(e)}") # Fail safe
 
 # [Ver 41.8] 抽取公共闭环判断逻辑
 async def _check_is_closed_logic(latest_msg):
@@ -1216,16 +1217,9 @@ async def check_wait_keyword_logic(keyword, result_queue):
                             
                         if is_orphan:
                             # [Ver 45.10] 新增：AI 上下文检测 (Is this orphan a context slip-up?)
-                            # 获取前后文 (前后5条)
-                            # history 是倒序 (New -> Old)
-                            # i 是当前消息
-                            # i-1, i-2 是新的 (Subsequent)
-                            # i+1, i+2 是旧的 (Preceding)
-                            
                             start = max(0, i - 5)
                             end = min(len(history), i + 6)
                             context_slice = history[start:end]
-                            # Sort by date for AI readability
                             context_slice.sort(key=lambda x: x.date)
                             
                             context_txts = []
@@ -1241,16 +1235,21 @@ async def check_wait_keyword_logic(keyword, result_queue):
                                 marker = " <<< TARGET" if cm.id == m.id else ""
                                 context_txts.append(f"[{cm.date.strftime('%H:%M:%S')}] {c_name}: {c_txt}{marker}")
                             
-                            # 调用 AI
-                            is_slip_up = await asyncio.get_event_loop().run_in_executor(
+                            # 调用 AI (Ver 45.11: Unpack tuple)
+                            is_slip_up, ai_reason = await asyncio.get_event_loop().run_in_executor(
                                 None, lambda: _ai_check_orphan_context(m.text or "[Media]", context_txts)
                             )
                             
-                            if is_slip_up:
-                                continue # AI says ignore it
-
-                            # 这是一个确认的孤立消息
+                            # [Ver 45.11] 不管AI说是否需要回，都记录下来，只是状态不同
                             found_count += 1
+                            
+                            is_result_closed = False
+                            display_reason = "孤立无回复 (No Quote Reply)"
+                            
+                            if is_slip_up:
+                                is_result_closed = True
+                                closed_count += 1
+                                display_reason = f"AI智能豁免: {ai_reason}"
                             
                             group_name = str(chat_id)
                             try:
@@ -1260,14 +1259,13 @@ async def check_wait_keyword_logic(keyword, result_queue):
 
                             safe_text = (m.text or "[媒体/空]")[:100].replace('\n', ' ')
                             beijing_time = m.date.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
-                            
                             real_chat_id = str(chat_id).replace('-100', '')
                             link = f"https://t.me/c/{real_chat_id}/{m.id}"
                             
                             result_queue.put(json.dumps({
                                 "type": "result",
-                                "is_closed": False,
-                                "reason": "孤立无回复 (No Quote Reply)",
+                                "is_closed": is_result_closed,
+                                "reason": display_reason,
                                 "time": beijing_time,
                                 "group_name": group_name,
                                 "found_text": safe_text,
@@ -2296,7 +2294,7 @@ if __name__ == '__main__':
             
         Thread(target=run_web).start()
         # [Ver 43.5] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 45.10 Wait Check: Context Aware Orphan Detection)")
+        log_tree(0, "✅ 系统启动 (Ver 45.11 Wait Check: Show AI Skipped Reasons)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
@@ -2304,4 +2302,4 @@ if __name__ == '__main__':
         logger.critical("👉 请重新生成 SESSION_STRING 并更新环境变量。")
         sys.exit(1)
     except Exception as e:
-        log_tree
+        log_tree(9, f"❌ 启动失败: {e}")
