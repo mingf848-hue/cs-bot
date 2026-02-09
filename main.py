@@ -14,17 +14,6 @@ from flask import Flask, render_template_string, Response, request, stream_with_
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import AuthKeyDuplicatedError
-# [Ver 43.7] 确保引入统计模块
-try:
-    from work_stats import init_stats_blueprint
-except ImportError:
-    init_stats_blueprint = None
-
-# [Ver 45.13] 确保引入自动回复模块 (修复 /zd 404)
-try:
-    from monitor_responder import init_responder_blueprint
-except ImportError:
-    init_responder_blueprint = None
 
 # ==========================================
 # 模块 0: 北京时间树状日志系统
@@ -68,6 +57,24 @@ def log_tree(level, msg):
     full_msg = f"{prefix}{msg}"
     if _sys_opt or level >= 2: logger.info(full_msg)
     else: logger.debug(full_msg)
+
+# ==========================================
+# 动态模块加载 (Stats & Responder)
+# ==========================================
+# [Ver 43.7] 引入统计模块
+try:
+    from work_stats import init_stats_blueprint
+except ImportError as e:
+    logger.warning(f"⚠️ 统计模块加载失败: {e}")
+    init_stats_blueprint = None
+
+# [Ver 45.14] 引入自动回复模块 (增加错误打印)
+try:
+    from monitor_responder import init_responder_blueprint
+    logger.info("✅ 自动回复模块 (monitor_responder) 导入成功")
+except ImportError as e:
+    logger.error(f"❌ 自动回复模块导入失败: {e}")
+    init_responder_blueprint = None
 
 # ==========================================
 # 模块 1: 基础函数 (强力清洗版)
@@ -309,7 +316,7 @@ DASHBOARD_HTML = """
 </head>
 <body>
     <div class="header">
-        <h1>⚡️ 实时监控 (Ver 45.13)</h1>
+        <h1>⚡️ 实时监控 (Ver 45.14)</h1>
         <div class="status-grp">
             <span class="audio-btn" onclick="toggleAudio()" title="开启/关闭报警音">🔇</span>
             <a href="#" onclick="ctrl(1)" class="ctrl-btn">上班</a>
@@ -341,7 +348,7 @@ DASHBOARD_HTML = """
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
     <a href="/tool/work_stats" target="_blank" class="btn" style="margin-top:10px;background:#6a1b9a">📊 工作量统计 & Google同步</a>
     <a href="/zd" target="_blank" class="btn" style="margin-top:10px;background:#e65100">🤖 自动回复配置</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.13 (Fix: Mount Responder)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.14 (Fix: Actually Mount Responder)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -2298,10 +2305,14 @@ if __name__ == '__main__':
         # [Ver 43.5] 功能挂载
         if init_stats_blueprint:
             init_stats_blueprint(app, client, bot_loop, CS_GROUP_IDS)
+        
+        # [Ver 45.14] 自动回复挂载
+        if init_responder_blueprint:
+             init_responder_blueprint(app, client, bot_loop)
             
         Thread(target=run_web).start()
         # [Ver 43.5] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 45.13 Fix: Mount Responder)")
+        log_tree(0, "✅ 系统启动 (Ver 45.14 Fix: Actually Mount Responder)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
