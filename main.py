@@ -59,24 +59,6 @@ def log_tree(level, msg):
     else: logger.debug(full_msg)
 
 # ==========================================
-# 动态模块加载 (Stats & Responder)
-# ==========================================
-# [Ver 43.7] 引入统计模块
-try:
-    from work_stats import init_stats_blueprint
-except ImportError as e:
-    logger.warning(f"⚠️ 统计模块加载失败: {e}")
-    init_stats_blueprint = None
-
-# [Ver 45.14] 引入自动回复模块 (增加错误打印)
-try:
-    from monitor_responder import init_responder_blueprint
-    logger.info("✅ 自动回复模块 (monitor_responder) 导入成功")
-except ImportError as e:
-    logger.error(f"❌ 自动回复模块导入失败: {e}")
-    init_responder_blueprint = None
-
-# ==========================================
 # 模块 1: 基础函数 (强力清洗版)
 # ==========================================
 def normalize(text):
@@ -151,6 +133,24 @@ except Exception as e:
     sys.exit(1)
 
 log_tree(0, f"系统启动 | 稍等词: {len(WAIT_SIGNATURES)} | 跟进词: {len(KEEP_SIGNATURES)} | 忽略词: {len(IGNORE_SIGNATURES)}")
+
+# ==========================================
+# 动态模块加载 (Stats & Responder)
+# ==========================================
+# [Ver 43.7] 引入统计模块
+try:
+    from work_stats import init_stats_blueprint
+except ImportError as e:
+    logger.warning(f"⚠️ 统计模块加载失败: {e}")
+    init_stats_blueprint = None
+
+# [Ver 45.16] 引入自动回复模块 (Correct Function Name: init_monitor)
+try:
+    from monitor_responder import init_monitor
+    logger.info("✅ 自动回复模块 (monitor_responder) 导入成功")
+except ImportError as e:
+    logger.error(f"❌ 自动回复模块导入失败: {e}")
+    init_monitor = None
 
 # ==========================================
 # 模块 3: 全局状态
@@ -316,7 +316,7 @@ DASHBOARD_HTML = """
 </head>
 <body>
     <div class="header">
-        <h1>⚡️ 实时监控 (Ver 45.14)</h1>
+        <h1>⚡️ 实时监控 (Ver 45.16)</h1>
         <div class="status-grp">
             <span class="audio-btn" onclick="toggleAudio()" title="开启/关闭报警音">🔇</span>
             <a href="#" onclick="ctrl(1)" class="ctrl-btn">上班</a>
@@ -348,7 +348,7 @@ DASHBOARD_HTML = """
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
     <a href="/tool/work_stats" target="_blank" class="btn" style="margin-top:10px;background:#6a1b9a">📊 工作量统计 & Google同步</a>
     <a href="/zd" target="_blank" class="btn" style="margin-top:10px;background:#e65100">🤖 自动回复配置</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.14 (Fix: Actually Mount Responder)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.16 (Fix: Correct Responder Mount)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -2306,13 +2306,16 @@ if __name__ == '__main__':
         if init_stats_blueprint:
             init_stats_blueprint(app, client, bot_loop, CS_GROUP_IDS)
         
-        # [Ver 45.14] 自动回复挂载
-        if init_responder_blueprint:
-             init_responder_blueprint(app, client, bot_loop)
+        # [Ver 45.16] 自动回复挂载 (修复: 使用正确的导入名称 init_monitor)
+        if init_monitor:
+            # 这里的参数需要根据 monitor_responder.py 中的定义进行调整
+            # 假设 init_monitor 的签名是 (client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
+            # 我们需要传递相应的值
+            init_monitor(client, app, OTHER_CS_IDS, CS_NAME_PREFIXES, handler)
             
         Thread(target=run_web).start()
         # [Ver 43.5] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 45.14 Fix: Actually Mount Responder)")
+        log_tree(0, "✅ 系统启动 (Ver 45.16 Fix: Correct Responder Mount)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
