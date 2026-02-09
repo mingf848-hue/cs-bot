@@ -20,6 +20,12 @@ try:
 except ImportError:
     init_stats_blueprint = None
 
+# [Ver 45.13] 确保引入自动回复模块 (修复 /zd 404)
+try:
+    from monitor_responder import init_responder_blueprint
+except ImportError:
+    init_responder_blueprint = None
+
 # ==========================================
 # 模块 0: 北京时间树状日志系统
 # ==========================================
@@ -303,7 +309,7 @@ DASHBOARD_HTML = """
 </head>
 <body>
     <div class="header">
-        <h1>⚡️ 实时监控 (Ver 45.11)</h1>
+        <h1>⚡️ 实时监控 (Ver 45.13)</h1>
         <div class="status-grp">
             <span class="audio-btn" onclick="toggleAudio()" title="开启/关闭报警音">🔇</span>
             <a href="#" onclick="ctrl(1)" class="ctrl-btn">上班</a>
@@ -334,7 +340,8 @@ DASHBOARD_HTML = """
     <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
     <a href="/tool/work_stats" target="_blank" class="btn" style="margin-top:10px;background:#6a1b9a">📊 工作量统计 & Google同步</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.11 (Wait Check: Show AI Skipped Reasons)</div>
+    <a href="/zd" target="_blank" class="btn" style="margin-top:10px;background:#e65100">🤖 自动回复配置</a>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.13 (Fix: Mount Responder)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -1020,11 +1027,11 @@ def _ai_check_reply_needed(text):
 
 def _ai_check_orphan_context(target_text, context_text_list):
     """
-    [Sync Function] [Ver 45.11]
+    [Sync Function] [Ver 45.12]
     Detect if an orphan message is just context noise / slip-up
     Returns (is_slip_up: bool, reason: str).
     """
-    if not target_text or len(target_text) < 2: return (True, "Ignore very short/empty") 
+    if not target_text or len(target_text) < 2: return (True, "忽略极短/空消息") 
     
     context_str = "\n".join(context_text_list)
     log_prefix = f"🤖 [AI-Orphan] Text='{target_text[:15]}...' | "
@@ -1034,21 +1041,21 @@ def _ai_check_orphan_context(target_text, context_text_list):
     headers = {'Content-Type': 'application/json'}
     
     prompt = f"""
-    Context Analysis Task:
-    A user sent an isolated message (Target Message) that was not a reply to any thread.
-    Please analyze if this message is contextually related to the Recent Chat History (e.g., an anxious follow-up, adding details to previous thread, or just noise like 'ok', 'thanks').
+    上下文分析任务：
+    用户发送了一条孤立消息（目标消息），没有引用回复任何现有话题。
+    请分析这条消息是否与最近的聊天记录在上下文上有关联（例如：焦急的追问、对前一个话题的补充细节、或者仅仅是“好的”、“谢谢”等结束语）。
     
-    Target Message: "{target_text}"
+    目标消息："{target_text}"
     
-    Recent Chat History (mixed speakers):
+    最近聊天记录（混合发言者）：
     {context_str}
     
-    Decision Rules:
-    1. If the Target Message seems to be a continuation of the history (e.g. adding details, rushing CS, re-stating issue), return is_slip_up = TRUE (We will ignore it).
-    2. If the Target Message is a duplicate greeting or simple ACK ('1', 'ok') that fits the flow, return is_slip_up = TRUE.
-    3. ONLY if the Target Message is a completely NEW, DISTINCT issue that requires a separate reply chain, return is_slip_up = FALSE.
+    判定规则：
+    1. 如果目标消息看起来是历史记录的延续（例如：补充细节、催促客服、重述问题），返回 is_slip_up = TRUE（我们将忽略它）。
+    2. 如果目标消息是重复的问候或简单的确认（'1', 'ok'）且符合对话流，返回 is_slip_up = TRUE。
+    3. 只有当目标消息是一个全新的、独立的问题，需要单独的回复链时，才返回 is_slip_up = FALSE。
     
-    Output JSON: {{"reason": "...", "is_slip_up": true/false}}
+    请输出 JSON 格式: {{"reason": "用中文简短说明原因...", "is_slip_up": true/false}}
     """
     
     data = {
@@ -2294,7 +2301,7 @@ if __name__ == '__main__':
             
         Thread(target=run_web).start()
         # [Ver 43.5] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 45.11 Wait Check: Show AI Skipped Reasons)")
+        log_tree(0, "✅ 系统启动 (Ver 45.13 Fix: Mount Responder)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
