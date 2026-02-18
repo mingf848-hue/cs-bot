@@ -59,6 +59,24 @@ def log_tree(level, msg):
     else: logger.debug(full_msg)
 
 # ==========================================
+# 动态模块加载 (Stats & Responder)
+# ==========================================
+# [Ver 43.7] 引入统计模块
+try:
+    from work_stats import init_stats_blueprint
+except ImportError as e:
+    logger.warning(f"⚠️ 统计模块加载失败: {e}")
+    init_stats_blueprint = None
+
+# [Ver 45.16] 引入自动回复模块
+try:
+    from monitor_responder import init_monitor
+    logger.info("✅ 自动回复模块 (monitor_responder) 导入成功")
+except ImportError as e:
+    logger.error(f"❌ 自动回复模块导入失败: {e}")
+    init_monitor = None
+
+# ==========================================
 # 模块 1: 基础函数 (强力清洗版)
 # ==========================================
 def normalize(text):
@@ -133,24 +151,6 @@ except Exception as e:
     sys.exit(1)
 
 log_tree(0, f"系统启动 | 稍等词: {len(WAIT_SIGNATURES)} | 跟进词: {len(KEEP_SIGNATURES)} | 忽略词: {len(IGNORE_SIGNATURES)}")
-
-# ==========================================
-# 动态模块加载 (Stats & Responder)
-# ==========================================
-# [Ver 43.7] 引入统计模块
-try:
-    from work_stats import init_stats_blueprint
-except ImportError as e:
-    logger.warning(f"⚠️ 统计模块加载失败: {e}")
-    init_stats_blueprint = None
-
-# [Ver 45.16] 引入自动回复模块 (Correct Function Name: init_monitor)
-try:
-    from monitor_responder import init_monitor
-    logger.info("✅ 自动回复模块 (monitor_responder) 导入成功")
-except ImportError as e:
-    logger.error(f"❌ 自动回复模块导入失败: {e}")
-    init_monitor = None
 
 # ==========================================
 # 模块 3: 全局状态
@@ -316,7 +316,7 @@ DASHBOARD_HTML = """
 </head>
 <body>
     <div class="header">
-        <h1>⚡️ 实时监控 (Ver 45.16)</h1>
+        <h1>⚡️ 实时监控 (Ver 45.17)</h1>
         <div class="status-grp">
             <span class="audio-btn" onclick="toggleAudio()" title="开启/关闭报警音">🔇</span>
             <a href="#" onclick="ctrl(1)" class="ctrl-btn">上班</a>
@@ -348,7 +348,7 @@ DASHBOARD_HTML = """
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
     <a href="/tool/work_stats" target="_blank" class="btn" style="margin-top:10px;background:#6a1b9a">📊 工作量统计 & Google同步</a>
     <a href="/zd" target="_blank" class="btn" style="margin-top:10px;background:#e65100">🤖 自动回复配置</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.16 (Fix: Correct Responder Mount)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.17 (Wait Check: 20h & User-Specific Logic)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -1032,9 +1032,9 @@ def _ai_check_reply_needed(text):
         log_tree(9, log_prefix + f"❌ 网络异常: {e}")
         return (True, f"网络异常: {str(e)}") 
 
-def _ai_check_orphan_context(target_text, context_text_list):
+def _ai_check_orphan_context(target_text, context_text_list, target_label="User"):
     """
-    [Sync Function] [Ver 45.12]
+    [Sync Function] [Ver 45.17]
     Detect if an orphan message is just context noise / slip-up
     Returns (is_slip_up: bool, reason: str).
     """
@@ -1047,22 +1047,24 @@ def _ai_check_orphan_context(target_text, context_text_list):
     url = f"{proxy_url}/v1beta/models/{AI_MODEL_NAME}:generateContent"
     headers = {'Content-Type': 'application/json'}
     
+    # [Ver 45.17] 强化 Prompt：必须识别 Target User ID
     prompt = f"""
     上下文分析任务：
-    用户发送了一条孤立消息（目标消息），没有引用回复任何现有话题。
-    请分析这条消息是否与最近的聊天记录在上下文上有关联（例如：焦急的追问、对前一个话题的补充细节、或者仅仅是“好的”、“谢谢”等结束语）。
+    你正在审核一个聊天记录，寻找【漏回消息】。
     
-    目标消息："{target_text}"
+    目标发送者: "{target_label}"
+    目标消息: "{target_text}"
     
-    最近聊天记录（混合发言者）：
+    最近聊天记录（带发送者ID）：
     {context_str}
     
     判定规则：
-    1. 如果目标消息看起来是历史记录的延续（例如：补充细节、催促客服、重述问题），返回 is_slip_up = TRUE（我们将忽略它）。
-    2. 如果目标消息是重复的问候或简单的确认（'1', 'ok'）且符合对话流，返回 is_slip_up = TRUE。
-    3. 只有当目标消息是一个全新的、独立的问题，需要单独的回复链时，才返回 is_slip_up = FALSE。
+    1. 【严格身份验证】：只关注 "{target_label}" 的行为。其他无关用户（如 User(9999)）的插话必须忽略，不能作为豁免理由。
+    2. 【自我延续】：如果 "{target_label}" 在目标消息之前或之后紧接着发了其他消息（且那些消息被回复了，或者构成了完整表达），则视为 "is_slip_up": true（属于上下文失误/补充，不需要单独回）。
+    3. 【客服互动】：如果上下文显示客服（CS）已经明确回答了 "{target_label}" 的问题（即使没有使用引用回复功能），则视为 "is_slip_up": true。
+    4. 【全新问题】：只有当目标消息是 "{target_label}" 发出的一个全新的、独立的、且无人理睬的提问时，才返回 "is_slip_up": false（这才是真正的漏回）。
     
-    请输出 JSON 格式: {{"reason": "用中文简短说明原因...", "is_slip_up": true/false}}
+    请输出 JSON 格式: {{"reason": "用中文简短说明原因（指明是否是同一人）...", "is_slip_up": true/false}}
     """
     
     data = {
@@ -1153,7 +1155,14 @@ async def check_wait_keyword_logic(keyword, result_queue):
     将结果推送到 result_queue。
     """
     try:
-        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=10)
+        # [Ver 45.17] 全体检测使用 20 小时窗口
+        cutoff_hours = 10
+        limit_count = 3000
+        if keyword in ["全体", "全体检测"]:
+            cutoff_hours = 20
+            limit_count = 6000 # 扩大搜索深度以覆盖20小时
+            
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=cutoff_hours)
         total_groups = len(CS_GROUP_IDS)
         
         # 定义不参与检查的黑名单群组
@@ -1173,10 +1182,9 @@ async def check_wait_keyword_logic(keyword, result_queue):
             }))
 
             try:
-                # 1. 抓取该群组最近10小时的消息
+                # 1. 抓取历史消息
                 history = []
-                # 限制3000条或时间截止
-                async for m in client.iter_messages(chat_id, limit=3000):
+                async for m in client.iter_messages(chat_id, limit=limit_count):
                     if m.date and m.date < cutoff_time: break
                     history.append(m)
                 
@@ -1236,22 +1244,31 @@ async def check_wait_keyword_logic(keyword, result_queue):
                             context_slice = history[start:end]
                             context_slice.sort(key=lambda x: x.date)
                             
+                            # [Ver 45.17] 目标用户身份标记
+                            target_uid = m.sender_id
+                            target_label = f"User({str(target_uid)[-4:]})" # 目标用户ID后4位
+
                             context_txts = []
                             for cm in context_slice:
-                                c_name = "User"
-                                if cm.sender_id in ([MY_ID] + OTHER_CS_IDS): c_name = "CS"
+                                # 为每一条消息打上身份标签
+                                if cm.sender_id in ([MY_ID] + OTHER_CS_IDS): 
+                                    c_label = "CS"
                                 else:
+                                    is_cm_cs = False
                                     try:
-                                        if getattr(cm.sender, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)): c_name = "CS"
+                                        if getattr(cm.sender, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)): is_cm_cs = True
                                     except: pass
-                                
+                                    
+                                    if is_cm_cs: c_label = "CS"
+                                    else: c_label = f"User({str(cm.sender_id)[-4:]})" # 其他用户ID后4位
+
                                 c_txt = (cm.text or "[Media]").replace('\n', ' ')
                                 marker = " <<< TARGET" if cm.id == m.id else ""
-                                context_txts.append(f"[{cm.date.strftime('%H:%M:%S')}] {c_name}: {c_txt}{marker}")
+                                context_txts.append(f"[{cm.date.strftime('%H:%M:%S')}] {c_label}: {c_txt}{marker}")
                             
-                            # 调用 AI (Ver 45.11: Unpack tuple)
+                            # 调用 AI (Ver 45.17: 传入 target_label)
                             is_slip_up, ai_reason = await asyncio.get_event_loop().run_in_executor(
-                                None, lambda: _ai_check_orphan_context(m.text or "[Media]", context_txts)
+                                None, lambda: _ai_check_orphan_context(m.text or "[Media]", context_txts, target_label)
                             )
                             
                             # [Ver 45.11] 不管AI说是否需要回，都记录下来，只是状态不同
@@ -2306,16 +2323,13 @@ if __name__ == '__main__':
         if init_stats_blueprint:
             init_stats_blueprint(app, client, bot_loop, CS_GROUP_IDS)
         
-        # [Ver 45.16] 自动回复挂载 (修复: 使用正确的导入名称 init_monitor)
+        # [Ver 45.16] 自动回复挂载
         if init_monitor:
-            # 这里的参数需要根据 monitor_responder.py 中的定义进行调整
-            # 假设 init_monitor 的签名是 (client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
-            # 我们需要传递相应的值
             init_monitor(client, app, OTHER_CS_IDS, CS_NAME_PREFIXES, handler)
             
         Thread(target=run_web).start()
         # [Ver 43.5] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 45.16 Fix: Correct Responder Mount)")
+        log_tree(0, "✅ 系统启动 (Ver 45.17 Wait Check: 20h & User-Specific Logic)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
