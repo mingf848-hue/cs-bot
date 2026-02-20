@@ -714,6 +714,7 @@ WAIT_CHECK_HTML = """
         .msg-meta { font-size: 12px; color: #888; margin-bottom: 4px; display: flex; gap: 10px; }
         .msg-text { font-size: 14px; line-height: 1.5; color: #333; word-wrap: break-word; background: #f5f5f5; padding: 8px; border-radius: 4px; margin: 5px 0; border-left: 3px solid #ccc; }
         .latest-text { font-size: 12px; color: #d32f2f; margin-top: 6px; background: #fff3e0; padding: 4px 8px; border-radius: 4px; border: 1px dashed #ffa726; }
+        .latest-text-success { font-size: 12px; color: #2e7d32; margin-top: 6px; background: #e8f5e9; padding: 4px 8px; border-radius: 4px; border: 1px dashed #81c784; }
         .reason-text { color: #d32f2f; font-size: 13px; margin-top: 4px; font-style: italic; }
         .reason-success { color: #2e7d32; font-size: 13px; margin-top: 4px; font-style: italic; }
         .msg-link { text-decoration: none; color: #0088cc; font-size: 13px; display: inline-block; margin-top: 5px; font-weight: 500; }
@@ -853,7 +854,18 @@ WAIT_CHECK_HTML = """
                 
                 const isAllSearch = (data.latest_text === '无人引用回复' || data.latest_text === '相邻消息被回复');
                 const mainDisplay = isAllSearch ? data.found_text : data.latest_text;
-                const subDisplay = isAllSearch ? data.latest_text : data.found_text;
+                
+                let subDisplay = isAllSearch ? data.latest_text : data.found_text;
+                if (isAllSearch) {
+                    if (data.latest_text === '无人引用回复') {
+                        subDisplay = data.is_closed ? '无直接引用 (AI已豁免)' : '无直接引用 (需处理)';
+                    } else if (data.latest_text === '相邻消息被回复') {
+                        subDisplay = '上下文连续发言覆盖';
+                    }
+                }
+                
+                const subClass = data.is_closed ? 'latest-text-success' : 'latest-text';
+                const subLabel = isAllSearch ? '判定特征' : '触发消息';
 
                 div.innerHTML = `
                     <div class="status-badge ${data.is_closed ? 'status-closed' : 'status-open'}">
@@ -866,7 +878,7 @@ WAIT_CHECK_HTML = """
                         </div>
                         <div class="msg-text">${mainDisplay}</div>
                         ${data.reason ? `<div class="${data.is_closed ? 'reason-success' : 'reason-text'}">${data.is_closed ? '🤖 ' : '⚠️ '}${data.reason}</div>` : ''}
-                        <div class="latest-text">👀 ${isAllSearch ? '判定状态' : '触发消息'}: [${subDisplay}]</div>
+                        <div class="${subClass}">👀 ${subLabel}: [${subDisplay}]</div>
                         <span class="msg-link copy-btn" onclick="copyLink('${data.link}', this)">🔗 点击复制链接</span>
                     </div>
                 `;
