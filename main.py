@@ -787,6 +787,27 @@ def log_raw():
         file_size = os.path.getsize(LOG_FILE_PATH)
         read_size = 200 * 1024 
         with open(LOG_FILE_PATH, 'rb') as f:
+            if file_size > read_size: f.seek(file_size - read_size)
+            content = f.read().decode('utf-8', errors='ignore')
+        return Response(content, mimetype='text/plain')
+    except Exception as e: return f"Log read error: {e}"
+
+@app.after_request
+def add_header(response):
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    return response
+
+@app.route('/api/ctrl')
+def api_ctrl():
+    s = request.args.get('s', type=int)
+    log_tree(1, f"🌐 Web指令接收: {'上班' if s==1 else '下班'}")
+    global bot_loop
+    if not bot_loop: return "Error: Loop Not Ready", 500
+    coro = perform_start_work() if s == 1 else perform_stop_work()
+    try: asyncio.run_coroutine_threadsafe(coro, bot_loop)
+    except Exception as e: return str(e), 500
+    return "OK"
+
 @app.route('/api/wait_check_stream')
 def wait_check_stream():
     keyword = request.args.get('keyword', '').strip()
