@@ -61,14 +61,12 @@ def log_tree(level, msg):
 # ==========================================
 # 动态模块加载 (Stats & Responder)
 # ==========================================
-# [Ver 43.7] 引入统计模块
 try:
     from work_stats import init_stats_blueprint
 except ImportError as e:
     logger.warning(f"⚠️ 统计模块加载失败: {e}")
     init_stats_blueprint = None
 
-# [Ver 45.16] 引入自动回复模块
 try:
     from monitor_responder import init_monitor
     logger.info("✅ 自动回复模块 (monitor_responder) 导入成功")
@@ -82,7 +80,6 @@ except ImportError as e:
 def normalize(text):
     if not text: return ""
     text = text.lower()
-    # [Ver 34.0] 移除所有标点符号和空白，只保留纯文本
     text = re.sub(r'[^\w=]', '', text) 
     return text
 
@@ -115,11 +112,9 @@ try:
     
     wait_keywords_env = os.environ["WAIT_KEYWORDS"]
     clean_env = wait_keywords_env.replace("，", ",") 
-    # [Ver 35.0 Fix] 确保不包含空字符串，防止图片/无文字消息被误判
     raw_wait = {normalize(x) for x in clean_env.split(',') if x.strip()}
     WAIT_SIGNATURES = {x for x in raw_wait if x} 
 
-    # [Ver 42.1] 修复 Keep 关键词解析逻辑：优先使用 | 分隔
     keep_keywords_env = os.environ.get("KEEP_KEYWORDS", "") 
     if '|' in keep_keywords_env:
         keep_list = keep_keywords_env.split('|')
@@ -130,7 +125,7 @@ try:
     raw_keep = {normalize(x) for x in keep_list if x.strip()}
     KEEP_SIGNATURES = {x for x in raw_keep if x}
     
-    log_tree(0, f"🔍 关键词配置 (Normalized): WAIT={WAIT_SIGNATURES} | KEEP={KEEP_SIGNATURES}")
+    log_tree(0, f"🔍 关键词配置: WAIT={len(WAIT_SIGNATURES)} | KEEP={len(KEEP_SIGNATURES)}")
 
     default_ignore = (
         "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴,"
@@ -194,9 +189,8 @@ bot_loop = None
 def update_msg_cache(chat_id, msg_id, user_id, grouped_id=None):
     key = (chat_id, msg_id)
     if len(msg_to_user_cache) >= MAX_CACHE_SIZE:
-        if key not in msg_to_user_cache: 
-            try: msg_to_user_cache.pop(next(iter(msg_to_user_cache)))
-            except StopIteration: pass
+        try: msg_to_user_cache.pop(next(iter(msg_to_user_cache)))
+        except StopIteration: pass
     msg_to_user_cache[key] = user_id
     if grouped_id:
         g_key = (chat_id, grouped_id)
@@ -209,9 +203,8 @@ def update_msg_cache(chat_id, msg_id, user_id, grouped_id=None):
 def update_content_cache(chat_id, msg_id, name, text):
     key = (chat_id, msg_id)
     if len(msg_content_cache) >= MAX_CACHE_SIZE:
-        if key not in msg_content_cache: 
-            try: msg_content_cache.pop(next(iter(msg_content_cache)))
-            except StopIteration: pass
+        try: msg_content_cache.pop(next(iter(msg_content_cache)))
+        except StopIteration: pass
     safe_text = text[:100].replace('\n', ' ') if text else "[非文本/空]"
     msg_content_cache[key] = {'name': name, 'text': safe_text}
 
@@ -316,7 +309,7 @@ DASHBOARD_HTML = """
 </head>
 <body>
     <div class="header">
-        <h1>⚡️ 实时监控 (Ver 45.17)</h1>
+        <h1>⚡️ 实时监控 (Ver 45.21)</h1>
         <div class="status-grp">
             <span class="audio-btn" onclick="toggleAudio()" title="开启/关闭报警音">🔇</span>
             <a href="#" onclick="ctrl(1)" class="ctrl-btn">上班</a>
@@ -348,7 +341,7 @@ DASHBOARD_HTML = """
     <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
     <a href="/tool/work_stats" target="_blank" class="btn" style="margin-top:10px;background:#6a1b9a">📊 工作量统计 & Google同步</a>
     <a href="/zd" target="_blank" class="btn" style="margin-top:10px;background:#e65100">🤖 自动回复配置</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.17 (Wait Check: 20h & User-Specific Logic)</div>
+    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.21 (Final Consolidated Version)</div>
     <script>
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
@@ -583,7 +576,6 @@ LOG_VIEWER_HTML = """
     <script>
         const container = document.getElementById('log-container');
         let parsedLogs = [];
-        // [Ver 34.0] UI Fix: Handle date format
         fetch('/log_raw?t=' + Date.now())
             .then(r => { if (!r.ok) throw new Error('Network response was not ok'); return r.text(); })
             .then(text => {
@@ -594,11 +586,9 @@ LOG_VIEWER_HTML = """
             .catch(err => { container.innerHTML = `<div class="error-msg">加载失败: ${err.message}</div>`; });
 
         function parseLogs(text) {
-            // [Fix JS Escaping] Use double backslash for python string
             const rawLines = text.split(/\\r?\\n/);
             parsedLogs = [];
             let currentEntry = null;
-            // [Fix JS Escaping] Escape \\d and \\s for JS regex
             const timeRegex = /^(\\d{4}-\\d{2}-\\d{2}\\s+)?(\\d{2}:\\d{2}:\\d{2})(.*)/;
             
             rawLines.forEach(line => {
@@ -606,10 +596,8 @@ LOG_VIEWER_HTML = """
                 const match = line.match(timeRegex);
                 if (match) {
                     if (currentEntry) parsedLogs.push(currentEntry);
-                    // match[2] is time, match[3] is content
                     currentEntry = { time: match[2], raw: match[3], content: match[3].trim(), fullText: match[3] };
                 } else {
-                    // [Fix JS Escaping] Use \\n for literal newline char in JS string
                     if (currentEntry) { currentEntry.fullText += '\\n' + line; currentEntry.content += '\\n' + line; }
                 }
             });
@@ -623,7 +611,6 @@ LOG_VIEWER_HTML = """
                 let content = entry.content;
                 let raw = entry.raw || "";
                 let ids = [];
-                // [Fix JS Escaping] Escape \\d and \\s for JS regex
                 const idRegex = /(Msg|User|Thread|流|归属|用户)[:=]?\\s?(\\d+)/g;
                 let match;
                 while ((match = idRegex.exec(content)) !== null) { ids.push(match[2]); }
@@ -635,12 +622,10 @@ LOG_VIEWER_HTML = """
                 else if (raw.includes('👮') || raw.includes('[AUDIT]')) { type = 'audit'; }
                 else if (raw.includes('┣━━') || raw.includes('┗━━')) { type = 'sys'; }
 
-                // [Fix JS Escaping] Escape \\d, \\s and quotes inside replacement string
                 content = content.replace(/(Msg[:=]?\\s?)(\\d+)/g, '$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
                 content = content.replace(/(User|用户|归属)[:=]?\\s?(\\d+)/g, '$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
                 
                 let actionBtn = '';
-                // [Ver 43.4 Fix] Fixed string interpolation for reportBug by removing extra escaping
                 if (type === 'user') {
                     actionBtn = ids.length > 0 ? `<span class="btn-report btn-missed" onclick="reportBug('漏报', '${idsStr}')">🐞 漏报</span>` : '';
                 } else if (type === 'alert' || type === 'audit') {
@@ -749,7 +734,7 @@ WAIT_CHECK_HTML = """
             <label>输入关键词 (输入"全体"可扫描漏回)</label>
             <input type="text" id="keyword" placeholder="输入关键词 (例如: 请稍等ART，或输入 '全体')" value="请稍等ART">
         </div>
-        <button onclick="startCheck()" id="btn-search">开始检测 (过去 10 小时)</button>
+        <button onclick="startCheck()" id="btn-search">开始检测</button>
         
         <div id="progress-container">
             <div id="progress-bar"><div id="progress-fill"></div></div>
@@ -789,7 +774,6 @@ WAIT_CHECK_HTML = """
             allResults = [];
 
             try {
-                // 使用流式 API
                 const response = await fetch(`/api/wait_check_stream?keyword=${encodeURIComponent(keyword)}`);
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
@@ -805,24 +789,17 @@ WAIT_CHECK_HTML = """
                         if (!line.trim()) continue;
                         try {
                             const data = JSON.parse(line);
-                            
                             if (data.type === 'progress') {
                                 pFill.style.width = data.percent + '%';
                                 pText.innerText = data.msg;
                             } else if (data.type === 'result') {
                                 allResults.push(data);
-                                // [Ver 43.0] Collect all first for sorting
                                 pText.innerText = `已找到 ${allResults.length} 条结果...`;
                             } else if (data.type === 'done') {
                                 pFill.style.width = '100%';
                                 pText.innerText = '检测完成，正在排序...';
-                                
-                                // [Ver 43.0] Sort by time descending (Newest first)
-                                allResults.sort((a, b) => {
-                                    return new Date(b.time) - new Date(a.time);
-                                });
-                                
-                                renderResults(allResults); // Batch render
+                                allResults.sort((a, b) => new Date(b.time) - new Date(a.time));
+                                renderResults(allResults); 
                                 renderSummary(data.total, data.closed, data.open);
                             }
                         } catch (e) {
@@ -855,12 +832,9 @@ WAIT_CHECK_HTML = """
             else if (type === 'closed') filtered = allResults.filter(d => d.is_closed);
             else if (type === 'open') filtered = allResults.filter(d => !d.is_closed);
             
-            // [Ver 43.0] Ensure sorted
             filtered.sort((a, b) => new Date(b.time) - new Date(a.time));
-            
             renderResults(filtered);
             
-            // Update active state visual
             document.querySelectorAll('.filter-btn').forEach(btn => {
                  if(btn.innerText.includes(type === 'all' ? '全部' : (type === 'closed' ? '已闭环' : '未闭环'))) {
                      btn.classList.add('filter-active');
@@ -870,7 +844,6 @@ WAIT_CHECK_HTML = """
             });
         }
         
-        // [Ver 45.9] Update: Added copy link functionality without alert
         function renderResults(list) {
             const resList = document.getElementById('result-list');
             resList.innerHTML = '';
@@ -910,16 +883,17 @@ WAIT_CHECK_HTML = """
 </html>
 """
 
+# ==========================================
+# 补全的 Web 路由区域 (处理 404 错误)
+# ==========================================
 @app.route('/')
 def status_page():
     now = datetime.now(timezone(timedelta(hours=8))).strftime('%H:%M:%S')
     return render_template_string(DASHBOARD_HTML, working=IS_WORKING, w=wait_timers, f=followup_timers, r=reply_timers, s=self_reply_timers, current_time=now)
 
-# [Ver 43.5] Fix UI Template Literals issue by bypassing Jinja2 with Response
 @app.route('/log')
 def log_ui(): return Response(LOG_VIEWER_HTML, mimetype='text/html')
 
-# [Ver 42.0] Fix 500 error by using raw Response instead of render_template_string for JS-heavy templates
 @app.route('/tool/wait_check')
 def wait_check_ui(): 
     return Response(WAIT_CHECK_HTML, mimetype='text/html')
@@ -927,13 +901,10 @@ def wait_check_ui():
 @app.route('/log_raw')
 def log_raw():
     try:
-        # [Ver 38.1] Check file exists first
         if not os.path.exists(LOG_FILE_PATH):
             return "Log file not created yet.", 200
-            
         file_size = os.path.getsize(LOG_FILE_PATH)
         read_size = 200 * 1024 
-        # [Ver 43.0] Fix IndentationError from previous version
         with open(LOG_FILE_PATH, 'rb') as f:
             if file_size > read_size: f.seek(file_size - read_size)
             content = f.read().decode('utf-8', errors='ignore')
@@ -956,89 +927,36 @@ def api_ctrl():
     except Exception as e: return str(e), 500
     return "OK"
 
+
 # ==========================================
-# 模块 4.5: 稍等闭环检测 API (Async Generator)
+# 模块 4.5: AI 分析模块 (Ver 45.21)
 # ==========================================
+
 def _ai_check_reply_needed(text):
-    """
-    [Sync Function] 使用 Gemini AI 判断是否需要回复
-    返回 (bool, reason_str)
-    """
-    log_prefix = f"🤖 [AI-Audit] Text='{text[:20]}...' | "
-    
-    # [Ver 45.3] 网络异常时的本地兜底策略
-    # 如果内容很短且像结束语，或者是纯符号/数字，则判定为闭环，避免因AI挂了导致大量误报
     simple_text = normalize(text)
-    if len(simple_text) <= 2 or simple_text.isdigit(): # 如 "1", "=", "ok"
-         return (False, f"网络异常(本地兜底): 内容极简[{simple_text}]")
-    if simple_text in IGNORE_SIGNATURES:
-         return (False, f"网络异常(本地兜底): 命中忽略词")
+    if len(simple_text) <= 2 or simple_text.isdigit(): return (False, "本地兜底: 极简回复")
+    if simple_text in IGNORE_SIGNATURES: return (False, "本地兜底: 命中忽略词")
     
-    # 2. 构造请求
-    # [Ver 40.0] URL 优化：移除末尾斜杠并直接请求，不带 API KEY 参数
     proxy_url = AI_PROXY_URL.rstrip('/')
     url = f"{proxy_url}/v1beta/models/{AI_MODEL_NAME}:generateContent"
-    
     headers = {'Content-Type': 'application/json'}
-    prompt = f"""
-    判断客户的这条最后回复是否需要客服继续跟进回复。
-    客户消息："{text}"
+    prompt = f"判断客户消息是否需要回复。消息: '{text}'\n如果是礼貌结束语或无意义，返回false。如果是问题或投诉，返回true。\nJSON: {{'reason': '...', 'need_reply': true/false}}"
+    data = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"response_mime_type": "application/json"}}
     
-    规则：
-    1. 如果包含明确的问题、投诉、未解决的诉求、需要确认的操作，返回 TRUE。
-    2. 如果只是礼貌性的结束语（如“好的”、“谢谢”、“收到”、“明白了”、“ok”、“辛苦了”）、单纯的情绪表达（如“哈哈”）、或者表示话题已结束，返回 FALSE。
-    3. 仅仅是“好的谢谢”这种组合，绝对是 FALSE。
-    
-    请输出 JSON 格式: {{"reason": "思考过程...", "need_reply": true/false}}
-    """
-    data = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"response_mime_type": "application/json"}
-    }
-    
-    # 3. 发送请求
     try:
-        start_t = time.time()
         resp = requests.post(url, json=data, headers=headers, timeout=10)
-        cost_t = time.time() - start_t
-        
         if resp.status_code == 200:
-            res_json = resp.json()
-            try:
-                # 解析 Gemini 的 JSON 响应
-                candidates = res_json.get('candidates', [])
-                if not candidates:
-                    log_tree(9, log_prefix + "❌ AI返回空候选")
-                    return (True, "AI返回空结果")
-                
-                raw_content = candidates[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
-                
-                # 尝试解析 JSON
-                ai_decision = json.loads(raw_content)
-                reason = ai_decision.get("reason", "No reason")
-                need_reply = ai_decision.get("need_reply", True)
-                
-                log_tree(2, log_prefix + f"✅ AI响应({cost_t:.2f}s): [{str(need_reply).upper()}] 理由: {reason}")
-                return (need_reply, reason)
-                
-            except Exception as parse_e:
-                log_tree(9, log_prefix + f"⚠️ 解析失败: {parse_e} | Raw: {raw_content}")
-                # Fallback
-                return (True, f"解析失败: {str(parse_e)}")
-        else:
-            log_tree(9, log_prefix + f"❌ 请求失败: {resp.status_code} {resp.text}")
-            return (True, f"API请求失败: {resp.status_code}") 
-    except Exception as e:
-        log_tree(9, log_prefix + f"❌ 网络异常: {e}")
-        return (True, f"网络异常: {str(e)}") 
+            decision = json.loads(resp.json()['candidates'][0]['content']['parts'][0]['text'])
+            return (decision.get("need_reply", True), decision.get("reason", "AI Decision"))
+    except: pass
+    return (True, "AI Fail")
 
 def _ai_check_orphan_context(target_text, context_text_list, target_label="User"):
     """
-    [Sync Function] [Ver 45.17]
-    Detect if an orphan message is just context noise / slip-up
-    Returns (is_slip_up: bool, reason: str).
+    [Sync Function] [Ver 45.20/21]
+    让 AI 自由思考上下文，移除死板规则。
     """
-    if not target_text or len(target_text) < 2: return (True, "忽略极短/空消息") 
+    if not target_text or len(target_text) < 1: return (True, "忽略空消息") 
     
     context_str = "\n".join(context_text_list)
     log_prefix = f"🤖 [AI-Orphan] Text='{target_text[:15]}...' | "
@@ -1047,24 +965,22 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
     url = f"{proxy_url}/v1beta/models/{AI_MODEL_NAME}:generateContent"
     headers = {'Content-Type': 'application/json'}
     
-    # [Ver 45.17] 强化 Prompt：必须识别 Target User ID
     prompt = f"""
-    上下文分析任务：
-    你正在审核一个聊天记录，寻找【漏回消息】。
-    
+    你是一名经验丰富的客服质检员。
+    请根据上下文判断下面的【目标消息】是否属于“客服漏回”的事故。
+
     目标发送者: "{target_label}"
     目标消息: "{target_text}"
     
-    最近聊天记录（带发送者ID）：
+    最近聊天记录 (包含时间、发送者、内容):
     {context_str}
     
-    判定规则：
-    1. 【严格身份验证】：只关注 "{target_label}" 的行为。其他无关用户（如 User(9999)）的插话必须忽略，不能作为豁免理由。
-    2. 【自我延续】：如果 "{target_label}" 在目标消息之前或之后紧接着发了其他消息（且那些消息被回复了，或者构成了完整表达），则视为 "is_slip_up": true（属于上下文失误/补充，不需要单独回）。
-    3. 【客服互动】：如果上下文显示客服（CS）已经明确回答了 "{target_label}" 的问题（即使没有使用引用回复功能），则视为 "is_slip_up": true。
-    4. 【全新问题】：只有当目标消息是 "{target_label}" 发出的一个全新的、独立的、且无人理睬的提问时，才返回 "is_slip_up": false（这才是真正的漏回）。
+    【分析逻辑】:
+    请像人类一样综合思考。仔细观察上下文的时间流和对话流。
+    - 豁免 (is_slip_up=true): 如果这条消息看起来是用户连续发言中的一句（分段发送）、对上一句的补充、无意义的语气词，或者客服在上下文中已经明显在该时段接待了该用户（即使没有引用这条特定消息），请认为无需单独回复。
+    - 漏回 (is_slip_up=false): 只有当这是一条被完全忽视的、独立的业务请求，且在上下文中没有任何响应时，才标记为漏回。
     
-    请输出 JSON 格式: {{"reason": "用中文简短说明原因（指明是否是同一人）...", "is_slip_up": true/false}}
+    请输出 JSON 格式: {{"reason": "用中文简短说明原因...", "is_slip_up": true/false}}
     """
     
     data = {
@@ -1080,92 +996,56 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
             decision = json.loads(raw_content)
             is_slip_up = decision.get("is_slip_up", False)
             reason = decision.get("reason", "AI Decision")
-            log_tree(2, log_prefix + f"✅ AI判定: 忽略={is_slip_up} | {reason}")
+            log_tree(2, log_prefix + f"✅ AI判定: 豁免={is_slip_up} | {reason}")
             return (is_slip_up, reason)
         else:
-            return (False, f"API Error {resp.status_code}") # Fail safe
+            return (False, f"API Error {resp.status_code}") 
     except Exception as e:
         log_tree(9, log_prefix + f"❌ AI Check Failed: {e}")
-        return (False, f"Exception {str(e)}") # Fail safe
+        return (False, f"Exception {str(e)}") 
 
-# [Ver 41.8] 抽取公共闭环判断逻辑
 async def _check_is_closed_logic(latest_msg):
     is_closed = False
     reason = ""
-    
-    # 检查最新消息的发送者
     last_sender_id = latest_msg.sender_id
     last_sender_is_cs = False
-    if last_sender_id in ([MY_ID] + OTHER_CS_IDS):
-         last_sender_is_cs = True
+    if last_sender_id in ([MY_ID] + OTHER_CS_IDS): last_sender_is_cs = True
     else:
          try:
              s = await latest_msg.get_sender()
-             if s and getattr(s, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)):
-                 last_sender_is_cs = True
+             if s and getattr(s, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)): last_sender_is_cs = True
          except: pass
     
     if not last_sender_is_cs:
-        # 最后是客户发言 -> AI 检测
-        if not latest_msg.text or not latest_msg.text.strip():
-            is_closed = False
-            reason = "最后是客户[媒体/贴纸]"
+        if not latest_msg.text or not latest_msg.text.strip(): is_closed = False; reason = "最后是客户[媒体/贴纸]"
         else:
-            # 使用同步执行器调用 AI
-            need_reply, ai_reason = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: _ai_check_reply_needed(latest_msg.text)
-            )
-            if not need_reply:
-                is_closed = True
-                reason = f"AI判定已闭环：{ai_reason}"
-            else:
-                is_closed = False
-                reason = f"AI判定需回复：{ai_reason}"
+            need_reply, ai_reason = await asyncio.get_event_loop().run_in_executor(None, lambda: _ai_check_reply_needed(latest_msg.text))
+            if not need_reply: is_closed = True; reason = f"AI判定已闭环：{ai_reason}"
+            else: is_closed = False; reason = f"AI判定需回复：{ai_reason}"
     else:
-        # 最后是客服发言 -> 检查内容是否仍包含等待词/跟进词
         last_text_norm = normalize(latest_msg.text or "")
-        
-        # 稍等词 (Wait): 保持包含匹配 (Inclusion) 以兼容 "请稍等一下"
         is_wait = any(k in last_text_norm for k in WAIT_SIGNATURES)
-        
-        # 跟进词 (Keep): 使用精确匹配 (Exact Match)
-        # [Ver 45.1 Fix] 复用 Keep Keyword 强制精确逻辑
         is_keep = last_text_norm in KEEP_SIGNATURES
-        
         if is_wait or is_keep:
-            is_closed = False
-            reason = f"客服最后仍回复{'稍等' if is_wait else '跟进'}词"
-            
-            # [Ver 44.0] 豁免逻辑：如果客户删除了原消息，视为已闭环（无法回复）
+            is_closed = False; reason = f"客服最后仍回复{'稍等' if is_wait else '跟进'}词"
             if latest_msg.reply_to:
                 try:
                     replied_obj = await latest_msg.get_reply_message()
-                    if not replied_obj: 
-                        is_closed = True
-                        reason = "客户已删消息 (自动豁免)"
+                    if not replied_obj: is_closed = True; reason = "客户已删消息 (自动豁免)"
                 except: pass
-        else:
-            is_closed = True
-            
+        else: is_closed = True
     return is_closed, reason
 
 async def check_wait_keyword_logic(keyword, result_queue):
-    """
-    搜索过去10小时内包含 `keyword` 的消息，并检查闭环。
-    将结果推送到 result_queue。
-    """
     try:
-        # [Ver 45.17] 全体检测使用 20 小时窗口
         cutoff_hours = 10
         limit_count = 3000
         if keyword in ["全体", "全体检测"]:
             cutoff_hours = 20
-            limit_count = 6000 # 扩大搜索深度以覆盖20小时
+            limit_count = 6000 
             
         cutoff_time = datetime.now(timezone.utc) - timedelta(hours=cutoff_hours)
         total_groups = len(CS_GROUP_IDS)
-        
-        # 定义不参与检查的黑名单群组
         EXCLUDED_GROUPS = [-1002807120955, -1002169616907]
         
         found_count = 0
@@ -1174,118 +1054,121 @@ async def check_wait_keyword_logic(keyword, result_queue):
         for idx, chat_id in enumerate(CS_GROUP_IDS):
             if chat_id in EXCLUDED_GROUPS: continue
             
-            # 推送进度
             percent = int((idx / total_groups) * 100)
-            result_queue.put(json.dumps({
-                "type": "progress", "percent": percent, 
-                "msg": f"正在扫描群组 {chat_id} ({idx+1}/{total_groups})..."
-            }))
+            result_queue.put(json.dumps({"type": "progress", "percent": percent, "msg": f"正在扫描群组 {chat_id} ({idx+1}/{total_groups})..."}))
 
             try:
-                # 1. 抓取历史消息
                 history = []
                 async for m in client.iter_messages(chat_id, limit=limit_count):
                     if m.date and m.date < cutoff_time: break
                     history.append(m)
                 
-                # [Ver 45.8] 全体模式 (Full Check): 严格的孤立消息检测 (Strict Orphan Scan)
                 if keyword in ["全体", "全体检测"]:
-                    # 1. 预处理：建立 ID -> GroupedID 映射
                     msg_grouped_map = {}
+                    user_msg_map = defaultdict(list)
                     for m in history:
-                        if m.grouped_id:
-                            msg_grouped_map[m.id] = m.grouped_id
+                        if m.grouped_id: msg_grouped_map[m.id] = m.grouped_id
+                        if m.sender_id: user_msg_map[m.sender_id].append(m)
 
-                    # 2. 构建 reply_to 集合 (找出所有作为父消息存在的ID)
                     replied_to_ids = set()
                     for m in history:
                         if m.reply_to and m.reply_to.reply_to_msg_id:
                             replied_to_ids.add(m.reply_to.reply_to_msg_id)
                     
-                    # 3. 构建被回复的 GroupID 集合 (Group Awareness)
                     replied_grouped_ids = set()
                     for mid in replied_to_ids:
                         if mid in msg_grouped_map:
                             replied_grouped_ids.add(msg_grouped_map[mid])
 
-                    # 4. 遍历检查每条消息
                     for i, m in enumerate(history):
-                        # 过滤掉客服消息
                         is_cs = False
                         if m.sender_id in ([MY_ID] + OTHER_CS_IDS): is_cs = True
                         else:
                             try:
                                 s = m.sender 
-                                if s and getattr(s, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)):
-                                    is_cs = True
+                                if s and getattr(s, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)): is_cs = True
                             except: pass
                         if is_cs: continue
 
-                        # 过滤掉已经是回复的消息 (它属于某个流，不是孤立的)
-                        if m.reply_to and m.reply_to.reply_to_msg_id:
-                            continue
+                        if m.reply_to and m.reply_to.reply_to_msg_id: continue
 
-                        # 核心检查: 
-                        # 1. 它是Top-Level消息 (没有父消息)
-                        # 2. 它没有被直接引用 (ID不在 replied_to_ids)
-                        # 3. 它所属的图集也没有被引用 (GroupedID不在 replied_grouped_ids)
-                        
                         is_orphan = True
-                        
-                        if m.id in replied_to_ids: 
-                            is_orphan = False
-                        elif m.grouped_id and m.grouped_id in replied_grouped_ids: 
-                            is_orphan = False
+                        if m.id in replied_to_ids: is_orphan = False
+                        elif m.grouped_id and m.grouped_id in replied_grouped_ids: is_orphan = False
                             
                         if is_orphan:
-                            # [Ver 45.10] 新增：AI 上下文检测 (Is this orphan a context slip-up?)
-                            start = max(0, i - 5)
-                            end = min(len(history), i + 6)
+                            # 120s 连续发言硬豁免
+                            is_consecutive_covered = False
+                            nearby_msgs = user_msg_map.get(m.sender_id, [])
+                            
+                            for nm in nearby_msgs:
+                                if nm.id == m.id: continue
+                                dt = abs((m.date - nm.date).total_seconds())
+                                if dt <= 120:
+                                    if nm.id in replied_to_ids or (nm.grouped_id and nm.grouped_id in replied_grouped_ids):
+                                        is_consecutive_covered = True
+                                        break
+                            
+                            if is_consecutive_covered:
+                                found_count += 1
+                                closed_count += 1
+                                group_name = str(chat_id)
+                                try: g = await client.get_entity(chat_id); group_name = g.title
+                                except: pass
+                                safe_text = (m.text or "[媒体/空]")[:100].replace('\n', ' ')
+                                beijing_time = m.date.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
+                                real_chat_id = str(chat_id).replace('-100', '')
+                                link = f"https://t.me/c/{real_chat_id}/{m.id}"
+                                result_queue.put(json.dumps({
+                                    "type": "result",
+                                    "is_closed": True,
+                                    "reason": "连续发言已覆盖 (Neighbor Replied)",
+                                    "time": beijing_time,
+                                    "group_name": group_name,
+                                    "found_text": safe_text,
+                                    "latest_text": "相邻消息被回复",
+                                    "link": link
+                                }))
+                                continue
+
+                            start = max(0, i - 6) 
+                            end = min(len(history), i + 7)
                             context_slice = history[start:end]
                             context_slice.sort(key=lambda x: x.date)
                             
-                            # [Ver 45.17] 目标用户身份标记
                             target_uid = m.sender_id
-                            target_label = f"User({str(target_uid)[-4:]})" # 目标用户ID后4位
+                            target_label = f"User({str(target_uid)[-4:]})" 
 
                             context_txts = []
                             for cm in context_slice:
-                                # 为每一条消息打上身份标签
-                                if cm.sender_id in ([MY_ID] + OTHER_CS_IDS): 
-                                    c_label = "CS"
+                                if cm.sender_id in ([MY_ID] + OTHER_CS_IDS): c_label = "CS"
                                 else:
                                     is_cm_cs = False
                                     try:
                                         if getattr(cm.sender, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)): is_cm_cs = True
                                     except: pass
-                                    
                                     if is_cm_cs: c_label = "CS"
-                                    else: c_label = f"User({str(cm.sender_id)[-4:]})" # 其他用户ID后4位
+                                    else: c_label = f"User({str(cm.sender_id)[-4:]})"
 
                                 c_txt = (cm.text or "[Media]").replace('\n', ' ')
                                 marker = " <<< TARGET" if cm.id == m.id else ""
                                 context_txts.append(f"[{cm.date.strftime('%H:%M:%S')}] {c_label}: {c_txt}{marker}")
                             
-                            # 调用 AI (Ver 45.17: 传入 target_label)
                             is_slip_up, ai_reason = await asyncio.get_event_loop().run_in_executor(
                                 None, lambda: _ai_check_orphan_context(m.text or "[Media]", context_txts, target_label)
                             )
                             
-                            # [Ver 45.11] 不管AI说是否需要回，都记录下来，只是状态不同
                             found_count += 1
-                            
                             is_result_closed = False
                             display_reason = "孤立无回复 (No Quote Reply)"
                             
                             if is_slip_up:
                                 is_result_closed = True
                                 closed_count += 1
-                                display_reason = f"AI智能豁免: {ai_reason}"
+                                display_reason = f"🤖 {ai_reason}"
                             
                             group_name = str(chat_id)
-                            try:
-                                g = await client.get_entity(chat_id)
-                                group_name = g.title
+                            try: g = await client.get_entity(chat_id); group_name = g.title
                             except: pass
 
                             safe_text = (m.text or "[媒体/空]")[:100].replace('\n', ' ')
@@ -1304,9 +1187,8 @@ async def check_wait_keyword_logic(keyword, result_queue):
                                 "link": link
                             }))
                             
-                    continue # 跳过后续常规逻辑
+                    continue 
 
-                # 2. 建立 Thread 状态表 (常规逻辑)
                 thread_latest_msg = {}
                 for m in history:
                     t_id = None
@@ -1317,52 +1199,37 @@ async def check_wait_keyword_logic(keyword, result_queue):
                     if t_id not in thread_latest_msg:
                         thread_latest_msg[t_id] = m
 
-                # 3. 在历史中查找包含 keyword 的消息
                 for m in history:
                     if not m.text: continue
                     if keyword in m.text: 
                         found_count += 1
-                        
                         t_id = None
                         if m.reply_to:
-                            t_id = m.reply_to.reply_to_top_id 
-                            if not t_id: t_id = m.reply_to.reply_to_msg_id
+                            t_id = m.reply_to.reply_to_top_id or m.reply_to.reply_to_msg_id
                         if not t_id: t_id = m.id
                         
                         latest_msg = thread_latest_msg.get(t_id, m)
-                        
-                        # [Ver 42.0] 调用统一闭环判断逻辑
                         is_closed, reason = await _check_is_closed_logic(latest_msg)
-                        
                         if is_closed: closed_count += 1
 
-                        # 构建结果并推送
                         group_name = str(chat_id)
-                        try:
-                            g = await client.get_entity(chat_id)
-                            group_name = g.title
+                        try: g = await client.get_entity(chat_id); group_name = g.title
                         except: pass
                         
                         safe_text = (m.text or "")[:100].replace('\n', ' ')
                         beijing_time = m.date.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
                         
-                        # [Link Fix] 链接逻辑优化
-                        target_msg_for_link = latest_msg if not is_closed else m
-                        
                         link = ""
                         real_chat_id = str(chat_id).replace('-100', '')
                         url_thread_id = None
+                        target_msg_for_link = latest_msg if not is_closed else m
                         
                         if "(客户删消息)" not in reason:
                             if target_msg_for_link.reply_to:
-                                url_thread_id = target_msg_for_link.reply_to.reply_to_top_id
-                                if not url_thread_id:
-                                    url_thread_id = target_msg_for_link.reply_to.reply_to_msg_id
+                                url_thread_id = target_msg_for_link.reply_to.reply_to_top_id or target_msg_for_link.reply_to.reply_to_msg_id
                         
-                        if url_thread_id:
-                             link = f"https://t.me/c/{real_chat_id}/{target_msg_for_link.id}?thread={url_thread_id}"
-                        else:
-                             link = f"https://t.me/c/{real_chat_id}/{target_msg_for_link.id}"
+                        if url_thread_id: link = f"https://t.me/c/{real_chat_id}/{target_msg_for_link.id}?thread={url_thread_id}"
+                        else: link = f"https://t.me/c/{real_chat_id}/{target_msg_for_link.id}"
                         
                         latest_content = (latest_msg.text or "[媒体]")[:60].replace('\n', ' ')
 
@@ -1386,39 +1253,24 @@ async def check_wait_keyword_logic(keyword, result_queue):
             "closed": closed_count, 
             "open": found_count - closed_count
         }))
-        result_queue.put(None) # Sentinel
+        result_queue.put(None) 
 
     except Exception as e:
         logger.error(f"Check Task Logic Error: {e}")
         result_queue.put(None)
 
-# [Ver 42.8 Fix] Restore missing route
 @app.route('/api/wait_check_stream')
 def wait_check_stream():
-    """
-    [Added to fix 404] 流式 API 路由，对接 Telethon 逻辑
-    """
     keyword = request.args.get('keyword', '').strip()
     if not keyword: return "Keyword required", 400
-    
     def generate():
         result_queue = queue.Queue()
-        # 将异步任务提交到全局 Bot Loop 中执行，并把结果放入 queue
-        if not bot_loop: 
-             yield "Error: Bot loop not ready\n"
-             return
-
-        asyncio.run_coroutine_threadsafe(
-            check_wait_keyword_logic(keyword, result_queue), 
-            bot_loop
-        )
-        
+        if not bot_loop: yield "Error: Bot loop not ready\n"; return
+        asyncio.run_coroutine_threadsafe(check_wait_keyword_logic(keyword, result_queue), bot_loop)
         while True:
-            # 阻塞等待结果
             data = result_queue.get()
             if data is None: break
             yield data + "\n"
-            
     return Response(stream_with_context(generate()), mimetype='text/plain')
 
 def run_web():
@@ -1460,21 +1312,15 @@ async def check_msg_exists(channel_id, msg_id):
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
-# [Ver 42.2] 增强巡检: 修复大小写匹配问题 + 详细统计报告
 async def audit_pending_tasks():
     log_tree(4, "开始执行【下班巡检】(关键词分批扫描)...")
     await send_alert("👮 **开始执行下班自动巡检...**\n正在分批扫描专属关键词...", "")
     
-    # 1. 确定要扫描的关键词列表
-    # [Ver 41.9] 只扫描 WAIT_KEYWORDS，不扫描 KEEP，防止误报他人任务
     all_keywords = sorted(list(WAIT_SIGNATURES))
-    # 去重
     all_keywords = sorted(list(set(all_keywords)), key=lambda x: (len(x), x), reverse=True) 
     
-    # 2. 预读取历史消息 (优化: 每个群只读一次，存入缓存)
-    # Map: chat_id -> list of messages (past 10 hours)
     history_cache = {}
-    cutoff_time = datetime.now(timezone.utc) - timedelta(hours=10) # 统一为10小时
+    cutoff_time = datetime.now(timezone.utc) - timedelta(hours=10) 
     
     EXCLUDED_GROUPS = [-1002807120955, -1002169616907]
 
@@ -1483,7 +1329,6 @@ async def audit_pending_tasks():
         if chat_id in EXCLUDED_GROUPS: continue
         try:
             msgs = []
-            # 限制3000条或时间截止
             async for m in client.iter_messages(chat_id, limit=3000):
                 if m.date and m.date < cutoff_time: break
                 msgs.append(m)
@@ -1493,7 +1338,6 @@ async def audit_pending_tasks():
 
     total_issues = 0
 
-    # 3. 分批扫描关键词
     for keyword in all_keywords:
         if not keyword.strip(): continue
         
@@ -1502,7 +1346,6 @@ async def audit_pending_tasks():
         closed_count = 0
         
         for chat_id, history in history_cache.items():
-            # 建立线程上下文 (最新消息)
             thread_latest_msg = {}
             for m in history:
                 t_id = None
@@ -1513,14 +1356,10 @@ async def audit_pending_tasks():
                 if t_id not in thread_latest_msg:
                     thread_latest_msg[t_id] = m
             
-            # 在历史中查找命中该 keyword 的消息
             for m in history:
                 if not m.text: continue
                 
-                # [Ver 42.2 Fix] 必须 normalize 后再匹配，因为 keyword 已经是小写了
-                # 修复: "请稍等art" in "请稍等ART" (False) 的问题
                 if keyword in normalize(m.text):
-                    # 检查发送者是否为客服 (ID匹配 或 名字前缀匹配)
                     is_cs_sender = False
                     if m.sender_id in ([MY_ID] + OTHER_CS_IDS): is_cs_sender = True
                     else:
@@ -1528,34 +1367,27 @@ async def audit_pending_tasks():
                         name = getattr(sender, 'first_name', '') or ''
                         if name.startswith(tuple(CS_NAME_PREFIXES)): is_cs_sender = True
                     
-                    # 只有客服发的关键词才算任务起点
                     if not is_cs_sender: continue
 
                     found_count += 1
 
-                    # 找到该消息所属 Thread 的最新消息
                     t_id = None
                     if m.reply_to:
                         t_id = m.reply_to.reply_to_top_id or m.reply_to.reply_to_msg_id
                     if not t_id: t_id = m.id
                     
                     latest_msg = thread_latest_msg.get(t_id, m)
-                    
-                    # [Ver 41.8] 调用统一闭环判断逻辑
                     is_closed, reason = await _check_is_closed_logic(latest_msg)
                     
                     if is_closed:
                         closed_count += 1
                     else:
-                        # 发现未闭环问题
-                        # 获取客服名字
                         cs_name_display = "未知客服"
                         try:
                             s = await m.get_sender()
                             if s: cs_name_display = getattr(s, 'first_name', 'Unknown')
                         except: pass
 
-                        # 获取客户问题内容 (Reply To)
                         customer_text = "[无法获取原问题]"
                         if m.reply_to:
                             try:
@@ -1575,7 +1407,6 @@ async def audit_pending_tasks():
                         else:
                              link = f"https://t.me/c/{real_chat_id}/{latest_msg.id}"
                         
-                        # CS 回复的关键词消息内容
                         cs_reply_text = (latest_msg.text or "[媒体]")[:15]
 
                         kw_issues.append({
@@ -1586,7 +1417,6 @@ async def audit_pending_tasks():
                             'link': link
                         })
 
-        # [Ver 42.2] 只有当发现问题时才发送报警，并带上统计信息
         if kw_issues:
             total_issues += len(kw_issues)
             open_count = found_count - closed_count
@@ -1596,7 +1426,7 @@ async def audit_pending_tasks():
                 f"📊 命中: {found_count} | ✅ 闭环: {closed_count} | ❌ 未闭环: {open_count}\n\n"
             )
             
-            for i, iss in enumerate(kw_issues[:8]): # 限制单条消息长度
+            for i, iss in enumerate(kw_issues[:8]): 
                 report_text += (
                     f"{i+1}. 👤 {iss['cs_name']}\n"
                     f"   💬 客户: {iss['customer_text']}\n"
@@ -1608,9 +1438,8 @@ async def audit_pending_tasks():
                 report_text += f"... (还有 {len(kw_issues)-8} 条未显示)"
             
             await send_alert(report_text, "", f"Audit-{keyword}")
-            await asyncio.sleep(2) # 避免刷屏过快
+            await asyncio.sleep(2) 
         else:
-            # 可选：如果该关键词完全干净，只在后台记录日志
             log_tree(4, f"关键词 '{keyword}' 巡检完成，无异常 (总数: {found_count})")
 
     await send_alert(f"🏁 **下班巡检结束**\n总计发现 **{total_issues}** 个未闭环问题。", "")
@@ -1660,23 +1489,17 @@ def remove_task_record(chat_id, user_id, msg_id, thread_id=None):
             chat_thread_active_msgs[t_key].discard(msg_id)
             if not chat_thread_active_msgs[t_key]: del chat_thread_active_msgs[t_key]
 
-# [Ver 45.2] 修复三角销单：A<-B<-C, D->A
-# 严格限制销单逻辑，禁止宽泛的用户级销单
 def cancel_tasks(chat_id, user_id, thread_id=None, target_msg_id=None, reason="未知", types=None):
-    if types is None: types = ['wait', 'followup', 'reply', 'self_reply'] # Default to all
+    if types is None: types = ['wait', 'followup', 'reply', 'self_reply'] 
     
     targets = set()
     hit_specific = False
     
-    # 1. 精确打击：如果提供了 target_msg_id
     if target_msg_id:
-        # A. 直接检查 target_msg_id 是否是任务本体
         if target_msg_id in wait_tasks or target_msg_id in followup_tasks or target_msg_id in reply_tasks or target_msg_id in self_reply_tasks:
             targets.add(target_msg_id)
             hit_specific = True
             
-        # B. 检查 target_msg_id 是否是触发源 (例如回复了"稍等"这条消息)
-        # 很多时候 task key 是 CS 的消息，但也可能是客户的消息
         if target_msg_id in wait_msg_map:
             targets.add(wait_msg_map[target_msg_id])
             hit_specific = True
@@ -1685,21 +1508,13 @@ def cancel_tasks(chat_id, user_id, thread_id=None, target_msg_id=None, reason="�
             targets.add(followup_msg_map[target_msg_id])
             hit_specific = True
 
-        # 如果通过精确查找找到了任务，那就很棒
         if targets:
             hit_specific = True
 
-    # 2. 话题范围 (仅当没有精确命中时)
-    # [Ver 45.2] 这是用户要求的"针对消息流的销单"
     if not hit_specific and thread_id:
         t_key = (chat_id, thread_id)
         if t_key in chat_thread_active_msgs:
             targets.update(chat_thread_active_msgs[t_key])
-
-    # 3. [已移除] 用户范围 (User Scope Fallback)
-    # [Ver 45.2] 用户明确要求"禁止宽泛销单"，因此移除基于 user_id 的兜底销单。
-    # 这避免了同一个账号（如转发Bot）发的不同工单因为回复了其中一个而导致其他工单被销单。
-    # if (not hit_specific) and user_id: ... REMOVED
 
     if not targets: return
 
@@ -1715,7 +1530,6 @@ def cancel_tasks(chat_id, user_id, thread_id=None, target_msg_id=None, reason="�
     if count > 0:
         log_tree(2, f"销单成功 | {reason} | 流: {thread_id} | 任务: {cleared_ids}")
 
-# [Ver 41.0] 时间源优化：这里的时间全是基于 Message Timestamp
 def check_recent_activity_safe(chat_id, task_start_time, user_ids=None, thread_id=None):
     buffer_seconds = 10
     if user_ids:
@@ -1732,27 +1546,23 @@ def check_recent_activity_safe(chat_id, task_start_time, user_ids=None, thread_i
 # ==========================================
 # 模块 7: 倒计时任务
 # ==========================================
-# [Ver 45.4] 修复竞态清理问题 (Identity Check)
 async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, user_ids_list, trigger_timestamp, thread_id=None):
     try:
-        current_task = asyncio.current_task() # 获取当前任务对象
+        current_task = asyncio.current_task() 
         ids_str = f"Msg={key_id}"
         if user_ids_list: ids_str += " " + " ".join([f"User={u}" for u in user_ids_list])
         
         log_tree(1, f"启动 [稍等] 倒计时 (12m) {ids_str} | Thread={thread_id}")
         
-        # 这里的 end_time 用于 Web 展示，使用消息时间计算更准确
         end_time = trigger_timestamp + WAIT_TIMEOUT
         wait_timers[key_id] = {'ts': end_time, 'user': agent_name, 'url': link}
         for uid in user_ids_list: register_task(chat_id, uid, key_id, thread_id)
 
-        # 物理睡眠时间仍然需要等待这么久，这是服务器的职责
         await asyncio.sleep(WAIT_TIMEOUT)
         
         if not IS_WORKING: return
         if my_msg_id and not await check_msg_exists(chat_id, my_msg_id): return
 
-        # 醒来后，使用触发时的消息时间戳去对比活动日志
         is_safe, safe_reason = check_recent_activity_safe(chat_id, trigger_timestamp, user_ids_list, thread_id)
         if is_safe:
             log_tree(2, f"🛡️ 拦截误报 [稍等] {ids_str} | 原因: {safe_reason} (客服已处理)")
@@ -1761,7 +1571,6 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
         log_tree(2, f"触发 [稍等] 超时 Msg={key_id}")
         await send_alert(f"📩 消息: `{original_text.replace('`', '')}`\n🚨 **稍等-超时预警**\n👤 客服: {agent_name}\n⚠️ 状态: 已过 {WAIT_TIMEOUT // 60} 分钟 (无后续回复)\n🔗 [点击处理]({link})", link, ids_str)
 
-        # [Ver 31.0] 严重超时监控
         CRITICAL_TIMEOUT = 10 * 60
         await asyncio.sleep(CRITICAL_TIMEOUT)
         
@@ -1786,8 +1595,6 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
 
     except asyncio.CancelledError: pass 
     finally:
-        # [Ver 45.4 Fix] 仅当自己是当前活跃任务时，才清理资源
-        # 这防止了旧任务（被取消时）误删除了新任务（刚启动）的倒计时数据
         if key_id in wait_tasks and wait_tasks[key_id] == current_task:
             del wait_tasks[key_id]
             if key_id in wait_timers: del wait_timers[key_id]
@@ -1818,7 +1625,6 @@ async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_
         await send_alert(f"📩 消息: `{original_text.replace('`', '')}`\n🚨 **跟进-超时预警**\n👤 客服: {agent_name}\n⚠️ 状态: **反馈核实内容超时未跟进回复** ({FOLLOWUP_TIMEOUT // 60} 分钟)\n🔗 [点击处理]({link})", link, ids_str)
     except asyncio.CancelledError: pass
     finally:
-        # [Ver 45.4 Fix] Identity Check
         if key_id in followup_tasks and followup_tasks[key_id] == current_task:
             del followup_tasks[key_id]
             if key_id in followup_timers: del followup_timers[key_id]
@@ -1842,13 +1648,11 @@ async def task_reply_timeout(trigger_msg_id, sender_name, content, link, chat_id
         await send_alert(f"📩 内容: `{content.replace('`', '')}`\n🔔 **漏回消息提醒**\n👤 用户: {sender_name} 回复了客服 {target_name}\n⚠️ 状态: 已 {REPLY_TIMEOUT // 60} 分钟未回复\n🔗 [点击回复]({link})", link, ids_str)
     except asyncio.CancelledError: pass 
     finally:
-        # [Ver 45.4 Fix] Identity Check
         if trigger_msg_id in reply_tasks and reply_tasks[trigger_msg_id] == current_task:
             del reply_tasks[trigger_msg_id]
             if trigger_msg_id in reply_timers: del reply_timers[trigger_msg_id]
             remove_task_record(chat_id, user_id, trigger_msg_id, thread_id)
 
-# [Ver 39.3] 自回检测任务 - 竞态条件修复
 async def task_self_reply_timeout(trigger_msg_id, user_name, content, link, chat_id, user_id, trigger_timestamp, thread_id=None):
     try:
         current_task = asyncio.current_task()
@@ -1858,23 +1662,13 @@ async def task_self_reply_timeout(trigger_msg_id, user_name, content, link, chat
         end_time = trigger_timestamp + SELF_REPLY_TIMEOUT
         self_reply_timers[trigger_msg_id] = {'ts': end_time, 'user': user_name, 'url': link}
         
-        # [Fix Ver 39.3] register_task 已在 handler 中同步执行，这里不再重复调用，避免状态冲突。
-        
         await asyncio.sleep(SELF_REPLY_TIMEOUT)
         if not IS_WORKING: return
         
-        # [Ver 39.1] 报警前二次检查：如果期间客服活跃过，则视为已处理
-        # [Ver 42.6] Removed CS Active Exemption due to user feedback - STRICT MODE
-        # is_safe, safe_reason = check_recent_activity_safe(chat_id, trigger_timestamp, [user_id], thread_id)
-        # if is_safe:
-        #     log_tree(2, f"🛡️ 拦截误报 [自回] {ids_str} | 原因: {safe_reason}")
-        #     return
-
         log_tree(2, f"触发 [自回] 报警 Msg={trigger_msg_id}")
         await send_alert(f"📩 内容: `{content.replace('`', '')}`\n🔔 **自回防漏监测**\n👤 用户: {user_name} (自行追加消息)\n⚠️ 状态: 已 {SELF_REPLY_TIMEOUT // 60} 分钟未处理\n🔗 [点击回复]({link})", link, ids_str)
     except asyncio.CancelledError: pass 
     finally:
-        # [Ver 45.4 Fix] Identity Check
         if trigger_msg_id in self_reply_tasks and self_reply_tasks[trigger_msg_id] == current_task:
              del self_reply_tasks[trigger_msg_id]
              if trigger_msg_id in self_reply_timers: del self_reply_timers[trigger_msg_id]
@@ -1943,7 +1737,6 @@ async def handler_deleted(event):
             reply_tasks[msg_id].cancel()
             log_tree(2, f"🗑️ 物理删除侦测 Msg={msg_id} | {sender_info_str} -> 🛑 撤销 [漏回] 监控")
             
-        # [Ver 38.0]
         if msg_id in self_reply_tasks:
             self_reply_tasks[msg_id].cancel()
             log_tree(2, f"🗑️ 物理删除侦测 Msg={msg_id} | {sender_info_str} -> 🛑 撤销 [自回] 监控")
@@ -1959,17 +1752,13 @@ async def get_traceable_sender(chat_id, reply_to_msg_id, current_recursion=0):
         target_msg = msgs[0]
         if not target_msg: return None
         
-        # [Ver 28.3] 深度捕获
         sender_id = target_msg.sender_id
-        
-        # 如果获取到了 ID，立即缓存 (包含 GroupedID 用于关联)
         if sender_id:
             cs_ids = [MY_ID] + OTHER_CS_IDS
             if sender_id not in cs_ids:
                 update_msg_cache(chat_id, reply_to_msg_id, sender_id, target_msg.grouped_id)
                 log_tree(1, f" ┣━━ 🧠 学习新知识: Msg({reply_to_msg_id}) 属于 User({sender_id})")
             return sender_id
-            
         return None
     except Exception: return None
 
@@ -2005,13 +1794,11 @@ async def handler(event):
         if not MY_ID: MY_ID = (await client.get_me()).id
         if not IS_WORKING: return
         
-        # [Ver 45.9] 过滤服务消息 (如有人加入群聊、置顶消息等)
+        # 过滤服务消息
         if event.message.action:
             return 
 
-        # [Ver 41.0] 获取消息的确切物理时间戳（UTC -> Timestamp）
         msg_timestamp = event.date.timestamp()
-        # 日志格式优化，显示消息时间 T=...
         msg_time_str = event.date.astimezone(timezone(timedelta(hours=8))).strftime('%H:%M:%S')
 
         text = event.text or ""
@@ -2035,12 +1822,8 @@ async def handler(event):
 
         norm_text = normalize(text)
         is_wait_cmd = any(k in norm_text for k in WAIT_SIGNATURES)
-        
-        # [Ver 45.1 Fix] 跟进词 (Keep) 强制使用精确匹配 (in Set)，禁止模糊匹配
-        # 这确保 "转账处理中" 不会触发 "处理中"
         is_keep_cmd = norm_text in KEEP_SIGNATURES
         
-        # [Ver 39.2] 增强客服身份识别: ID匹配 或 名字前缀匹配
         is_name_cs = False
         if sender_name:
              for prefix in CS_NAME_PREFIXES:
@@ -2065,61 +1848,34 @@ async def handler(event):
             if not real_customer_id:
                 real_customer_id = await get_traceable_sender(chat_id, reply_to_msg_id)
 
-        # [Ver 28.3] 组关联增强
-        if not real_customer_id and reply_to_msg_id:
-             pass 
-
         if is_sender_cs:
-            # [Ver 41.0] 传入 msg_timestamp
             record_cs_activity(chat_id, user_id=real_customer_id, thread_id=current_thread_id, timestamp=msg_timestamp)
             
             if isinstance(event, events.MessageEdited):
-                 # Only cancel if editing to "Done" status
                  if real_customer_id or current_thread_id:
                      cancel_tasks(chat_id, real_customer_id, current_thread_id, reason=f"客服编辑: [{text[:100]}...]")
-                 
-                 # [Ver 43.9] 编辑检测最终修正版 - Strict Manual Scan
                  try:
-                     # 默认认为这次编辑是有效的（除非我们找到反证）
                      is_latest = True
                      latest_found_id = event.id
-                     
                      if current_thread_id:
-                         # 扫描该流最近 30 条消息，找到该流的“头部”
                          async for m in client.iter_messages(chat_id, limit=30):
-                             # 判定 m 是否属于该流
                              is_in_thread = False
                              if m.reply_to:
-                                 # 只要 TopicID 或 ReplyID 任一匹配，都算是该流的消息
                                  if m.reply_to.reply_to_top_id == current_thread_id: is_in_thread = True
                                  if m.reply_to.reply_to_msg_id == current_thread_id: is_in_thread = True
                              
                              if is_in_thread:
-                                 # iter_messages 是倒序的（最新 -> 最旧）
-                                 # 所以我们找到的第一个符合条件的 m，就是该流的最新消息
-                                 
-                                 # 1. 如果最新的消息 ID 比本次编辑的 ID 大，说明后面有人说话了
                                  if m.id > event.id:
                                      is_latest = False
                                      latest_found_id = m.id
-                                     
-                                     # 检查这条最新的消息内容
                                      txt = normalize(m.text or "")
-                                     # 如果最新消息不是“稍等”，说明话题已经往下进行了（比如“已处理”）
                                      if not any(k in txt for k in WAIT_SIGNATURES):
                                          log_tree(1, f"🛡️ 编辑拦截 | Msg={event.id} 被新消息 Msg={m.id} 覆盖 (内容非稍等) -> 忽略")
-                                         return # 直接终止，不让下面的逻辑跑了
+                                         return 
                                      else:
-                                         # 如果最新消息也是“稍等”，那说明还在排队，这次编辑虽然是旧消息，但也允许触发（刷新状态）
                                          log_tree(1, f"⚠️ 编辑放行 | Msg={event.id} 虽非最新 (Top={m.id}) 但Top仍为稍等")
-                                 
-                                 # 2. 如果最新的消息就是我自己 (m.id == event.id)，那说明我就是最新的
-                                 # pass，继续执行下面的逻辑
-                                 
-                                 break # 找到最新的就可以停止扫描了
+                                 break 
                          else:
-                             # 主群无回复模式（Fallback）
-                             # 直接取整个群最新一条
                              latest_batch = await client.get_messages(chat_id, limit=1)
                              if latest_batch:
                                  m = latest_batch[0]
@@ -2136,24 +1892,18 @@ async def handler(event):
                 source_info = "未知"
                 if (chat_id, reply_to_msg_id) in msg_to_user_cache: source_info = "缓存命中"
                 elif real_customer_id: source_info = "API实时查询"
-                else: source_info = "追踪失败" # [Ver 28.3] 明确失败状态
+                else: source_info = "追踪失败" 
                 
-                # [Ver 41.2] 日志增加 [T=...] 真实时间显示，证明逻辑使用的是 Telegram 时间而非服务器时间
                 log_tree(1, f"⚡️ 客服操作捕获 | Msg: {reply_to_msg_id} [T={msg_time_str}] | 客服: {sender_name} | 内容: [{text[:100]}] | 归属: {real_customer_id} | 流: {current_thread_id} | 状态: {source_info}")
 
-            # [Ver 42.4] 智能销单逻辑升级：精确打击
-            # 如果客服回复的是某条特定消息，只取消该消息的任务。
-            # 如果没有特定回复（如在话题中发言），才按话题取消。
-            # 仅当完全没有上下文时，才兜底取消用户所有任务。
-            
-            cancel_types = None # Default: Cancel All types
+            cancel_types = None 
             if is_wait_cmd or is_keep_cmd:
                 cancel_types = ['reply', 'self_reply']
 
             if real_customer_id or current_thread_id:
                 cancel_tasks(chat_id, real_customer_id, 
                              thread_id=current_thread_id, 
-                             target_msg_id=reply_to_msg_id, # [Ver 42.4] Pass exact target
+                             target_msg_id=reply_to_msg_id, 
                              reason=f"客服回复: [{text[:100]}...]", 
                              types=cancel_types)
             
@@ -2161,7 +1911,6 @@ async def handler(event):
                 reply_tasks[reply_to_msg_id].cancel()
                 del reply_tasks[reply_to_msg_id]
             
-            # [Ver 38.0] 客服回复了，也要消除自回任务
             if reply_to_msg_id and reply_to_msg_id in self_reply_tasks:
                 self_reply_tasks[reply_to_msg_id].cancel()
                 del self_reply_tasks[reply_to_msg_id]
@@ -2172,16 +1921,12 @@ async def handler(event):
                     related_users = [real_customer_id]
 
                 if related_users:
-                    # [Ver 41.6] 逻辑回调：按关键词触发任务
                     if is_keep_cmd:
-                        # [Fix] 前置检查：只有历史中有明确的 WAIT 关键词（属于我的任务），才开启跟进监控
-                        # 这避免了监控其他客服的“处理中”消息
                         should_monitor_keep = await check_wait_in_history(chat_id, current_thread_id)
                         
                         if not should_monitor_keep:
                              log_tree(1, f"🛡️ 豁免 [跟进] | Msg={event.id} | 原因: 历史流无本号[稍等]关键词")
                         else:
-                            # [Fix Ver 36.1] 强制冲突检测
                             if reply_to_msg_id in wait_tasks:
                                 wait_tasks[reply_to_msg_id].cancel()
                                 del wait_tasks[reply_to_msg_id]
@@ -2219,23 +1964,17 @@ async def handler(event):
                         wait_msg_map[event.id] = reply_to_msg_id
 
         else:
-            # [Ver 31.9] 双杀修复：忽略客户的编辑事件
             if isinstance(event, events.MessageEdited):
                 return
 
             update_msg_cache(chat_id, event.id, sender_id, grouped_id)
-            # [Ver 31.8] 客户说话 -> 只取消【漏回监控】，绝不取消【稍等/跟进任务】
             cancel_tasks(chat_id, sender_id, current_thread_id, reason=f"客户发言: [{text[:100]}...]", types=['reply'])
             
-            # [Ver 41.0] 日志中增加时间显示
             log_tree(0, f"Msg={event.id} [T={msg_time_str}] | User={sender_id} | [{chat_id}] {sender_name}: {text} [{msg_type}]")
             
-            # [Ver 38.0] 自回防漏监测 (Self-Reply Guard)
             if reply_to_msg_id and real_customer_id:
                 if sender_id == real_customer_id:
-                     # 确保忽略列表中的词不触发（例如连续说“谢谢”）
                      if normalize(text.strip()) not in IGNORE_SIGNATURES:
-                         # [Ver 39.4] 图集去重: 如果属于同一个 Media Group，只监控第一条
                          should_monitor = True
                          if grouped_id:
                              if grouped_id in self_reply_dedup:
@@ -2245,21 +1984,14 @@ async def handler(event):
                                  self_reply_dedup.append(grouped_id)
                          
                          if should_monitor:
-                             # [Ver 43.3] Context Check: Only monitor if WAIT keyword exists in recent history (Thread-Aware)
                              has_wait = await check_wait_in_history(chat_id, current_thread_id)
                              
                              if not has_wait:
                                  log_tree(1, f"🛡️ 豁免 [自回-无稍等历史] | User={sender_id} | Msg={event.id}")
                              else:
-                                 # [Ver 42.6] Removed CS Active Exemption - Strict Mode
-                                 
                                  cancel_tasks(chat_id, sender_id, current_thread_id, reason="新自回覆盖旧自回", types=['self_reply'])
-                                 
                                  register_task(chat_id, sender_id, event.id, current_thread_id)
-
                                  log_tree(1, f"🔥 侦测到自回行为 | User={sender_name} | Msg={event.id} -> {reply_to_msg_id}")
-                                 
-                                 # [Ver 42.8] Fix: Restore wait_check_stream route by adding it back
                                  
                                  task = asyncio.create_task(task_self_reply_timeout(
                                      event.id, sender_name, text[:50], msg_link, chat_id, sender_id, 
@@ -2278,7 +2010,7 @@ async def handler(event):
             if reply_to_msg_id:
                 try:
                     target_id = None
-                    target_name = "未知客服" # Default
+                    target_name = "未知客服" 
                     
                     replied_msg = await event.get_reply_message()
                     if replied_msg: 
@@ -2295,7 +2027,6 @@ async def handler(event):
                     if (target_id == MY_ID) or (target_id in OTHER_CS_IDS):
                         if normalize(text.strip()) in IGNORE_SIGNATURES: return
                         if event.id in reply_tasks: reply_tasks[event.id].cancel()
-                        # [Ver 41.3 Fix Argument Error]
                         task = asyncio.create_task(task_reply_timeout(
                             event.id, sender_name, text[:50], msg_link, chat_id, sender_id, target_name, 
                             trigger_timestamp=msg_timestamp,
@@ -2310,7 +2041,6 @@ async def handler(event):
 
 if __name__ == '__main__':
     try:
-        # [Ver 31.2] 启动延迟
         delay = int(os.environ.get("STARTUP_DELAY", 120))
         if delay > 0:
             logger.info(f"⏳ 启动延迟: 等待 {delay} 秒以确保旧连接断开...")
@@ -2319,22 +2049,18 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         
-        # [Ver 43.5] 功能挂载
         if init_stats_blueprint:
             init_stats_blueprint(app, client, bot_loop, CS_GROUP_IDS)
         
-        # [Ver 45.16] 自动回复挂载
         if init_monitor:
             init_monitor(client, app, OTHER_CS_IDS, CS_NAME_PREFIXES, handler)
             
         Thread(target=run_web).start()
-        # [Ver 43.5] 启动日志更新
-        log_tree(0, "✅ 系统启动 (Ver 45.17 Wait Check: 20h & User-Specific Logic)")
+        log_tree(0, "✅ 系统启动 (Ver 45.21 Final Consolidated)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
         logger.critical("🚨 严重错误: SESSION_STRING 已失效！检测到多地登录冲突。")
-        logger.critical("👉 请重新生成 SESSION_STRING 并更新环境变量。")
         sys.exit(1)
     except Exception as e:
         log_tree(9, f"❌ 启动失败: {e}")
