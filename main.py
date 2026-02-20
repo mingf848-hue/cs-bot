@@ -283,73 +283,98 @@ DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>监控看板</title>
+    <title>监控面板</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta http-equiv="refresh" content="5"> 
     <style>
-        :root { --bg: #fff; --text: #333; --card: #f8f9fa; --border: #eee; --green: #28a745; --red: #dc3545; }
-        body { background: var(--bg); color: var(--text); font-family: sans-serif; padding: 20px; max-width: 600px; margin: 0 auto; }
-        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 20px; }
-        h1 { margin: 0; font-size: 1.4rem; }
+        :root { --bg: #f8fafc; --text: #1e293b; --card: #ffffff; --border: #e2e8f0; --green: #10b981; --red: #ef4444; }
+        body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; max-width: 600px; margin: 0 auto; }
+        .icon { width: 18px; height: 18px; vertical-align: middle; stroke: currentColor; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; display: inline-block; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #cbd5e1; padding-bottom: 12px; margin-bottom: 20px; }
+        h1 { margin: 0; font-size: 1.4rem; display: flex; align-items: center; gap: 8px; color: #0f172a; }
         .status-grp { display: flex; gap: 10px; align-items: center; }
-        .tag { padding: 4px 10px; border-radius: 4px; color: #fff; font-weight: bold; font-size: 0.9rem; }
+        .tag { padding: 4px 10px; border-radius: 4px; color: #fff; font-weight: 600; font-size: 0.85rem; letter-spacing: 0.5px; }
         .on { background: var(--green); } .off { background: var(--red); }
-        .ctrl-btn { padding: 4px 8px; border: 1px solid #ccc; background: #eee; cursor: pointer; border-radius: 4px; font-size: 0.8rem; text-decoration: none; color: #333; }
-        .ctrl-btn:hover { background: #ddd; }
-        .audio-btn { cursor: pointer; font-size: 1.2rem; user-select: none; }
-        .box { margin-bottom: 20px; }
-        .title { font-weight: bold; border-left: 4px solid #333; padding-left: 8px; margin-bottom: 8px; color: #555; display: flex; justify-content: space-between; }
-        .card { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
-        .t { font-family: monospace; font-weight: bold; font-size: 1.1rem; color: #d63384; }
-        .late { color: red; text-decoration: underline; animation: flash 1s infinite; }
-        .empty { color: #999; text-align: center; font-style: italic; padding: 10px; }
-        .btn { display: block; width: 100%; padding: 12px; background: #222; color: #fff; text-align: center; text-decoration: none; border-radius: 6px; font-weight: bold; margin-top: 20px; }
-        @keyframes flash { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
+        .ctrl-btn { padding: 4px 10px; border: 1px solid #cbd5e1; background: #f1f5f9; cursor: pointer; border-radius: 4px; font-size: 0.85rem; text-decoration: none; color: #475569; font-weight: 500; transition: background 0.2s; }
+        .ctrl-btn:hover { background: #e2e8f0; }
+        .audio-btn { cursor: pointer; color: #64748b; display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 4px; background: #f1f5f9; border: 1px solid #cbd5e1; transition: color 0.2s; }
+        .audio-btn:hover { background: #e2e8f0; color: #0f172a; }
+        .box { margin-bottom: 24px; }
+        .title { font-weight: 600; padding-left: 0; margin-bottom: 10px; color: #334155; display: flex; justify-content: space-between; align-items: center; font-size: 0.95rem; }
+        .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
+        .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 1px 2px rgba(0,0,0,0.02); }
+        .t { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-weight: 600; font-size: 1.1rem; color: #db2777; }
+        .late { color: #dc2626; animation: flash 1.5s infinite; }
+        .empty { color: #94a3b8; text-align: center; padding: 16px; font-size: 0.9rem; background: #f1f5f9; border-radius: 8px; border: 1px dashed #cbd5e1; }
+        .btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 12px; background: #1e293b; color: #fff; text-decoration: none; border-radius: 8px; font-weight: 600; margin-top: 12px; font-size: 0.95rem; box-sizing: border-box; transition: opacity 0.2s; }
+        .btn:hover { opacity: 0.9; }
+        .link-text { font-size: 0.8rem; color: #2563eb; text-decoration: none; display: flex; align-items: center; gap: 4px; margin-top: 4px; }
+        .link-text:hover { text-decoration: underline; }
+        @keyframes flash { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>⚡️ 实时监控 (Ver 45.21)</h1>
+        <h1>
+            <svg class="icon" style="color:#2563eb" viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+            实时监控
+        </h1>
         <div class="status-grp">
-            <span class="audio-btn" onclick="toggleAudio()" title="开启/关闭报警音">🔇</span>
+            <div class="audio-btn" onclick="toggleAudio()" title="报警音开关" id="audio-icon"></div>
             <a href="#" onclick="ctrl(1)" class="ctrl-btn">上班</a>
             <a href="#" onclick="ctrl(0)" class="ctrl-btn">下班</a>
             <div class="tag {{ 'on' if working else 'off' }}">{{ 'WORKING' if working else 'STOPPED' }}</div>
         </div>
     </div>
-    {% for title, timers in [('⏳ 稍等 (12m)', w), ('🕵️ 跟进 (15m)', f), ('🔔 漏回 (5m)', r), ('🔄 自回 (3m)', s)] %}
+    {% for title, timers, color in [('稍等任务 (12m)', w, '#f59e0b'), ('跟进任务 (15m)', f, '#3b82f6'), ('漏回监控 (5m)', r, '#ef4444'), ('自回防漏 (3m)', s, '#8b5cf6')] %}
     <div class="box">
-        <div class="title"><span>{{ title }}</span><span>{{ timers|length }}</span></div>
+        <div class="title">
+            <div style="display:flex; align-items:center;"><span class="dot" style="background:{{color}}"></span>{{ title }}</div>
+            <span style="color:#64748b">{{ timers|length }}</span>
+        </div>
         {% if timers %}
             {% for mid, info in timers.items() %}
             <div class="card">
                 <div>
-                    <b>{{ info.user }}</b>
-                    {% if title == '🔔 漏回 (5m)' and info.target %}
-                        <span style="font-size:0.85rem; color:#666"> ➔ {{ info.target }}</span>
+                    <strong style="color:#0f172a">{{ info.user }}</strong>
+                    {% if title == '漏回监控 (5m)' and info.target %}
+                        <span style="font-size:0.85rem; color:#64748b"> → {{ info.target }}</span>
                     {% endif %}
-                    <br>
-                    <a href="{{ info.url }}" target="_blank" style="font-size:0.8rem">🔗跳转</a>
+                    <a href="{{ info.url }}" target="_blank" class="link-text">
+                        <svg class="icon" style="width:12px;height:12px;" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>跳转处理
+                    </a>
                 </div>
                 <span class="t" data-end="{{ info.ts }}">--:--</span>
             </div>
             {% endfor %}
-        {% else %}<div class="empty">无任务</div>{% endif %}
+        {% else %}<div class="empty">暂无任务</div>{% endif %}
     </div>
     {% endfor %}
-    <a href="/log" target="_blank" class="btn">🔍 打开交互式日志分析器</a>
-    <a href="/tool/wait_check" target="_blank" class="btn" style="margin-top:10px;background:#00695c">🛠️ 稍等闭环检测工具</a>
-    <a href="/tool/work_stats" target="_blank" class="btn" style="margin-top:10px;background:#6a1b9a">📊 工作量统计 & Google同步</a>
-    <a href="/zd" target="_blank" class="btn" style="margin-top:10px;background:#e65100">🤖 自动回复配置</a>
-    <div style="text-align:center;color:#ccc;margin-top:30px;font-size:0.8rem">Ver 45.21 (Final Consolidated Version)</div>
+    <div style="margin-top: 30px; border-top: 1px solid #e2e8f0; padding-top: 20px;">
+        <a href="/log" target="_blank" class="btn">
+            <svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 交互式日志分析器
+        </a>
+        <a href="/tool/wait_check" target="_blank" class="btn" style="background:#0f766e">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 9.36l-7.1 7.1a1 1 0 0 1-1.41 0l-1.42-1.42a1 1 0 0 1 0-1.4l7.1-7.1a6 6 0 0 1 9.36-7.94l-3.76 3.76z"/></svg> 闭环检测工具
+        </a>
+        <a href="/tool/work_stats" target="_blank" class="btn" style="background:#6d28d9">
+            <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg> 工作量统计与同步
+        </a>
+        <a href="/zd" target="_blank" class="btn" style="background:#c2410c">
+            <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" y1="16" x2="8" y2="16"/><line x1="16" y1="16" x2="16" y2="16"/></svg> 自动回复配置
+        </a>
+    </div>
+    <div style="text-align:center;color:#94a3b8;margin-top:20px;font-size:0.75rem">System Version 45.21</div>
     <script>
+        const svgOn = '<svg class="icon" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>';
+        const svgOff = '<svg class="icon" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>';
         let savedState = localStorage.getItem('tg_bot_audio_enabled');
         let audioEnabled = savedState === null ? true : (savedState === 'true');
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        const audioBtn = document.querySelector('.audio-btn');
-        if (audioBtn) { audioBtn.innerText = audioEnabled ? "🔊" : "🔇"; }
+        const audioBtn = document.getElementById('audio-icon');
+        if (audioBtn) { audioBtn.innerHTML = audioEnabled ? svgOn : svgOff; }
         function playAlarm() { if (!audioEnabled) return; if (audioCtx.state === 'suspended') audioCtx.resume().catch(e => console.log(e)); const oscillator = audioCtx.createOscillator(); const gainNode = audioCtx.createGain(); oscillator.type = 'square'; oscillator.frequency.setValueAtTime(800, audioCtx.currentTime); oscillator.frequency.exponentialRampToValueAtTime(400, audioCtx.currentTime + 0.1); gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime); gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1); oscillator.connect(gainNode); gainNode.connect(audioCtx.destination); oscillator.start(); oscillator.stop(audioCtx.currentTime + 0.2); }
-        function toggleAudio() { audioEnabled = !audioEnabled; localStorage.setItem('tg_bot_audio_enabled', audioEnabled); const btn = document.querySelector('.audio-btn'); btn.innerText = audioEnabled ? "🔊" : "🔇"; if(audioEnabled) { if (audioCtx.state === 'suspended') audioCtx.resume(); playAlarm(); } }
+        function toggleAudio() { audioEnabled = !audioEnabled; localStorage.setItem('tg_bot_audio_enabled', audioEnabled); audioBtn.innerHTML = audioEnabled ? svgOn : svgOff; if(audioEnabled) { if (audioCtx.state === 'suspended') audioCtx.resume(); playAlarm(); } }
         function ctrl(s) { fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => setTimeout(() => location.reload(), 500)); }
         setInterval(() => { const now = Date.now() / 1000; let hasLate = false; document.querySelectorAll('.t').forEach(el => { const diff = parseFloat(el.dataset.end) - now; if(diff <= 0) { el.innerText = "已超时"; el.classList.add('late'); hasLate = true; } else { const m = Math.floor(diff / 60); const s = Math.floor(diff % 60); el.innerText = `${m}:${s.toString().padStart(2, '0')}`; } }); if (hasLate && audioEnabled) playAlarm(); }, 1000);
     </script>
@@ -362,244 +387,78 @@ LOG_VIEWER_HTML = """
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>系统日志流 | Log Viewer</title>
+    <title>系统日志流</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         :root {
-            --bg-body: #0f172a;
-            --bg-panel: #1e293b;
-            --bg-input: #334155;
-            --text-main: #f1f5f9;
-            --text-muted: #94a3b8;
-            --primary: #3b82f6;
-            --user-bubble: #334155;
-            --cs-bubble: #0f766e;
-            --alert-bg: rgba(239, 68, 68, 0.15);
-            --alert-border: #ef4444;
-            --audit-bg: rgba(245, 158, 11, 0.15);
-            --audit-border: #f59e0b;
-            --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+            --bg-body: #0f172a; --bg-panel: #1e293b; --bg-input: #334155;
+            --text-main: #f1f5f9; --text-muted: #94a3b8; --primary: #3b82f6;
+            --user-bubble: #334155; --cs-bubble: #0f766e;
+            --alert-bg: rgba(239, 68, 68, 0.15); --alert-border: #ef4444;
+            --audit-bg: rgba(245, 158, 11, 0.15); --audit-border: #f59e0b;
         }
         * { box-sizing: border-box; }
-        body {
-            background-color: var(--bg-body);
-            color: var(--text-main);
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            margin: 0;
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-        /* Scrollbar */
-        ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: var(--bg-body); }
-        ::-webkit-scrollbar-thumb { background: var(--bg-input); border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
-
-        /* Toolbar */
-        .toolbar {
-            background: rgba(15, 23, 42, 0.85);
-            backdrop-filter: blur(12px);
-            padding: 16px 24px;
-            border-bottom: 1px solid var(--bg-input);
-            display: flex;
-            gap: 12px;
-            align-items: center;
-            z-index: 10;
-            box-shadow: var(--shadow);
-        }
-        input {
-            flex-grow: 1;
-            background: var(--bg-panel);
-            border: 1px solid var(--bg-input);
-            color: var(--text-main);
-            padding: 10px 16px;
-            border-radius: 8px;
-            font-size: 14px;
-            transition: all 0.2s;
-        }
-        input:focus {
-            outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
-        }
-        button {
-            background: var(--bg-panel);
-            color: var(--text-main);
-            border: 1px solid var(--bg-input);
-            padding: 10px 20px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: 600;
-            font-size: 14px;
-            transition: all 0.2s;
-            white-space: nowrap;
-        }
-        button:hover { background: var(--bg-input); transform: translateY(-1px); }
-        
-        /* Log Container */
-        #log-container {
-            flex-grow: 1;
-            overflow-y: auto;
-            padding: 24px;
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-            scroll-behavior: smooth;
-        }
-
-        /* Message Rows */
-        .msg-row {
-            display: flex;
-            flex-direction: column;
-            max-width: 100%;
-            animation: fadeIn 0.3s ease;
-        }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-
-        .msg-meta {
-            font-size: 11px;
-            color: var(--text-muted);
-            margin-bottom: 4px;
-            font-family: "Menlo", "Consolas", monospace;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 0 4px;
-        }
-
-        .bubble {
-            padding: 12px 18px;
-            border-radius: 16px;
-            font-size: 14px;
-            line-height: 1.6;
-            position: relative;
-            word-wrap: break-word;
-            white-space: pre-wrap;
-            box-shadow: var(--shadow);
-            max-width: 85%;
-        }
-
-        /* User Message (Left) */
-        .msg-user { align-items: flex-start; }
-        .msg-user .bubble {
-            background-color: var(--user-bubble);
-            border-top-left-radius: 2px;
-            color: #e2e8f0;
-        }
-
-        /* CS Message (Right) */
-        .msg-cs { align-items: flex-end; }
-        .msg-cs .bubble {
-            background-color: var(--cs-bubble);
-            border-top-right-radius: 2px;
-            color: #f0fdfa;
-        }
-        .msg-cs .msg-meta { flex-direction: row-reverse; }
-
-        /* System/Audit/Alert Messages */
-        .msg-sys, .msg-alert, .msg-audit {
-            align-items: center;
-            width: 100%;
-        }
-        .msg-sys .bubble, .msg-alert .bubble, .msg-audit .bubble {
-            max-width: 95%;
-            background: transparent;
-            box-shadow: none;
-            padding: 8px 12px;
-            border-radius: 6px;
-            font-family: "Menlo", "Consolas", monospace;
-            font-size: 12px;
-            border-left: 3px solid;
-        }
-
-        .msg-sys .bubble {
-            border-color: var(--text-muted);
-            background: rgba(148, 163, 184, 0.05);
-            color: var(--text-muted);
-        }
-
-        .msg-alert .bubble {
-            border-color: var(--alert-border);
-            background: var(--alert-bg);
-            color: #fca5a5;
-        }
-
-        .msg-audit .bubble {
-            border-color: var(--audit-border);
-            background: var(--audit-bg);
-            color: #fdba74;
-        }
-
-        /* Interactive Elements */
-        .pill {
-            display: inline-block;
-            background: rgba(255, 255, 255, 0.1);
-            padding: 2px 6px;
-            border-radius: 4px;
-            cursor: pointer;
-            transition: background 0.2s;
-            user-select: all;
-        }
+        body { background-color: var(--bg-body); color: var(--text-main); font-family: -apple-system, sans-serif; margin: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        .icon { width: 14px; height: 14px; vertical-align: text-bottom; stroke: currentColor; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; display: inline-block; margin-right: 4px; }
+        ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-track { background: var(--bg-body); } ::-webkit-scrollbar-thumb { background: var(--bg-input); border-radius: 4px; }
+        .toolbar { background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(12px); padding: 16px 24px; border-bottom: 1px solid var(--bg-input); display: flex; gap: 12px; align-items: center; z-index: 10; }
+        input { flex-grow: 1; background: var(--bg-panel); border: 1px solid var(--bg-input); color: var(--text-main); padding: 10px 16px; border-radius: 8px; font-size: 14px; outline: none; }
+        input:focus { border-color: var(--primary); }
+        button { background: var(--bg-panel); color: var(--text-main); border: 1px solid var(--bg-input); padding: 10px 16px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; display: flex; align-items: center; transition: all 0.2s; }
+        button:hover { background: var(--bg-input); }
+        #log-container { flex-grow: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; scroll-behavior: smooth; }
+        .msg-row { display: flex; flex-direction: column; max-width: 100%; animation: fadeIn 0.2s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        .msg-meta { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; font-family: ui-monospace, monospace; display: flex; align-items: center; gap: 8px; padding: 0 4px; }
+        .bubble { padding: 12px 18px; border-radius: 12px; font-size: 13px; line-height: 1.6; word-wrap: break-word; white-space: pre-wrap; max-width: 85%; }
+        .msg-user { align-items: flex-start; } .msg-user .bubble { background-color: var(--user-bubble); border-top-left-radius: 2px; }
+        .msg-cs { align-items: flex-end; } .msg-cs .bubble { background-color: var(--cs-bubble); border-top-right-radius: 2px; } .msg-cs .msg-meta { flex-direction: row-reverse; }
+        .msg-sys, .msg-alert, .msg-audit { align-items: center; width: 100%; }
+        .msg-sys .bubble, .msg-alert .bubble, .msg-audit .bubble { max-width: 95%; background: transparent; padding: 8px 12px; border-radius: 6px; font-family: ui-monospace, monospace; font-size: 12px; border-left: 3px solid; }
+        .msg-sys .bubble { border-color: var(--text-muted); background: rgba(148, 163, 184, 0.05); color: var(--text-muted); }
+        .msg-alert .bubble { border-color: var(--alert-border); background: var(--alert-bg); color: #fca5a5; }
+        .msg-audit .bubble { border-color: var(--audit-border); background: var(--audit-bg); color: #fdba74; }
+        .pill { display: inline-block; background: rgba(255, 255, 255, 0.1); padding: 2px 6px; border-radius: 4px; cursor: pointer; transition: background 0.2s; user-select: all; }
         .pill:hover { background: rgba(255, 255, 255, 0.2); color: #fff; }
-
-        .highlight-row .bubble {
-            box-shadow: 0 0 0 2px #fbbf24, 0 0 20px rgba(251, 191, 36, 0.2);
-            z-index: 10;
-        }
-
-        .btn-report {
-            font-size: 10px;
-            padding: 2px 6px;
-            border-radius: 4px;
-            text-transform: uppercase;
-            font-weight: bold;
-            cursor: pointer;
-            letter-spacing: 0.5px;
-            border: 1px solid rgba(255,255,255,0.2);
-        }
-        .btn-missed { background: #f59e0b; color: black; }
-        .btn-false { background: #ef4444; color: white; }
-
+        .highlight-row .bubble { box-shadow: 0 0 0 2px #fbbf24, 0 0 20px rgba(251, 191, 36, 0.2); }
+        .btn-report { font-size: 10px; padding: 2px 6px; border-radius: 4px; font-weight: bold; cursor: pointer; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.05); }
+        .btn-report:hover { background: rgba(255,255,255,0.15); }
+        .btn-missed { color: #fcd34d; border-color: rgba(252, 211, 77, 0.3); }
+        .btn-false { color: #fca5a5; border-color: rgba(252, 165, 165, 0.3); }
         .error-msg { text-align: center; padding: 40px; color: var(--text-muted); font-style: italic; }
     </style>
 </head>
 <body>
     <div class="toolbar">
-        <input type="text" id="search" placeholder="🔍 输入 ID / 关键词 (回车跳转)..." onkeyup="if(event.key==='Enter') doSearch()">
-        <button onclick="doSearch()">查找</button>
-        <button onclick="window.location.reload()">🔄 刷新</button>
-        <button onclick="scrollToBottom()">⬇️ 底部</button>
+        <input type="text" id="search" placeholder="输入 ID / 关键词 (回车跳转)..." onkeyup="if(event.key==='Enter') doSearch()">
+        <button onclick="doSearch()"><svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>查找</button>
+        <button onclick="window.location.reload()"><svg class="icon" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>刷新</button>
+        <button onclick="scrollToBottom()"><svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>底部</button>
     </div>
-    <div id="log-container">Loading logs...</div>
+    <div id="log-container">加载中...</div>
     <script>
         const container = document.getElementById('log-container');
         let parsedLogs = [];
         fetch('/log_raw?t=' + Date.now())
-            .then(r => { if (!r.ok) throw new Error('Network response was not ok'); return r.text(); })
+            .then(r => { if (!r.ok) throw new Error('网络异常'); return r.text(); })
             .then(text => {
                 if (!text.trim()) { container.innerHTML = '<div class="error-msg">暂无日志数据</div>'; return; }
                 try { parseLogs(text); renderLogs(); scrollToBottom(); } 
-                catch (e) { console.error("Log parsing error:", e); container.innerHTML = `<div class="error-msg">日志解析错误: ${e.message}</div>`; }
+                catch (e) { container.innerHTML = `<div class="error-msg">解析错误: ${e.message}</div>`; }
             })
             .catch(err => { container.innerHTML = `<div class="error-msg">加载失败: ${err.message}</div>`; });
 
         function parseLogs(text) {
             const rawLines = text.split(/\\r?\\n/);
-            parsedLogs = [];
-            let currentEntry = null;
+            parsedLogs = []; let currentEntry = null;
             const timeRegex = /^(\\d{4}-\\d{2}-\\d{2}\\s+)?(\\d{2}:\\d{2}:\\d{2})(.*)/;
-            
             rawLines.forEach(line => {
                 if(!line.trim()) return;
                 const match = line.match(timeRegex);
                 if (match) {
                     if (currentEntry) parsedLogs.push(currentEntry);
-                    currentEntry = { time: match[2], raw: match[3], content: match[3].trim(), fullText: match[3] };
-                } else {
-                    if (currentEntry) { currentEntry.fullText += '\\n' + line; currentEntry.content += '\\n' + line; }
-                }
+                    currentEntry = { time: match[2], raw: match[3], content: match[3].trim() };
+                } else { if (currentEntry) currentEntry.content += '\\n' + line; }
             });
             if (currentEntry) parsedLogs.push(currentEntry);
         }
@@ -607,30 +466,24 @@ LOG_VIEWER_HTML = """
         function renderLogs() {
             let html = '';
             parsedLogs.forEach((entry, idx) => {
-                let type = 'sys';
-                let content = entry.content;
-                let raw = entry.raw || "";
-                let ids = [];
-                const idRegex = /(Msg|User|Thread|流|归属|用户)[:=]?\\s?(\\d+)/g;
-                let match;
-                while ((match = idRegex.exec(content)) !== null) { ids.push(match[2]); }
+                let type = 'sys'; let raw = entry.raw;
+                let content = entry.content.replace(/[📦⚡️🚨👮❌]/g, '').trim(); 
+                let ids = []; const idRegex = /(Msg|User|Thread|流|归属|用户)[:=]?\\s?(\\d+)/g;
+                let match; while ((match = idRegex.exec(content)) !== null) { ids.push(match[2]); }
                 let idsStr = ids.join(',');
 
-                if (raw.includes('📦')) { type = 'user'; content = content.replace('📦', '').trim(); }
-                else if (raw.includes('客服操作') || (raw.includes('⚡️') && raw.includes('┣━━'))) { type = 'cs'; content = content.replace(/[┣┗]━━/, '').replace('⚡️', '⚡️ ').trim(); }
-                else if (raw.includes('🚨') || raw.includes('[ALERT]')) { type = 'alert'; }
-                else if (raw.includes('👮') || raw.includes('[AUDIT]')) { type = 'audit'; }
-                else if (raw.includes('┣━━') || raw.includes('┗━━')) { type = 'sys'; }
+                if (raw.includes('📦')) type = 'user';
+                else if (raw.includes('客服操作') || (raw.includes('⚡️') && raw.includes('┣━━'))) type = 'cs';
+                else if (raw.includes('🚨') || raw.includes('[ALERT]')) type = 'alert';
+                else if (raw.includes('👮') || raw.includes('[AUDIT]')) type = 'audit';
 
+                content = content.replace(/[┣┗]━━/, '').trim();
                 content = content.replace(/(Msg[:=]?\\s?)(\\d+)/g, '$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
                 content = content.replace(/(User|用户|归属)[:=]?\\s?(\\d+)/g, '$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
                 
                 let actionBtn = '';
-                if (type === 'user') {
-                    actionBtn = ids.length > 0 ? `<span class="btn-report btn-missed" onclick="reportBug('漏报', '${idsStr}')">🐞 漏报</span>` : '';
-                } else if (type === 'alert' || type === 'audit') {
-                    actionBtn = ids.length > 0 ? `<span class="btn-report btn-false" onclick="reportBug('误报', '${idsStr}')">🐞 误报</span>` : '';
-                }
+                if (type === 'user' && ids.length > 0) actionBtn = `<span class="btn-report btn-missed" onclick="reportBug('漏报', '${idsStr}')">反馈漏报</span>`;
+                else if ((type === 'alert' || type === 'audit') && ids.length > 0) actionBtn = `<span class="btn-report btn-false" onclick="reportBug('误报', '${idsStr}')">反馈误报</span>`;
                 
                 let metaHtml = `<div class="msg-meta">${entry.time} #${idx} ${actionBtn}</div>`;
                 let rowClass = `msg-row msg-${type}`;
@@ -638,11 +491,7 @@ LOG_VIEWER_HTML = """
                 if (type === 'user' || type === 'cs') {
                     html += `<div class="${rowClass}" id="log-${idx}">${type === 'cs' ? metaHtml : ''}<div class="bubble">${content}</div>${type === 'user' ? metaHtml : ''}</div>`;
                 } else {
-                    if (type === 'alert' || type === 'audit') {
-                          html += `<div class="${rowClass}" id="log-${idx}"><div class="bubble">${actionBtn} <b>${content}</b></div></div>`;
-                    } else {
-                          html += `<div class="${rowClass}" id="log-${idx}"><div class="bubble">${entry.time} ${content}</div></div>`;
-                    }
+                    html += `<div class="${rowClass}" id="log-${idx}"><div class="bubble"><span style="color:var(--text-muted);margin-right:8px">${entry.time}</span> ${content} ${actionBtn}</div></div>`;
                 }
             });
             container.innerHTML = html;
@@ -662,16 +511,14 @@ LOG_VIEWER_HTML = """
             }
         }
         function reportBug(type, idsStr) {
-            const ids = idsStr.split(',');
-            if (ids.length === 0) return;
-            let report = `=== ${type}反馈报告 ===\\n`;
-            report += `类型: ${type}\\n涉及 ID: ${idsStr}\\n\\n-- 关键日志流 --\\n`;
+            if (!idsStr) return;
+            let report = `=== ${type}反馈报告 ===\\n类型: ${type}\\n涉及 ID: ${idsStr}\\n\\n-- 关键日志流 --\\n`;
             parsedLogs.forEach(entry => {
                 let hit = false;
-                for (let id of ids) { if (entry.raw.includes(id)) { hit = true; break; } }
-                if (hit) { report += `[${entry.time}] ${entry.content}\\n`; }
+                for (let id of idsStr.split(',')) { if (entry.raw.includes(id)) { hit = true; break; } }
+                if (hit) report += `[${entry.time}] ${entry.content}\\n`;
             });
-            navigator.clipboard.writeText(report).then(() => { alert(`✅ [${type}] 详情已复制！请直接粘贴发送。`); });
+            navigator.clipboard.writeText(report).then(() => alert(`已复制 [${type}] 详情，可直接发送。`));
         }
         function scrollToBottom() { container.scrollTop = container.scrollHeight; }
     </script>
@@ -683,78 +530,84 @@ WAIT_CHECK_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>稍等关键词闭环检测工具</title>
+    <title>闭环检测工具</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { font-family: -apple-system, sans-serif; background: #f0f2f5; padding: 20px; max-width: 800px; margin: 0 auto; color: #333; }
-        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
-        h1 { margin-top: 0; color: #1a1a1a; font-size: 1.5rem; border-bottom: 2px solid #eee; padding-bottom: 10px; }
-        .form-group { margin-bottom: 15px; }
-        label { display: block; margin-bottom: 5px; font-weight: bold; }
-        input[type="text"] { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; font-size: 16px; }
-        button { background: #0088cc; color: white; border: none; padding: 12px 20px; border-radius: 6px; cursor: pointer; font-size: 16px; width: 100%; font-weight: bold; transition: background 0.2s; }
-        button:hover { background: #006699; }
-        button:disabled { background: #ccc; cursor: not-allowed; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; padding: 20px; max-width: 800px; margin: 0 auto; color: #1e293b; }
+        .icon { width: 16px; height: 16px; vertical-align: text-bottom; stroke: currentColor; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; display: inline-block; }
+        .icon-sm { width: 14px; height: 14px; vertical-align: text-bottom; stroke: currentColor; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; display: inline-block; }
+        .card { background: white; padding: 24px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); margin-bottom: 20px; border: 1px solid #e2e8f0; }
+        h1 { margin-top: 0; color: #0f172a; font-size: 1.4rem; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #e2e8f0; padding-bottom: 16px; margin-bottom: 20px; }
+        .form-group { margin-bottom: 16px; }
+        label { display: block; margin-bottom: 6px; font-weight: 600; font-size: 0.9rem; color: #475569; }
+        input[type="text"] { width: 100%; padding: 12px 16px; border: 1px solid #cbd5e1; border-radius: 6px; box-sizing: border-box; font-size: 15px; outline: none; transition: border-color 0.2s; }
+        input[type="text"]:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1); }
+        button { background: #0f172a; color: white; border: none; padding: 12px 20px; border-radius: 6px; cursor: pointer; font-size: 15px; width: 100%; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 8px; transition: background 0.2s; }
+        button:hover { background: #1e293b; } button:disabled { background: #94a3b8; cursor: not-allowed; }
         
-        #progress-container { margin-top: 20px; display: none; background: #f8f9fa; padding: 15px; border-radius: 6px; border: 1px solid #eee; }
-        #progress-bar { width: 100%; height: 10px; background: #ddd; border-radius: 5px; overflow: hidden; margin-bottom: 8px; }
-        #progress-fill { height: 100%; background: #4caf50; width: 0%; transition: width 0.3s; }
-        #status-text { font-size: 14px; color: #666; text-align: center; }
+        #progress-container { margin-top: 20px; display: none; background: #f1f5f9; padding: 16px; border-radius: 8px; border: 1px solid #e2e8f0; }
+        #progress-bar { width: 100%; height: 6px; background: #cbd5e1; border-radius: 3px; overflow: hidden; margin-bottom: 10px; }
+        #progress-fill { height: 100%; background: #3b82f6; width: 0%; transition: width 0.3s ease; }
+        #status-text { font-size: 13px; color: #64748b; text-align: center; font-weight: 500; }
 
         .result-list { margin-top: 20px; }
-        .result-item { padding: 15px; border-bottom: 1px solid #eee; display: flex; align-items: flex-start; gap: 15px; background: #fff; transition: background 0.2s; }
-        .result-item:hover { background: #fafafa; }
-        .result-item:last-child { border-bottom: none; }
+        .result-item { padding: 16px; border-bottom: 1px solid #e2e8f0; display: flex; align-items: flex-start; gap: 16px; background: #fff; transition: background 0.2s; }
+        .result-item:hover { background: #f8fafc; } .result-item:last-child { border-bottom: none; }
         
-        .status-badge { padding: 6px 10px; border-radius: 6px; font-size: 13px; font-weight: bold; white-space: nowrap; display: flex; align-items: center; justify-content: center; min-width: 80px; }
-        .status-closed { background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
-        .status-open { background: #ffebee; color: #c62828; border: 1px solid #ffcdd2; }
+        .status-badge { padding: 6px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 4px; min-width: 85px; justify-content: center; }
+        .status-closed { background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0; }
+        .status-open { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
         
         .msg-content { flex-grow: 1; min-width: 0; }
-        .msg-meta { font-size: 12px; color: #888; margin-bottom: 4px; display: flex; gap: 10px; }
-        .msg-text { font-size: 14px; line-height: 1.5; color: #333; word-wrap: break-word; background: #f5f5f5; padding: 8px; border-radius: 4px; margin: 5px 0; border-left: 3px solid #ccc; }
-        .latest-text { font-size: 12px; color: #d32f2f; margin-top: 6px; background: #fff3e0; padding: 4px 8px; border-radius: 4px; border: 1px dashed #ffa726; }
-        .latest-text-success { font-size: 12px; color: #2e7d32; margin-top: 6px; background: #e8f5e9; padding: 4px 8px; border-radius: 4px; border: 1px dashed #81c784; }
-        .reason-text { color: #d32f2f; font-size: 13px; margin-top: 4px; font-style: italic; }
-        .reason-success { color: #2e7d32; font-size: 13px; margin-top: 4px; font-style: italic; }
-        .msg-link { text-decoration: none; color: #0088cc; font-size: 13px; display: inline-block; margin-top: 5px; font-weight: 500; }
-        .msg-link:hover { text-decoration: underline; }
-        .copy-btn { cursor: pointer; background: #e0f7fa; padding: 2px 6px; border-radius: 4px; border: 1px solid #b2ebf2; }
-        .copy-btn:hover { background: #b2ebf2; }
+        .msg-meta { font-size: 12px; color: #64748b; margin-bottom: 6px; display: flex; gap: 12px; font-weight: 500; }
+        .msg-text { font-size: 14px; line-height: 1.5; color: #334155; word-wrap: break-word; background: #f1f5f9; padding: 10px 12px; border-radius: 6px; margin: 6px 0; border-left: 3px solid #cbd5e1; }
+        .latest-text { font-size: 12px; color: #b45309; margin-top: 8px; background: #fffbeb; padding: 6px 10px; border-radius: 4px; border: 1px dashed #fcd34d; display: inline-block; }
+        .latest-text-success { font-size: 12px; color: #0f766e; margin-top: 8px; background: #f0fdfa; padding: 6px 10px; border-radius: 4px; border: 1px dashed #99f6e4; display: inline-block; }
+        .reason-text { color: #dc2626; font-size: 13px; margin-top: 6px; font-weight: 500; }
+        .reason-success { color: #059669; font-size: 13px; margin-top: 6px; font-weight: 500; }
+        .msg-link { color: #2563eb; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; margin-top: 8px; font-weight: 500; cursor: pointer; padding: 4px 8px; background: #eff6ff; border-radius: 4px; border: 1px solid #bfdbfe; transition: all 0.2s; }
+        .msg-link:hover { background: #dbeafe; }
         
-        .summary { font-weight: bold; margin-bottom: 20px; padding: 15px; background: #e3f2fd; border-radius: 6px; border: 1px solid #bbdefb; color: #0d47a1; display: none; }
-        .filter-btn { cursor: pointer; color: #0056b3; text-decoration: underline; margin: 0 5px; }
-        .filter-btn:hover { color: #003d80; }
-        .filter-active { font-weight: 900; color: #d32f2f; text-decoration: none; }
+        .summary { font-weight: 600; margin-bottom: 24px; padding: 16px; background: #eff6ff; border-radius: 8px; border: 1px solid #bfdbfe; color: #1e3a8a; display: none; font-size: 0.95rem; }
+        .filter-btn { cursor: pointer; color: #2563eb; margin: 0 6px; padding: 2px 6px; border-radius: 4px; transition: background 0.2s; display: inline-block; }
+        .filter-btn:hover { background: #dbeafe; }
+        .filter-active { background: #2563eb; color: #fff; pointer-events: none; }
     </style>
 </head>
 <body>
     <div class="card">
-        <h1>🔍 稍等关键词闭环检测</h1>
+        <h1>
+            <svg class="icon" style="width:22px;height:22px;color:#0f172a" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 9.36l-7.1 7.1a1 1 0 0 1-1.41 0l-1.42-1.42a1 1 0 0 1 0-1.4l7.1-7.1a6 6 0 0 1 9.36-7.94l-3.76 3.76z"/></svg> 
+            闭环情况检测
+        </h1>
         <div class="form-group">
-            <label>输入关键词 (输入"全体"可扫描漏回)</label>
-            <input type="text" id="keyword" placeholder="输入关键词 (例如: 请稍等ART，或输入 '全体')" value="请稍等ART">
+            <label>扫描配置 (输入 "全体" 可进行全局遗漏排查)</label>
+            <input type="text" id="keyword" placeholder="输入跟进/稍等关键词，例如: 请稍等ART" value="请稍等ART">
         </div>
-        <button onclick="startCheck()" id="btn-search">开始检测</button>
+        <button onclick="startCheck()" id="btn-search">
+            <svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 开始排查
+        </button>
         
         <div id="progress-container">
             <div id="progress-bar"><div id="progress-fill"></div></div>
-            <div id="status-text">准备就绪...</div>
+            <div id="status-text">系统准备就绪...</div>
         </div>
     </div>
 
-    <div class="card" id="result-card" style="display:none">
-        <div class="summary" id="summary-box"></div>
+    <div class="card" id="result-card" style="display:none; padding: 0;">
+        <div class="summary" id="summary-box" style="margin: 20px 20px 0 20px;"></div>
         <div class="result-list" id="result-list"></div>
     </div>
 
     <script>
         let allResults = [];
-        let currentFilter = 'all';
+        const iconCheck = `<svg class="icon-sm" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>`;
+        const iconCross = `<svg class="icon-sm" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+        const iconLink = `<svg class="icon-sm" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`;
 
         async function startCheck() {
             const keyword = document.getElementById('keyword').value.trim();
-            if (!keyword) return alert("请输入关键词");
+            if (!keyword) return alert("配置内容不能为空");
             
             const btn = document.getElementById('btn-search');
             const pContainer = document.getElementById('progress-container');
@@ -770,7 +623,7 @@ WAIT_CHECK_HTML = """
             resList.innerHTML = '';
             summaryBox.style.display = 'none';
             pFill.style.width = '1%';
-            pText.innerText = "正在初始化...";
+            pText.innerText = "建立连接并初始化...";
             
             allResults = [];
 
@@ -795,10 +648,10 @@ WAIT_CHECK_HTML = """
                                 pText.innerText = data.msg;
                             } else if (data.type === 'result') {
                                 allResults.push(data);
-                                pText.innerText = `已找到 ${allResults.length} 条结果...`;
+                                pText.innerText = `数据拉取中: 已发现 ${allResults.length} 条符合条件的记录...`;
                             } else if (data.type === 'done') {
                                 pFill.style.width = '100%';
-                                pText.innerText = '检测完成，正在排序...';
+                                pText.innerText = '拉取完成，正在本地渲染视图...';
                                 allResults.sort((a, b) => new Date(b.time) - new Date(a.time));
                                 renderResults(allResults); 
                                 renderSummary(data.total, data.closed, data.open);
@@ -809,9 +662,10 @@ WAIT_CHECK_HTML = """
                     }
                 }
             } catch (e) {
-                pText.innerText = "发生错误: " + e.message;
+                pText.innerText = "运行异常: " + e.message;
             } finally {
                 btn.disabled = false;
+                setTimeout(() => { if(pFill.style.width === '100%') pContainer.style.display = 'none'; }, 2000);
             }
         }
 
@@ -819,15 +673,15 @@ WAIT_CHECK_HTML = """
             const summaryBox = document.getElementById('summary-box');
             summaryBox.style.display = 'block';
             summaryBox.innerHTML = `
-                检测完成: 共找到 ${total} 条消息。
-                <span class="filter-btn" onclick="filterResults('closed')">✅ 已闭环: ${closed}</span>
-                <span class="filter-btn" onclick="filterResults('open')">❌ 未闭环: ${open}</span>
-                <span class="filter-btn" onclick="filterResults('all')">📝 显示全部</span>
+                扫描报告: 合计 ${total} 记录
+                <span style="margin:0 12px; color:#cbd5e1">|</span>
+                <span class="filter-btn" onclick="filterResults('closed')">已闭环 (${closed})</span>
+                <span class="filter-btn" onclick="filterResults('open')">需跟进 (${open})</span>
+                <span class="filter-btn filter-active" onclick="filterResults('all')">全览</span>
             `;
         }
 
         function filterResults(type) {
-            currentFilter = type;
             let filtered = [];
             if (type === 'all') filtered = allResults;
             else if (type === 'closed') filtered = allResults.filter(d => d.is_closed);
@@ -837,7 +691,7 @@ WAIT_CHECK_HTML = """
             renderResults(filtered);
             
             document.querySelectorAll('.filter-btn').forEach(btn => {
-                 if(btn.innerText.includes(type === 'all' ? '全部' : (type === 'closed' ? '已闭环' : '未闭环'))) {
+                 if(btn.innerText.includes(type === 'all' ? '全览' : (type === 'closed' ? '已闭环' : '需跟进'))) {
                      btn.classList.add('filter-active');
                  } else {
                      btn.classList.remove('filter-active');
@@ -858,28 +712,36 @@ WAIT_CHECK_HTML = """
                 let subDisplay = isAllSearch ? data.latest_text : data.found_text;
                 if (isAllSearch) {
                     if (data.latest_text === '无人引用回复') {
-                        subDisplay = data.is_closed ? '无直接引用 (AI已豁免)' : '无直接引用 (需处理)';
+                        subDisplay = data.is_closed ? '无直接引用，AI 判定豁免' : '无直接引用，标记遗漏';
                     } else if (data.latest_text === '相邻消息被回复') {
-                        subDisplay = '上下文连续发言覆盖';
+                        subDisplay = '连续发言，已被相邻上下文覆盖';
                     }
                 }
                 
                 const subClass = data.is_closed ? 'latest-text-success' : 'latest-text';
-                const subLabel = isAllSearch ? '判定特征' : '触发消息';
+                const subLabel = isAllSearch ? '特征' : '触发点';
 
                 div.innerHTML = `
                     <div class="status-badge ${data.is_closed ? 'status-closed' : 'status-open'}">
-                        ${data.is_closed ? '✅ 已闭环' : '❌ 未闭环'}
+                        ${data.is_closed ? iconCheck + ' 已闭环' : iconCross + ' 未闭环'}
                     </div>
                     <div class="msg-content">
                         <div class="msg-meta">
-                            <span>📅 ${data.time}</span>
-                            <span>📂 ${data.group_name}</span>
+                            <span>记录时间: ${data.time}</span>
+                            <span>归属群组: ${data.group_name}</span>
                         </div>
                         <div class="msg-text">${mainDisplay}</div>
-                        ${data.reason ? `<div class="${data.is_closed ? 'reason-success' : 'reason-text'}">${data.is_closed ? '🤖 ' : '⚠️ '}${data.reason}</div>` : ''}
-                        <div class="${subClass}">👀 ${subLabel}: [${subDisplay}]</div>
-                        <span class="msg-link copy-btn" onclick="copyLink('${data.link}', this)">🔗 点击复制链接</span>
+                        ${data.reason ? `<div class="${data.is_closed ? 'reason-success' : 'reason-text'}">${data.reason}</div>` : ''}
+                        <div style="margin-top: 4px;">
+                            <div class="${subClass}">
+                                <span style="opacity:0.7;margin-right:4px">${subLabel}</span> ${subDisplay}
+                            </div>
+                        </div>
+                        <div>
+                            <span class="msg-link copy-btn" onclick="copyLink('${data.link}', this)">
+                                ${iconLink} 复制原文定位
+                            </span>
+                        </div>
                     </div>
                 `;
                 resList.appendChild(div);
@@ -888,11 +750,11 @@ WAIT_CHECK_HTML = """
         
         function copyLink(link, btnElement) {
             navigator.clipboard.writeText(link).then(() => {
-                const originalText = btnElement.innerText;
-                btnElement.innerText = "✅ 已复制";
-                setTimeout(() => { btnElement.innerText = originalText; }, 1500);
+                const originalHTML = btnElement.innerHTML;
+                btnElement.innerHTML = `${iconCheck} 链接已复制`;
+                setTimeout(() => { btnElement.innerHTML = originalHTML; }, 1500);
             }).catch(err => {
-                console.error('Failed to copy: ', err);
+                console.error('Copy fail', err);
             });
         }
     </script>
@@ -901,7 +763,7 @@ WAIT_CHECK_HTML = """
 """
 
 # ==========================================
-# 补全的 Web 路由区域 (处理 404 错误)
+# Web 路由区域
 # ==========================================
 @app.route('/')
 def status_page():
@@ -1034,21 +896,21 @@ async def _check_is_closed_logic(latest_msg):
          except: pass
     
     if not last_sender_is_cs:
-        if not latest_msg.text or not latest_msg.text.strip(): is_closed = False; reason = "最后是客户[媒体/贴纸]"
+        if not latest_msg.text or not latest_msg.text.strip(): is_closed = False; reason = "最后消息非文本实体"
         else:
             need_reply, ai_reason = await asyncio.get_event_loop().run_in_executor(None, lambda: _ai_check_reply_needed(latest_msg.text))
-            if not need_reply: is_closed = True; reason = f"AI判定已闭环：{ai_reason}"
-            else: is_closed = False; reason = f"AI判定需回复：{ai_reason}"
+            if not need_reply: is_closed = True; reason = f"系统识别已闭环：{ai_reason}"
+            else: is_closed = False; reason = f"待处理：{ai_reason}"
     else:
         last_text_norm = normalize(latest_msg.text or "")
         is_wait = any(k in last_text_norm for k in WAIT_SIGNATURES)
         is_keep = last_text_norm in KEEP_SIGNATURES
         if is_wait or is_keep:
-            is_closed = False; reason = f"客服最后仍回复{'稍等' if is_wait else '跟进'}词"
+            is_closed = False; reason = f"流程挂起中: 包含{'稍等' if is_wait else '跟进'}指令"
             if latest_msg.reply_to:
                 try:
                     replied_obj = await latest_msg.get_reply_message()
-                    if not replied_obj: is_closed = True; reason = "客户已删消息 (自动豁免)"
+                    if not replied_obj: is_closed = True; reason = "原消息已撤回 (自动豁免)"
                 except: pass
         else: is_closed = True
     return is_closed, reason
@@ -1072,7 +934,7 @@ async def check_wait_keyword_logic(keyword, result_queue):
             if chat_id in EXCLUDED_GROUPS: continue
             
             percent = int((idx / total_groups) * 100)
-            result_queue.put(json.dumps({"type": "progress", "percent": percent, "msg": f"正在扫描群组 {chat_id} ({idx+1}/{total_groups})..."}))
+            result_queue.put(json.dumps({"type": "progress", "percent": percent, "msg": f"正在同步通信群组 {chat_id} ({idx+1}/{total_groups})..."}))
 
             try:
                 history = []
@@ -1143,12 +1005,12 @@ async def check_wait_keyword_logic(keyword, result_queue):
                             
                             found_count += 1
                             is_result_closed = False
-                            display_reason = "孤立无回复 (No Quote Reply)"
+                            display_reason = "状态异常: 孤立消息未得到响应"
                             
                             if is_slip_up:
                                 is_result_closed = True
                                 closed_count += 1
-                                display_reason = f"🤖 {ai_reason}"
+                                display_reason = f"AI判定: {ai_reason}"
                             
                             group_name = str(chat_id)
                             try: g = await client.get_entity(chat_id); group_name = g.title
@@ -1241,24 +1103,6 @@ async def check_wait_keyword_logic(keyword, result_queue):
     except Exception as e:
         logger.error(f"Check Task Logic Error: {e}")
         result_queue.put(None)
-
-@app.route('/api/wait_check_stream')
-def wait_check_stream():
-    keyword = request.args.get('keyword', '').strip()
-    if not keyword: return "Keyword required", 400
-    def generate():
-        result_queue = queue.Queue()
-        if not bot_loop: yield "Error: Bot loop not ready\n"; return
-        asyncio.run_coroutine_threadsafe(check_wait_keyword_logic(keyword, result_queue), bot_loop)
-        while True:
-            data = result_queue.get()
-            if data is None: break
-            yield data + "\n"
-    return Response(stream_with_context(generate()), mimetype='text/plain')
-
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port, threaded=True)
 
 # ==========================================
 # 模块 5: 通知与网络
