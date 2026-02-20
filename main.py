@@ -631,13 +631,15 @@ WAIT_CHECK_HTML = """
                 const response = await fetch(`/api/wait_check_stream?keyword=${encodeURIComponent(keyword)}`);
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
+                let buffer = '';
 
                 while (true) {
                     const { value, done } = await reader.read();
                     if (done) break;
                     
-                    const chunk = decoder.decode(value, {stream: true});
-                    const lines = chunk.split('\\n');
+                    buffer += decoder.decode(value, {stream: true});
+                    const lines = buffer.split('\\n');
+                    buffer = lines.pop(); // 关键修复: 保存最后不完整的半截字符串，留到下个数据块拼接
                     
                     for (const line of lines) {
                         if (!line.trim()) continue;
@@ -785,26 +787,26 @@ def log_raw():
         file_size = os.path.getsize(LOG_FILE_PATH)
         read_size = 200 * 1024 
         with open(LOG_FILE_PATH, 'rb') as f:
-            if file_size > read_size: f.seek(file_size - read_size)
-            content = f.read().decode('utf-8', errors='ignore')
-        return Response(content, mimetype='text/plain')
-    except Exception as e: return f"Log read error: {e}"
-
-@app.after_request
-def add_header(response):
-    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
-    return response
-
-@app.route('/api/ctrl')
-def api_ctrl():
-    s = request.args.get('s', type=int)
-    log_tree(1, f"🌐 Web指令接收: {'上班' if s==1 else '下班'}")
-    global bot_loop
-    if not bot_loop: return "Error: Loop Not Ready", 500
-    coro = perform_start_work() if s == 1 else perform_stop_work()
-    try: asyncio.run_coroutine_threadsafe(coro, bot_loop)
-    except Exception as e: return str(e), 500
-    return "OK"
+@app.route('/api/wait_check_stream')
+def wait_check_stream():
+    keyword = request.args.get('keyword', '').strip()
+    if not keyword: return "Keyword required", 400
+    def generate():
+        result_queue = queue.Queue()
+        if not bot_loop: yield "Error: Bot loop not ready\n"; return
+        asyncio.run_coroutine_threadsafe(check_wait_keyword_logic(keyword, result_queue), bot_loop)
+        while True:
+            data = result_queue.get()
+            if data is None: break
+            yield data + "\n"
+            
+    # 关键修复: 加入反向代理防缓冲 Headers，强制实时推流
+    headers = {
+        'Cache-Control': 'no-cache',
+        'X-Accel-Buffering': 'no',
+        'Connection': 'keep-alive'
+    }
+    return Response(stream_with_context(generate()), mimetype='text/event-stream', headers=headers)
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
