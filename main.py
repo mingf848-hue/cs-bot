@@ -850,6 +850,11 @@ WAIT_CHECK_HTML = """
             list.forEach(data => {
                 const div = document.createElement('div');
                 div.className = 'result-item';
+                
+                const isAllSearch = (data.latest_text === '无人引用回复' || data.latest_text === '相邻消息被回复');
+                const mainDisplay = isAllSearch ? data.found_text : data.latest_text;
+                const subDisplay = isAllSearch ? data.latest_text : data.found_text;
+
                 div.innerHTML = `
                     <div class="status-badge ${data.is_closed ? 'status-closed' : 'status-open'}">
                         ${data.is_closed ? '✅ 已闭环' : '❌ 未闭环'}
@@ -859,9 +864,9 @@ WAIT_CHECK_HTML = """
                             <span>📅 ${data.time}</span>
                             <span>📂 ${data.group_name}</span>
                         </div>
-                        <div class="msg-text">${data.found_text}</div>
+                        <div class="msg-text">${mainDisplay}</div>
                         ${data.reason ? `<div class="${data.is_closed ? 'reason-success' : 'reason-text'}">${data.is_closed ? '🤖 ' : '⚠️ '}${data.reason}</div>` : ''}
-                        ${!data.is_closed && data.latest_text ? `<div class="latest-text">👀 判定依据 (最新消息): [${data.latest_text}]</div>` : ''}
+                        <div class="latest-text">👀 ${isAllSearch ? '判定状态' : '触发消息'}: [${subDisplay}]</div>
                         <span class="msg-link copy-btn" onclick="copyLink('${data.link}', this)">🔗 点击复制链接</span>
                     </div>
                 `;
@@ -977,8 +982,8 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
     
     【分析逻辑】:
     请像人类一样综合思考。仔细观察上下文的时间流和对话流。
-    - 豁免 (is_slip_up=true): 如果这条消息看起来是用户连续发言中的一句（分段发送）、对上一句的补充、无意义的语气词，或者客服在上下文中已经明显在该时段接待了该用户（即使没有引用这条特定消息），请认为无需单独回复。
-    - 漏回 (is_slip_up=false): 只有当这是一条被完全忽视的、独立的业务请求，且在上下文中没有任何响应时，才标记为漏回。
+    - 豁免 (is_slip_up=true): 如果这条消息看起来是用户连续发言中的一句（分段发送）、对上一句的补充、无意义的语气词，或者客服在上下文中已经明显针对该【同一事件/话题】接待了该用户，请认为无需单独回复。
+    - 漏回 (is_slip_up=false): 只有当这是一条被完全忽视的、独立的业务请求时，才标记为漏回。特别注意：如果客户在短时间内连续发送了两个完全不同的问题（例如一个问充值，一个问其它业务），而客服只回答了其中一个，那么未被回答的那个独立问题应判定为漏回 (is_slip_up=false)！
     
     请输出 JSON 格式: {{"reason": "用中文简短说明原因...", "is_slip_up": true/false}}
     """
@@ -1097,40 +1102,6 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         elif m.grouped_id and m.grouped_id in replied_grouped_ids: is_orphan = False
                             
                         if is_orphan:
-                            # 120s 连续发言硬豁免
-                            is_consecutive_covered = False
-                            nearby_msgs = user_msg_map.get(m.sender_id, [])
-                            
-                            for nm in nearby_msgs:
-                                if nm.id == m.id: continue
-                                dt = abs((m.date - nm.date).total_seconds())
-                                if dt <= 120:
-                                    if nm.id in replied_to_ids or (nm.grouped_id and nm.grouped_id in replied_grouped_ids):
-                                        is_consecutive_covered = True
-                                        break
-                            
-                            if is_consecutive_covered:
-                                found_count += 1
-                                closed_count += 1
-                                group_name = str(chat_id)
-                                try: g = await client.get_entity(chat_id); group_name = g.title
-                                except: pass
-                                safe_text = (m.text or "[媒体/空]")[:100].replace('\n', ' ')
-                                beijing_time = m.date.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
-                                real_chat_id = str(chat_id).replace('-100', '')
-                                link = f"https://t.me/c/{real_chat_id}/{m.id}"
-                                result_queue.put(json.dumps({
-                                    "type": "result",
-                                    "is_closed": True,
-                                    "reason": "连续发言已覆盖 (Neighbor Replied)",
-                                    "time": beijing_time,
-                                    "group_name": group_name,
-                                    "found_text": safe_text,
-                                    "latest_text": "相邻消息被回复",
-                                    "link": link
-                                }))
-                                continue
-
                             start = max(0, i - 6) 
                             end = min(len(history), i + 7)
                             context_slice = history[start:end]
