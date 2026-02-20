@@ -806,6 +806,10 @@ def api_ctrl():
     except Exception as e: return str(e), 500
     return "OK"
 
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port, threaded=True)
+
 
 # ==========================================
 # 模块 4.5: AI 分析模块 (Ver 45.21)
