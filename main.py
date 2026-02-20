@@ -308,8 +308,8 @@ DASHBOARD_HTML = """
         .empty { color: #94a3b8; text-align: center; padding: 16px; font-size: 0.9rem; background: #f1f5f9; border-radius: 8px; border: 1px dashed #cbd5e1; }
         .btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 12px; background: #1e293b; color: #fff; text-decoration: none; border-radius: 8px; font-weight: 600; margin-top: 12px; font-size: 0.95rem; box-sizing: border-box; transition: opacity 0.2s; }
         .btn:hover { opacity: 0.9; }
-        .link-text { font-size: 0.8rem; color: #2563eb; text-decoration: none; display: flex; align-items: center; gap: 4px; margin-top: 4px; }
-        .link-text:hover { text-decoration: underline; }
+        .link-text { font-size: 0.8rem; color: #2563eb; text-decoration: none; display: flex; align-items: center; gap: 4px; margin-top: 4px; cursor: pointer; padding: 4px 8px; background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0; width: fit-content; transition: background 0.2s; }
+        .link-text:hover { background: #f1f5f9; }
         @keyframes flash { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
     </style>
 </head>
@@ -340,9 +340,9 @@ DASHBOARD_HTML = """
                     {% if title == '漏回监控 (5m)' and info.target %}
                         <span style="font-size:0.85rem; color:#64748b"> → {{ info.target }}</span>
                     {% endif %}
-                    <a href="{{ info.url }}" target="_blank" class="link-text">
-                        <svg class="icon" style="width:12px;height:12px;" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>跳转处理
-                    </a>
+                    <span class="link-text" onclick="copyLink('{{ info.url }}', this)">
+                        <svg class="icon" style="width:12px;height:12px;" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制消息链接
+                    </span>
                 </div>
                 <span class="t" data-end="{{ info.ts }}">--:--</span>
             </div>
@@ -376,6 +376,7 @@ DASHBOARD_HTML = """
         function playAlarm() { if (!audioEnabled) return; if (audioCtx.state === 'suspended') audioCtx.resume().catch(e => console.log(e)); const oscillator = audioCtx.createOscillator(); const gainNode = audioCtx.createGain(); oscillator.type = 'square'; oscillator.frequency.setValueAtTime(800, audioCtx.currentTime); oscillator.frequency.exponentialRampToValueAtTime(400, audioCtx.currentTime + 0.1); gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime); gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1); oscillator.connect(gainNode); gainNode.connect(audioCtx.destination); oscillator.start(); oscillator.stop(audioCtx.currentTime + 0.2); }
         function toggleAudio() { audioEnabled = !audioEnabled; localStorage.setItem('tg_bot_audio_enabled', audioEnabled); audioBtn.innerHTML = audioEnabled ? svgOn : svgOff; if(audioEnabled) { if (audioCtx.state === 'suspended') audioCtx.resume(); playAlarm(); } }
         function ctrl(s) { fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => setTimeout(() => location.reload(), 500)); }
+        function copyLink(link, btnElement) { navigator.clipboard.writeText(link).then(() => { const originalHTML = btnElement.innerHTML; btnElement.innerHTML = `<svg class="icon" style="width:12px;height:12px;" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>已复制链接`; setTimeout(() => { btnElement.innerHTML = originalHTML; }, 1500); }).catch(err => { console.error('Copy fail', err); }); }
         setInterval(() => { const now = Date.now() / 1000; let hasLate = false; document.querySelectorAll('.t').forEach(el => { const diff = parseFloat(el.dataset.end) - now; if(diff <= 0) { el.innerText = "已超时"; el.classList.add('late'); hasLate = true; } else { const m = Math.floor(diff / 60); const s = Math.floor(diff % 60); el.innerText = `${m}:${s.toString().padStart(2, '0')}`; } }); if (hasLate && audioEnabled) playAlarm(); }, 1000);
     </script>
 </body>
@@ -533,7 +534,19 @@ WAIT_CHECK_HTML = """
     <title>闭环检测工具</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; padding: 20px; max-width: 800px; margin: 0 auto; color: #1e293b; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; padding: 20px; max-width: 1000px; margin: 0 auto; color: #1e293b; }
+        .layout-wrapper { display: flex; gap: 20px; align-items: flex-start; }
+        .sidebar { flex: 0 0 240px; position: sticky; top: 20px; }
+        .main-content { flex: 1; min-width: 0; }
+        @media (max-width: 768px) {
+            .layout-wrapper { flex-direction: column; }
+            .sidebar { flex: none; width: 100%; position: relative; top: 0; }
+            .kw-list { display: flex; flex-wrap: wrap; gap: 8px; }
+            .kw-btn { flex: 1 1 auto; white-space: nowrap; justify-content: center; }
+        }
+        .kw-list { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+        .kw-btn { padding: 10px 14px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; cursor: pointer; font-size: 14px; transition: all 0.2s; color: #334155; font-weight: 500; display: flex; align-items: center; gap: 8px; }
+        .kw-btn:hover { background: #eff6ff; border-color: #bfdbfe; color: #1e3a8a; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
         .icon { width: 16px; height: 16px; vertical-align: text-bottom; stroke: currentColor; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; display: inline-block; }
         .icon-sm { width: 14px; height: 14px; vertical-align: text-bottom; stroke: currentColor; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; display: inline-block; }
         .card { background: white; padding: 24px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); margin-bottom: 20px; border: 1px solid #e2e8f0; }
@@ -575,28 +588,50 @@ WAIT_CHECK_HTML = """
     </style>
 </head>
 <body>
-    <div class="card">
-        <h1>
-            <svg class="icon" style="width:22px;height:22px;color:#0f172a" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 9.36l-7.1 7.1a1 1 0 0 1-1.41 0l-1.42-1.42a1 1 0 0 1 0-1.4l7.1-7.1a6 6 0 0 1 9.36-7.94l-3.76 3.76z"/></svg> 
-            闭环情况检测
-        </h1>
-        <div class="form-group">
-            <label>扫描配置 (输入 "全体" 可进行全局遗漏排查)</label>
-            <input type="text" id="keyword" placeholder="输入跟进/稍等关键词，例如: 请稍等ART" value="请稍等ART">
+    <div class="layout-wrapper">
+        <div class="sidebar">
+            <div class="card" style="margin-bottom: 0; padding: 20px;">
+                <h3 style="margin-top: 0; font-size: 1.1rem; color: #0f172a; border-bottom: 1px solid #e2e8f0; padding-bottom: 12px; margin-bottom: 0;">
+                    <svg class="icon" style="color:#2563eb" viewBox="0 0 24 24"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg> 快捷选择
+                </h3>
+                <div class="kw-list">
+                    <div class="kw-btn" onclick="fillKeyword('全体')">
+                        <svg class="icon-sm" style="color:#0f766e" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 全体漏回检测
+                    </div>
+                    {% for kw in wait_keywords %}
+                    <div class="kw-btn" onclick="fillKeyword('{{ kw }}')">
+                        <svg class="icon-sm" style="color:#64748b" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg> {{ kw }}
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
         </div>
-        <button onclick="startCheck()" id="btn-search">
-            <svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 开始排查
-        </button>
-        
-        <div id="progress-container">
-            <div id="progress-bar"><div id="progress-fill"></div></div>
-            <div id="status-text">系统准备就绪...</div>
-        </div>
-    </div>
 
-    <div class="card" id="result-card" style="display:none; padding: 0;">
-        <div class="summary" id="summary-box" style="margin: 20px 20px 0 20px;"></div>
-        <div class="result-list" id="result-list"></div>
+        <div class="main-content">
+            <div class="card">
+                <h1>
+                    <svg class="icon" style="width:22px;height:22px;color:#0f172a" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 9.36l-7.1 7.1a1 1 0 0 1-1.41 0l-1.42-1.42a1 1 0 0 1 0-1.4l7.1-7.1a6 6 0 0 1 9.36-7.94l-3.76 3.76z"/></svg> 
+                    闭环情况检测
+                </h1>
+                <div class="form-group">
+                    <label>扫描配置 (输入 "全体" 可进行全局遗漏排查)</label>
+                    <input type="text" id="keyword" placeholder="点击左侧快捷键或输入关键词..." value="全体">
+                </div>
+                <button onclick="startCheck()" id="btn-search">
+                    <svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 开始排查
+                </button>
+                
+                <div id="progress-container">
+                    <div id="progress-bar"><div id="progress-fill"></div></div>
+                    <div id="status-text">系统准备就绪...</div>
+                </div>
+            </div>
+
+            <div class="card" id="result-card" style="display:none; padding: 0;">
+                <div class="summary" id="summary-box" style="margin: 20px 20px 0 20px;"></div>
+                <div class="result-list" id="result-list"></div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -604,6 +639,10 @@ WAIT_CHECK_HTML = """
         const iconCheck = `<svg class="icon-sm" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>`;
         const iconCross = `<svg class="icon-sm" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
         const iconLink = `<svg class="icon-sm" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`;
+
+        function fillKeyword(kw) {
+            document.getElementById('keyword').value = kw;
+        }
 
         async function startCheck() {
             const keyword = document.getElementById('keyword').value.trim();
@@ -639,10 +678,10 @@ WAIT_CHECK_HTML = """
                     
                     buffer += decoder.decode(value, {stream: true});
                     const lines = buffer.split('\\n');
-                    buffer = lines.pop(); // 关键修复: 保存最后不完整的半截字符串，留到下个数据块拼接
+                    buffer = lines.pop(); // 保留不完整的最后一行片段
                     
                     for (const line of lines) {
-                        if (!line.trim()) continue;
+                        if (!line.trim()) continue; // 忽略为了防反向代理缓冲而补充的空白行
                         try {
                             const data = JSON.parse(line);
                             if (data.type === 'progress') {
@@ -659,7 +698,7 @@ WAIT_CHECK_HTML = """
                                 renderSummary(data.total, data.closed, data.open);
                             }
                         } catch (e) {
-                            console.error("Parse error", e);
+                            console.error("Parse error", e, "Line content:", line);
                         }
                     }
                 }
@@ -777,7 +816,7 @@ def log_ui(): return Response(LOG_VIEWER_HTML, mimetype='text/html')
 
 @app.route('/tool/wait_check')
 def wait_check_ui(): 
-    return Response(WAIT_CHECK_HTML, mimetype='text/html')
+    return render_template_string(WAIT_CHECK_HTML, wait_keywords=sorted(list(WAIT_SIGNATURES)))
 
 @app.route('/log_raw')
 def log_raw():
@@ -816,18 +855,18 @@ def wait_check_stream():
         result_queue = queue.Queue()
         if not bot_loop: yield "Error: Bot loop not ready\n"; return
         asyncio.run_coroutine_threadsafe(check_wait_keyword_logic(keyword, result_queue), bot_loop)
+        
+        # 核心修复 1: 推送空白字符强行冲刷 Zeabur/Nginx 的代理缓冲区，让它第一时间返回流数据
+        yield (" " * 4096) + "\n"
+        
         while True:
             data = result_queue.get()
             if data is None: break
-            yield data + "\n"
+            yield data + "\n" + (" " * 4096) + "\n"
             
-    # 关键修复: 加入反向代理防缓冲 Headers，强制实时推流
-    headers = {
-        'Cache-Control': 'no-cache',
-        'X-Accel-Buffering': 'no',
-        'Connection': 'keep-alive'
-    }
-    return Response(stream_with_context(generate()), mimetype='text/event-stream', headers=headers)
+    response = Response(stream_with_context(generate()), mimetype='text/plain')
+    response.headers['X-Accel-Buffering'] = 'no'  # 核心修复 2: 显式声明禁止网关代理缓冲
+    return response
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -986,6 +1025,7 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         if mid in msg_grouped_map:
                             replied_grouped_ids.add(msg_grouped_map[mid])
 
+                    orphan_tasks = []
                     for i, m in enumerate(history):
                         is_cs = False
                         if m.sender_id in ([MY_ID] + OTHER_CS_IDS): is_cs = True
@@ -1003,61 +1043,72 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         elif m.grouped_id and m.grouped_id in replied_grouped_ids: is_orphan = False
                             
                         if is_orphan:
-                            start = max(0, i - 6) 
-                            end = min(len(history), i + 7)
-                            context_slice = history[start:end]
-                            context_slice.sort(key=lambda x: x.date)
-                            
-                            target_uid = m.sender_id
-                            target_label = f"User({str(target_uid)[-4:]})" 
+                            orphan_tasks.append((i, m))
+                    
+                    # 核心修复 3: 如果发现孤立消息，提前发出一个进度提示，避免 AI 耗时导致界面长时间假死
+                    if orphan_tasks:
+                        result_queue.put(json.dumps({"type": "progress", "percent": percent, "msg": f"群组 {chat_id} 发现 {len(orphan_tasks)} 条潜在漏回消息，正在排队进行 AI 深度研判..."}))
 
-                            context_txts = []
-                            for cm in context_slice:
-                                if cm.sender_id in ([MY_ID] + OTHER_CS_IDS): c_label = "CS"
-                                else:
-                                    is_cm_cs = False
-                                    try:
-                                        if getattr(cm.sender, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)): is_cm_cs = True
-                                    except: pass
-                                    if is_cm_cs: c_label = "CS"
-                                    else: c_label = f"User({str(cm.sender_id)[-4:]})"
+                    for orphan_idx, (i, m) in enumerate(orphan_tasks):
+                        # 核心修复 4: 每完成 5 条 AI 判定推送一次进度
+                        if orphan_idx > 0 and orphan_idx % 5 == 0:
+                            result_queue.put(json.dumps({"type": "progress", "percent": percent, "msg": f"群组 {chat_id} AI 深度研判中 (进度: {orphan_idx}/{len(orphan_tasks)})..."}))
 
-                                c_txt = (cm.text or "[Media]").replace('\n', ' ')
-                                marker = " <<< TARGET" if cm.id == m.id else ""
-                                context_txts.append(f"[{cm.date.strftime('%H:%M:%S')}] {c_label}: {c_txt}{marker}")
-                            
-                            is_slip_up, ai_reason = await asyncio.get_event_loop().run_in_executor(
-                                None, lambda: _ai_check_orphan_context(m.text or "[Media]", context_txts, target_label)
-                            )
-                            
-                            found_count += 1
-                            is_result_closed = False
-                            display_reason = "状态异常: 孤立消息未得到响应"
-                            
-                            if is_slip_up:
-                                is_result_closed = True
-                                closed_count += 1
-                                display_reason = f"AI判定: {ai_reason}"
-                            
-                            group_name = str(chat_id)
-                            try: g = await client.get_entity(chat_id); group_name = g.title
-                            except: pass
+                        start = max(0, i - 6) 
+                        end = min(len(history), i + 7)
+                        context_slice = history[start:end]
+                        context_slice.sort(key=lambda x: x.date)
+                        
+                        target_uid = m.sender_id
+                        target_label = f"User({str(target_uid)[-4:]})" 
 
-                            safe_text = (m.text or "[媒体/空]")[:100].replace('\n', ' ')
-                            beijing_time = m.date.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
-                            real_chat_id = str(chat_id).replace('-100', '')
-                            link = f"https://t.me/c/{real_chat_id}/{m.id}"
-                            
-                            result_queue.put(json.dumps({
-                                "type": "result",
-                                "is_closed": is_result_closed,
-                                "reason": display_reason,
-                                "time": beijing_time,
-                                "group_name": group_name,
-                                "found_text": safe_text,
-                                "latest_text": "无人引用回复",
-                                "link": link
-                            }))
+                        context_txts = []
+                        for cm in context_slice:
+                            if cm.sender_id in ([MY_ID] + OTHER_CS_IDS): c_label = "CS"
+                            else:
+                                is_cm_cs = False
+                                try:
+                                    if getattr(cm.sender, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)): is_cm_cs = True
+                                except: pass
+                                if is_cm_cs: c_label = "CS"
+                                else: c_label = f"User({str(cm.sender_id)[-4:]})"
+
+                            c_txt = (cm.text or "[Media]").replace('\n', ' ')
+                            marker = " <<< TARGET" if cm.id == m.id else ""
+                            context_txts.append(f"[{cm.date.strftime('%H:%M:%S')}] {c_label}: {c_txt}{marker}")
+                        
+                        is_slip_up, ai_reason = await asyncio.get_event_loop().run_in_executor(
+                            None, lambda: _ai_check_orphan_context(m.text or "[Media]", context_txts, target_label)
+                        )
+                        
+                        found_count += 1
+                        is_result_closed = False
+                        display_reason = "状态异常: 孤立消息未得到响应"
+                        
+                        if is_slip_up:
+                            is_result_closed = True
+                            closed_count += 1
+                            display_reason = f"AI判定: {ai_reason}"
+                        
+                        group_name = str(chat_id)
+                        try: g = await client.get_entity(chat_id); group_name = g.title
+                        except: pass
+
+                        safe_text = (m.text or "[媒体/空]")[:100].replace('\n', ' ')
+                        beijing_time = m.date.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
+                        real_chat_id = str(chat_id).replace('-100', '')
+                        link = f"https://t.me/c/{real_chat_id}/{m.id}"
+                        
+                        result_queue.put(json.dumps({
+                            "type": "result",
+                            "is_closed": is_result_closed,
+                            "reason": display_reason,
+                            "time": beijing_time,
+                            "group_name": group_name,
+                            "found_text": safe_text,
+                            "latest_text": "无人引用回复",
+                            "link": link
+                        }))
                             
                     continue 
 
