@@ -884,14 +884,11 @@ def run_web():
 # ==========================================
 
 def _ai_check_reply_needed(text):
-    simple_text = normalize(text)
-    if len(simple_text) <= 2 or simple_text.isdigit(): return (False, "本地兜底: 极简回复")
-    if simple_text in IGNORE_SIGNATURES: return (False, "本地兜底: 命中忽略词")
-    
+    # 彻底移除本地暴力兜底，完全依靠 AI 研判
     proxy_url = AI_PROXY_URL.rstrip('/')
     url = f"{proxy_url}/v1beta/models/{AI_MODEL_NAME}:generateContent"
     headers = {'Content-Type': 'application/json'}
-    prompt = f"判断客户消息是否需要回复。消息: '{text}'\n如果是礼貌结束语或无意义，返回false。如果是问题或投诉，返回true。\nJSON: {{'reason': '...', 'need_reply': true/false}}"
+    prompt = f"判断客户消息是否需要回复。消息: '{text}'\n如果是礼貌结束语(如：好、好的、谢谢、收到、ok等)或无意义，返回false。如果是问题或业务请求，返回true。\nJSON: {{'reason': '...', 'need_reply': true/false}}"
     data = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"response_mime_type": "application/json"}}
     
     try:
@@ -916,9 +913,10 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
     url = f"{proxy_url}/v1beta/models/{AI_MODEL_NAME}:generateContent"
     headers = {'Content-Type': 'application/json'}
     
+    # 修复了逻辑反转导致的判断BUG，变量名修改为 is_exempt (是否豁免)
     prompt = f"""
     你是一名经验丰富的客服质检员。
-    请根据上下文判断下面的【目标消息】是否属于“客服漏回”的事故。
+    请根据上下文判断下面的【目标消息】是否需要客服继续回复（即是否属于“客服漏回”的事故）。
 
     目标发送者: "{target_label}"
     目标消息: "{target_text}"
@@ -928,10 +926,10 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
     
     【分析逻辑】:
     请像人类一样综合思考。仔细观察上下文的时间流和对话流。
-    - 豁免 (is_slip_up=true): 如果这条消息看起来是用户连续发言中的一句（分段发送）、对上一句的补充、无意义的语气词，或者客服在上下文中已经明显针对该【同一事件/话题】接待了该用户，请认为无需单独回复。
-    - 漏回 (is_slip_up=false): 只有当这是一条被完全忽视的、独立的业务请求时，才标记为漏回。特别注意：如果客户在短时间内连续发送了两个完全不同的问题（例如一个问充值，一个问其它业务），而客服只回答了其中一个，那么未被回答的那个独立问题应判定为漏回 (is_slip_up=false)！
+    - 豁免无需回复 (is_exempt=true): 如果这条消息看起来是用户连续发言中的一句（分段发送）、对上一句的补充、无意义的语气词（如：好、好的、收到、谢谢等），或者客服在上下文中已经明显针对该【同一事件/话题】接待了该用户，请认为无需单独回复。
+    - 属于漏回需回复 (is_exempt=false): 只有当这是一条被完全忽视的、独立的业务请求时，才标记为漏回。特别注意：如果客户在短时间内连续发送了两个完全不同的问题（例如一个问充值，一个问其它业务），而客服只回答了其中一个，那么未被回答的那个独立问题应判定为漏回 (is_exempt=false)！
     
-    请输出 JSON 格式: {{"reason": "用中文简短说明原因...", "is_slip_up": true/false}}
+    请输出 JSON 格式: {{"reason": "用中文简短说明原因...", "is_exempt": true/false}}
     """
     
     data = {
@@ -945,10 +943,10 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
             res_json = resp.json()
             raw_content = res_json.get('candidates', [])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
             decision = json.loads(raw_content)
-            is_slip_up = decision.get("is_slip_up", False)
+            is_exempt = decision.get("is_exempt", False)
             reason = decision.get("reason", "AI Decision")
-            log_tree(2, log_prefix + f"✅ AI判定: 豁免={is_slip_up} | {reason}")
-            return (is_slip_up, reason)
+            log_tree(2, log_prefix + f"✅ AI判定: 豁免={is_exempt} | {reason}")
+            return (is_exempt, reason)
         else:
             return (False, f"API Error {resp.status_code}") 
     except Exception as e:
@@ -1083,18 +1081,21 @@ async def check_wait_keyword_logic(keyword, result_queue):
                             marker = " <<< TARGET" if cm.id == m.id else ""
                             context_txts.append(f"[{cm.date.strftime('%H:%M:%S')}] {c_label}: {c_txt}{marker}")
                         
-                        is_slip_up, ai_reason = await asyncio.get_event_loop().run_in_executor(
+                        # 返回的变成了 is_exempt(是否豁免), 不再是倒错逻辑的 is_slip_up
+                        is_exempt, ai_reason = await asyncio.get_event_loop().run_in_executor(
                             None, lambda: _ai_check_orphan_context(m.text or "[Media]", context_txts, target_label)
                         )
                         
                         found_count += 1
-                        is_result_closed = False
-                        display_reason = "状态异常: 孤立消息未得到响应"
                         
-                        if is_slip_up:
+                        # 核心修复：强制透传展示 AI 判定结果，不论真假
+                        if is_exempt:
                             is_result_closed = True
                             closed_count += 1
-                            display_reason = f"AI判定: {ai_reason}"
+                            display_reason = f"AI判定(豁免): {ai_reason}"
+                        else:
+                            is_result_closed = False
+                            display_reason = f"AI判定(漏回): {ai_reason}"
                         
                         group_name = str(chat_id)
                         try: g = await client.get_entity(chat_id); group_name = g.title
