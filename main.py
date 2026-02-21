@@ -361,7 +361,7 @@ DASHBOARD_HTML = """
             <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" y1="16" x2="8" y2="16"/><line x1="16" y1="16" x2="16" y2="16"/></svg> 自动回复配置
         </a>
     </div>
-    <div style="text-align:center;color:#94a3b8;margin-top:20px;font-size:0.75rem">System Version 45.21</div>
+    <div style="text-align:center;color:#94a3b8;margin-top:20px;font-size:0.75rem">System Version 45.22</div>
     <script>
         const svgOn = '<svg class="icon" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>';
         const svgOff = '<svg class="icon" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>';
@@ -373,7 +373,7 @@ DASHBOARD_HTML = """
         function playAlarm() { if (!audioEnabled) return; if (audioCtx.state === 'suspended') audioCtx.resume().catch(e => console.log(e)); const oscillator = audioCtx.createOscillator(); const gainNode = audioCtx.createGain(); oscillator.type = 'square'; oscillator.frequency.setValueAtTime(800, audioCtx.currentTime); oscillator.frequency.exponentialRampToValueAtTime(400, audioCtx.currentTime + 0.1); gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime); gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1); oscillator.connect(gainNode); gainNode.connect(audioCtx.destination); oscillator.start(); oscillator.stop(audioCtx.currentTime + 0.2); }
         function toggleAudio() { audioEnabled = !audioEnabled; localStorage.setItem('tg_bot_audio_enabled', audioEnabled); audioBtn.innerHTML = audioEnabled ? svgOn : svgOff; if(audioEnabled) { if (audioCtx.state === 'suspended') audioCtx.resume(); playAlarm(); } }
         function ctrl(s) { fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => setTimeout(() => location.reload(), 500)); }
-        function copyLink(link, btnElement) { navigator.clipboard.writeText(link).then(() => { const originalHTML = btnElement.innerHTML; btnElement.innerHTML = `<svg class="icon" style="width:12px;height:12px;" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>已复制链接`; setTimeout(() => { btnElement.innerHTML = originalHTML; }, 1500); }).catch(err => { console.error('Copy fail', err); }); }
+        function copyLink(link, btnElement) { navigator.clipboard.writeText(link).then(() => { const originalHTML = btnElement.innerHTML; btnElement.innerHTML = `<svg class="icon" style="width:12px;height:12px;" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>已复制链接`; setTimeout(() => { btnElement.innerHTML = originalHTML; }, 1500); }).catch(err => { console.error('Copy fail', err); }); }
         setInterval(() => { const now = Date.now() / 1000; let hasLate = false; document.querySelectorAll('.t').forEach(el => { const diff = parseFloat(el.dataset.end) - now; if(diff <= 0) { el.innerText = "已超时"; el.classList.add('late'); hasLate = true; } else { const m = Math.floor(diff / 60); const s = Math.floor(diff % 60); el.innerText = `${m}:${s.toString().padStart(2, '0')}`; } }); if (hasLate && audioEnabled) playAlarm(); }, 1000);
     </script>
 </body>
@@ -880,7 +880,7 @@ def run_web():
 
 
 # ==========================================
-# 模块 4.5: AI 分析模块 (Ver 45.21)
+# 模块 4.5: AI 分析模块 (Ver 45.22)
 # ==========================================
 
 def _ai_check_reply_needed(text):
@@ -901,7 +901,7 @@ def _ai_check_reply_needed(text):
 
 def _ai_check_orphan_context(target_text, context_text_list, target_label="User"):
     """
-    [Sync Function] [Ver 45.20/21]
+    [Sync Function] [Ver 45.20/22]
     让 AI 自由思考上下文，移除死板规则。
     """
     if not target_text or len(target_text) < 1: return (True, "忽略空消息") 
@@ -1010,6 +1010,7 @@ async def check_wait_keyword_logic(keyword, result_queue):
                 history = []
                 async for m in client.iter_messages(chat_id, limit=limit_count):
                     if m.date and m.date < cutoff_time: break
+                    if getattr(m, 'action', None): continue # 过滤拉人、置顶等系统服务消息
                     history.append(m)
                 
                 if keyword in ["全体", "全体检测"]:
@@ -1068,6 +1069,8 @@ async def check_wait_keyword_logic(keyword, result_queue):
 
                         context_txts = []
                         for cm in context_slice:
+                            if getattr(cm, 'action', None): continue # 避免上下文里出现系统提示干扰AI
+                            
                             if cm.sender_id in ([MY_ID] + OTHER_CS_IDS): c_label = "CS"
                             else:
                                 is_cm_cs = False
@@ -1243,6 +1246,7 @@ async def audit_pending_tasks():
             msgs = []
             async for m in client.iter_messages(chat_id, limit=3000):
                 if m.date and m.date < cutoff_time: break
+                if getattr(m, 'action', None): continue # 过滤系统服务消息
                 msgs.append(m)
             history_cache[chat_id] = msgs
         except Exception as e:
@@ -1967,7 +1971,7 @@ if __name__ == '__main__':
             init_monitor(client, app, OTHER_CS_IDS, CS_NAME_PREFIXES, handler)
             
         Thread(target=run_web).start()
-        log_tree(0, "✅ 系统启动 (Ver 45.21 Final Consolidated)")
+        log_tree(0, "✅ 系统启动 (Ver 45.22 Final Consolidated)")
         client.start()
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
