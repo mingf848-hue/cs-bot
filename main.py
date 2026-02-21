@@ -844,6 +844,15 @@ def api_ctrl():
     except Exception as e: return str(e), 500
     return "OK"
 
+# 【新增】供独立网页读取关键词配置的接口
+@app.route('/api/config')
+def api_config():
+    import json
+    data = json.dumps({"wait_keywords": sorted(list(WAIT_SIGNATURES))})
+    response = Response(data, mimetype='application/json')
+    response.headers['Access-Control-Allow-Origin'] = '*' # 允许跨域
+    return response
+
 @app.route('/api/wait_check_stream')
 def wait_check_stream():
     keyword = request.args.get('keyword', '').strip()
@@ -853,7 +862,6 @@ def wait_check_stream():
         if not bot_loop: yield "Error: Bot loop not ready\n"; return
         asyncio.run_coroutine_threadsafe(check_wait_keyword_logic(keyword, result_queue), bot_loop)
         
-        # 核心修复 1: 推送空白字符强行冲刷 Zeabur/Nginx 的代理缓冲区，让它第一时间返回流数据
         yield (" " * 4096) + "\n"
         
         while True:
@@ -862,7 +870,8 @@ def wait_check_stream():
             yield data + "\n" + (" " * 4096) + "\n"
             
     response = Response(stream_with_context(generate()), mimetype='text/plain')
-    response.headers['X-Accel-Buffering'] = 'no'  # 核心修复 2: 显式声明禁止网关代理缓冲
+    response.headers['X-Accel-Buffering'] = 'no'  
+    response.headers['Access-Control-Allow-Origin'] = '*' # 【新增】允许跨域调用
     return response
 
 def run_web():
