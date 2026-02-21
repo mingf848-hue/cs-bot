@@ -112,8 +112,7 @@ try:
     
     wait_keywords_env = os.environ["WAIT_KEYWORDS"]
     clean_env = wait_keywords_env.replace("，", ",") 
-    raw_wait = {normalize(x) for x in clean_env.split(',') if x.strip()}
-    WAIT_SIGNATURES = {x for x in raw_wait if x} 
+    WAIT_SIGNATURES = {x.strip() for x in clean_env.split(',') if x.strip()} 
 
     keep_keywords_env = os.environ.get("KEEP_KEYWORDS", "") 
     if '|' in keep_keywords_env:
@@ -122,8 +121,7 @@ try:
         keep_clean = keep_keywords_env.replace("，", ",")
         keep_list = keep_clean.split(',')
         
-    raw_keep = {normalize(x) for x in keep_list if x.strip()}
-    KEEP_SIGNATURES = {x for x in raw_keep if x}
+    KEEP_SIGNATURES = {x.strip() for x in keep_list if x.strip()}
     
     log_tree(0, f"🔍 关键词配置: WAIT={len(WAIT_SIGNATURES)} | KEEP={len(KEEP_SIGNATURES)}")
 
@@ -257,8 +255,7 @@ async def check_wait_in_history(chat_id, thread_id=None, limit=30):
                 except: pass
             
             if is_cs:
-                text_norm = normalize(m.text)
-                if any(k in text_norm for k in WAIT_SIGNATURES):
+                if any(k in m.text for k in WAIT_SIGNATURES):
                     return True
     except Exception as e:
         logger.error(f"History check failed: {e}")
@@ -968,9 +965,9 @@ async def _check_is_closed_logic(latest_msg):
             if not need_reply: is_closed = True; reason = f"系统识别已闭环：{ai_reason}"
             else: is_closed = False; reason = f"待处理：{ai_reason}"
     else:
-        last_text_norm = normalize(latest_msg.text or "")
-        is_wait = any(k in last_text_norm for k in WAIT_SIGNATURES)
-        is_keep = last_text_norm in KEEP_SIGNATURES
+        last_text = latest_msg.text or ""
+        is_wait = any(k in last_text for k in WAIT_SIGNATURES)
+        is_keep = last_text.strip() in KEEP_SIGNATURES
         if is_wait or is_keep:
             is_closed = False; reason = f"流程挂起中: 包含{'稍等' if is_wait else '跟进'}指令"
             if latest_msg.reply_to:
@@ -1264,7 +1261,7 @@ async def audit_pending_tasks():
             for m in history:
                 if not m.text: continue
                 
-                if keyword in normalize(m.text):
+                if keyword in m.text:
                     is_cs_sender = False
                     if m.sender_id in ([MY_ID] + OTHER_CS_IDS): is_cs_sender = True
                     else:
@@ -1725,9 +1722,8 @@ async def handler(event):
 
         update_content_cache(chat_id, event.id, sender_name, text)
 
-        norm_text = normalize(text)
-        is_wait_cmd = any(k in norm_text for k in WAIT_SIGNATURES)
-        is_keep_cmd = norm_text in KEEP_SIGNATURES
+        is_wait_cmd = any(k in text for k in WAIT_SIGNATURES)
+        is_keep_cmd = text.strip() in KEEP_SIGNATURES
         
         is_name_cs = False
         if sender_name:
@@ -1773,7 +1769,7 @@ async def handler(event):
                                  if m.id > event.id:
                                      is_latest = False
                                      latest_found_id = m.id
-                                     txt = normalize(m.text or "")
+                                     txt = m.text or ""
                                      if not any(k in txt for k in WAIT_SIGNATURES):
                                          log_tree(1, f"🛡️ 编辑拦截 | Msg={event.id} 被新消息 Msg={m.id} 覆盖 (内容非稍等) -> 忽略")
                                          return 
@@ -1785,7 +1781,7 @@ async def handler(event):
                              if latest_batch:
                                  m = latest_batch[0]
                                  if m.id > event.id:
-                                     txt = normalize(m.text or "")
+                                     txt = m.text or ""
                                      if not any(k in txt for k in WAIT_SIGNATURES):
                                          log_tree(1, f"🛡️ 编辑拦截(主群) | Msg={event.id} 被新消息 Msg={m.id} 覆盖 -> 忽略")
                                          return
