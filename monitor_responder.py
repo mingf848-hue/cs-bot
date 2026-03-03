@@ -1047,24 +1047,39 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             logger.error(f"❌ [OTP] {name} 启动/运行失败: {e}")
 
     async def keep_alive_loop(cli, name):
-        while cli.is_connected():
-            try:
-                now = datetime.now(BJ_TZ)
-                target = now.replace(hour=12, minute=13, second=47, microsecond=0)
-                if now >= target: target += timedelta(days=1)
-                wait_seconds = (target - now).total_seconds()
-                logger.info(f"⏳ [OTP] {name} 下次保活时间: {target.strftime('%Y-%m-%d %H:%M:%S')} (等待 {int(wait_seconds)}秒)")
-                await asyncio.sleep(wait_seconds)
-                if not cli.is_connected(): break
-                await cli(functions.account.UpdateStatusRequest(offline=False))
-                msg = await cli.send_message('me', f"💓 Daily Keep-Alive: {datetime.now(BJ_TZ).strftime('%Y-%m-%d %H:%M:%S')}")
-                await asyncio.sleep(5)
-                await msg.delete()
-                logger.info(f"💓 [OTP] {name} 每日保活执行成功")
-                await asyncio.sleep(60)
-            except Exception as e:
-                logger.warning(f"⚠️ [OTP] {name} 保活失败: {e}")
-                await asyncio.sleep(300)
+    while cli.is_connected():
+        try:
+            now = datetime.now(BJ_TZ)
+            # 1. 设定一个基础的目标时间点（今天的 12:13:47）
+            target = now.replace(hour=12, minute=13, second=47, microsecond=0)
+            
+            # 2. 如果当前时间已经过了今天的目标点，说明这一轮已经结束，
+            #    直接将目标设为 5 天后。
+            if now >= target:
+                target += timedelta(days=5)
+            
+            wait_seconds = (target - now).total_seconds()
+            logger.info(f"⏳ [OTP] {name} 下次保活时间: {target.strftime('%Y-%m-%d %H:%M:%S')} (等待 {int(wait_seconds)}秒)")
+            
+            await asyncio.sleep(wait_seconds)
+            
+            if not cli.is_connected(): break
+            
+            # --- 执行保活动作 ---
+            await cli(functions.account.UpdateStatusRequest(offline=False))
+            msg = await cli.send_message('me', f"💓 5-Day Keep-Alive: {datetime.now(BJ_TZ).strftime('%Y-%m-%d %H:%M:%S')}")
+            await asyncio.sleep(5)
+            await msg.delete()
+            
+            logger.info(f"💓 [OTP] {name} 5日保活执行成功")
+            
+            # 这里的 sleep 60 是为了防止逻辑瞬间重运行，
+            # 加上上面的 timedelta(days=5)，下一次循环会重新计算出 5 天后的 target
+            await asyncio.sleep(60) 
+            
+        except Exception as e:
+            logger.warning(f"⚠️ [OTP] {name} 保活失败: {e}")
+            await asyncio.sleep(300)
 
     if extra_sessions_env and api_id and api_hash:
         raw_items = [x.strip() for x in extra_sessions_env.split(';') if x.strip()]
