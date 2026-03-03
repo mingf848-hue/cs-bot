@@ -50,7 +50,8 @@ def fetch_keywords_from_gas():
     if not url: return None, "未配置 GOOGLE_SCRIPT_URL"
     
     try:
-        resp = requests.post(url, json={"action": "get_keywords"}, timeout=10, allow_redirects=True)
+        payload = {"action": "get_keywords"}
+        resp = requests.post(url, json=payload, timeout=10, allow_redirects=True)
         if resp.status_code == 200:
             data = resp.json()
             if data.get("success"):
@@ -63,12 +64,17 @@ def fetch_keywords_from_gas():
         logger.error(f"Fetch KW Error: {e}")
         return None, str(e)
 
-# 2. 推送数据到 GAS
-def sync_data_via_script(day, stats_data):
+# 2. 推送数据到 GAS (新增 month 和 year 参数)
+def sync_data_via_script(day, month, year, stats_data):
     url = get_gas_url()
     if not url: return False, "未配置 GOOGLE_SCRIPT_URL"
     try:
-        payload = {"day": day, "stats": stats_data}
+        payload = {
+            "day": day, 
+            "month": month,
+            "year": year,
+            "stats": stats_data
+        }
         response = requests.post(url, json=payload, allow_redirects=True, timeout=20)
         if response.status_code == 200:
             res_json = response.json()
@@ -127,14 +133,17 @@ async def daily_scheduler(client):
             # B. 统计昨天的数据
             yesterday = datetime.now(BJ_TZ) - timedelta(days=1)
             day_str = str(yesterday.day)
+            month_int = yesterday.month
+            year_int = yesterday.year
+            
             start = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
             end = yesterday.replace(hour=23, minute=59, second=59, microsecond=999999)
             
             stats = await quiet_scan(client, start, end, final_keywords)
             
-            # C. 自动同步
-            logger.info(f"📊 同步 {yesterday.month}月{day_str}日 数据...")
-            success, sync_msg = sync_data_via_script(day_str, stats)
+            # C. 自动同步 (带上年月)
+            logger.info(f"📊 同步 {year_int}年{month_int}月{day_str}日 数据...")
+            success, sync_msg = sync_data_via_script(day_str, month_int, year_int, stats)
             if success: logger.info(f"✅ 自动同步成功: {sync_msg}")
             else: logger.error(f"❌ 自动同步失败: {sync_msg}")
             
@@ -499,8 +508,16 @@ def init_stats_blueprint(app, client, bot_loop, _unused_args=None):
             try:
                 now = datetime.now(BJ_TZ)
                 d = int(day)
-                start = now.replace(day=d, hour=0, minute=0, second=0, microsecond=0)
-                end = now.replace(day=d, hour=23, minute=59, second=59, microsecond=999999)
+                
+                # 修复跨月查询本地数据的范围
+                if d > now.day:
+                    last_month = now.replace(day=1) - timedelta(days=1)
+                    start = last_month.replace(day=d, hour=0, minute=0, second=0, microsecond=0)
+                    end = last_month.replace(day=d, hour=23, minute=59, second=59, microsecond=999999)
+                else:
+                    start = now.replace(day=d, hour=0, minute=0, second=0, microsecond=0)
+                    end = now.replace(day=d, hour=23, minute=59, second=59, microsecond=999999)
+                    
                 kw_list = [x.strip() for x in kws.splitlines() if x.strip()]
                 q = queue.Queue()
                 asyncio.run_coroutine_threadsafe(perform_scan(client, start, end, kw_list, q), bot_loop)
@@ -514,5 +531,21 @@ def init_stats_blueprint(app, client, bot_loop, _unused_args=None):
     @app.route('/api/sync_to_sheet', methods=['POST'])
     def sync_to_sheet():
         data = request.json
-        success, msg = sync_data_via_script(data.get('day'), data.get('stats', {}))
+        day_str = data.get('day')
+        stats = data.get('stats', {})
+        
+        try:
+            d = int(day_str)
+            now = datetime.now(BJ_TZ)
+            # 计算前端点击同步时的准确年月
+            if d > now.day:
+                target_date = now.replace(day=1) - timedelta(days=1)
+                m, y = target_date.month, target_date.year
+            else:
+                m, y = now.month, now.year
+        except:
+            now = datetime.now(BJ_TZ)
+            m, y = now.month, now.year
+            
+        success, msg = sync_data_via_script(day_str, m, y, stats)
         return json.dumps({"success": success, "msg": msg}), 200, {'Content-Type': 'application/json'}
