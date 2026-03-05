@@ -1047,51 +1047,24 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             logger.error(f"❌ [OTP] {name} 启动/运行失败: {e}")
 
     async def keep_alive_loop(cli, name):
-    """
-    Maintains account activity by sending a self-message and updating status
-    every 6 days at a specific time.
-    """
-    while cli.is_connected():
-        try:
-            now = datetime.now(BJ_TZ)
-            # Define the target time (12:13:47)
-            target = now.replace(hour=12, minute=13, second=47, microsecond=0)
-            
-            # If the target time has already passed today, or we just finished a cycle,
-            # we schedule the next run for 6 days from the original target.
-            if now >= target:
-                target += timedelta(days=6)
-            
-            wait_seconds = (target - now).total_seconds()
-            
-            logger.info(f"⏳ [OTP] {name} 下次保活时间: {target.strftime('%Y-%m-%d %H:%M:%S')} (等待 {int(wait_seconds)}秒, 周期: 6天)")
-            
-            # Wait until the target time
-            await asyncio.sleep(wait_seconds)
-            
-            # Re-check connection after long sleep
-            if not cli.is_connected():
-                break
-            
-            # Update online status
-            await cli(functions.account.UpdateStatusRequest(offline=False))
-            
-            # Send activity message to 'Saved Messages'
-            msg = await cli.send_message('me', f"💓 6-Day Keep-Alive: {datetime.now(BJ_TZ).strftime('%Y-%m-%d %H:%M:%S')}")
-            
-            # Clean up the message after a short delay
-            await asyncio.sleep(5)
-            await msg.delete()
-            
-            logger.info(f"💓 [OTP] {name} 6日定期保活执行成功")
-            
-            # Brief sleep to prevent accidental immediate re-triggering before the 'now >= target' logic kicks in
-            await asyncio.sleep(60)
-            
-        except Exception as e:
-            logger.warning(f"⚠️ [OTP] {name} 保活失败: {e}")
-            # Wait 5 minutes before retrying on error
-            await asyncio.sleep(300)
+        while cli.is_connected():
+            try:
+                now = datetime.now(BJ_TZ)
+                target = now.replace(hour=12, minute=13, second=47, microsecond=0)
+                if now >= target: target += timedelta(days=1)
+                wait_seconds = (target - now).total_seconds()
+                logger.info(f"⏳ [OTP] {name} 下次保活时间: {target.strftime('%Y-%m-%d %H:%M:%S')} (等待 {int(wait_seconds)}秒)")
+                await asyncio.sleep(wait_seconds)
+                if not cli.is_connected(): break
+                await cli(functions.account.UpdateStatusRequest(offline=False))
+                msg = await cli.send_message('me', f"💓 Daily Keep-Alive: {datetime.now(BJ_TZ).strftime('%Y-%m-%d %H:%M:%S')}")
+                await asyncio.sleep(5)
+                await msg.delete()
+                logger.info(f"💓 [OTP] {name} 每日保活执行成功")
+                await asyncio.sleep(60)
+            except Exception as e:
+                logger.warning(f"⚠️ [OTP] {name} 保活失败: {e}")
+                await asyncio.sleep(300)
 
     if extra_sessions_env and api_id and api_hash:
         raw_items = [x.strip() for x in extra_sessions_env.split(';') if x.strip()]
