@@ -892,7 +892,7 @@ def _ai_check_reply_needed(text):
     data = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"response_mime_type": "application/json"}}
     
     try:
-        resp = requests.post(url, json=data, headers=headers, timeout=10)
+        resp = requests.post(url, json=data, headers=headers, timeout=60)
         if resp.status_code == 200:
             decision = json.loads(resp.json()['candidates'][0]['content']['parts'][0]['text'])
             return (decision.get("need_reply", True), decision.get("reason", "AI Decision"))
@@ -938,7 +938,7 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
     }
     
     try:
-        resp = requests.post(url, json=data, headers=headers, timeout=10)
+        resp = requests.post(url, json=data, headers=headers, timeout=60)
         if resp.status_code == 200:
             res_json = resp.json()
             raw_content = res_json.get('candidates', [])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
@@ -1197,7 +1197,7 @@ async def check_wait_keyword_logic(keyword, result_queue):
 # ==========================================
 def _post_request(url, payload):
     try:
-        resp = requests.post(url, json=payload, timeout=10)
+        resp = requests.post(url, json=payload, timeout=60)
         if resp.status_code != 200: log_tree(9, f"API推送失败: {resp.status_code}")
     except Exception as e: log_tree(9, f"网络异常: {e}")
 
