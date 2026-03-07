@@ -889,7 +889,13 @@ def _ai_check_reply_needed(text):
     url = f"{proxy_url}/v1beta/models/{AI_MODEL_NAME}:generateContent"
     headers = {'Content-Type': 'application/json'}
     prompt = f"判断客户消息是否需要回复。消息: '{text}'\n如果是礼貌结束语(如：好、好的、谢谢、收到、ok等)或无意义，返回false。如果是问题或业务请求，返回true。\nJSON: {{'reason': '...', 'need_reply': true/false}}"
-    data = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"response_mime_type": "application/json"}}
+    data = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "response_mime_type": "application/json",
+            "temperature": 0.0
+        }
+    }
     
     try:
         resp = requests.post(url, json=data, headers=headers, timeout=60)
