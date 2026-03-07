@@ -1069,8 +1069,8 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         if orphan_idx > 0 and orphan_idx % 5 == 0:
                             result_queue.put(json.dumps({"type": "progress", "percent": percent, "msg": f"群组 {chat_id} AI 深度研判中 (进度: {orphan_idx}/{len(orphan_tasks)})..."}))
 
-                        start = max(0, i - 8) 
-                        end = min(len(history), i + 20)
+                        start = max(0, i - 30) 
+                        end = min(len(history), i + 15)
                         context_slice = history[start:end]
                         context_slice.sort(key=lambda x: x.date)
                         
@@ -1098,7 +1098,8 @@ async def check_wait_keyword_logic(keyword, result_queue):
                             if cm.reply_to and cm.reply_to.reply_to_msg_id:
                                 reply_tag = " [使用了引用回复]"
                                 
-                            context_txts.append(f"[{cm.date.strftime('%H:%M:%S')}] {c_label}{reply_tag}: {c_txt}{marker}")
+                            beijing_time_str = cm.date.astimezone(timezone(timedelta(hours=8))).strftime('%H:%M:%S')
+                            context_txts.append(f"[{beijing_time_str}] {c_label}{reply_tag}: {c_txt}{marker}")
                         
                         # 返回的变成了 is_exempt(是否豁免), 不再是倒错逻辑的 is_slip_up
                         is_exempt, ai_reason = await asyncio.get_event_loop().run_in_executor(
