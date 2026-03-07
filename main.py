@@ -933,6 +933,7 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
     【分析逻辑】:
     请像人类一样综合思考。仔细观察上下文的时间流和对话流。
     - 豁免无需回复 (is_exempt=true): 如果这条消息看起来是用户连续发言中的一句（分段发送）、对上一句的补充、无意义的语气词（如：好、好的、收到、谢谢等），或者客服在上下文中已经明显针对该【同一事件/话题】接待了该用户，请认为无需单独回复。
+    【特别注意】：聊天记录中如果带有“[使用了引用回复]”标签，代表客服精确绑定回复了某个客户。如果目标消息是单纯的催促（如单独的一个“？”、“在吗”、“处理好了吗”等），且上下文中显示客服已经带有“[使用了引用回复]”标签回复并处理了该用户之前的【核心业务诉求】（哪怕客服引用的是用户前面的订单消息，而不是引用的这句催促），都代表客户问题已解决，请果断判定为已处理，予以豁免 (is_exempt=true)！
     - 属于漏回需回复 (is_exempt=false): 只有当这是一条被完全忽视的、独立的业务请求时，才标记为漏回。特别注意：如果客户在短时间内连续发送了两个完全不同的问题（例如一个问充值，一个问其它业务），而客服只回答了其中一个，那么未被回答的那个独立问题应判定为漏回 (is_exempt=false)！
     
     请输出 JSON 格式: {{"reason": "用中文简短说明原因...", "is_exempt": true/false}}
@@ -1065,8 +1066,8 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         if orphan_idx > 0 and orphan_idx % 5 == 0:
                             result_queue.put(json.dumps({"type": "progress", "percent": percent, "msg": f"群组 {chat_id} AI 深度研判中 (进度: {orphan_idx}/{len(orphan_tasks)})..."}))
 
-                        start = max(0, i - 6) 
-                        end = min(len(history), i + 7)
+                        start = max(0, i - 8) 
+                        end = min(len(history), i + 20)
                         context_slice = history[start:end]
                         context_slice.sort(key=lambda x: x.date)
                         
@@ -1075,7 +1076,7 @@ async def check_wait_keyword_logic(keyword, result_queue):
 
                         context_txts = []
                         for cm in context_slice:
-                            if getattr(cm, 'action', None): continue # 避免上下文里出现系统提示干扰AI
+                            if getattr(cm, 'action', None): continue 
                             
                             if cm.sender_id in ([MY_ID] + OTHER_CS_IDS): c_label = "CS"
                             else:
@@ -1088,7 +1089,13 @@ async def check_wait_keyword_logic(keyword, result_queue):
 
                             c_txt = (cm.text or "[Media]").replace('\n', ' ')
                             marker = " <<< TARGET" if cm.id == m.id else ""
-                            context_txts.append(f"[{cm.date.strftime('%H:%M:%S')}] {c_label}: {c_txt}{marker}")
+                            
+                            # 👇 新增：判断是否使用了引用回复功能
+                            reply_tag = ""
+                            if cm.reply_to and cm.reply_to.reply_to_msg_id:
+                                reply_tag = " [使用了引用回复]"
+                                
+                            context_txts.append(f"[{cm.date.strftime('%H:%M:%S')}] {c_label}{reply_tag}: {c_txt}{marker}")
                         
                         # 返回的变成了 is_exempt(是否豁免), 不再是倒错逻辑的 is_slip_up
                         is_exempt, ai_reason = await asyncio.get_event_loop().run_in_executor(
