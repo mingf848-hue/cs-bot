@@ -1051,6 +1051,11 @@ async def check_wait_keyword_logic(keyword, result_queue):
                             except: pass
                         if is_cs: continue
 
+                        if m.sticker or m.gif:
+                            continue
+
+                        if m.reply_to and m.reply_to.reply_to_msg_id: continue
+
                         if m.reply_to and m.reply_to.reply_to_msg_id: continue
 
                         is_orphan = True
@@ -1090,7 +1095,14 @@ async def check_wait_keyword_logic(keyword, result_queue):
                                 if is_cm_cs: c_label = "CS"
                                 else: c_label = f"User({str(cm.sender_id)[-4:]})"
 
-                            c_txt = (cm.text or "[Media]").replace('\n', ' ')
+                            # 👇 将表情包明确标注，防止 AI 误以为是客户发的报错截图
+                            if cm.sticker:
+                                c_txt = "[贴纸/表情包]"
+                            elif cm.gif:
+                                c_txt = "[GIF动图]"
+                            else:
+                                c_txt = (cm.text or "[媒体/图片]").replace('\n', ' ')
+                                
                             marker = " <<< TARGET" if cm.id == m.id else ""
                             
                             # 👇 新增：判断是否使用了引用回复功能
