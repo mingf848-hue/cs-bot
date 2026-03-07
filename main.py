@@ -941,7 +941,10 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
     
     data = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"response_mime_type": "application/json"}
+        "generationConfig": {
+            "response_mime_type": "application/json",
+            "temperature": 0.0
+        }
     }
     
     try:
