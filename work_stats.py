@@ -64,7 +64,7 @@ def fetch_keywords_from_gas():
         logger.error(f"Fetch KW Error: {e}")
         return None, str(e)
 
-# 2. 推送数据到 GAS (新增 month 和 year 参数)
+# 2. 推送数据到 GAS (带年月参数)
 def sync_data_via_script(day, month, year, stats_data):
     url = get_gas_url()
     if not url: return False, "未配置 GOOGLE_SCRIPT_URL"
@@ -101,7 +101,6 @@ async def quiet_scan(client, start_time, end_time, keywords):
                 content = normalize_text(message.text)
                 for orig, norm in norm_map:
                     if norm in content:
-                        logger.info(f"抓到 [{orig}] 链接: https://t.me/c/{str(chat_id).replace('-100', '')}/{message.id} | 原文: {message.text[:30].replace(chr(10), ' ')}")
                         stats[orig][category] += 1
                         break
         except Exception as e:
@@ -142,7 +141,7 @@ async def daily_scheduler(client):
             
             stats = await quiet_scan(client, start, end, final_keywords)
             
-            # C. 自动同步 (带上年月)
+            # C. 自动同步
             logger.info(f"📊 同步 {year_int}年{month_int}月{day_str}日 数据...")
             success, sync_msg = sync_data_via_script(day_str, month_int, year_int, stats)
             if success: logger.info(f"✅ 自动同步成功: {sync_msg}")
@@ -245,6 +244,18 @@ STATS_HTML = """
         #progress-bar { height: 100%; background: var(--primary); width: 0%; transition: width 0.3s; }
         #progress-text { margin-top: 8px; font-size: 12px; color: var(--text-sub); text-align: center; display: none; }
 
+        /* 新增：实时抓取日志框样式 */
+        #match-logs {
+            margin-top: 20px; max-height: 200px; overflow-y: auto; font-size: 12px; 
+            background: #FAFAFA; padding: 12px; border-radius: 8px; display: none; 
+            border: 1px solid var(--border);
+        }
+        .log-item { margin-bottom: 6px; border-bottom: 1px dashed #E5E5EA; padding-bottom: 4px; }
+        .log-kw { color: #007AFF; font-weight: 600; margin-right: 6px; }
+        .log-link { color: #34C759; text-decoration: none; font-weight: bold; margin-right: 6px; }
+        .log-link:hover { text-decoration: underline; }
+        .log-text { color: #86868B; }
+
         #result-area { margin-top: 40px; animation: fadeIn 0.5s ease; display: none; }
         .result-header {
             display: flex; align-items: center; justify-content: space-between;
@@ -306,6 +317,11 @@ STATS_HTML = """
         <div id="progress-text">准备就绪...</div>
         <div id="error-box" class="error-box"></div>
 
+        <div id="match-logs">
+            <div style="font-weight: 600; margin-bottom: 8px; color: var(--text-sub);">实时抓取记录 (点击链接定位)</div>
+            <div id="match-logs-content"></div>
+        </div>
+
         <div id="result-area">
             <div class="result-header">
                 <h3 id="result-title">统计结果</h3>
@@ -360,12 +376,18 @@ STATS_HTML = """
             const tbody = document.getElementById('result-body');
             const syncBtn = document.getElementById('btnSync');
             const syncSt = document.getElementById('sync-status');
+            
+            const logsWrap = document.getElementById('match-logs');
+            const logsContent = document.getElementById('match-logs-content');
 
             btn.disabled = true; btn.innerText = "统计中...";
             pWrap.style.display = 'block'; pText.style.display = 'block'; pBar.style.width = '2%';
             pText.innerText = '连接服务器...'; errBox.style.display = 'none';
             resArea.style.display = 'none'; tbody.innerHTML = '';
             syncSt.innerText = ''; syncBtn.disabled = false; syncBtn.innerText = "☁️ 同步到表格";
+            
+            logsWrap.style.display = 'block';
+            logsContent.innerHTML = '';
 
             try {
                 const params = new URLSearchParams({day, keywords});
@@ -384,6 +406,13 @@ STATS_HTML = """
                             if (data.type === 'progress') {
                                 pBar.style.width = data.percent + '%';
                                 pText.innerText = data.msg;
+                            } else if (data.type === 'match') {
+                                // 实时追加命中记录
+                                const div = document.createElement('div');
+                                div.className = 'log-item';
+                                div.innerHTML = `<span class="log-kw">[${data.kw}]</span> <a href="${data.link}" target="_blank" class="log-link">🔗原消息</a> <span class="log-text">${data.text}</span>`;
+                                logsContent.appendChild(div);
+                                logsWrap.scrollTop = logsWrap.scrollHeight;
                             } else if (data.type === 'done') {
                                 currentStats = data.results;
                                 renderTable(data.results, keywords);
@@ -447,7 +476,7 @@ STATS_HTML = """
 """
 
 # ==========================================
-# 任务执行器 (流式进度)
+# 任务执行器 (流式进度) - 增加了实时发送链接给网页的功能
 # ==========================================
 async def perform_scan(client, start_time, end_time, keywords, result_queue):
     try:
@@ -471,6 +500,17 @@ async def perform_scan(client, start_time, end_time, keywords, result_queue):
                     content = normalize_text(message.text)
                     for orig, norm in norm_map:
                         if norm in content:
+                            # 提取链接和消息片段，推送给前端展示
+                            link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{message.id}"
+                            safe_text = message.text[:30].replace('\n', ' ')
+                            
+                            result_queue.put(json.dumps({
+                                "type": "match",
+                                "kw": orig,
+                                "link": link,
+                                "text": safe_text
+                            }))
+                            
                             stats[orig][category] += 1
                             break 
             except: pass
