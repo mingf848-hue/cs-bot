@@ -6,6 +6,7 @@ import json
 import queue
 import os
 import requests
+import random  # 确保导入了 random 模块
 from datetime import datetime, timedelta, timezone
 from flask import request, render_template_string, Response, stream_with_context
 
@@ -38,16 +39,16 @@ def normalize_text(text):
     if not text: return ""
     return text.lower().replace("～", "~").strip()
 
-# 👉 新增：构建聪明的正则匹配规则
+# 构建聪明的正则匹配规则
 def build_regex_patterns(keywords):
     patterns = []
     for kw in keywords:
         norm = normalize_text(kw)
         escaped_norm = re.escape(norm)
-        # 核心修复：如果关键词以字母或数字结尾，强制要求其后面不能再紧跟字母或数字 (防止 be 匹配成 bex)
+        # 核心修复：如果关键词以字母或数字结尾，强制要求其后面不能再紧跟字母或数字
         if re.search(r'[a-z0-9]$', norm):
             escaped_norm += r'(?![a-z0-9])'
-        # 同样防止前缀有字母连在一起 (防止 xbe 匹配成 be)
+        # 同样防止前缀有字母连在一起
         if re.search(r'^[a-z0-9]', norm):
             escaped_norm = r'(?<![a-z0-9])' + escaped_norm
         patterns.append((kw, re.compile(escaped_norm)))
@@ -102,7 +103,7 @@ def sync_data_via_script(day, month, year, stats_data):
 # 3. 静默扫描函数 (后台自动任务用)
 async def quiet_scan(client, start_time, end_time, keywords):
     stats = {kw: {'promo': 0, 'assist': 0} for kw in keywords}
-    norm_patterns = build_regex_patterns(keywords) # 启用正则
+    norm_patterns = build_regex_patterns(keywords) 
     utc_start = start_time.astimezone(timezone.utc)
     utc_end = end_time.astimezone(timezone.utc)
     
@@ -115,29 +116,47 @@ async def quiet_scan(client, start_time, end_time, keywords):
                 if not message.text: continue
                 content = normalize_text(message.text)
                 for orig, pattern in norm_patterns:
-                    if pattern.search(content): # 用正则代替直接的 in 匹配
+                    if pattern.search(content): 
                         stats[orig][category] += 1
                         break
         except Exception as e:
             logger.error(f"AutoScan Error Group {chat_id}: {e}")
     return stats
 
-# 4. 每日定时调度器
+# 4. 每日定时调度器 (04:20-04:40 随机执行机制)
 async def daily_scheduler(client):
-    logger.info("⏰ 自动统计任务调度器已启动 (目标: 每天北京时间 04:10)")
+    logger.info("⏰ 自动统计任务调度器已启动 (目标: 每天北京时间 04:20-04:40 随机时间段)")
+    last_run_date = None # 记录上次执行的日期，防止一天内重复执行
+
     while True:
         try:
             now = datetime.now(BJ_TZ)
-            target_today = now.replace(hour=4, minute=10, second=0, microsecond=0)
-            target = target_today + timedelta(days=1) if now > target_today else target_today
+            today_str = now.strftime('%Y-%m-%d')
+            
+            # 确定基准日期：如果今天已经执行过了，强制将下次执行目标日设定为明天
+            if last_run_date == today_str:
+                target_date = now + timedelta(days=1)
+            else:
+                target_date = now
+                
+            # 在基准日期的基础上，生成随机的时、分、秒 (04:20:00 - 04:40:59)
+            rand_minute = random.randint(20, 40)
+            rand_second = random.randint(0, 59)
+            target = target_date.replace(hour=4, minute=rand_minute, second=rand_second, microsecond=0)
+            
+            # 兜底检测：如果当前时间已经错过了今天生成的随机时间，推迟到明天并重新随机
+            if now >= target:
+                rand_minute = random.randint(20, 40)
+                rand_second = random.randint(0, 59)
+                target = (now + timedelta(days=1)).replace(hour=4, minute=rand_minute, second=rand_second, microsecond=0)
             
             wait_seconds = (target - now).total_seconds()
-            logger.info(f"⏳ 下次执行: {target.strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info(f"⏳ 下次自动执行锁定在: {target.strftime('%Y-%m-%d %H:%M:%S')}")
             await asyncio.sleep(wait_seconds)
             
-            logger.info("🤖 开始执行自动统计...")
+            logger.info("🤖 到达随机时间点，开始执行自动统计...")
             
-            # A. 自动拉取关键词
+            # 自动拉取关键词
             online_kws, msg = fetch_keywords_from_gas()
             final_keywords = online_kws if online_kws else [k.strip() for k in FALLBACK_KEYWORDS.splitlines() if k.strip()]
             
@@ -145,7 +164,7 @@ async def daily_scheduler(client):
                 logger.error("❌ 关键词为空，跳过")
                 continue
 
-            # B. 统计昨天的数据
+            # 统计昨天的数据
             yesterday = datetime.now(BJ_TZ) - timedelta(days=1)
             day_str = str(yesterday.day)
             month_int = yesterday.month
@@ -156,13 +175,16 @@ async def daily_scheduler(client):
             
             stats = await quiet_scan(client, start, end, final_keywords)
             
-            # C. 自动同步
+            # 自动同步
             logger.info(f"📊 同步 {year_int}年{month_int}月{day_str}日 数据...")
             success, sync_msg = sync_data_via_script(day_str, month_int, year_int, stats)
             if success: logger.info(f"✅ 自动同步成功: {sync_msg}")
             else: logger.error(f"❌ 自动同步失败: {sync_msg}")
             
+            # 更新执行记录，防止一天跑多次
+            last_run_date = datetime.now(BJ_TZ).strftime('%Y-%m-%d')
             await asyncio.sleep(60)
+            
         except asyncio.CancelledError: break
         except Exception as e:
             logger.error(f"❌ 调度器错误: {e}")
@@ -494,7 +516,7 @@ STATS_HTML = """
 async def perform_scan(client, start_time, end_time, keywords, result_queue):
     try:
         stats = {kw: {'promo': 0, 'assist': 0} for kw in keywords}
-        norm_patterns = build_regex_patterns(keywords) # 启用正则
+        norm_patterns = build_regex_patterns(keywords)
         utc_start = start_time.astimezone(timezone.utc)
         utc_end = end_time.astimezone(timezone.utc)
         total = len(ALL_TARGET_GROUPS)
@@ -512,7 +534,7 @@ async def perform_scan(client, start_time, end_time, keywords, result_queue):
                     if not message.text: continue
                     content = normalize_text(message.text)
                     for orig, pattern in norm_patterns:
-                        if pattern.search(content): # 用正则代替直接的 in 匹配
+                        if pattern.search(content):
                             link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{message.id}"
                             safe_text = message.text[:30].replace('\n', ' ')
                             
