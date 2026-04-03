@@ -101,6 +101,7 @@ async def quiet_scan(client, start_time, end_time, keywords):
                 content = normalize_text(message.text)
                 for orig, norm in norm_map:
                     if norm in content:
+                        logger.info(f"抓到 [{orig}] 链接: https://t.me/c/{str(chat_id).replace('-100', '')}/{message.id} | 原文: {message.text[:30].replace(chr(10), ' ')}")
                         stats[orig][category] += 1
                         break
         except Exception as e:
