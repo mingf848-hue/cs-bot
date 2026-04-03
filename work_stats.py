@@ -38,6 +38,21 @@ def normalize_text(text):
     if not text: return ""
     return text.lower().replace("～", "~").strip()
 
+# 👉 新增：构建聪明的正则匹配规则
+def build_regex_patterns(keywords):
+    patterns = []
+    for kw in keywords:
+        norm = normalize_text(kw)
+        escaped_norm = re.escape(norm)
+        # 核心修复：如果关键词以字母或数字结尾，强制要求其后面不能再紧跟字母或数字 (防止 be 匹配成 bex)
+        if re.search(r'[a-z0-9]$', norm):
+            escaped_norm += r'(?![a-z0-9])'
+        # 同样防止前缀有字母连在一起 (防止 xbe 匹配成 be)
+        if re.search(r'^[a-z0-9]', norm):
+            escaped_norm = r'(?<![a-z0-9])' + escaped_norm
+        patterns.append((kw, re.compile(escaped_norm)))
+    return patterns
+
 # ==========================================
 # 核心功能模块 (GAS 通信)
 # ==========================================
@@ -87,7 +102,7 @@ def sync_data_via_script(day, month, year, stats_data):
 # 3. 静默扫描函数 (后台自动任务用)
 async def quiet_scan(client, start_time, end_time, keywords):
     stats = {kw: {'promo': 0, 'assist': 0} for kw in keywords}
-    norm_map = [(kw, normalize_text(kw)) for kw in keywords]
+    norm_patterns = build_regex_patterns(keywords) # 启用正则
     utc_start = start_time.astimezone(timezone.utc)
     utc_end = end_time.astimezone(timezone.utc)
     
@@ -99,8 +114,8 @@ async def quiet_scan(client, start_time, end_time, keywords):
                 if message.date < utc_start: break
                 if not message.text: continue
                 content = normalize_text(message.text)
-                for orig, norm in norm_map:
-                    if norm in content:
+                for orig, pattern in norm_patterns:
+                    if pattern.search(content): # 用正则代替直接的 in 匹配
                         stats[orig][category] += 1
                         break
         except Exception as e:
@@ -244,7 +259,6 @@ STATS_HTML = """
         #progress-bar { height: 100%; background: var(--primary); width: 0%; transition: width 0.3s; }
         #progress-text { margin-top: 8px; font-size: 12px; color: var(--text-sub); text-align: center; display: none; }
 
-        /* 新增：实时抓取日志框样式 */
         #match-logs {
             margin-top: 20px; max-height: 200px; overflow-y: auto; font-size: 12px; 
             background: #FAFAFA; padding: 12px; border-radius: 8px; display: none; 
@@ -407,7 +421,6 @@ STATS_HTML = """
                                 pBar.style.width = data.percent + '%';
                                 pText.innerText = data.msg;
                             } else if (data.type === 'match') {
-                                // 实时追加命中记录
                                 const div = document.createElement('div');
                                 div.className = 'log-item';
                                 div.innerHTML = `<span class="log-kw">[${data.kw}]</span> <a href="${data.link}" target="_blank" class="log-link">🔗原消息</a> <span class="log-text">${data.text}</span>`;
@@ -476,12 +489,12 @@ STATS_HTML = """
 """
 
 # ==========================================
-# 任务执行器 (流式进度) - 增加了实时发送链接给网页的功能
+# 任务执行器 (流式进度)
 # ==========================================
 async def perform_scan(client, start_time, end_time, keywords, result_queue):
     try:
         stats = {kw: {'promo': 0, 'assist': 0} for kw in keywords}
-        norm_map = [(kw, normalize_text(kw)) for kw in keywords]
+        norm_patterns = build_regex_patterns(keywords) # 启用正则
         utc_start = start_time.astimezone(timezone.utc)
         utc_end = end_time.astimezone(timezone.utc)
         total = len(ALL_TARGET_GROUPS)
@@ -498,9 +511,8 @@ async def perform_scan(client, start_time, end_time, keywords, result_queue):
                     if message.date < utc_start: break
                     if not message.text: continue
                     content = normalize_text(message.text)
-                    for orig, norm in norm_map:
-                        if norm in content:
-                            # 提取链接和消息片段，推送给前端展示
+                    for orig, pattern in norm_patterns:
+                        if pattern.search(content): # 用正则代替直接的 in 匹配
                             link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{message.id}"
                             safe_text = message.text[:30].replace('\n', ' ')
                             
@@ -525,7 +537,6 @@ async def perform_scan(client, start_time, end_time, keywords, result_queue):
 # 路由初始化
 # ==========================================
 def init_stats_blueprint(app, client, bot_loop, _unused_args=None):
-    # 启动每日定时任务
     if bot_loop and client:
         bot_loop.create_task(daily_scheduler(client))
 
@@ -550,7 +561,6 @@ def init_stats_blueprint(app, client, bot_loop, _unused_args=None):
                 now = datetime.now(BJ_TZ)
                 d = int(day)
                 
-                # 修复跨月查询本地数据的范围
                 if d > now.day:
                     last_month = now.replace(day=1) - timedelta(days=1)
                     start = last_month.replace(day=d, hour=0, minute=0, second=0, microsecond=0)
@@ -578,7 +588,6 @@ def init_stats_blueprint(app, client, bot_loop, _unused_args=None):
         try:
             d = int(day_str)
             now = datetime.now(BJ_TZ)
-            # 计算前端点击同步时的准确年月
             if d > now.day:
                 target_date = now.replace(day=1) - timedelta(days=1)
                 m, y = target_date.month, target_date.year
