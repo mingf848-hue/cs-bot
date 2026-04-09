@@ -282,7 +282,6 @@ DASHBOARD_HTML = """
 <head>
     <title>监控面板</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta http-equiv="refresh" content="5"> 
     <style>
         :root { --bg: #f8fafc; --text: #1e293b; --card: #ffffff; --border: #e2e8f0; --green: #10b981; --red: #ef4444; }
         body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; max-width: 600px; margin: 0 auto; }
@@ -320,33 +319,39 @@ DASHBOARD_HTML = """
             <div class="audio-btn" onclick="toggleAudio()" title="报警音开关" id="audio-icon"></div>
             <a href="#" onclick="ctrl(1)" class="ctrl-btn">上班</a>
             <a href="#" onclick="ctrl(0)" class="ctrl-btn">下班</a>
-            <div class="tag {{ 'on' if working else 'off' }}">{{ 'WORKING' if working else 'STOPPED' }}</div>
-        </div>
-    </div>
-    {% for title, timers, color in [('稍等任务 (12m)', w, '#f59e0b'), ('跟进任务 (15m)', f, '#3b82f6'), ('漏回监控 (5m)', r, '#ef4444'), ('自回防漏 (3m)', s, '#8b5cf6')] %}
-    <div class="box">
-        <div class="title">
-            <div style="display:flex; align-items:center;"><span class="dot" style="background:{{color}}"></span>{{ title }}</div>
-            <span style="color:#64748b">{{ timers|length }}</span>
-        </div>
-        {% if timers %}
-            {% for mid, info in timers.items() %}
-            <div class="card">
-                <div>
-                    <strong style="color:#0f172a">{{ info.user }}</strong>
-                    {% if title == '漏回监控 (5m)' and info.target %}
-                        <span style="font-size:0.85rem; color:#64748b"> → {{ info.target }}</span>
-                    {% endif %}
-                    <span class="link-text" onclick="copyLink('{{ info.url }}', this)">
-                        <svg class="icon" style="width:12px;height:12px;" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制消息链接
-                    </span>
-                </div>
-                <span class="t" data-end="{{ info.ts }}">--:--</span>
+            <div id="status-tag-area">
+                <div class="tag {{ 'on' if working else 'off' }}">{{ 'WORKING' if working else 'STOPPED' }}</div>
             </div>
-            {% endfor %}
-        {% else %}<div class="empty">暂无任务</div>{% endif %}
+        </div>
     </div>
-    {% endfor %}
+
+    <div id="silent-task-container">
+        {% for title, timers, color in [('稍等任务 (12m)', w, '#f59e0b'), ('跟进任务 (15m)', f, '#3b82f6'), ('漏回监控 (5m)', r, '#ef4444'), ('自回防漏 (3m)', s, '#8b5cf6')] %}
+        <div class="box">
+            <div class="title">
+                <div style="display:flex; align-items:center;"><span class="dot" style="background:{{color}}"></span>{{ title }}</div>
+                <span style="color:#64748b">{{ timers|length }}</span>
+            </div>
+            {% if timers %}
+                {% for mid, info in timers.items() %}
+                <div class="card">
+                    <div>
+                        <strong style="color:#0f172a">{{ info.user }}</strong>
+                        {% if title == '漏回监控 (5m)' and info.target %}
+                            <span style="font-size:0.85rem; color:#64748b"> → {{ info.target }}</span>
+                        {% endif %}
+                        <span class="link-text" onclick="copyLink('{{ info.url }}', this)">
+                            <svg class="icon" style="width:12px;height:12px;" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制消息链接
+                        </span>
+                    </div>
+                    <span class="t" data-end="{{ info.ts }}">--:--</span>
+                </div>
+                {% endfor %}
+            {% else %}<div class="empty">暂无任务</div>{% endif %}
+        </div>
+        {% endfor %}
+    </div>
+
     <div style="margin-top: 30px; border-top: 1px solid #e2e8f0; padding-top: 20px;">
         <a href="/log" target="_blank" class="btn">
             <svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 交互式日志分析器
@@ -361,7 +366,8 @@ DASHBOARD_HTML = """
             <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" y1="16" x2="8" y2="16"/><line x1="16" y1="16" x2="16" y2="16"/></svg> 自动回复配置
         </a>
     </div>
-    <div style="text-align:center;color:#94a3b8;margin-top:20px;font-size:0.75rem">System Version 45.22</div>
+    <div style="text-align:center;color:#94a3b8;margin-top:20px;font-size:0.75rem">System Version 45.22 (Silent Update)</div>
+
     <script>
         const svgOn = '<svg class="icon" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>';
         const svgOff = '<svg class="icon" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>';
@@ -370,11 +376,86 @@ DASHBOARD_HTML = """
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         const audioBtn = document.getElementById('audio-icon');
         if (audioBtn) { audioBtn.innerHTML = audioEnabled ? svgOn : svgOff; }
-        function playAlarm() { if (!audioEnabled) return; if (audioCtx.state === 'suspended') audioCtx.resume().catch(e => console.log(e)); const oscillator = audioCtx.createOscillator(); const gainNode = audioCtx.createGain(); oscillator.type = 'square'; oscillator.frequency.setValueAtTime(800, audioCtx.currentTime); oscillator.frequency.exponentialRampToValueAtTime(400, audioCtx.currentTime + 0.1); gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime); gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1); oscillator.connect(gainNode); gainNode.connect(audioCtx.destination); oscillator.start(); oscillator.stop(audioCtx.currentTime + 0.2); }
-        function toggleAudio() { audioEnabled = !audioEnabled; localStorage.setItem('tg_bot_audio_enabled', audioEnabled); audioBtn.innerHTML = audioEnabled ? svgOn : svgOff; if(audioEnabled) { if (audioCtx.state === 'suspended') audioCtx.resume(); playAlarm(); } }
-        function ctrl(s) { fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => setTimeout(() => location.reload(), 500)); }
-        function copyLink(link, btnElement) { navigator.clipboard.writeText(link).then(() => { const originalHTML = btnElement.innerHTML; btnElement.innerHTML = `<svg class="icon" style="width:12px;height:12px;" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>已复制链接`; setTimeout(() => { btnElement.innerHTML = originalHTML; }, 1500); }).catch(err => { console.error('Copy fail', err); }); }
-        setInterval(() => { const now = Date.now() / 1000; let hasLate = false; document.querySelectorAll('.t').forEach(el => { const diff = parseFloat(el.dataset.end) - now; if(diff <= 0) { el.innerText = "已超时"; el.classList.add('late'); hasLate = true; } else { const m = Math.floor(diff / 60); const s = Math.floor(diff % 60); el.innerText = `${m}:${s.toString().padStart(2, '0')}`; } }); if (hasLate && audioEnabled) playAlarm(); }, 1000);
+
+        function playAlarm() { 
+            if (!audioEnabled) return; 
+            if (audioCtx.state === 'suspended') audioCtx.resume().catch(e => console.log(e)); 
+            const oscillator = audioCtx.createOscillator(); 
+            const gainNode = audioCtx.createGain(); 
+            oscillator.type = 'square'; 
+            oscillator.frequency.setValueAtTime(800, audioCtx.currentTime); 
+            oscillator.frequency.exponentialRampToValueAtTime(400, audioCtx.currentTime + 0.1); 
+            gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime); 
+            gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1); 
+            oscillator.connect(gainNode); 
+            gainNode.connect(audioCtx.destination); 
+            oscillator.start(); 
+            oscillator.stop(audioCtx.currentTime + 0.2); 
+        }
+
+        function toggleAudio() { 
+            audioEnabled = !audioEnabled; 
+            localStorage.setItem('tg_bot_audio_enabled', audioEnabled); 
+            audioBtn.innerHTML = audioEnabled ? svgOn : svgOff; 
+            if(audioEnabled) { 
+                if (audioCtx.state === 'suspended') audioCtx.resume(); 
+                playAlarm(); 
+            } 
+        }
+
+        function ctrl(s) { 
+            fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => {
+                silentUpdate(); // 按钮点完立即静默刷一次
+            }); 
+        }
+
+        function copyLink(link, btnElement) { 
+            navigator.clipboard.writeText(link).then(() => { 
+                const originalHTML = btnElement.innerHTML; 
+                btnElement.innerHTML = `<svg class="icon" style="width:12px;height:12px;" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>已复制链接`; 
+                setTimeout(() => { btnElement.innerHTML = originalHTML; }, 1500); 
+            }).catch(err => { console.error('Copy fail', err); }); 
+        }
+
+        // --- 新增：静默更新逻辑 ---
+        async function silentUpdate() {
+            try {
+                // 后台偷偷请求一次主页
+                const response = await fetch(window.location.href + '?_t=' + Date.now());
+                const text = await response.text();
+                // 像剥洋葱一样解析网页
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(text, 'text/html');
+                
+                // 只把“任务区域”和“上班状态区域”替换掉
+                document.getElementById('silent-task-container').innerHTML = doc.getElementById('silent-task-container').innerHTML;
+                document.getElementById('status-tag-area').innerHTML = doc.getElementById('status-tag-area').innerHTML;
+            } catch (e) {
+                console.error("静默更新失败:", e);
+            }
+        }
+
+        // 每 5 秒执行一次静默更新
+        setInterval(silentUpdate, 5000);
+
+        // 每 1 秒跑一次倒计时显示
+        setInterval(() => { 
+            const now = Date.now() / 1000; 
+            let hasLate = false; 
+            document.querySelectorAll('.t').forEach(el => { 
+                const diff = parseFloat(el.dataset.end) - now; 
+                if(diff <= 0) { 
+                    el.innerText = "已超时"; 
+                    el.classList.add('late'); 
+                    hasLate = true; 
+                } else { 
+                    const m = Math.floor(diff / 60); 
+                    const s = Math.floor(diff % 60); 
+                    el.innerText = `${m}:${s.toString().padStart(2, '0')}`; 
+                } 
+            }); 
+            if (hasLate && audioEnabled) playAlarm(); 
+        }, 1000);
     </script>
 </body>
 </html>
