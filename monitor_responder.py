@@ -825,14 +825,22 @@ OTP_HTML = """
         toast.classList.add('show');
         setTimeout(() => toast.classList.remove('show'), 2000);
     }
+    // 增加一个开关，防止重复刷新
+    let isReloading = false; 
+
     document.addEventListener("DOMContentLoaded", function() {
         const items = document.querySelectorAll('.google-item');
         setInterval(() => {
+            // 如果已经正在刷新了，就什么都不做
+            if (isReloading) return; 
+
             let needsReload = false;
             items.forEach(item => {
                 let ttl = parseFloat(item.getAttribute('data-ttl'));
                 ttl -= 0.1;
-                if (ttl <= 0) { needsReload = true; } else {
+                if (ttl <= 0) { 
+                    needsReload = true; 
+                } else {
                     item.setAttribute('data-ttl', ttl.toFixed(1));
                     const badge = item.querySelector('.ttl-text');
                     if(badge) badge.innerText = Math.ceil(ttl) + 's';
@@ -844,7 +852,12 @@ OTP_HTML = """
                     }
                 }
             });
-            if (needsReload) { setTimeout(() => location.reload(), 1500); }
+
+            // 如果倒计时结束了
+            if (needsReload) { 
+                isReloading = true; // 立即锁死，不再触发第二次
+                location.reload();   // 立即刷新网页
+            }
         }, 100); 
     });
     </script>
