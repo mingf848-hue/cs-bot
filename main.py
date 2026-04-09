@@ -34,7 +34,7 @@ file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(file_fmt)
 
 console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(logging.INFO)
+console_handler.setLevel(logging.DEBUG)
 console_handler.setFormatter(file_fmt)
 
 logger.addHandler(file_handler)
