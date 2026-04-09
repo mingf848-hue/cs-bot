@@ -1626,9 +1626,9 @@ client = TelegramClient(
     StringSession(SESSION_STRING), 
     API_ID, 
     API_HASH,
-    device_model="Mac mini M2", 
-    app_version="5.8.3 arm64 Mac App Store",      
-    system_version="macOS 15.6.1",
+    device_model="VMware20,1", 
+    app_version="Telegram Desktop 6.7.5 x64",      
+    system_version="Windows 10 x64",
     lang_code="zh-hans",
     system_lang_code="zh-hans"
 )
