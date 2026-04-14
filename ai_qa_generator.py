@@ -30,46 +30,18 @@ TRIGGER_KW = "请稍等ART"
 # 导出文件名
 OUTPUT_FILE = f"ai_training_data_{datetime.now().strftime('%m%d_%H%M')}.json"
 
-# ================= 工具函数 =================
-
-def extract_id_list(env_str):
-    """
-    安全提取 ID 列表，处理带中文备注的情况（如 5787870260（四号））
-    逻辑同步自 main.py
-    """
-    if not env_str: return []
-    clean_str = env_str.replace("，", ",") 
-    items = clean_str.split(',')
-    result = []
-    for item in items:
-        # 使用正则匹配数字（支持负号 ID）
-        match = re.search(r'-?\d+', item)
-        if match:
-            try:
-                result.append(int(match.group()))
-            except:
-                pass
-    return result
-
-# 解析客服 ID 列表
-OTHER_CS_IDS = extract_id_list(os.environ.get("OTHER_CS_IDS", ""))
-
 # ================= 核心逻辑 =================
 
 async def run_export():
     client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
     await client.connect()
     
-    # 获取当前登录账号的 ID
-    me = await client.get_me()
-    # 合并所有被视为客服的 ID 集合
-    cs_ids = set(OTHER_CS_IDS + [me.id])
-    
     # 计算 30 天前的时间
     cutoff = datetime.now(timezone.utc) - timedelta(days=30)
     qa_pairs = []
 
     print(f"🚀 开始从 {len(ALL_TARGET_GROUPS)} 个群组中提取近 30 天的问答对...")
+    print(f"📢 当前模式：已解除客服 ID 限制，扫描所有包含 '{TRIGGER_KW}' 的回复。")
 
     for chat_id in ALL_TARGET_GROUPS:
         try:
@@ -77,10 +49,10 @@ async def run_export():
             group_name = getattr(entity, 'title', str(chat_id))
             print(f"📂 正在扫描群组: {group_name}")
             
-            # 搜索包含“稍等”关键词的消息
+            # 搜索包含关键词的消息
             async for msg in client.iter_messages(chat_id, offset_date=cutoff, reverse=True, search=TRIGGER_KW):
-                # 规则：必须是客服 ID 发出的，且必须是回复了某条消息
-                if msg.sender_id in cs_ids and msg.is_reply:
+                # 规则：只要消息包含关键词且是“引用回复”，就尝试溯源
+                if msg.is_reply:
                     # A. 提取“问题”：获取该指令回复的那条原始消息内容
                     question_msg = await msg.get_reply_message()
                     if not question_msg or not question_msg.text:
@@ -88,12 +60,13 @@ async def run_export():
                     
                     question_text = question_msg.text.strip()
                     
-                    # B. 提取“答复”：在该指令之后，寻找同一客服发出的第一条实质性回复
+                    # B. 提取“答复”：在该指令之后，寻找【同一发送者】发出的第一条实质性回复
                     answer_text = None
+                    # 在该指令后的 20 条消息内寻找
                     async for follow_up in client.iter_messages(chat_id, min_id=msg.id, limit=20):
                         if follow_up.sender_id == msg.sender_id and follow_up.text:
-                            # 过滤掉再次发送的快捷键或长度太短的内容
-                            if TRIGGER_KW not in follow_up.text and len(follow_up.text) > 5:
+                            # 过滤掉再次发送的快捷键、空内容或太短的内容
+                            if TRIGGER_KW not in follow_up.text and len(follow_up.text) > 3:
                                 answer_text = follow_up.text.strip()
                                 break
                     
@@ -105,7 +78,7 @@ async def run_export():
                             "metadata": {
                                 "group": group_name,
                                 "time": msg.date.strftime('%Y-%m-%d %H:%M'),
-                                "cs_id": msg.sender_id
+                                "sender_id": msg.sender_id
                             }
                         })
                         print(f" ✅ 成功匹配: [问] {question_text[:15]}... -> [答] {answer_text[:15]}...")
@@ -120,7 +93,10 @@ async def run_export():
         print(f"\n✨ 任务完成！共计导出 {len(qa_pairs)} 组问答对。")
         print(f"📁 文件已保存至: {OUTPUT_FILE}")
     else:
-        print("\n⚠️ 扫描结束，未找到符合条件的问答数据。")
+        print(f"\n⚠️ 扫描结束，未找到符合条件的问答数据。请确保：")
+        print(f"  1. 群组中有包含 '{TRIGGER_KW}' 的消息。")
+        print(f"  2. 这些消息是使用了 Telegram 的“回复(Reply)”功能发送的。")
+        print(f"  3. 发送者在发送该指令后，有后续的正式答复内容。")
 
     await client.disconnect()
 
