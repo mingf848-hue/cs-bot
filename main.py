@@ -1787,7 +1787,7 @@ client = TelegramClient(
     API_ID, 
     API_HASH,
     device_model="VMware20,1", 
-    app_version="6.7.5 x64",      
+    app_version="6.6.3 x64",      
     system_version="Windows 10 x64",
     lang_code="zh-hans",
     system_lang_code="zh-hans"
