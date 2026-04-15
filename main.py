@@ -698,13 +698,6 @@ WAIT_CHECK_HTML = """
                 <button onclick="startCheck()" id="btn-search">
                     <svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 开始排查
                 </button>
-                <button onclick="startCheck()" id="btn-search">
-    <svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 开始排查
-</button>
-
-<button onclick="exportQA()" id="btn-export" style="background:#059669; margin-top: 10px; width: 100%;">
-    <svg class="icon" viewBox="0 0 24 24" style="width:18px;height:18px;vertical-align:middle;margin-right:8px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> 导出 AI 投喂数据 (JSON)
-</button>
                 
                 <div id="progress-container">
                     <div id="progress-bar"><div id="progress-fill"></div></div>
@@ -794,25 +787,6 @@ WAIT_CHECK_HTML = """
                 setTimeout(() => { if(pFill.style.width === '100%') pContainer.style.display = 'none'; }, 2000);
             }
         }
-        function exportQA() {
-    const btn = document.getElementById('btn-export');
-    const originalText = btn.innerHTML;
-    
-    // UI 反馈
-    btn.disabled = true;
-    btn.innerHTML = "正在深度扫描(耗时较长，请稍后)...";
-    btn.style.opacity = "0.7";
-    
-    // 触发下载接口
-    window.location.href = '/api/export_qa_json';
-    
-    // 10秒后恢复按钮，防止重复点击
-    setTimeout(() => {
-        btn.disabled = false;
-        btn.innerHTML = originalText;
-        btn.style.opacity = "1";
-    }, 10000);
-}
 
         function renderSummary(total, closed, open) {
             const summaryBox = document.getElementById('summary-box');
@@ -980,59 +954,6 @@ def wait_check_stream():
     response.headers['X-Accel-Buffering'] = 'no'  
     response.headers['Access-Control-Allow-Origin'] = '*' # 【新增】允许跨域调用
     return response
-    @app.route('/api/export_qa_json')
-    def export_qa_json_api():
-        import json
-        from datetime import datetime, timedelta, timezone
-        
-        async def perform_scan():
-            trigger_kw = "请稍等ART"
-            days = 30
-            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-            qa_results = []
-            
-            # 直接使用 main.py 中已经存在的 CS_GROUP_IDS 列表
-            for chat_id in CS_GROUP_IDS:
-                try:
-                    # 使用 Telethon 的搜索功能
-                    async for msg in client.iter_messages(chat_id, offset_date=cutoff, reverse=True, search=trigger_kw):
-                        if msg.is_reply:
-                            # 1. 溯源客户问题
-                            q_msg = await msg.get_reply_message()
-                            if not q_msg or not q_msg.text: continue
-                            
-                            # 2. 寻找同一个人的后续答复
-                            answer_text = None
-                            async for follow in client.iter_messages(chat_id, min_id=msg.id, limit=20):
-                                if follow.sender_id == msg.sender_id and follow.text:
-                                    if trigger_kw not in follow.text and len(follow.text) > 5:
-                                        answer_text = follow.text.strip()
-                                        break
-                            
-                            if answer_text:
-                                qa_results.append({
-                                    "instruction": "你是一个专业的在线客服",
-                                    "input": q_msg.text.strip(),
-                                    "output": answer_text,
-                                    "metadata": {"time": msg.date.strftime('%Y-%m-%d %H:%M'), "group": str(chat_id)}
-                                })
-                except Exception as e:
-                    logger.error(f"QA Export Error in {chat_id}: {e}")
-            return qa_results
-
-        # 在主循环中安全运行异步任务
-        try:
-            future = asyncio.run_coroutine_threadsafe(perform_scan(), bot_loop)
-            final_data = future.result(timeout=300) # 设置5分钟超时
-            
-            json_output = json.dumps(final_data, ensure_ascii=False, indent=4)
-            return Response(
-                json_output,
-                mimetype='application/json',
-                headers={'Content-Disposition': f'attachment;filename=ai_training_{datetime.now().strftime("%m%d")}.json'}
-            )
-        except Exception as e:
-            return f"导出失败: {str(e)}", 500
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -1787,7 +1708,7 @@ client = TelegramClient(
     API_ID, 
     API_HASH,
     device_model="VMware20,1", 
-    app_version="6.6.3 x64",      
+    app_version="6.7.5 x64",      
     system_version="Windows 10 x64",
     lang_code="zh-hans",
     system_lang_code="zh-hans"
