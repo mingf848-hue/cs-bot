@@ -1096,7 +1096,20 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     sess_str = item
                 
                 logger.info(f"🔄 [OTP] 正在准备 {acc_name}...")
-                extra_client = TelegramClient(StringSession(sess_str), api_id, api_hash, loop=bot_loop)
+                
+                # 在这里添加设备伪装参数
+                extra_client = TelegramClient(
+                    StringSession(sess_str), 
+                    api_id, 
+                    api_hash, 
+                    loop=bot_loop,
+                    device_model="VMware20,1",
+                    system_version="Windows 10 x64",
+                    app_version="6.6.3 x64",
+                    lang_code="zh-hans",
+                    system_lang_code="zh-hans"
+                )
+                
                 global_clients[acc_name] = extra_client
                 extra_client.add_event_handler(create_otp_handler(acc_name), events.NewMessage(chats=777000))
                 bot_loop.create_task(_start_extra_client(extra_client, acc_name))
