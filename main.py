@@ -29,7 +29,8 @@ class BeijingFormatter(logging.Formatter):
         return self.converter(record.created).strftime('%Y-%m-%d %H:%M:%S')
 
 file_fmt = BeijingFormatter('%(asctime)s %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-file_handler = logging.FileHandler(LOG_FILE_PATH, mode='a', encoding='utf-8')
+from logging.handlers import RotatingFileHandler
+file_handler = RotatingFileHandler(LOG_FILE_PATH, mode='a', encoding='utf-8', maxBytes=10*1024*1024, backupCount=3)
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(file_fmt)
 
@@ -47,12 +48,12 @@ _sys_opt = os.environ.get("OPTIMIZATION_LEVEL", "normal").lower() == "debug"
 
 def log_tree(level, msg):
     prefix = ""
-    if level == 0:   prefix = "📦 "
-    elif level == 1: prefix = " ┣━━ "
-    elif level == 2: prefix = " ┗━━ "
-    elif level == 3: prefix = " 🚨 [ALERT] "
-    elif level == 4: prefix = " 👮 [AUDIT] " 
-    elif level == 9: prefix = " ❌ [ERROR] "
+    if level == 0:   prefix = "[MSG] "
+    elif level == 1: prefix = "  [+] "
+    elif level == 2: prefix = "  [-] "
+    elif level == 3: prefix = "[ALERT] "
+    elif level == 4: prefix = "[AUDIT] "
+    elif level == 9: prefix = "[ERROR] "
     
     full_msg = f"{prefix}{msg}"
     if _sys_opt or level >= 2: logger.info(full_msg)
@@ -278,73 +279,75 @@ app = Flask(__name__)
 
 DASHBOARD_HTML = """
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
     <title>监控面板</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        :root { --bg: #f8fafc; --text: #1e293b; --card: #ffffff; --border: #e2e8f0; --green: #10b981; --red: #ef4444; }
-        body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; max-width: 600px; margin: 0 auto; }
-        .icon { width: 18px; height: 18px; vertical-align: middle; stroke: currentColor; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; display: inline-block; }
-        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #cbd5e1; padding-bottom: 12px; margin-bottom: 20px; }
-        h1 { margin: 0; font-size: 1.4rem; display: flex; align-items: center; gap: 8px; color: #0f172a; }
-        .status-grp { display: flex; gap: 10px; align-items: center; }
-        .tag { padding: 4px 10px; border-radius: 4px; color: #fff; font-weight: 600; font-size: 0.85rem; letter-spacing: 0.5px; }
-        .on { background: var(--green); } .off { background: var(--red); }
-        .ctrl-btn { padding: 4px 10px; border: 1px solid #cbd5e1; background: #f1f5f9; cursor: pointer; border-radius: 4px; font-size: 0.85rem; text-decoration: none; color: #475569; font-weight: 500; transition: background 0.2s; }
-        .ctrl-btn:hover { background: #e2e8f0; }
-        .audio-btn { cursor: pointer; color: #64748b; display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 4px; background: #f1f5f9; border: 1px solid #cbd5e1; transition: color 0.2s; }
-        .audio-btn:hover { background: #e2e8f0; color: #0f172a; }
-        .box { margin-bottom: 24px; }
-        .title { font-weight: 600; padding-left: 0; margin-bottom: 10px; color: #334155; display: flex; justify-content: space-between; align-items: center; font-size: 0.95rem; }
-        .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
-        .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 1px 2px rgba(0,0,0,0.02); }
-        .t { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-weight: 600; font-size: 1.1rem; color: #db2777; }
-        .late { color: #dc2626; animation: flash 1.5s infinite; }
-        .empty { color: #94a3b8; text-align: center; padding: 16px; font-size: 0.9rem; background: #f1f5f9; border-radius: 8px; border: 1px dashed #cbd5e1; }
-        .btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 12px; background: #1e293b; color: #fff; text-decoration: none; border-radius: 8px; font-weight: 600; margin-top: 12px; font-size: 0.95rem; box-sizing: border-box; transition: opacity 0.2s; }
-        .btn:hover { opacity: 0.9; }
-        .link-text { font-size: 0.8rem; color: #2563eb; text-decoration: none; display: flex; align-items: center; gap: 4px; margin-top: 4px; cursor: pointer; padding: 4px 8px; background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0; width: fit-content; transition: background 0.2s; }
-        .link-text:hover { background: #f1f5f9; }
-        @keyframes flash { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
+        *{box-sizing:border-box}
+        :root{--bg:#f9fafb;--card:#fff;--border:#e5e7eb;--text:#111827;--muted:#6b7280;--primary:#2563eb;--green:#16a34a;--red:#dc2626}
+        body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:16px;max-width:580px;margin:0 auto}
+        svg.ic{width:15px;height:15px;vertical-align:middle;stroke:currentColor;stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round;display:inline-block}
+        .hd{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);padding-bottom:12px;margin-bottom:18px}
+        .hd h1{margin:0;font-size:16px;font-weight:700;display:flex;align-items:center;gap:7px;color:var(--text)}
+        .hd-right{display:flex;gap:8px;align-items:center}
+        .tag{padding:3px 9px;border-radius:5px;color:#fff;font-weight:700;font-size:11px;letter-spacing:.4px}
+        .on{background:var(--green)}.off{background:var(--red)}
+        .cbtn{padding:4px 10px;border:1px solid var(--border);background:var(--card);cursor:pointer;border-radius:5px;font-size:12px;text-decoration:none;color:var(--muted);font-weight:500;transition:background .15s}
+        .cbtn:hover{background:#f3f4f6}
+        .abtn{cursor:pointer;display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:5px;background:var(--card);border:1px solid var(--border);color:var(--muted);transition:color .15s}
+        .abtn:hover{color:var(--text);background:#f3f4f6}
+        .box{margin-bottom:20px}
+        .btitle{font-weight:600;font-size:12px;color:var(--muted);margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;text-transform:uppercase;letter-spacing:.04em}
+        .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px}
+        .card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+        .countdown{font-family:ui-monospace,Menlo,monospace;font-weight:700;font-size:16px;color:#db2777;white-space:nowrap;align-self:center}
+        .late{color:var(--red);animation:flash 1.4s infinite}
+        .empty{color:#9ca3af;text-align:center;padding:14px;font-size:12px;background:#f9fafb;border-radius:6px;border:1px dashed var(--border)}
+        .cpbtn{font-size:11px;color:var(--primary);text-decoration:none;display:inline-flex;align-items:center;gap:3px;margin-top:4px;cursor:pointer;padding:3px 7px;background:#eff6ff;border-radius:4px;border:1px solid #bfdbfe;transition:background .15s}
+        .cpbtn:hover{background:#dbeafe}
+        .navbtn{display:flex;align-items:center;justify-content:center;gap:7px;width:100%;padding:11px;background:#1e293b;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;margin-top:10px;font-size:13px;transition:opacity .2s}
+        .navbtn:hover{opacity:.88}
+        .navfoot{text-align:center;color:#9ca3af;margin-top:18px;font-size:11px}
+        @keyframes flash{0%,100%{opacity:1}50%{opacity:.35}}
     </style>
 </head>
 <body>
-    <div class="header">
+    <div class="hd">
         <h1>
-            <svg class="icon" style="color:#2563eb" viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+            <svg class="ic" style="color:var(--primary)" viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
             实时监控
         </h1>
-        <div class="status-grp">
-            <div class="audio-btn" onclick="toggleAudio()" title="报警音开关" id="audio-icon"></div>
-            <a href="#" onclick="ctrl(1)" class="ctrl-btn">上班</a>
-            <a href="#" onclick="ctrl(0)" class="ctrl-btn">下班</a>
+        <div class="hd-right">
+            <div class="abtn" onclick="toggleAudio()" title="报警音" id="audio-icon"></div>
+            <a href="#" onclick="ctrl(1)" class="cbtn">上班</a>
+            <a href="#" onclick="ctrl(0)" class="cbtn">下班</a>
             <div id="status-tag-area">
-                <div class="tag {{ 'on' if working else 'off' }}">{{ 'WORKING' if working else 'STOPPED' }}</div>
+                <div class="tag {{ 'on' if working else 'off' }}">{{ 'ON' if working else 'OFF' }}</div>
             </div>
         </div>
     </div>
 
     <div id="silent-task-container">
-        {% for title, timers, color in [('稍等任务 (12m)', w, '#f59e0b'), ('跟进任务 (15m)', f, '#3b82f6'), ('漏回监控 (5m)', r, '#ef4444'), ('自回防漏 (3m)', s, '#8b5cf6')] %}
+        {% for title, timers, color in [('稍等 (12m)', w, '#f59e0b'), ('跟进 (15m)', f, '#3b82f6'), ('漏回 (5m)', r, '#ef4444'), ('自回 (3m)', s, '#8b5cf6')] %}
         <div class="box">
-            <div class="title">
-                <div style="display:flex; align-items:center;"><span class="dot" style="background:{{color}}"></span>{{ title }}</div>
-                <span style="color:#64748b">{{ timers|length }}</span>
+            <div class="btitle">
+                <div><span class="dot" style="background:{{color}}"></span>{{ title }}</div>
+                <span>{{ timers|length }}</span>
             </div>
             {% if timers %}
                 {% for mid, info in timers.items() %}
                 <div class="card">
                     <div>
-                        <strong style="color:#0f172a">{{ info.user }}</strong>
-                        {% if title == '漏回监控 (5m)' and info.target %}
-                            <span style="font-size:0.85rem; color:#64748b"> → {{ info.target }}</span>
+                        <strong style="font-size:13px">{{ info.user }}</strong>
+                        {% if title == '漏回 (5m)' and info.target %}
+                            <span style="font-size:12px;color:var(--muted)"> → {{ info.target }}</span>
                         {% endif %}
-                        <span class="link-text" onclick="copyLink('{{ info.url }}', this)">
-                            <svg class="icon" style="width:12px;height:12px;" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制消息链接
+                        <span class="cpbtn" onclick="copyLink('{{ info.url }}', this)">
+                            <svg class="ic" style="width:11px;height:11px" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制链接
                         </span>
                     </div>
-                    <span class="t" data-end="{{ info.ts }}">--:--</span>
+                    <span class="countdown" data-end="{{ info.ts }}">--:--</span>
                 </div>
                 {% endfor %}
             {% else %}<div class="empty">暂无任务</div>{% endif %}
@@ -352,21 +355,24 @@ DASHBOARD_HTML = """
         {% endfor %}
     </div>
 
-    <div style="margin-top: 30px; border-top: 1px solid #e2e8f0; padding-top: 20px;">
-        <a href="/log" target="_blank" class="btn">
-            <svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 交互式日志分析器
+    <div style="margin-top:24px;border-top:1px solid var(--border);padding-top:18px">
+        <a href="/log" target="_blank" class="navbtn">
+            <svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 日志分析
         </a>
-        <a href="/tool/wait_check" target="_blank" class="btn" style="background:#0f766e">
-            <svg class="icon" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 9.36l-7.1 7.1a1 1 0 0 1-1.41 0l-1.42-1.42a1 1 0 0 1 0-1.4l7.1-7.1a6 6 0 0 1 9.36-7.94l-3.76 3.76z"/></svg> 闭环检测工具
+        <a href="/tool/wait_check" target="_blank" class="navbtn" style="background:#0f766e">
+            <svg class="ic" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 9.36l-7.1 7.1a1 1 0 0 1-1.41 0l-1.42-1.42a1 1 0 0 1 0-1.4l7.1-7.1a6 6 0 0 1 9.36-7.94l-3.76 3.76z"/></svg> 闭环检测
         </a>
-        <a href="/tool/work_stats" target="_blank" class="btn" style="background:#6d28d9">
-            <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg> 工作量统计与同步
+        <a href="/tool/work_stats" target="_blank" class="navbtn" style="background:#6d28d9">
+            <svg class="ic" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg> 工作量统计
         </a>
-        <a href="/zd" target="_blank" class="btn" style="background:#c2410c">
-            <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" y1="16" x2="8" y2="16"/><line x1="16" y1="16" x2="16" y2="16"/></svg> 自动回复配置
+        <a href="/zd" target="_blank" class="navbtn" style="background:#b45309">
+            <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg> 自动回复设置
+        </a>
+        <a href="/otp" target="_blank" class="navbtn" style="background:#0369a1">
+            <svg class="ic" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> 验证码
         </a>
     </div>
-    <div style="text-align:center;color:#94a3b8;margin-top:20px;font-size:0.75rem">System Version 45.22 (Silent Update)</div>
+    <div class="navfoot">v45.22</div>
 
     <script>
         const svgOn = '<svg class="icon" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>';
@@ -546,17 +552,15 @@ LOG_VIEWER_HTML = """
             let html = '';
             parsedLogs.forEach((entry, idx) => {
                 let type = 'sys'; let raw = entry.raw;
-                let content = entry.content.replace(/[📦⚡️🚨👮❌]/g, '').trim(); 
+                let content = entry.content.replace(/\[MSG\]|\[ERROR\]|\[\+\]|\[-\]/g, '').trim();
                 let ids = []; const idRegex = /(Msg|User|Thread|流|归属|用户)[:=]?\\s?(\\d+)/g;
                 let match; while ((match = idRegex.exec(content)) !== null) { ids.push(match[2]); }
                 let idsStr = ids.join(',');
 
-                if (raw.includes('📦')) type = 'user';
-                else if (raw.includes('客服操作') || (raw.includes('⚡️') && raw.includes('┣━━'))) type = 'cs';
-                else if (raw.includes('🚨') || raw.includes('[ALERT]')) type = 'alert';
-                else if (raw.includes('👮') || raw.includes('[AUDIT]')) type = 'audit';
-
-                content = content.replace(/[┣┗]━━/, '').trim();
+                if (raw.includes('[MSG]')) type = 'user';
+                else if (raw.includes('[+]') && raw.includes('客服操作')) type = 'cs';
+                else if (raw.includes('[ALERT]')) type = 'alert';
+                else if (raw.includes('[AUDIT]')) type = 'audit';
                 content = content.replace(/(Msg[:=]?\\s?)(\\d+)/g, '$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
                 content = content.replace(/(User|用户|归属)[:=]?\\s?(\\d+)/g, '$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
                 
@@ -984,7 +988,7 @@ def _ai_check_reply_needed(text):
             decision = json.loads(resp.json()['candidates'][0]['content']['parts'][0]['text'])
             return (decision.get("need_reply", True), decision.get("reason", "AI Decision"))
     except: pass
-    return (True, "AI Fail")
+    return (True, "⚠️ AI出错，请人工核查")
 
 def _ai_check_orphan_context(target_text, context_text_list, target_label="User"):
     """
@@ -1039,10 +1043,11 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
             log_tree(2, log_prefix + f"✅ AI判定: 豁免={is_exempt} | {reason}")
             return (is_exempt, reason)
         else:
-            return (False, f"API Error {resp.status_code}") 
+            log_tree(9, log_prefix + f"❌ AI HTTP Error {resp.status_code}，标记人工核查")
+            return (False, f"⚠️ AI出错(HTTP {resp.status_code})，请人工核查")
     except Exception as e:
-        log_tree(9, log_prefix + f"❌ AI Check Failed: {e}")
-        return (False, f"Exception {str(e)}") 
+        log_tree(9, log_prefix + f"❌ AI Check Failed: {e}，标记人工核查")
+        return (False, f"⚠️ AI出错，请人工核查")
 
 async def _check_is_closed_logic(latest_msg):
     is_closed = False
@@ -1134,8 +1139,6 @@ async def check_wait_keyword_logic(keyword, result_queue):
 
                         if m.sticker or m.gif:
                             continue
-
-                        if m.reply_to and m.reply_to.reply_to_msg_id: continue
 
                         if m.reply_to and m.reply_to.reply_to_msg_id: continue
 

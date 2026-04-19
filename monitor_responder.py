@@ -432,14 +432,13 @@ SETTINGS_HTML = """
     <script src="https://unpkg.com/vue@3.3.4/dist/vue.global.prod.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        body { font-family: 'Plus Jakarta Sans', sans-serif; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; }
         ::-webkit-scrollbar { width: 4px; height: 4px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 2px; }
         ::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
-        textarea, input, select { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: -0.01em; }
+        textarea, input, select { font-family: ui-monospace, Menlo, monospace; font-size: 11px; letter-spacing: -0.01em; }
         .bento-card { background: white; border: 1px solid #E5E7EB; border-radius: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); transition: all 0.2s ease; }
         .bento-card:hover { border-color: #D1D5DB; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); }
         .bento-input { background-color: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 6px; color: #374151; transition: all 0.15s; }
@@ -449,7 +448,7 @@ SETTINGS_HTML = """
         .approval-bg { background-color: #EFF6FF; border-top: 1px solid #DBEAFE; }
     </style>
     <script>
-        tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Plus Jakarta Sans"', 'sans-serif'], mono: ['"JetBrains Mono"', 'monospace'], }, colors: { primary: '#6366F1', slate: { 50:'#f9fafb', 100:'#f3f4f6', 200:'#e5e7eb', 800:'#1f2937' } } } } }
+        tailwind.config = { theme: { extend: { fontFamily: { sans: ['-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'sans-serif'], mono: ['ui-monospace', 'Menlo', 'monospace'], }, colors: { primary: '#6366F1', slate: { 50:'#f9fafb', 100:'#f3f4f6', 200:'#e5e7eb', 800:'#1f2937' } } } } }
     </script>
 </head>
 <body class="text-slate-800 antialiased min-h-screen pb-20 font-sans">
@@ -463,7 +462,7 @@ SETTINGS_HTML = """
         <div class="flex items-center gap-3">
             <div class="hidden md:flex items-center gap-1.5 px-2 py-1 bg-slate-50 rounded border border-slate-200">
                 <span class="text-[10px] font-bold text-slate-500 uppercase">分身模式:</span>
-                <span class="text-[10px] font-bold" :class="config.extra_enabled ? 'text-green-500' : 'text-slate-400'">{{ config.extra_enabled ? '✅ ON' : '⛔ OFF' }}</span>
+                <span class="text-[10px] font-bold" :class="config.extra_enabled ? 'text-green-500' : 'text-slate-400'">{{ config.extra_enabled ? '启用' : '停用' }}</span>
             </div>
 
             <div class="flex items-center gap-3 bg-slate-50 px-2 py-1 rounded border border-slate-200 mx-2 hidden md:flex">
@@ -514,7 +513,7 @@ SETTINGS_HTML = """
                 
                 <div v-if="rule.enabled && rule.reply_account && rule.reply_account !== '' && !config.extra_enabled" 
                      class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-slate-800 text-white px-3 py-1 rounded shadow-lg z-20 text-xs font-bold pointer-events-none whitespace-nowrap">
-                    ⛔ 被主控强关
+                    已停用
                 </div>
 
                 <div class="px-3 py-2 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
@@ -551,7 +550,7 @@ SETTINGS_HTML = """
                     <div class="space-y-1.5">
                         <div class="section-label"><i class="fa-solid fa-filter mr-1"></i>过滤与冷却</div>
                         <div class="grid grid-cols-5 gap-2">
-                            <div class="col-span-2"><select v-model="rule.sender_mode" class="bento-input w-full px-1 py-0 h-7 text-[10px] font-sans font-medium"><option value="exclude">🚫 排除前缀</option><option value="include">✅ 只许前缀</option></select></div>
+                            <div class="col-span-2"><select v-model="rule.sender_mode" class="bento-input w-full px-1 py-0 h-7 text-[10px] font-sans font-medium"><option value="exclude">排除前缀</option><option value="include">仅允许</option></select></div>
                             <div class="col-span-3"><input :value="listToString(rule.sender_prefixes).replace(/\\n/g, ', ')" @change="stringToList($event, rule, 'sender_prefixes')" class="bento-input w-full px-2 py-1.5 h-7 truncate font-mono text-[11px]" placeholder="前缀: YY, AA"></div>
                             <div class="col-span-5 relative flex items-center gap-2 mt-0.5"><span class="text-[10px] text-slate-400 font-medium">冷却CD:</span><input type="number" v-model.number="rule.cooldown" class="bento-input w-16 px-1 py-0 h-6 text-center text-[10px] font-mono font-bold"><span class="text-[10px] text-slate-400 font-medium">秒</span></div>
                         </div>
@@ -562,7 +561,7 @@ SETTINGS_HTML = """
                         <div class="flex items-center gap-2 mb-2 bg-indigo-50 border border-indigo-100 p-1.5 rounded">
                             <span class="text-[9px] font-bold text-indigo-500 uppercase"><i class="fa-solid fa-user-tag mr-1"></i>选择回复账号:</span>
                             <select v-model="rule.reply_account" class="flex-1 text-[10px] bg-transparent border-none p-0 text-indigo-700 font-bold focus:ring-0 cursor-pointer h-4">
-                                <option value="">👤 主账号 (默认)</option>
+                                <option value="">主账号 (默认)</option>
                                 <option v-for="acc in available_accounts" :value="acc">{{ acc }}</option>
                             </select>
                         </div>
@@ -572,7 +571,7 @@ SETTINGS_HTML = """
                                 <div class="flex flex-col justify-center items-center w-8 bg-slate-50 border border-slate-200 rounded h-auto font-mono"><input v-model.number="reply.min" class="w-full text-center bg-transparent text-[9px] text-slate-500 focus:outline-none h-3 p-0" placeholder="min"><div class="w-3 h-px bg-slate-200 my-0.5"></div><input v-model.number="reply.max" class="w-full text-center bg-transparent text-[9px] text-slate-500 focus:outline-none h-3 p-0" placeholder="max"></div>
                                 <div class="flex-1 bg-slate-50 border border-slate-200 rounded p-1.5 hover:border-primary/30 hover:bg-white transition-all">
                                     <div class="flex items-center gap-1.5 mb-1">
-                                        <select v-model="reply.type" class="text-[10px] bg-transparent border-none p-0 text-slate-600 font-bold focus:ring-0 cursor-pointer w-auto font-sans"><option value="text">💬 发送文本</option><option value="forward">🔀 直接转发</option><option value="copy_file">📂 转发+新文案</option><option value="amount_logic">💰 金额分流</option><option value="preempt_check">⚡ 抢答检测 (自删)</option></select>
+                                        <select v-model="reply.type" class="text-[10px] bg-transparent border-none p-0 text-slate-600 font-bold focus:ring-0 cursor-pointer w-auto font-sans"><option value="text">发送文本</option><option value="forward">直接转发</option><option value="copy_file">转发+新文案</option><option value="amount_logic">金额分流</option><option value="preempt_check">抢答检测 (自删)</option></select>
                                         <button @click="rule.replies.splice(rIndex, 1)" class="ml-auto text-slate-300 hover:text-red-400"><i class="fa-solid fa-xmark text-[10px]"></i></button>
                                     </div>
                                     <template v-if="reply.type === 'text'"><textarea v-model="reply.text" rows="2" class="bento-input w-full px-1.5 py-1 text-[10px] resize-none border-transparent bg-white focus:border-slate-200 font-mono" placeholder="内容... ({data}插入提取结果)"></textarea></template>
@@ -716,151 +715,127 @@ SETTINGS_HTML = """
 </body>
 </html>
 """
-OTP_HTML = """
-<!DOCTYPE html>
+OTP_HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>验证码监控</title>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <style>
-        :root { --bg-color: #f3f4f6; --text-color: #1f2937; --card-bg: #ffffff; }
-        body { font-family: -apple-system, system-ui, "Microsoft YaHei", sans-serif; background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
-        .header { text-align: center; margin-bottom: 30px; }
-        .header h1 { font-size: 24px; font-weight: 800; margin: 0; color: #374151; letter-spacing: -0.5px; }
-        .header span { font-size: 13px; color: #9ca3af; font-weight: 500; background: #e5e7eb; padding: 2px 8px; border-radius: 99px; margin-left: 8px; vertical-align: middle; }
-        .grid-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; width: 100%; max-width: 1200px; margin-bottom: 40px; }
-        .card { background: var(--card-bg); border-radius: 16px; padding: 20px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03); border: 1px solid #f3f4f6; transition: transform 0.2s; position: relative; overflow: hidden; }
-        .card:hover { transform: translateY(-2px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05); }
-        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-        .platform-icon { font-size: 20px; margin-right: 8px; }
-        .account-name { font-weight: 700; font-size: 15px; color: #111827; }
-        .status-badge { font-size: 11px; padding: 2px 8px; border-radius: 6px; font-weight: 600; text-transform: uppercase; }
-        .tg-style .platform-icon { color: #24A1DE; }
-        .tg-style .status-badge { background: #e0f2fe; color: #0284c7; }
-        .tg-style .code-box { background: #f0f9ff; color: #0369a1; border: 1px dashed #bae6fd; }
-        .ga-style .platform-icon { color: #EA4335; }
-        .ga-style .status-badge { background: #fff1f2; color: #e11d48; }
-        .ga-style .code-box { background: #fff5f5; color: #be123c; border: 1px dashed #fecdd3; }
-        .code-box { font-family: 'SF Mono', 'Menlo', monospace; font-size: 32px; font-weight: 700; letter-spacing: 4px; text-align: center; padding: 16px; border-radius: 12px; margin: 12px 0; cursor: pointer; user-select: all; transition: all 0.2s; }
-        .code-box:active { transform: scale(0.98); background-color: #e5e7eb; }
-        .meta-info { font-size: 12px; color: #6b7280; display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-weight: 500; }
-        .progress-track { height: 6px; background: #f3f4f6; border-radius: 3px; overflow: hidden; margin-top: 15px; }
-        .progress-fill { height: 100%; border-radius: 3px; transition: width 0.1s linear; }
-        .ga-style .progress-fill { background: linear-gradient(90deg, #f43f5e, #e11d48); }
-        .empty-state { text-align: center; padding: 40px; color: #9ca3af; font-size: 14px; background: white; border-radius: 16px; border: 2px dashed #e5e7eb; width: 100%; max-width: 600px; }
-        .section-label { font-size: 12px; font-weight: 700; color: #9ca3af; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; width: 100%; max-width: 1200px; }
-        .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #1f2937; color: white; padding: 8px 16px; border-radius: 20px; font-size: 12px; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
-        .toast.show { opacity: 1; }
+        *{box-sizing:border-box;margin:0;padding:0}
+        :root{--bg:#f9fafb;--card:#fff;--border:#e5e7eb;--text:#111827;--muted:#6b7280}
+        body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding:20px 16px}
+        .topbar{display:flex;align-items:center;justify-content:space-between;max-width:1200px;margin:0 auto 24px}
+        .topbar h1{font-size:17px;font-weight:700;display:flex;align-items:center;gap:8px}
+        .dot{width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block;animation:pulse 2s infinite}
+        @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+        .nav{display:flex;gap:6px}
+        .nav a{font-size:12px;color:var(--muted);text-decoration:none;padding:4px 10px;border:1px solid var(--border);border-radius:6px}
+        .nav a:hover{color:var(--text);border-color:#d1d5db}
+        .sec-title{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;max-width:1200px;margin:0 auto 10px}
+        .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px;max-width:1200px;margin:0 auto 28px}
+        .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px;cursor:pointer;transition:box-shadow .15s,transform .15s;user-select:none}
+        .card:hover{box-shadow:0 4px 12px rgba(0,0,0,.06);transform:translateY(-1px)}
+        .card:active{transform:scale(.98)}
+        .card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+        .acc{font-size:13px;font-weight:700}
+        .badge{font-size:10px;font-weight:600;padding:2px 7px;border-radius:5px}
+        .btg{background:#e0f2fe;color:#0284c7}
+        .bga{background:#fff1f2;color:#e11d48}
+        .code{font-family:ui-monospace,Menlo,monospace;font-size:28px;font-weight:700;letter-spacing:5px;text-align:center;padding:12px;border-radius:8px;margin-bottom:8px}
+        .ctg{background:#f0f9ff;color:#0369a1}
+        .cga{background:#fff5f5;color:#be123c;margin:0}
+        .empty-code{font-size:13px;letter-spacing:0;color:var(--muted);font-style:italic}
+        .meta{font-size:11px;color:var(--muted);display:flex;justify-content:space-between}
+        .hint{font-size:10px;color:#0ea5e9}
+        .ring-wrap{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+        .rbg{fill:none;stroke:#fecdd3;stroke-width:4}
+        .rarc{fill:none;stroke:#e11d48;stroke-width:4;stroke-linecap:round}
+        .rtxt{font-size:11px;fill:var(--muted);text-anchor:middle;dominant-baseline:middle;font-family:ui-monospace,Menlo,monospace}
+        .empty{text-align:center;padding:48px;color:var(--muted);font-size:13px;border:2px dashed var(--border);border-radius:12px;max-width:500px;margin:0 auto}
+        .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1f2937;color:#fff;padding:7px 16px;border-radius:20px;font-size:12px;opacity:0;transition:opacity .3s;pointer-events:none;white-space:nowrap}
+        .toast.show{opacity:1}
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>验证码监控 <span>{{ tz_name }}</span></h1>
-    </div>
-    {% if otp_list %}
-    <div class="section-label">Telegram 登录验证码</div>
-    <div class="grid-container">
-        {% for name, data in otp_list.items() %}
-        <div class="card tg-style">
-            <div class="card-header">
-                <div style="display:flex; align-items:center;">
-                    <i class="fa-brands fa-telegram platform-icon"></i>
-                    <span class="account-name">{{ name }}</span>
-                </div>
-                <span class="status-badge">已连接</span>
-            </div>
-            {% if data.code %}
-                <div class="code-box" onclick="copyToClip('{{ data.code }}')">{{ data.code }}</div>
-                <div class="meta-info">
-                    <span><i class="fa-regular fa-clock"></i> {{ data.time.split(' ')[1] }} 接收</span>
-                    <span style="color:#0ea5e9; font-size:10px;">点击复制</span>
-                </div>
-            {% else %}
-                <div style="padding: 24px 0; text-align: center; color: #9ca3af; font-size: 13px; font-style: italic;">等待验证码...</div>
-            {% endif %}
-            <div class="meta-info" style="margin-top:10px; border-top:1px solid #f3f4f6; padding-top:8px;">
-                <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">{{ data.text[:30] }}...</span>
-            </div>
-        </div>
-        {% endfor %}
-    </div>
-    {% endif %}
-    {% if google_list %}
-    <div class="section-label">谷歌验证码 (2FA)</div>
-    <div class="grid-container">
-        {% for item in google_list %}
-        <div class="card ga-style google-item" data-ttl="{{ item.ttl }}">
-            <div class="card-header">
-                <div style="display:flex; align-items:center;">
-                    <i class="fa-brands fa-google platform-icon"></i>
-                    <span class="account-name">{{ item.name }}</span>
-                </div>
-                <span class="status-badge ttl-text">{{ item.ttl }}s</span>
-            </div>
-            <div class="code-box" onclick="copyToClip('{{ item.code }}')">{{ item.code }}</div>
-            <div class="progress-track">
-                <div class="progress-fill" style="width: {{ (item.ttl / 30) * 100 }}%"></div>
-            </div>
-        </div>
-        {% endfor %}
-    </div>
-    {% endif %}
-    {% if not otp_list and not google_list %}
-    <div class="empty-state"><i class="fa-solid fa-ghost" style="font-size: 32px; margin-bottom: 10px;"></i><br>暂无已配置的账号</div>
-    {% endif %}
-    <div id="toast" class="toast">已复制到剪贴板</div>
-    <script>
-    function copyToClip(text) {
-        if(!text) return;
-        const input = document.createElement('input');
-        input.setAttribute('value', text);
-        document.body.appendChild(input);
-        input.select();
-        document.execCommand('copy');
-        document.body.removeChild(input);
-        const toast = document.getElementById('toast');
-        toast.textContent = text + ' 已复制';
-        toast.classList.add('show');
-        setTimeout(() => toast.classList.remove('show'), 2000);
-    }
-    // 增加一个开关，防止重复刷新
-    let isReloading = false; 
+<div class="topbar">
+    <h1><span class="dot" id="dot"></span>验证码监控</h1>
+    <div class="nav"><a href="/">仪表板</a><a href="/zd">设置</a></div>
+</div>
+<div id="tg-sec" style="display:none"><div class="sec-title">Telegram 登录验证码</div><div class="grid" id="tg-grid"></div></div>
+<div id="ga-sec" style="display:none"><div class="sec-title">谷歌验证码 (2FA)</div><div class="grid" id="ga-grid"></div></div>
+<div id="empty" class="empty" style="display:none">暂无已配置的账号</div>
+<div id="toast" class="toast"></div>
+<script>
+const R=24,C=R+4,CIRC=2*Math.PI*R;
+let gaStates={};
 
-    document.addEventListener("DOMContentLoaded", function() {
-        const items = document.querySelectorAll('.google-item');
-        setInterval(() => {
-            // 如果已经正在刷新了，就什么都不做
-            if (isReloading) return; 
-
-            let needsReload = false;
-            items.forEach(item => {
-                let ttl = parseFloat(item.getAttribute('data-ttl'));
-                ttl -= 0.1;
-                if (ttl <= 0) { 
-                    needsReload = true; 
-                } else {
-                    item.setAttribute('data-ttl', ttl.toFixed(1));
-                    const badge = item.querySelector('.ttl-text');
-                    if(badge) badge.innerText = Math.ceil(ttl) + 's';
-                    const fill = item.querySelector('.progress-fill');
-                    if(fill) {
-                        const pct = (ttl / 30) * 100;
-                        fill.style.width = pct + '%';
-                        if(ttl < 5) fill.style.background = '#ef4444'; else fill.style.background = 'linear-gradient(90deg, #f43f5e, #e11d48)';
-                    }
-                }
-            });
-
-            // 如果倒计时结束了
-            if (needsReload) { 
-                isReloading = true; // 立即锁死，不再触发第二次
-                location.reload();   // 立即刷新网页
-            }
-        }, 100); 
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function copyCode(code){
+    if(!code)return;
+    (navigator.clipboard?navigator.clipboard.writeText(code):Promise.reject()).catch(()=>{
+        const el=document.createElement('input');el.value=code;document.body.appendChild(el);el.select();document.execCommand('copy');document.body.removeChild(el);
     });
-    </script>
+    const t=document.getElementById('toast');t.textContent=code+' 已复制';t.classList.add('show');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('show'),2000);
+}
+function buildTG(item){
+    const d=document.createElement('div');d.className='card';d.onclick=()=>copyCode(item.code);
+    const timeStr=(item.time||'').split(' ')[1]||'';
+    d.innerHTML=item.code
+        ?`<div class="card-head"><span class="acc">${esc(item.name)}</span><span class="badge btg">TG</span></div><div class="code ctg">${esc(item.code)}</div><div class="meta"><span>${esc(timeStr)} 接收</span><span class="hint">点击复制</span></div>${item.text?`<div class="meta" style="margin-top:8px;border-top:1px solid #f3f4f6;padding-top:8px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%">${esc(item.text)}</span></div>`:''}`
+        :`<div class="card-head"><span class="acc">${esc(item.name)}</span><span class="badge btg">TG</span></div><div class="code ctg empty-code">等待验证码...</div>`;
+    return d;
+}
+function buildGA(item){
+    const d=document.createElement('div');d.className='card';d.setAttribute('data-ga',item.name);d.onclick=()=>copyCode(item.code);
+    d.innerHTML=`<div class="card-head"><span class="acc">${esc(item.name)}</span><span class="badge bga">2FA</span></div><div class="ring-wrap"><svg width="${C*2}" height="${C*2}" viewBox="0 0 ${C*2} ${C*2}"><circle class="rbg" cx="${C}" cy="${C}" r="${R}"/><circle class="rarc" cx="${C}" cy="${C}" r="${R}" stroke-dasharray="${CIRC}" stroke-dashoffset="0" transform="rotate(-90 ${C} ${C})"/><text class="rtxt" x="${C}" y="${C}">30</text></svg><div class="code cga" style="flex:1">${esc(item.code)}</div></div><div class="meta"><span style="opacity:.5">点击复制</span></div>`;
+    return d;
+}
+function updateRing(name){
+    const s=gaStates[name];if(!s)return;
+    const card=document.querySelector('[data-ga="'+name+'"]');if(!card)return;
+    const elapsed=Date.now()/1000-s.fetchedAt;
+    const ttl=Math.max(0,s.ttl_exact-elapsed);
+    const arc=card.querySelector('.rarc'),txt=card.querySelector('.rtxt'),codeEl=card.querySelector('.cga');
+    if(arc){arc.setAttribute('stroke-dashoffset',(1-ttl/s.interval)*CIRC);arc.setAttribute('stroke',ttl<5?'#ef4444':'#e11d48');}
+    if(txt)txt.textContent=Math.ceil(ttl)+'s';
+    if(codeEl)codeEl.textContent=s.code;
+}
+(function animLoop(){requestAnimationFrame(animLoop);for(const n in gaStates)updateRing(n);})();
+
+async function poll(){
+    try{
+        const res=await fetch('/api/otp');
+        if(!res.ok)throw new Error(res.status);
+        const data=await res.json();
+        const recvAt=Date.now()/1000;
+        // TG
+        const tgGrid=document.getElementById('tg-grid'),tgSec=document.getElementById('tg-sec');
+        if(data.tg_codes&&data.tg_codes.length){
+            tgSec.style.display='';
+            const cur=tgGrid.querySelectorAll('.card');
+            if(cur.length!==data.tg_codes.length){tgGrid.innerHTML='';data.tg_codes.forEach(i=>tgGrid.appendChild(buildTG(i)));}
+            else data.tg_codes.forEach((item,i)=>{const c=cur[i].querySelector('.code');if(c)c.textContent=item.code||'等待验证码...';});
+        }else tgSec.style.display='none';
+        // GA
+        const gaGrid=document.getElementById('ga-grid'),gaSec=document.getElementById('ga-sec');
+        if(data.ga_codes&&data.ga_codes.length){
+            gaSec.style.display='';
+            const existing=new Set([...gaGrid.querySelectorAll('.card')].map(c=>c.getAttribute('data-ga')));
+            const incoming=new Set(data.ga_codes.map(x=>x.name));
+            existing.forEach(n=>{if(!incoming.has(n)){const c=gaGrid.querySelector('[data-ga="'+n+'"]');if(c)c.remove();delete gaStates[n];}});
+            data.ga_codes.forEach(item=>{
+                gaStates[item.name]={code:item.code,ttl_exact:item.ttl_exact,interval:item.interval||30,fetchedAt:recvAt};
+                if(!gaGrid.querySelector('[data-ga="'+item.name+'"]'))gaGrid.appendChild(buildGA(item));
+            });
+        }else{gaSec.style.display='none';}
+        const hasAny=(data.tg_codes&&data.tg_codes.length)||(data.ga_codes&&data.ga_codes.length);
+        document.getElementById('empty').style.display=hasAny?'none':'';
+        document.getElementById('dot').style.background='#22c55e';
+    }catch(e){document.getElementById('dot').style.background='#ef4444';}
+}
+poll();setInterval(poll,2000);
+</script>
 </body>
 </html>
 """
@@ -954,27 +929,29 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         
     @app.route('/otp')
     def view_otp_page():
-        tg_data = latest_otp_storage
-        ga_data = []
+        return Response(OTP_HTML, mimetype='text/html; charset=utf-8')
+
+    @app.route('/api/otp')
+    def api_otp_data():
+        import time as _t
+        now = _t.time()
+        result = {"server_time": now, "tg_codes": [], "ga_codes": []}
+        for name, data in latest_otp_storage.items():
+            result["tg_codes"].append({"name": name, "code": data.get("code", ""), "text": (data.get("text") or "")[:40], "time": data.get("time", "")})
         if pyotp:
             raw_secrets = os.environ.get("GA_SECRETS", "")
-            if raw_secrets:
-                pairs = raw_secrets.split(';')
-                for p in pairs:
-                    if ':' in p:
-                        name, secret = p.split(':', 1)
-                        name = name.strip()
-                        secret = secret.strip()
-                        if not secret: continue
-                        try:
-                            totp = pyotp.TOTP(secret)
-                            code = totp.now()
-                            time_remaining = totp.interval - datetime.now().timestamp() % totp.interval
-                            ga_data.append({"name": name, "code": code, "ttl": int(time_remaining)})
-                        except Exception as e:
-                            logger.error(f"❌ [GoogleAuth] 计算失败 ({name}): {e}")
-        return render_template_string(OTP_HTML, otp_list=tg_data, google_list=ga_data, tz_name=TZ_NAME)
-        
+            for p in (raw_secrets or "").split(';'):
+                if ':' not in p: continue
+                name, secret = p.split(':', 1)
+                name, secret = name.strip(), secret.strip()
+                if not secret: continue
+                try:
+                    totp = pyotp.TOTP(secret)
+                    result["ga_codes"].append({"name": name, "code": totp.now(), "ttl_exact": round(totp.interval - (now % totp.interval), 3), "interval": totp.interval})
+                except Exception as e:
+                    logger.error(f"[OTP] {name}: {e}")
+        return jsonify(result)
+
     @app.route('/tool/monitor_settings_json')
     def monitor_settings_json():
         data = current_config.copy()
