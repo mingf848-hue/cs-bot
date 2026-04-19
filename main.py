@@ -985,7 +985,7 @@ def _ai_check_reply_needed(text):
             decision = json.loads(resp.json()['candidates'][0]['content']['parts'][0]['text'])
             return (decision.get("need_reply", True), decision.get("reason", "AI Decision"))
     except: pass
-    return (False, "AI不可用，跳过本条")
+    return (True, "⚠️ AI出错，请人工核查")
 
 def _ai_check_orphan_context(target_text, context_text_list, target_label="User"):
     """
@@ -1040,11 +1040,11 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
             log_tree(2, log_prefix + f"✅ AI判定: 豁免={is_exempt} | {reason}")
             return (is_exempt, reason)
         else:
-            log_tree(9, log_prefix + f"❌ AI HTTP Error {resp.status_code}，豁免本条")
-            return (True, f"AI服务异常(HTTP {resp.status_code})，自动豁免")
+            log_tree(9, log_prefix + f"❌ AI HTTP Error {resp.status_code}，标记人工核查")
+            return (False, f"⚠️ AI出错(HTTP {resp.status_code})，请人工核查")
     except Exception as e:
-        log_tree(9, log_prefix + f"❌ AI Check Failed: {e}，豁免本条")
-        return (True, f"AI不可用，自动豁免")
+        log_tree(9, log_prefix + f"❌ AI Check Failed: {e}，标记人工核查")
+        return (False, f"⚠️ AI出错，请人工核查")
 
 async def _check_is_closed_logic(latest_msg):
     is_closed = False
