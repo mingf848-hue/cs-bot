@@ -138,7 +138,7 @@ try:
     CS_NAME_PREFIXES = ["YY_6/9_值班号", "Y_YY"]
 
     AI_PROXY_URL = os.environ.get("AI_PROXY_URL")
-    AI_MODEL_NAME = os.environ.get("AI_MODEL_NAME", "gemini-2.0-flash-lite")
+    AI_MODEL_NAME = "gemini-3.1-flash-lite-preview"
 
 except Exception as e:
     logger.error(f"❌ 配置错误: {e}")
