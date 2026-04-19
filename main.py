@@ -29,7 +29,8 @@ class BeijingFormatter(logging.Formatter):
         return self.converter(record.created).strftime('%Y-%m-%d %H:%M:%S')
 
 file_fmt = BeijingFormatter('%(asctime)s %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-file_handler = logging.FileHandler(LOG_FILE_PATH, mode='a', encoding='utf-8')
+from logging.handlers import RotatingFileHandler
+file_handler = RotatingFileHandler(LOG_FILE_PATH, mode='a', encoding='utf-8', maxBytes=10*1024*1024, backupCount=3)
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(file_fmt)
 
@@ -137,7 +138,7 @@ try:
     CS_NAME_PREFIXES = ["YY_6/9_值班号", "Y_YY"]
 
     AI_PROXY_URL = os.environ.get("AI_PROXY_URL")
-    AI_MODEL_NAME = "gemini-3.1-flash-lite-preview"
+    AI_MODEL_NAME = os.environ.get("AI_MODEL_NAME", "gemini-2.0-flash-lite")
 
 except Exception as e:
     logger.error(f"❌ 配置错误: {e}")
@@ -984,7 +985,7 @@ def _ai_check_reply_needed(text):
             decision = json.loads(resp.json()['candidates'][0]['content']['parts'][0]['text'])
             return (decision.get("need_reply", True), decision.get("reason", "AI Decision"))
     except: pass
-    return (True, "AI Fail")
+    return (False, "AI不可用，跳过本条")
 
 def _ai_check_orphan_context(target_text, context_text_list, target_label="User"):
     """
@@ -1039,10 +1040,11 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
             log_tree(2, log_prefix + f"✅ AI判定: 豁免={is_exempt} | {reason}")
             return (is_exempt, reason)
         else:
-            return (False, f"API Error {resp.status_code}") 
+            log_tree(9, log_prefix + f"❌ AI HTTP Error {resp.status_code}，豁免本条")
+            return (True, f"AI服务异常(HTTP {resp.status_code})，自动豁免")
     except Exception as e:
-        log_tree(9, log_prefix + f"❌ AI Check Failed: {e}")
-        return (False, f"Exception {str(e)}") 
+        log_tree(9, log_prefix + f"❌ AI Check Failed: {e}，豁免本条")
+        return (True, f"AI不可用，自动豁免")
 
 async def _check_is_closed_logic(latest_msg):
     is_closed = False
@@ -1134,8 +1136,6 @@ async def check_wait_keyword_logic(keyword, result_queue):
 
                         if m.sticker or m.gif:
                             continue
-
-                        if m.reply_to and m.reply_to.reply_to_msg_id: continue
 
                         if m.reply_to and m.reply_to.reply_to_msg_id: continue
 
