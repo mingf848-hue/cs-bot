@@ -339,9 +339,9 @@ STATS_HTML = """
             <div class="input-group">
                 <label>关键词配置</label>
                 {% if fetch_status %}
-                    <span class="status-tag st-ok">✅ 已从表格同步</span>
+                    <span class="status-tag st-ok">已从表格同步</span>
                 {% else %}
-                    <span class="status-tag st-err">⚠️ 使用本地缓存 ({{ fetch_msg }})</span>
+                    <span class="status-tag st-err">使用本地缓存 ({{ fetch_msg }})</span>
                 {% endif %}
                 <textarea id="keywordsInput" class="keywords-box">{{ default_keywords }}</textarea>
             </div>
@@ -363,11 +363,11 @@ STATS_HTML = """
                 <h3 id="result-title">统计结果</h3>
                 <div style="display:flex; align-items:center">
                     <span id="sync-status"></span>
-                    <button onclick="syncToCloud()" id="btnSync" class="submit-btn sync-btn">☁️ 同步到表格</button>
+                    <button onclick="syncToCloud()" id="btnSync" class="submit-btn sync-btn">同步到表格</button>
                 </div>
             </div>
             
-            <div class="hint-box">💡 确认数据无误后，点击上方“同步”按钮即可一键写入表格。</div>
+            <div class=”hint-box”>确认数据无误后，点击上方”同步”按钮即可一键写入表格。</div>
             
             <div style="border: 1px solid var(--border); border-radius: 8px; overflow: hidden;">
                 <table id="result-table">
@@ -420,7 +420,7 @@ STATS_HTML = """
             pWrap.style.display = 'block'; pText.style.display = 'block'; pBar.style.width = '2%';
             pText.innerText = '连接服务器...'; errBox.style.display = 'none';
             resArea.style.display = 'none'; tbody.innerHTML = '';
-            syncSt.innerText = ''; syncBtn.disabled = false; syncBtn.innerText = "☁️ 同步到表格";
+            syncSt.innerText = ''; syncBtn.disabled = false; syncBtn.innerText = "同步到表格";
             
             logsWrap.style.display = 'block';
             logsContent.innerHTML = '';
@@ -494,10 +494,10 @@ STATS_HTML = """
                 });
                 const json = await res.json();
                 if (json.success) {
-                    st.style.color = '#34C759'; st.innerText = "✅ " + json.msg;
+                    st.style.color = '#34C759'; st.innerText = json.msg;
                     btn.innerText = "已同步";
                 } else {
-                    st.style.color = '#FF3B30'; st.innerText = "❌ " + json.msg;
+                    st.style.color = '#FF3B30'; st.innerText = "[失败] " + json.msg;
                     btn.disabled = false; btn.innerText = "重试";
                 }
             } catch (e) {
