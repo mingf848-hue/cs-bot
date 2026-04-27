@@ -593,6 +593,7 @@ SETTINGS_HTML = """
             <div class="flex flex-col md:flex-row gap-3 w-full md:w-auto flex-1 justify-end">
                 <div class="flex flex-col gap-1 w-full md:w-48"><label class="text-[9px] font-bold text-slate-500 uppercase">查找我的反馈话术</label><input v-model="recovery.search" class="bento-input px-2 py-1.5 h-8 text-xs font-mono border-red-200 focus:border-red-400" placeholder="例如: 场馆技术核实中..."></div>
                 <div class="flex flex-col gap-1 w-full md:w-48"><label class="text-[9px] font-bold text-slate-500 uppercase">回复给原提问者</label><input v-model="recovery.reply" class="bento-input px-2 py-1.5 h-8 text-xs font-mono border-green-200 focus:border-green-400" placeholder="例如: 已恢复，请刷新重试"></div>
+                <div class="flex flex-col gap-1 w-full md:w-32"><label class="text-[9px] font-bold text-slate-500 uppercase">附带图片(可选)</label><div class="flex items-center gap-1"><input type="file" accept="image/*" @change="onRecoveryImage" ref="recoveryImgInput" class="hidden"><button type="button" @click="$refs.recoveryImgInput.click()" class="h-8 px-2 bg-blue-50 hover:bg-blue-100 text-blue-600 border border-blue-200 rounded text-[10px] font-bold flex items-center gap-1 whitespace-nowrap"><i class="fa-solid fa-image"></i><span v-if="!recovery.image">选择图片</span><span v-else class="truncate max-w-[60px]">{{ recovery.imageName }}</span></button><button v-if="recovery.image" type="button" @click="clearRecoveryImage" class="h-8 w-8 bg-red-50 hover:bg-red-100 text-red-500 border border-red-200 rounded text-[10px] flex items-center justify-center" title="清除"><i class="fa-solid fa-xmark"></i></button></div></div>
                 <div class="flex flex-col gap-1 w-full md:w-20"><label class="text-[9px] font-bold text-slate-500 uppercase">范围(小时)</label><input type="number" v-model.number="recovery.hours" class="bento-input px-2 py-1.5 h-8 text-xs text-center font-bold" placeholder="5"></div>
                 <div class="flex flex-col gap-1 w-full md:w-24"><label class="text-[9px] font-bold text-slate-500 uppercase">间隔(秒)</label><div class="flex gap-1"><input type="number" v-model.number="recovery.min" class="bento-input px-1 py-1.5 h-8 text-xs text-center font-bold w-1/2" placeholder="2"><input type="number" v-model.number="recovery.max" class="bento-input px-1 py-1.5 h-8 text-xs text-center font-bold w-1/2" placeholder="5"></div></div>
                 <div class="flex items-end"><button @click="runRecovery" :disabled="!recovery.search || !recovery.reply" class="h-8 bg-red-500 hover:bg-red-600 disabled:bg-slate-300 text-white px-4 rounded text-xs font-bold transition-colors flex items-center gap-2 shadow-sm whitespace-nowrap"><i class="fa-solid fa-paper-plane"></i> 执行回复</button></div>
@@ -611,7 +612,7 @@ SETTINGS_HTML = """
         setup() {
             const config = reactive({ enabled: false, extra_enabled: true, approval_keywords: [], schedule: {active: false, start: '09:00', end: '21:00'}, rules: [] });
             const toast = reactive({ show: false, msg: '', type: 'success' });
-            const recovery = reactive({ search: '', reply: '', hours: 5, min: 2, max: 5 });
+            const recovery = reactive({ search: '', reply: '', hours: 5, min: 2, max: 5, image: '', imageName: '' });
             const available_accounts = reactive([]);
 
             // v75: Independent function for refreshing status (Heartbeat)
@@ -694,10 +695,23 @@ SETTINGS_HTML = """
                 } catch(e) { showToast('网络错误', 'error'); }
             };
             
+            const onRecoveryImage = (e) => {
+                const file = e.target.files && e.target.files[0];
+                if (!file) return;
+                if (file.size > 10 * 1024 * 1024) { showToast('图片过大(>10MB)', 'error'); e.target.value=''; return; }
+                const reader = new FileReader();
+                reader.onload = () => { recovery.image = reader.result; recovery.imageName = file.name; };
+                reader.onerror = () => showToast('图片读取失败', 'error');
+                reader.readAsDataURL(file);
+            };
+
+            const clearRecoveryImage = () => { recovery.image = ''; recovery.imageName = ''; };
+
             const runRecovery = async () => {
                 const min = recovery.min || 1;
                 const max = recovery.max || 3;
-                if(!confirm(`⚠️ 确定要执行批量回复吗？\\n\\n范围: 过去 ${recovery.hours} 小时\\n目标: 我发送的 "${recovery.search}" \\n动作: 追溯回复给【原消息发送者】\\n间隔: ${min}-${max} 秒`)) return;
+                const imgInfo = recovery.image ? `\\n图片: ${recovery.imageName}` : '';
+                if(!confirm(`⚠️ 确定要执行批量回复吗？\\n\\n范围: 过去 ${recovery.hours} 小时\\n目标: 我发送的 "${recovery.search}" \\n动作: 追溯回复给【原消息发送者】${imgInfo}\\n间隔: ${min}-${max} 秒`)) return;
                 try {
                     const res = await fetch('/api/batch_recovery', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(recovery) });
                     const json = await res.json();
@@ -708,7 +722,7 @@ SETTINGS_HTML = """
 
             const showToast = (msg, type) => { toast.msg = msg; toast.type = type; toast.show = true; setTimeout(() => toast.show = false, 3000); };
 
-            return { config, toast, recovery, available_accounts, listToString, stringToList, stringToIntList, addRule, removeRule, saveConfig, runRecovery };
+            return { config, toast, recovery, available_accounts, listToString, stringToList, stringToIntList, addRule, removeRule, saveConfig, runRecovery, onRecoveryImage, clearRecoveryImage };
         }
     }).mount('#app');
 </script>
@@ -966,20 +980,37 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     @app.route('/api/batch_recovery', methods=['POST'])
     def trigger_batch_recovery():
         data = request.json
+        image_data = data.get('image') or ''
+        image_bytes = None
+        image_name = data.get('imageName') or 'image.jpg'
+        if image_data and ',' in image_data:
+            try:
+                import base64 as _b64
+                image_bytes = _b64.b64decode(image_data.split(',', 1)[1])
+            except Exception:
+                image_bytes = None
         asyncio.run_coroutine_threadsafe(
-            run_batch_recovery_task(client, data.get('search'), data.get('reply'), float(data.get('hours', 5)), float(data.get('min', 2.0)), float(data.get('max', 5.0))),
+            run_batch_recovery_task(client, data.get('search'), data.get('reply'), float(data.get('hours', 5)), float(data.get('min', 2.0)), float(data.get('max', 5.0)), image_bytes, image_name),
             bot_loop
         )
-        return jsonify({"success": True, "msg": "任务已启动"})
+        return jsonify({"success": True, "msg": "任务已启动" + ("（含图片）" if image_bytes else "")})
 
-    async def run_batch_recovery_task(cli, search, reply, hours, min_d, max_d):
+    async def run_batch_recovery_task(cli, search, reply, hours, min_d, max_d, image_bytes=None, image_name='image.jpg'):
         limit_time = datetime.now(timezone.utc) - timedelta(hours=hours)
         async for msg in cli.iter_messages(None, search=search):
             if msg.date < limit_time: break
             if not msg.is_group or not msg.out: continue
             try:
                 target_id = msg.reply_to_msg_id if (msg.is_reply and msg.reply_to_msg_id) else msg.id
-                await cli.send_message(msg.chat_id, format_caption(reply), reply_to=target_id)
+                caption = format_caption(reply)
+                if image_bytes:
+                    # 图片+文字 一条消息发送
+                    import io as _io
+                    buf = _io.BytesIO(image_bytes)
+                    buf.name = image_name
+                    await cli.send_file(msg.chat_id, buf, caption=caption, reply_to=target_id)
+                else:
+                    await cli.send_message(msg.chat_id, caption, reply_to=target_id)
                 await asyncio.sleep(random.uniform(min_d, max_d))
             except: pass
 
