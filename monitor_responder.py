@@ -5,7 +5,9 @@ import random
 import json
 import os
 import re
+import unicodedata
 import warnings
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from flask import request, jsonify, Response, render_template_string
 from telethon import events, TelegramClient, functions
@@ -43,8 +45,10 @@ TZ_NAME = "北京时间"
 # ==========================================
 latest_otp_storage = {}
 global_clients = {}  # 存储所有活跃的客户端实例 {name: client}
+client_user_ids = {}  # 缓存已知账号的 Telegram user id {name: id}
 MAIN_NAME = "主账号" # 全局记录主账号名称
 redis_client = None  # 全局 Redis 客户端
+system_cs_prefixes = []
 
 # --- 核心工具函数 ---
 
@@ -105,46 +109,222 @@ def get_sender_name(sender):
         return f"{fullname} (@{uname})".strip()
     return fullname or "Unknown"
 
+def split_config_items(raw, split_commas=False):
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        pattern = r'[\r\n,，]+' if split_commas else r'[\r\n]+'
+        items = re.split(pattern, raw)
+    elif isinstance(raw, list):
+        items = raw
+    else:
+        items = [raw]
+    return [str(x).strip() for x in items if str(x).strip()]
+
+def clean_group_ids(raw):
+    result = []
+    for item in split_config_items(raw, split_commas=True):
+        match = re.search(r'-?\d+', item)
+        if match:
+            try:
+                result.append(int(match.group()))
+            except Exception:
+                pass
+    return result
+
+def ensure_rule_id(rule):
+    rule_id = str(rule.get("id", "")).strip()
+    if not rule_id:
+        rule_id = f"rule_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+        rule["id"] = rule_id
+    return rule_id
+
+def normalize_prefix_text(text):
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFKC", str(text)).lower()
+    text = re.sub(r'[\s\u200b\u200c\u200d\ufeff]+', '', text)
+    return re.sub(r'[_\-/／\\|·•・.。:：]+', '', text)
+
+def sender_matches_prefix(sender_obj, prefixes, include_username=True):
+    if not sender_obj or not prefixes:
+        return False
+
+    username = (getattr(sender_obj, 'username', None) or "").strip().lower()
+    norm_username = normalize_prefix_text(username)
+    first_name = getattr(sender_obj, 'first_name', '') or ""
+    last_name = getattr(sender_obj, 'last_name', '') or ""
+    title = getattr(sender_obj, 'title', '') or ""
+    fullname = f"{first_name} {last_name}".strip()
+    raw_name_candidates = [str(x).strip().lower() for x in (first_name, fullname, title) if str(x).strip()]
+    norm_name_candidates = [normalize_prefix_text(x) for x in raw_name_candidates]
+
+    for p in prefixes:
+        clean_p = str(p).strip().lstrip('@').lower()
+        norm_p = normalize_prefix_text(clean_p)
+        if not clean_p:
+            continue
+
+        if include_username and username and (clean_p in username or (norm_p and norm_p in norm_username)):
+            return True
+
+        if any(name.startswith(clean_p) for name in raw_name_candidates):
+            return True
+
+        if norm_p and any(name.startswith(norm_p) for name in norm_name_candidates):
+            return True
+
+        if norm_p and len(norm_p) >= 4 and any(norm_p in name for name in norm_name_candidates):
+            return True
+
+    return False
+
 def check_sender_allowed(sender_obj, rule):
     """
-    检查发送者是否被允许 (只检测 Username)
-    v69: 彻底忽略名字，只看 @username
+    检查发送者是否被允许。
+    Username 继续使用包含匹配；显示名使用前缀匹配，避免无 username 的客服被放行。
     """
     sender_mode = rule.get("sender_mode", "exclude")
     prefixes = rule.get("sender_prefixes", [])
-    
-    # 获取发送者的 Username (可能为 None)
-    current_username = getattr(sender_obj, 'username', None)
-    
-    # 情况1: 发送者没有设置 Username
-    if not current_username:
-        # 如果是白名单模式(Include)，必须有用户名才能通过，否则直接拦截
-        if sender_mode == "include":
-            return False
-        # 如果是黑名单模式(Exclude)，没用户名无法比对黑名单，默认放行
-        return True 
-
-    # 统一转小写进行比对
-    current_username = current_username.lower()
-    match_found = False
-    
-    for p in prefixes:
-        if not p: continue
-        # 清理配置项: 去掉 @ 符号，转小写
-        clean_p = p.strip().lstrip('@').lower()
-        
-        # 包含匹配: 只要 username 里包含这个词就算命中
-        if clean_p and (clean_p in current_username):
-            match_found = True
-            break
+    match_found = sender_matches_prefix(sender_obj, prefixes, include_username=True)
             
     if sender_mode == "exclude" and match_found: 
-        logger.info(f"🛡️ [Filter] 黑名单拦截 (Username): @{current_username} 命中 '{clean_p}'")
+        logger.info(f"🛡️ [Filter] 黑名单拦截: {get_sender_name(sender_obj)}")
         return False
     elif sender_mode == "include" and not match_found: 
         return False # 白名单未命中，拦截
         
     return True
+
+async def is_monitor_sender_cs(client, event, other_cs_ids, sender_obj=None):
+    sender_id = event.sender_id
+    if event.out:
+        return True
+    if sender_id in (other_cs_ids or []):
+        return True
+    if sender_id in client_user_ids.values():
+        return True
+
+    for name, cli in list(global_clients.items()):
+        if name in client_user_ids:
+            continue
+        try:
+            if hasattr(cli, "is_connected") and not cli.is_connected():
+                continue
+            me = await cli.get_me()
+            if me:
+                client_user_ids[name] = me.id
+                if sender_id == me.id:
+                    return True
+        except Exception:
+            pass
+
+    if sender_obj is None:
+        try:
+            sender_obj = await event.get_sender()
+        except Exception:
+            sender_obj = None
+
+    return sender_matches_prefix(sender_obj, system_cs_prefixes, include_username=False)
+
+def remember_sent_message(sent_records, chat_id, sent):
+    if not sent:
+        return
+    if isinstance(sent, (list, tuple)):
+        for item in sent:
+            remember_sent_message(sent_records, chat_id, item)
+        return
+    sent_records.append((chat_id, sent))
+
+def get_sent_ids_for_chat(sent_records, chat_id):
+    ids = set()
+    for sent_chat_id, sent in sent_records:
+        if sent_chat_id != chat_id:
+            continue
+        msg_id = getattr(sent, "id", sent)
+        if msg_id:
+            ids.add(msg_id)
+    return ids
+
+def get_first_sent_id_for_chat(sent_records, chat_id):
+    ids = get_sent_ids_for_chat(sent_records, chat_id)
+    if not ids:
+        return None
+    return min(ids)
+
+async def delete_sent_messages(client, sent_records):
+    ids_by_chat = {}
+    for chat_id, sent in sent_records:
+        msg_id = getattr(sent, "id", sent)
+        if msg_id:
+            ids_by_chat.setdefault(chat_id, []).append(msg_id)
+
+    for chat_id, msg_ids in ids_by_chat.items():
+        await client.delete_messages(chat_id, msg_ids)
+
+def parse_peer_target(raw):
+    target = str(raw or "").strip()
+    if not target:
+        return None
+    if re.fullmatch(r'-?\d+', target):
+        try:
+            return int(target)
+        except Exception:
+            return target
+    return target
+
+def format_bot_notice(tpl, event=None, rule=None, sender_name=""):
+    text = format_caption(tpl)
+    if not text:
+        return ""
+    message_text = ""
+    chat_id = ""
+    if event is not None:
+        message_text = getattr(event, "raw_text", None) or getattr(event, "text", "") or ""
+        chat_id = str(getattr(event, "chat_id", "") or "")
+    replacements = {
+        "{rule}": str((rule or {}).get("name", "")),
+        "{sender}": str(sender_name or ""),
+        "{group_id}": chat_id,
+        "{message}": message_text,
+    }
+    for key, value in replacements.items():
+        text = text.replace(key, value)
+    return text
+
+def _send_bot_message_sync(chat_id, text):
+    bot_token = os.environ.get("BOT_TOKEN", "").strip()
+    if not bot_token:
+        raise RuntimeError("BOT_TOKEN 未配置，无法发送 Bot 通知")
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "disable_web_page_preview": True,
+    }
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            status = getattr(resp, "status", resp.getcode())
+            resp_text = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        raise RuntimeError(f"Bot API 请求失败: {e}")
+    if status != 200:
+        raise RuntimeError(f"Bot API 返回 {status}: {resp_text[:200]}")
+    data = json.loads(resp_text)
+    if not data.get("ok"):
+        raise RuntimeError(f"Bot API 发送失败: {str(data)[:200]}")
+    return data
+
+async def send_bot_notice(chat_id, text):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: _send_bot_message_sync(chat_id, text))
 
 def format_caption(tpl):
     if not tpl: return ""
@@ -157,28 +337,38 @@ def parse_smart_amount(text):
     [v76 修复版] 从文本中提取金额，支持 k/w/万 等单位
     修复：排除订单号、超长数字干扰
     """
-    # 1. 优先：[关键词] + [任意非数字间隔] + [数字] + [可选单位]
+    if not text:
+        return False, 0.0
+
+    def apply_amount_unit(num, unit):
+        if not unit:
+            return num
+        unit = unit.lower()
+        if unit in ['w', '万']:
+            return num * 10000
+        if unit in ['k', '千']:
+            return num * 1000
+        return num
+
+    # 1. 优先：带单位的数字 (如 3万, 3w, 5k)，避免“万”被关键词分支提前吃掉
+    unit_nums = []
+    for unit_match in re.finditer(r'(?<![a-zA-Z0-9])(\d+(?:\.\d+)?)\s*([wWkK万千])', text):
+        num = apply_amount_unit(float(unit_match.group(1)), unit_match.group(2))
+        if num < 100000000:
+            unit_nums.append(num)
+    if unit_nums:
+        return True, max(unit_nums)
+
+    # 2. 次优：[关键词] + [任意非数字间隔] + [数字] + [可选单位]
     # 使用 [^0-9\n]{0,20} 允许中间有最多20个非数字字符
     kv_match = re.search(r'(?:金额|额度|存|款|U)[^0-9\n]{0,20}(\d+(?:\.\d+)?)\s*([wWkK万千])?', text)
     if kv_match:
         num = float(kv_match.group(1))
-        unit = kv_match.group(2)
-        if unit:
-            unit = unit.lower()
-            if unit in ['w', '万']: num *= 10000
-            elif unit in ['k', '千']: num *= 1000
+        num = apply_amount_unit(num, kv_match.group(2))
         
         # 再次校验：过滤掉大于1亿的数字（可能是订单号）
         if num < 100000000:
             return True, num
-
-    # 2. 次优：带单位的数字 (如 2w, 5k)
-    unit_match = re.search(r'(\d+(?:\.\d+)?)\s*([wWkK万千])', text)
-    if unit_match:
-        num = float(unit_match.group(1))
-        unit = unit_match.group(2).lower()
-        if unit in ['w', '万']: return True, num * 10000
-        elif unit in ['k', '千']: return True, num * 1000
 
     # 3. 兜底：提取文中所有纯数字，但必须排除长得像 ID/时间/订单号 的
     simple_nums = re.findall(r'\d+(?:\.\d+)?', text)
@@ -236,6 +426,7 @@ DEFAULT_CONFIG = {
 
 current_config = DEFAULT_CONFIG.copy()
 rule_timers = {}
+VALID_REPLY_TYPES = {"text", "forward", "copy_file", "amount_logic", "preempt_check", "notify_user"}
 
 # [v78] 全局 Redis 初始化函数 (Main.py 可见)
 def init_redis_connection():
@@ -286,23 +477,51 @@ def load_config(system_cs_prefixes):
     if not loaded: 
         logger.warning("⚠️ [Monitor] 未能加载任何配置，系统使用默认模板启动")
         current_config = DEFAULT_CONFIG.copy()
-    
+
+    if "enabled" not in current_config:
+        current_config["enabled"] = True
     if "extra_enabled" not in current_config:
         current_config["extra_enabled"] = True 
 
     if "approval_keywords" not in current_config:
         current_config["approval_keywords"] = ["同意", "批准", "ok"]
-    if "schedule" not in current_config:
+    else:
+        current_config["approval_keywords"] = split_config_items(current_config.get("approval_keywords", []), split_commas=True)
+    if not isinstance(current_config.get("schedule"), dict):
         current_config["schedule"] = DEFAULT_CONFIG["schedule"]
+    if not isinstance(current_config.get("rules"), list):
+        current_config["rules"] = []
 
+    clean_rules = []
     for rule in current_config["rules"]:
+        if not isinstance(rule, dict):
+            continue
+        ensure_rule_id(rule)
         if "enabled" not in rule: rule["enabled"] = True
         if "check_file" not in rule: rule["check_file"] = False
         if "enable_approval" not in rule: rule["enable_approval"] = False
         if "reply_account" not in rule: rule["reply_account"] = "" 
-        
+        if "groups" not in rule: rule["groups"] = []
+        if "keywords" not in rule: rule["keywords"] = []
+        if "file_extensions" not in rule: rule["file_extensions"] = []
         if "filename_keywords" not in rule: rule["filename_keywords"] = []
-        if "approval_action" not in rule: rule["approval_action"] = {}
+        if "sender_mode" not in rule: rule["sender_mode"] = "exclude"
+        if "sender_prefixes" not in rule: rule["sender_prefixes"] = []
+        if "cooldown" not in rule: rule["cooldown"] = 60
+        if not isinstance(rule.get("replies"), list): rule["replies"] = []
+        if not isinstance(rule.get("approval_action"), dict): rule["approval_action"] = {}
+
+        rule["groups"] = clean_group_ids(rule.get("groups", []))
+        rule["keywords"] = split_config_items(rule.get("keywords", []))
+        rule["file_extensions"] = [x.lower().replace('.', '') for x in split_config_items(rule.get("file_extensions", []), split_commas=True)]
+        rule["filename_keywords"] = split_config_items(rule.get("filename_keywords", []), split_commas=True)
+        rule["sender_prefixes"] = split_config_items(rule.get("sender_prefixes", []), split_commas=True)
+        if rule.get("sender_mode") not in ("exclude", "include"):
+            rule["sender_mode"] = "exclude"
+        try:
+            rule["cooldown"] = int(rule.get("cooldown", 60))
+        except Exception:
+            rule["cooldown"] = 60
         
         aa = rule["approval_action"]
         if "reply_admin" not in aa: aa["reply_admin"] = ""
@@ -312,16 +531,35 @@ def load_config(system_cs_prefixes):
             if f"delay_{i}_min" not in aa: aa[f"delay_{i}_min"] = 1.0
             if f"delay_{i}_max" not in aa: aa[f"delay_{i}_max"] = 2.0
 
+        clean_replies = []
+        for r in rule.get("replies", []):
+            if not isinstance(r, dict):
+                continue
+            try: r["min"] = float(r.get("min", 1.0))
+            except Exception: r["min"] = 1.0
+            try: r["max"] = float(r.get("max", 3.0))
+            except Exception: r["max"] = 3.0
+            if "type" not in r: r["type"] = "text"
+            if r.get("type") not in VALID_REPLY_TYPES: r["type"] = "text"
+            r["text"] = str(r.get("text", "") or "")
+            r["forward_to"] = str(r.get("forward_to", "") or "").strip()
+            clean_replies.append(r)
+        rule["replies"] = clean_replies
+
         if rule["sender_mode"] == "exclude" and not rule["sender_prefixes"]:
             rule["sender_prefixes"] = list(system_cs_prefixes)
+        clean_rules.append(rule)
+    current_config["rules"] = clean_rules
 
 def save_config(new_config):
     global current_config
     try:
         if not isinstance(new_config, dict) or "rules" not in new_config:
             return False, "无效的配置格式"
+        if not isinstance(new_config.get("rules"), list):
+            return False, "rules 必须是数组"
 
-        if "schedule" not in new_config:
+        if not isinstance(new_config.get("schedule"), dict):
             new_config["schedule"] = DEFAULT_CONFIG["schedule"]
         else:
             new_config["schedule"]["active"] = bool(new_config["schedule"].get("active", False))
@@ -332,26 +570,23 @@ def save_config(new_config):
             current_config["extra_enabled"] = bool(new_config["extra_enabled"])
 
         raw_app_kws = new_config.get("approval_keywords", [])
-        if isinstance(raw_app_kws, str):
-            new_config["approval_keywords"] = [k.strip() for k in re.split(r'[,\n]', raw_app_kws) if k.strip()]
+        new_config["approval_keywords"] = split_config_items(raw_app_kws, split_commas=True)
         
+        clean_rules = []
         for rule in new_config.get("rules", []):
+            if not isinstance(rule, dict):
+                continue
+            ensure_rule_id(rule)
             rule["enabled"] = bool(rule.get("enabled", True))
             rule["reply_account"] = str(rule.get("reply_account", "")).strip() 
             
-            clean_groups = []
             raw_groups = rule.get("groups", [])
-            if isinstance(raw_groups, str): raw_groups = raw_groups.split('\n')
-            for g in raw_groups:
-                g_str = str(g).strip()
-                match = re.search(r'-?\d+', g_str)
-                if match:
-                    try: clean_groups.append(int(match.group()))
-                    except: pass
-            rule["groups"] = clean_groups
+            rule["groups"] = clean_group_ids(raw_groups)
             
             rule["check_file"] = bool(rule.get("check_file", False))
             rule["enable_approval"] = bool(rule.get("enable_approval", False))
+            if rule.get("sender_mode") not in ("exclude", "include"):
+                rule["sender_mode"] = "exclude"
 
             clean_kws = []
             raw_kws = rule.get("keywords", [])
@@ -361,26 +596,17 @@ def save_config(new_config):
                 if k: clean_kws.append(k)
             rule["keywords"] = clean_kws
 
-            clean_exts = []
             raw_exts = rule.get("file_extensions", [])
-            if isinstance(raw_exts, str): raw_exts = raw_exts.split('\n')
-            for ext in raw_exts:
-                e = str(ext).strip().lower().replace('.', '')
-                if e: clean_exts.append(e)
-            rule["file_extensions"] = clean_exts
+            rule["file_extensions"] = [x.lower().replace('.', '') for x in split_config_items(raw_exts, split_commas=True)]
 
-            clean_fn_kws = []
             raw_fn_kws = rule.get("filename_keywords", [])
-            if isinstance(raw_fn_kws, str): raw_fn_kws = raw_fn_kws.split('\n')
-            for k in raw_fn_kws:
-                k = str(k).strip()
-                if k: clean_fn_kws.append(k)
-            rule["filename_keywords"] = clean_fn_kws
+            rule["filename_keywords"] = split_config_items(raw_fn_kws, split_commas=True)
             
-            if "approval_action" not in rule: rule["approval_action"] = {}
+            if not isinstance(rule.get("approval_action"), dict): rule["approval_action"] = {}
             aa = rule["approval_action"]
             aa["reply_admin"] = str(aa.get("reply_admin", "")).strip()
             aa["reply_origin"] = str(aa.get("reply_origin", "")).strip()
+            aa["forward_to"] = str(aa.get("forward_to", "")).strip()
             
             for i in range(1, 4):
                 try: aa[f"delay_{i}_min"] = float(aa.get(f"delay_{i}_min", 1.0))
@@ -388,22 +614,31 @@ def save_config(new_config):
                 try: aa[f"delay_{i}_max"] = float(aa.get(f"delay_{i}_max", 2.0))
                 except: aa[f"delay_{i}_max"] = 2.0
             
-            clean_prefixes = []
             raw_prefixes = rule.get("sender_prefixes", [])
-            if isinstance(raw_prefixes, str): raw_prefixes = raw_prefixes.split('\n')
-            for p in raw_prefixes:
-                p = str(p).strip()
-                if p: clean_prefixes.append(p)
-            rule["sender_prefixes"] = clean_prefixes
+            rule["sender_prefixes"] = split_config_items(raw_prefixes, split_commas=True)
             
             try: rule["cooldown"] = int(rule.get("cooldown", 60))
             except: rule["cooldown"] = 60
-            for r in rule.get("replies", []):
+            clean_replies = []
+            raw_replies = rule.get("replies", [])
+            if not isinstance(raw_replies, list):
+                raw_replies = []
+            for r in raw_replies:
+                if not isinstance(r, dict):
+                    continue
                 try: r["min"] = float(r.get("min", 1.0))
                 except: r["min"] = 1.0
                 try: r["max"] = float(r.get("max", 3.0))
                 except: r["max"] = 3.0
                 if "type" not in r: r["type"] = "text"
+                if r.get("type") not in VALID_REPLY_TYPES: r["type"] = "text"
+                r["text"] = str(r.get("text", "") or "")
+                r["forward_to"] = str(r.get("forward_to", "") or "").strip()
+                clean_replies.append(r)
+            rule["replies"] = clean_replies
+            clean_rules.append(rule)
+
+        new_config["rules"] = clean_rules
         
         if redis_client:
             try: 
@@ -446,6 +681,15 @@ SETTINGS_HTML = """
         .section-label { font-size: 10px; font-weight: 700; color: #6B7280; text-transform: uppercase; letter-spacing: 0.05em; }
         .recovery-panel { background: linear-gradient(135deg, #FFF1F2 0%, #FFF 100%); border: 1px solid #FECDD3; }
         .approval-bg { background-color: #EFF6FF; border-top: 1px solid #DBEAFE; }
+        .flow-step { display: flex; gap: 8px; align-items: stretch; }
+        .delay-box { width: 56px; flex: 0 0 56px; border: 1px solid #E5E7EB; border-radius: 8px; background: #FAFAFA; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; color: #9CA3AF; }
+        .delay-box input { width: 38px; height: 20px; text-align: center; background: transparent; border: 0; padding: 0; color: #6B7280; font-weight: 700; }
+        .step-panel { flex: 1; border: 1px solid #E5E7EB; border-radius: 8px; background: #FFFFFF; padding: 8px; transition: border-color .15s, box-shadow .15s; }
+        .step-panel:hover { border-color: #C7D2FE; box-shadow: 0 4px 12px rgba(99,102,241,.08); }
+        .visual-label { font-size: 9px; font-weight: 800; color: #9CA3AF; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 3px; display: flex; align-items: center; gap: 4px; }
+        .visual-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+        .step-type { border: 0; background: transparent; color: #4B5563; font-weight: 800; height: 22px; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; }
+        .step-help { border: 1px solid #FDE68A; background: #FFFBEB; color: #92400E; border-radius: 6px; padding: 6px 8px; font-size: 10px; font-weight: 600; line-height: 1.4; }
     </style>
     <script>
         tailwind.config = { theme: { extend: { fontFamily: { sans: ['-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'sans-serif'], mono: ['ui-monospace', 'Menlo', 'monospace'], }, colors: { primary: '#6366F1', slate: { 50:'#f9fafb', 100:'#f3f4f6', 200:'#e5e7eb', 800:'#1f2937' } } } } }
@@ -557,7 +801,7 @@ SETTINGS_HTML = """
                     </div>
                     <div class="h-px bg-slate-100"></div>
                     <div class="space-y-1.5">
-                        <div class="flex items-center justify-between"><span class="section-label text-primary"><i class="fa-solid fa-bolt mr-1"></i>执行动作流</span><button @click="rule.replies.push({type:'text', text:'', forward_to:'', min:1, max:3})" class="text-[10px] text-primary hover:bg-primary/5 px-1.5 py-0.5 rounded transition-colors border border-transparent hover:border-primary/10 font-bold">+ 添加步骤</button></div>
+                        <div class="flex items-center justify-between"><span class="section-label text-primary"><i class="fa-solid fa-bolt mr-1"></i>执行动作流</span><button @click="addStep(rule)" class="text-[10px] text-primary hover:bg-primary/5 px-1.5 py-0.5 rounded transition-colors border border-transparent hover:border-primary/10 font-bold"><i class="fa-solid fa-plus mr-1"></i>添加步骤</button></div>
                         <div class="flex items-center gap-2 mb-2 bg-indigo-50 border border-indigo-100 p-1.5 rounded">
                             <span class="text-[9px] font-bold text-indigo-500 uppercase"><i class="fa-solid fa-user-tag mr-1"></i>选择回复账号:</span>
                             <select v-model="rule.reply_account" class="flex-1 text-[10px] bg-transparent border-none p-0 text-indigo-700 font-bold focus:ring-0 cursor-pointer h-4">
@@ -566,19 +810,92 @@ SETTINGS_HTML = """
                             </select>
                         </div>
                         <div v-if="rule.replies.length === 0" class="text-center py-2 text-[10px] text-slate-300 border border-dashed border-slate-200 rounded font-medium">无动作</div>
-                        <div class="space-y-1.5">
-                            <div v-for="(reply, rIndex) in rule.replies" :key="rIndex" class="flex gap-1.5 group/item">
-                                <div class="flex flex-col justify-center items-center w-8 bg-slate-50 border border-slate-200 rounded h-auto font-mono"><input v-model.number="reply.min" class="w-full text-center bg-transparent text-[9px] text-slate-500 focus:outline-none h-3 p-0" placeholder="min"><div class="w-3 h-px bg-slate-200 my-0.5"></div><input v-model.number="reply.max" class="w-full text-center bg-transparent text-[9px] text-slate-500 focus:outline-none h-3 p-0" placeholder="max"></div>
-                                <div class="flex-1 bg-slate-50 border border-slate-200 rounded p-1.5 hover:border-primary/30 hover:bg-white transition-all">
-                                    <div class="flex items-center gap-1.5 mb-1">
-                                        <select v-model="reply.type" class="text-[10px] bg-transparent border-none p-0 text-slate-600 font-bold focus:ring-0 cursor-pointer w-auto font-sans"><option value="text">发送文本</option><option value="forward">直接转发</option><option value="copy_file">转发+新文案</option><option value="amount_logic">金额分流</option><option value="preempt_check">抢答检测 (自删)</option></select>
-                                        <button @click="rule.replies.splice(rIndex, 1)" class="ml-auto text-slate-300 hover:text-red-400"><i class="fa-solid fa-xmark text-[10px]"></i></button>
+                        <div class="space-y-2">
+                            <div v-for="(reply, rIndex) in rule.replies" :key="rIndex" class="flow-step group/item">
+                                <div class="delay-box">
+                                    <input v-model.number="reply.min" placeholder="1">
+                                    <div class="w-4 h-px bg-slate-200"></div>
+                                    <input v-model.number="reply.max" placeholder="3">
+                                    <span class="text-[9px] font-bold">秒</span>
+                                </div>
+                                <div class="step-panel">
+                                    <div class="flex items-center gap-2 mb-2">
+                                        <span class="text-[10px] text-slate-400 font-mono">#{{rIndex + 1}}</span>
+                                        <select v-model="reply.type" @change="normalizeStep(reply)" class="step-type">
+                                            <option value="text">发送文本</option>
+                                            <option value="forward">直接转发</option>
+                                            <option value="copy_file">转发+新文案</option>
+                                            <option value="amount_logic">金额分流</option>
+                                            <option value="preempt_check">抢答检测（自删）</option>
+                                            <option value="notify_user">Bot私聊通知</option>
+                                        </select>
+                                        <button @click="rule.replies.splice(rIndex, 1)" class="ml-auto text-slate-300 hover:text-red-400 w-6 h-6 flex items-center justify-center rounded hover:bg-red-50" title="删除步骤"><i class="fa-solid fa-xmark text-[10px]"></i></button>
                                     </div>
-                                    <template v-if="reply.type === 'text'"><textarea v-model="reply.text" rows="2" class="bento-input w-full px-1.5 py-1 text-[10px] resize-none border-transparent bg-white focus:border-slate-200 font-mono" placeholder="内容... ({data}插入提取结果)"></textarea></template>
-                                    <template v-if="reply.type === 'forward'"><input v-model="reply.forward_to" class="bento-input w-full px-1.5 py-1 h-6 text-[10px] font-mono text-blue-600" placeholder="目标群ID"></template>
-                                    <template v-if="reply.type === 'copy_file'"><input v-model="reply.forward_to" class="bento-input w-full px-1.5 py-1 h-6 text-[10px] font-mono text-blue-600 mb-1" placeholder="目标群ID"><textarea v-model="reply.text" rows="2" class="bento-input w-full px-1.5 py-1 text-[10px] resize-none bg-yellow-50 border-yellow-100 focus:border-yellow-300 font-mono" placeholder="新文案... ({time})"></textarea></template>
-                                    <template v-if="reply.type === 'amount_logic'"><input v-model="reply.forward_to" class="bento-input w-full px-1.5 py-1 h-6 text-[10px] font-mono text-blue-600 mb-1" placeholder="小额转发目标群ID"><textarea v-model="reply.text" rows="2" class="bento-input w-full px-1.5 py-1 text-[10px] resize-none bg-indigo-50 border-indigo-100 focus:border-indigo-300 font-mono" placeholder="2000|大额语|小额1;;小额2"></textarea></template>
-                                    <template v-if="reply.type === 'preempt_check'"><div class="px-1.5 py-1 bg-red-50 text-red-500 rounded text-[10px] font-medium border border-red-100 flex items-center gap-2"><i class="fa-solid fa-user-ninja"></i><span>检测到中间有人插话则删除自己</span></div></template>
+
+                                    <template v-if="reply.type === 'text'">
+                                        <div class="visual-field">
+                                            <div class="visual-label"><i class="fa-solid fa-message"></i>发送内容</div>
+                                            <textarea v-model="reply.text" rows="3" class="bento-input w-full px-2 py-1.5 text-[11px] resize-none bg-white" placeholder="输入要回复到原群的文字"></textarea>
+                                        </div>
+                                    </template>
+
+                                    <template v-if="reply.type === 'forward'">
+                                        <div class="visual-field">
+                                            <div class="visual-label"><i class="fa-solid fa-share"></i>转发目标群</div>
+                                            <input v-model="reply.forward_to" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] text-blue-600" placeholder="-1001234567890">
+                                        </div>
+                                    </template>
+
+                                    <template v-if="reply.type === 'copy_file'">
+                                        <div class="grid grid-cols-1 gap-2">
+                                            <div class="visual-field">
+                                                <div class="visual-label"><i class="fa-solid fa-share"></i>转发目标群</div>
+                                                <input v-model="reply.forward_to" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] text-blue-600" placeholder="-1001234567890">
+                                            </div>
+                                            <div class="visual-field">
+                                                <div class="visual-label"><i class="fa-solid fa-pen"></i>新文案</div>
+                                                <textarea v-model="reply.text" rows="3" class="bento-input w-full px-2 py-1.5 text-[11px] resize-none bg-yellow-50 border-yellow-100 focus:border-yellow-300" placeholder="发送文件/图片时附带的文案，支持 {time}"></textarea>
+                                            </div>
+                                        </div>
+                                    </template>
+
+                                    <template v-if="reply.type === 'amount_logic'">
+                                        <div class="grid grid-cols-2 gap-2">
+                                            <div class="visual-field">
+                                                <div class="visual-label"><i class="fa-solid fa-scale-balanced"></i>金额阈值</div>
+                                                <input :value="amountPart(reply, 0)" @input="setAmountPart(reply, 0, $event.target.value)" class="bento-input w-full px-2 py-1.5 h-8 text-[11px]" placeholder="2000">
+                                            </div>
+                                            <div class="visual-field">
+                                                <div class="visual-label"><i class="fa-solid fa-share"></i>小额转发群</div>
+                                                <input v-model="reply.forward_to" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] text-blue-600" placeholder="-1001234567890">
+                                            </div>
+                                            <div class="visual-field col-span-2">
+                                                <div class="visual-label"><i class="fa-solid fa-arrow-trend-up"></i>大额回复</div>
+                                                <textarea :value="amountPart(reply, 1)" @input="setAmountPart(reply, 1, $event.target.value)" rows="2" class="bento-input w-full px-2 py-1.5 text-[11px] resize-none bg-indigo-50 border-indigo-100" placeholder="金额达到阈值时回复的内容"></textarea>
+                                            </div>
+                                            <div class="visual-field col-span-2">
+                                                <div class="visual-label"><i class="fa-solid fa-arrow-trend-down"></i>小额回复</div>
+                                                <textarea :value="amountLowLines(reply)" @input="setAmountLowLines(reply, $event.target.value)" rows="3" class="bento-input w-full px-2 py-1.5 text-[11px] resize-none bg-indigo-50 border-indigo-100" placeholder="金额低于阈值时回复，每行一条"></textarea>
+                                            </div>
+                                        </div>
+                                    </template>
+
+                                    <template v-if="reply.type === 'preempt_check'">
+                                        <div class="step-help"><i class="fa-solid fa-user-shield mr-1"></i>只检测在本规则第一条回复之前插入的他人消息；若有人更快，会删除本规则已发出的消息。</div>
+                                    </template>
+
+                                    <template v-if="reply.type === 'notify_user'">
+                                        <div class="grid grid-cols-1 gap-2">
+                                            <div class="visual-field">
+                                                <div class="visual-label"><i class="fa-solid fa-user"></i>Bot通知对象</div>
+                                                <input v-model="reply.forward_to" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] text-emerald-700" placeholder="用户ID，或机器人可访问的 @username">
+                                            </div>
+                                            <div class="visual-field">
+                                                <div class="visual-label"><i class="fa-solid fa-bell"></i>通知内容</div>
+                                                <textarea v-model="reply.text" rows="3" class="bento-input w-full px-2 py-1.5 text-[11px] resize-none bg-emerald-50 border-emerald-100 focus:border-emerald-300" placeholder="例如：{rule} 已自动回复 {sender}：{message}"></textarea>
+                                            </div>
+                                        </div>
+                                    </template>
                                 </div>
                             </div>
                         </div>
@@ -614,6 +931,47 @@ SETTINGS_HTML = """
             const toast = reactive({ show: false, msg: '', type: 'success' });
             const recovery = reactive({ search: '', reply: '', hours: 5, min: 2, max: 5, image: '', imageName: '' });
             const available_accounts = reactive([]);
+            const syncAvailableAccounts = (accounts) => {
+                if (!Array.isArray(accounts)) return;
+                available_accounts.splice(0, available_accounts.length, ...accounts);
+            };
+            const hydrateReply = (rep = {}) => ({
+                ...rep,
+                type: rep.type || 'text',
+                text: rep.text || '',
+                forward_to: rep.forward_to || '',
+                min: rep.min ?? 1,
+                max: rep.max ?? 3
+            });
+            const splitAmountConfig = (reply) => {
+                const parts = String(reply.text || '').split('|');
+                while (parts.length < 3) parts.push('');
+                return parts.slice(0, 3);
+            };
+            const amountPart = (reply, index) => splitAmountConfig(reply)[index] || '';
+            const setAmountPart = (reply, index, value) => {
+                const parts = splitAmountConfig(reply);
+                parts[index] = value;
+                reply.text = parts.join('|');
+            };
+            const amountLowLines = (reply) => amountPart(reply, 2).split(';;').join('\\n');
+            const setAmountLowLines = (reply, value) => {
+                const lines = String(value || '').split(/[\\r\\n]+/).map(s => s.trim()).filter(Boolean);
+                setAmountPart(reply, 2, lines.join(';;'));
+            };
+            const normalizeStep = (reply) => {
+                if (!reply.text) reply.text = '';
+                if (!reply.forward_to) reply.forward_to = '';
+                if (reply.min === undefined || reply.min === null || reply.min === '') reply.min = 1;
+                if (reply.max === undefined || reply.max === null || reply.max === '') reply.max = 3;
+                if (reply.type === 'amount_logic') {
+                    reply.text = splitAmountConfig(reply).join('|');
+                }
+            };
+            const addStep = (rule) => {
+                if (!Array.isArray(rule.replies)) rule.replies = [];
+                rule.replies.push(hydrateReply({type:'text', text:'', forward_to:'', min:1, max:3}));
+            };
 
             // v75: Independent function for refreshing status (Heartbeat)
             const refreshStatus = () => {
@@ -623,6 +981,7 @@ SETTINGS_HTML = """
                         // Only update switches to avoid UI glitches during typing
                         if(data.enabled !== undefined) config.enabled = data.enabled;
                         if(data.extra_enabled !== undefined) config.extra_enabled = data.extra_enabled;
+                        syncAvailableAccounts(data.available_accounts);
                     })
                     .catch(e => console.log('Heartbeat skipped'));
             };
@@ -633,7 +992,7 @@ SETTINGS_HTML = """
                 .then(data => { 
                     config.enabled = data.enabled; 
                     if(data.extra_enabled !== undefined) config.extra_enabled = data.extra_enabled;
-                    if(data.available_accounts) available_accounts.push(...data.available_accounts);
+                    syncAvailableAccounts(data.available_accounts);
                     
                     if(data.approval_keywords) config.approval_keywords = data.approval_keywords;
                     else config.approval_keywords = ['同意', '批准', 'ok'];
@@ -642,7 +1001,8 @@ SETTINGS_HTML = """
                     else config.schedule = {active: false, start: '09:00', end: '21:00'};
 
                     config.rules = (data.rules || []).map(r => {
-                        if(r.replies) r.replies = r.replies.map(rep => ({...rep, type: rep.type || 'text'}));
+                        if(r.replies) r.replies = r.replies.map(rep => hydrateReply(rep));
+                        else r.replies = [];
                         if(r.check_file === undefined) r.check_file = false;
                         if(r.enable_approval === undefined) r.enable_approval = false;
                         if(r.enabled === undefined) r.enabled = true;
@@ -673,13 +1033,14 @@ SETTINGS_HTML = """
 
             const addRule = () => {
                 config.rules.push({
+                    id: 'rule_' + Date.now() + '_' + Math.floor(Math.random() * 10000),
                     name: '新规则 #' + (config.rules.length + 1),
                     enabled: true,
                     groups: [], check_file: false, keywords: [], file_extensions: [], filename_keywords: [],
                     enable_approval: false,
                     approval_action: {reply_admin:'', reply_origin:'', forward_to:'', delay_1_min:1, delay_1_max:2, delay_2_min:1, delay_2_max:3, delay_3_min:1, delay_3_max:2},
                     sender_mode: 'exclude', sender_prefixes: [], cooldown: 60,
-                    replies: [{type:'text', text: '', min: 1, max: 2}],
+                    replies: [hydrateReply({type:'text', text: '', min: 1, max: 2})],
                     reply_account: ''
                 });
             };
@@ -722,7 +1083,7 @@ SETTINGS_HTML = """
 
             const showToast = (msg, type) => { toast.msg = msg; toast.type = type; toast.show = true; setTimeout(() => toast.show = false, 3000); };
 
-            return { config, toast, recovery, available_accounts, listToString, stringToList, stringToIntList, addRule, removeRule, saveConfig, runRecovery, onRecoveryImage, clearRecoveryImage };
+            return { config, toast, recovery, available_accounts, listToString, stringToList, stringToIntList, addRule, addStep, removeRule, saveConfig, runRecovery, onRecoveryImage, clearRecoveryImage, normalizeStep, amountPart, setAmountPart, amountLowLines, setAmountLowLines };
         }
     }).mount('#app');
 </script>
@@ -854,14 +1215,14 @@ poll();setInterval(poll,2000);
 </html>
 """
 
-async def analyze_message(client, rule, event, other_cs_ids, sender_obj):
+async def analyze_message(client, rule, event, other_cs_ids, sender_obj, check_cooldown=True):
     if not rule.get("enabled", True): 
         return False, "规则已关闭", None
 
     if event.chat_id not in rule.get("groups", []): return False, "群组不符", None
     if event.is_reply: return False, "是回复消息", None
-    if event.out: return False, "Bot自己发送", None
-    if event.sender_id in other_cs_ids: return False, "ID是客服", None
+    if await is_monitor_sender_cs(client, event, other_cs_ids, sender_obj):
+        return False, "发送者是客服", None
     
     # v69: Pass sender object, not name string
     if not check_sender_allowed(sender_obj, rule):
@@ -890,10 +1251,11 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_obj):
     else:
         if not match_text(text, rule): return False, "文本关键词不符", None
     
-    rule_id = rule.get("id", str(rule.get("groups")))
-    last_time = rule_timers.get(rule_id, 0)
-    now = time.time()
-    if now - last_time < rule.get("cooldown", 60): return False, "冷却中", None
+    if check_cooldown:
+        rule_id = ensure_rule_id(rule)
+        last_time = rule_timers.get(rule_id, 0)
+        now = time.time()
+        if now - last_time < rule.get("cooldown", 60): return False, "冷却中", None
     
     return True, "✅ 匹配成功", None
 
@@ -925,7 +1287,9 @@ async def run_schedule_job():
 
 def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None):
     global global_main_handler
+    global system_cs_prefixes
     global_main_handler = main_handler
+    system_cs_prefixes = list(main_cs_prefixes or [])
     init_redis_connection() # [v78] 确保调用全局函数
     load_config(main_cs_prefixes)
     
@@ -974,12 +1338,31 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @app.route('/api/monitor_settings', methods=['POST'])
     def update_monitor_settings():
-        success, msg = save_config(request.json)
+        success, msg = save_config(request.get_json(silent=True) or {})
         return jsonify({"success": success, "msg": msg if not success else ""})
 
     @app.route('/api/batch_recovery', methods=['POST'])
     def trigger_batch_recovery():
-        data = request.json
+        data = request.get_json(silent=True) or {}
+        search = str(data.get('search') or '').strip()
+        reply = str(data.get('reply') or '').strip()
+        if not search or not reply:
+            return jsonify({"success": False, "msg": "查找话术和回复内容不能为空"})
+
+        try:
+            hours = max(0.1, float(data.get('hours', 5)))
+        except Exception:
+            return jsonify({"success": False, "msg": "范围小时数无效"})
+
+        try:
+            min_d = max(0.0, float(data.get('min', 2.0)))
+            max_d = max(0.0, float(data.get('max', 5.0)))
+        except Exception:
+            return jsonify({"success": False, "msg": "间隔秒数无效"})
+
+        if min_d > max_d:
+            min_d, max_d = max_d, min_d
+
         image_data = data.get('image') or ''
         image_bytes = None
         image_name = data.get('imageName') or 'image.jpg'
@@ -990,7 +1373,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             except Exception:
                 image_bytes = None
         asyncio.run_coroutine_threadsafe(
-            run_batch_recovery_task(client, data.get('search'), data.get('reply'), float(data.get('hours', 5)), float(data.get('min', 2.0)), float(data.get('max', 5.0)), image_bytes, image_name),
+            run_batch_recovery_task(client, search, reply, hours, min_d, max_d, image_bytes, image_name),
             bot_loop
         )
         return jsonify({"success": True, "msg": "任务已启动" + ("（含图片）" if image_bytes else "")})
@@ -1012,7 +1395,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                 else:
                     await cli.send_message(msg.chat_id, caption, reply_to=target_id)
                 await asyncio.sleep(random.uniform(min_d, max_d))
-            except: pass
+            except Exception as e:
+                logger.error(f"❌ [Recovery] 批量回复失败 Msg={getattr(msg, 'id', 'unknown')}: {e}")
 
     def create_otp_handler(account_name):
         async def otp_handler(event):
@@ -1052,6 +1436,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                 return
             
             me = await cli.get_me()
+            client_user_ids[name] = me.id
             logger.info(f"✅ [OTP] {name} 启动成功 | 登录身份: {me.first_name} ({me.id})")
             
             try:
@@ -1132,7 +1517,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         # Approval Logic
         if event.is_reply:
             app_kws = current_config.get("approval_keywords", ["同意", "批准", "ok"])
-            if any(k in event.text for k in app_kws):
+            event_text = event.text or ""
+            if any(k and k in event_text for k in app_kws):
                 try:
                     approver = await event.get_sender()
                     # v69: Approval also checks username strictly
@@ -1146,7 +1532,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                             if not rule.get("enabled", True): continue
                             
                             # 1. Match original message
-                            is_match, _, _ = await analyze_message(client, rule, events.NewMessage.Event(original_msg), other_cs_ids, orig_sender)
+                            is_match, _, _ = await analyze_message(client, rule, events.NewMessage.Event(original_msg), other_cs_ids, orig_sender, check_cooldown=False)
                             
                             if is_match and rule.get("enable_approval", False):
                                 # 2. [Fixed] Check if APPROVER is allowed for THIS rule
@@ -1156,7 +1542,6 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                 logger.info(f"👮 [Approval] 批准通过! 匹配规则: {rule.get('name')}")
                                 action = rule.get("approval_action", {})
                                 
-                                replier_client = client
                                 target_name = rule.get("reply_account")
                                 
                                 # v72: Strict Pause Logic
@@ -1167,8 +1552,14 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                     logger.info(f"⏸️ [Approval] 副号开关已关，规则已暂停")
                                     return
 
-                                if target_name in global_clients:
-                                    replier_client = global_clients[target_name]
+                                if target_name not in global_clients:
+                                    logger.error(f"❌ [Approval] 指定回复账号不存在或未注册: {target_name}，已取消执行")
+                                    return
+
+                                replier_client = global_clients[target_name]
+                                if target_name != MAIN_NAME and hasattr(replier_client, "is_connected") and not replier_client.is_connected():
+                                    logger.error(f"❌ [Approval] 指定回复账号未连接: {target_name}，已取消执行")
+                                    return
 
                                 await asyncio.sleep(random.uniform(float(action.get("delay_1_min", 1.0)), float(action.get("delay_1_max", 2.0))))
                                 if action.get("reply_admin"): await event.reply(format_caption(action["reply_admin"]))
@@ -1176,13 +1567,15 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                 await asyncio.sleep(random.uniform(float(action.get("delay_2_min", 1.0)), float(action.get("delay_2_max", 3.0))))
                                 fwd_tgt = action.get("forward_to")
                                 if fwd_tgt:
-                                    try: await replier_client.forward_messages(int(str(fwd_tgt).strip()), original_msg)
+                                    try: await replier_client.forward_messages(parse_peer_target(fwd_tgt), original_msg)
                                     except Exception as e: logger.error(f"❌ [Approval] 转发失败: {e}")
 
                                 await asyncio.sleep(random.uniform(float(action.get("delay_3_min", 1.0)), float(action.get("delay_3_max", 2.0))))
                                 if action.get("reply_origin"):
-                                    try: await replier_client.send_message(original_msg.chat_id, format_caption(action["reply_origin"]), reply_to=original_msg.id)
-                                    except: await original_msg.reply(format_caption(action["reply_origin"])) 
+                                    try:
+                                        await replier_client.send_message(original_msg.chat_id, format_caption(action["reply_origin"]), reply_to=original_msg.id)
+                                    except Exception as e:
+                                        logger.error(f"❌ [Approval] 回复原消息失败: {e}")
                                 return
                 except Exception as e: logger.error(f"❌ [Approval] 处理出错: {e}")
 
@@ -1200,11 +1593,10 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                 # v69: Pass event.sender object
                 is_match, reason, extracted_data = await analyze_message(client, rule, event, other_cs_ids, event.sender)
                 if is_match:
+                    rule_id = ensure_rule_id(rule)
                     logger.info(f"✅ [Monitor] 规则 '{rule.get('name')}' 触发!")
-                    rule_timers[rule.get("id", str(rule.get("groups")))] = time.time()
                     
                     # v72: Strict Routing (No Fallback)
-                    target_client = client 
                     target_name = rule.get("reply_account")
                     extra_on = current_config.get("extra_enabled", True)
 
@@ -1217,63 +1609,114 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                         break # Stop checking other rules
 
                     # 3. Assign Client
-                    if target_name in global_clients:
-                        target_client = global_clients[target_name]
-                        if target_name != MAIN_NAME: logger.info(f"🔀 [Routing] 使用指定账号回复: {target_name}")
+                    if target_name not in global_clients:
+                        logger.error(f"❌ [Routing] 指定回复账号不存在或未注册: {target_name}，规则 '{rule.get('name')}' 已取消")
+                        break
+
+                    target_client = global_clients[target_name]
+                    if target_name != MAIN_NAME and hasattr(target_client, "is_connected") and not target_client.is_connected():
+                        logger.error(f"❌ [Routing] 指定回复账号未连接: {target_name}，规则 '{rule.get('name')}' 已取消")
+                        break
+                    if target_name != MAIN_NAME: logger.info(f"🔀 [Routing] 使用指定账号回复: {target_name}")
 
                     sent_msgs = []
-                    for step in rule.get("replies", []):
-                        await asyncio.sleep(random.uniform(step.get("min", 1), step.get("max", 3)))
-                        stype = step.get("type", "text")
-                        
-                        if stype == "forward":
-                            tgt = step.get("forward_to")
-                            if tgt: sent_msgs.append(await target_client.forward_messages(int(str(tgt).strip()), event.message))
-                        
-                        elif stype == "copy_file":
-                            tgt = step.get("forward_to")
-                            if tgt and event.message.file:
-                                sent_msgs.append(await target_client.send_file(int(str(tgt).strip()), event.message.file.media, caption=format_caption(step.get("text", ""))))
-                        
-                        elif stype == "amount_logic":
-                            cfg = step.get("text", "")
-                            tgt = step.get("forward_to")
-                            parts = cfg.split('|')
-                            if len(parts) >= 3:
-                                thresh = float(parts[0])
-                                # v76: Smart amount (Fixed long ID bug)
-                                found, amt = parse_smart_amount(event.text)
-                                
-                                if found:
-                                    logger.info(f"💰 [Amount] 识别到金额: {amt}")
-                                    if amt >= thresh:
-                                        sent_msgs.append(await target_client.send_message(event.chat_id, format_caption(parts[1]), reply_to=event.id))
+                    notify_sent = False
+                    action_failed = False
+                    try:
+                        for step in rule.get("replies", []):
+                            await asyncio.sleep(random.uniform(step.get("min", 1), step.get("max", 3)))
+                            stype = step.get("type", "text")
+
+                            if stype == "forward":
+                                tgt = step.get("forward_to")
+                                if tgt:
+                                    tgt_chat_id = parse_peer_target(tgt)
+                                    sent = await target_client.forward_messages(tgt_chat_id, event.message)
+                                    remember_sent_message(sent_msgs, tgt_chat_id, sent)
+
+                            elif stype == "copy_file":
+                                tgt = step.get("forward_to")
+                                if tgt and event.message.file:
+                                    tgt_chat_id = parse_peer_target(tgt)
+                                    sent = await target_client.send_file(tgt_chat_id, event.message.file.media, caption=format_caption(step.get("text", "")))
+                                    remember_sent_message(sent_msgs, tgt_chat_id, sent)
+
+                            elif stype == "amount_logic":
+                                cfg = step.get("text", "")
+                                tgt = step.get("forward_to")
+                                parts = cfg.split('|')
+                                if len(parts) >= 3:
+                                    thresh = float(parts[0])
+                                    # v76: Smart amount (Fixed long ID bug)
+                                    found, amt = parse_smart_amount(event.text)
+
+                                    if found:
+                                        logger.info(f"💰 [Amount] 识别到金额: {amt}")
+                                        if amt >= thresh:
+                                            sent = await target_client.send_message(event.chat_id, format_caption(parts[1]), reply_to=event.id)
+                                            remember_sent_message(sent_msgs, event.chat_id, sent)
+                                        else:
+                                            for sub_msg in parts[2].split(';;'):
+                                                if sub_msg.strip():
+                                                    sent = await target_client.send_message(event.chat_id, format_caption(sub_msg), reply_to=event.id)
+                                                    remember_sent_message(sent_msgs, event.chat_id, sent)
+                                                    await asyncio.sleep(random.uniform(1.5, 3.0))
+                                            if tgt:
+                                                tgt_chat_id = parse_peer_target(tgt)
+                                                fwd_msg = await target_client.forward_messages(tgt_chat_id, event.message)
+                                                remember_sent_message(sent_msgs, tgt_chat_id, fwd_msg)
                                     else:
-                                        for sub_msg in parts[2].split(';;'):
-                                            if sub_msg.strip():
-                                                sent_msgs.append(await target_client.send_message(event.chat_id, format_caption(sub_msg), reply_to=event.id))
-                                                await asyncio.sleep(random.uniform(1.5, 3.0)) 
-                                        if tgt: 
-                                            fwd_msg = await target_client.forward_messages(int(str(tgt).strip()), event.message)
-                                            sent_msgs.append(fwd_msg)
-                                else:
-                                    logger.warning(f"⚠️ [Monitor] Amount logic matched text but no specific amount found.")
+                                        logger.warning(f"⚠️ [Monitor] Amount logic matched text but no specific amount found.")
 
-                        elif stype == "preempt_check":
-                            if not sent_msgs: continue
-                            me = await target_client.get_me()
-                            hist = await target_client.get_messages(event.chat_id, limit=10, min_id=event.id)
-                            if any(m.sender_id != me.id and m.sender_id != event.sender_id for m in hist):
-                                await target_client.delete_messages(event.chat_id, sent_msgs)
-                                sent_msgs = []
-                                break
+                            elif stype == "preempt_check":
+                                if not sent_msgs: continue
+                                me = await target_client.get_me()
+                                source_sent_ids = get_sent_ids_for_chat(sent_msgs, event.chat_id)
+                                first_source_sent_id = get_first_sent_id_for_chat(sent_msgs, event.chat_id)
+                                if not first_source_sent_id:
+                                    logger.info(f"🛡️ [Preempt] 原群尚无本规则发送消息，跳过抢答检测")
+                                    continue
+                                hist_limit = max(20, len(source_sent_ids) + 10)
+                                hist = await target_client.get_messages(event.chat_id, limit=hist_limit, min_id=event.id)
+                                has_preempt = any(
+                                    m.id < first_source_sent_id and
+                                    m.id not in source_sent_ids and
+                                    m.sender_id != me.id and
+                                    m.sender_id != event.sender_id
+                                    for m in hist
+                                )
+                                if has_preempt:
+                                    await delete_sent_messages(target_client, sent_msgs)
+                                    sent_msgs = []
+                                    logger.info(f"🧹 [Preempt] 检测到抢答，已删除规则 '{rule.get('name')}' 的已发送消息")
+                                    break
 
-                        else: # text
-                            content = step.get("text", "")
-                            if content: 
-                                sent = await target_client.send_message(event.chat_id, format_caption(content), reply_to=event.id)
-                                sent_msgs.append(sent)
-                                if global_main_handler: asyncio.create_task(global_main_handler(events.NewMessage.Event(sent)))
+                            elif stype == "notify_user":
+                                notify_target = parse_peer_target(step.get("forward_to"))
+                                notify_text = format_bot_notice(step.get("text", ""), event, rule, sender_name)
+                                if notify_target and notify_text:
+                                    await send_bot_notice(notify_target, notify_text)
+                                    notify_sent = True
+                                    logger.info(f"🔔 [Notify] 规则 '{rule.get('name')}' 已通过 Telegram Bot 通知: {notify_target}")
+
+                            else: # text
+                                content = step.get("text", "")
+                                if content:
+                                    sent = await target_client.send_message(event.chat_id, format_caption(content), reply_to=event.id)
+                                    remember_sent_message(sent_msgs, event.chat_id, sent)
+                                    if global_main_handler: asyncio.create_task(global_main_handler(events.NewMessage.Event(sent)))
+                    except Exception as e:
+                        action_failed = True
+                        if sent_msgs or notify_sent:
+                            rule_timers[rule_id] = time.time()
+                            logger.warning(f"⚠️ [Monitor] 规则 '{rule.get('name')}' 已部分发送，已进入冷却")
+                        logger.error(f"❌ [Monitor] 规则 '{rule.get('name')}' 执行动作失败: {e}")
+
+                    if not action_failed:
+                        if sent_msgs or notify_sent:
+                            rule_timers[rule_id] = time.time()
+                        else:
+                            logger.warning(f"⚠️ [Monitor] 规则 '{rule.get('name')}' 未完成任何发送动作，不进入冷却")
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
