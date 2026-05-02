@@ -664,11 +664,19 @@ SETTINGS_HTML = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Monitor Pro v78</title>
+    <script>
+        tailwind.config = { theme: { extend: { fontFamily: { sans: ['-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', '"Microsoft YaHei"', 'sans-serif'], mono: ['ui-monospace', 'Menlo', 'monospace'], }, colors: { primary: '#6366F1', slate: { 50:'#f9fafb', 100:'#f3f4f6', 200:'#e5e7eb', 800:'#1f2937' } } } } }
+    </script>
     <script src="https://unpkg.com/vue@3.3.4/dist/vue.global.prod.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; }
+        * { box-sizing: border-box; }
+        html { background: #F3F4F6; font-size: 14px; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+        body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 12px; line-height: 1.45; background: #F3F4F6; color: #1F2937; }
+        button, input, select, textarea { max-width: 100%; }
+        button, label, select, input[type="checkbox"], input[type="file"] { cursor: pointer; }
+        button:disabled { cursor: not-allowed; opacity: .65; }
         ::-webkit-scrollbar { width: 4px; height: 4px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 2px; }
@@ -690,10 +698,99 @@ SETTINGS_HTML = """
         .visual-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
         .step-type { border: 0; background: transparent; color: #4B5563; font-weight: 800; height: 22px; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; }
         .step-help { border: 1px solid #FDE68A; background: #FFFBEB; color: #92400E; border-radius: 6px; padding: 6px 8px; font-size: 10px; font-weight: 600; line-height: 1.4; }
+        #app > nav { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 16px; background: rgba(255,255,255,.94); border-bottom: 1px solid #E5E7EB; position: sticky; top: 0; z-index: 50; backdrop-filter: blur(10px); }
+        #app > nav > div { min-width: 0; }
+        main { width: 100%; max-width: 1400px; margin: 0 auto; padding: 24px 16px 80px; }
+        main > * + * { margin-top: 24px; }
+        main > .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; align-items: start; }
+        .bento-card { min-width: 0; }
+        .bento-card input, .bento-card select, .bento-card textarea { min-width: 0; }
+        .fixed.bottom-4.right-4 { position: fixed; right: 16px; bottom: 16px; }
+        .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border-width: 0; }
+        .hidden { display: none !important; }
+        .flex { display: flex; }
+        .inline-flex { display: inline-flex; }
+        .grid { display: grid; }
+        .items-center { align-items: center; }
+        .items-end { align-items: flex-end; }
+        .items-stretch { align-items: stretch; }
+        .justify-between { justify-content: space-between; }
+        .justify-center { justify-content: center; }
+        .justify-end { justify-content: flex-end; }
+        .flex-col { flex-direction: column; }
+        .flex-1 { flex: 1 1 0%; }
+        .shrink-0 { flex-shrink: 0; }
+        .relative { position: relative; }
+        .absolute { position: absolute; }
+        .w-full { width: 100%; }
+        .min-h-screen { min-height: 100vh; }
+        .overflow-hidden { overflow: hidden; }
+        .resize-none { resize: none; }
+        .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .whitespace-nowrap { white-space: nowrap; }
+        .text-center { text-align: center; }
+        .font-bold { font-weight: 700; }
+        .font-semibold { font-weight: 600; }
+        .font-medium { font-weight: 500; }
+        .font-mono { font-family: ui-monospace, Menlo, monospace; }
+        .font-sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; }
+        .pointer-events-none { pointer-events: none; }
+        .cursor-pointer { cursor: pointer; }
+        .select-none { user-select: none; }
+        .rounded, .rounded-lg { border-radius: 8px; }
+        .rounded-full { border-radius: 9999px; }
+        .border { border: 1px solid #E5E7EB; }
+        .border-dashed { border-style: dashed; }
+        .bg-white { background: #FFFFFF; }
+        .bg-slate-50 { background: #F9FAFB; }
+        .bg-slate-100 { background: #F3F4F6; }
+        .text-slate-800 { color: #1F2937; }
+        .text-slate-700 { color: #374151; }
+        .text-slate-600 { color: #4B5563; }
+        .text-slate-500 { color: #6B7280; }
+        .text-slate-400 { color: #94A3B8; }
+        .text-primary { color: #6366F1; }
+        .bg-primary { background: #6366F1; }
+        .text-white { color: #FFFFFF; }
+        .shadow-sm { box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+        .transition-colors, .transition-all { transition-duration: .15s; transition-property: color, background-color, border-color, opacity, transform, box-shadow; }
+        .space-y-1\.5 > * + * { margin-top: 6px; }
+        .space-y-2 > * + * { margin-top: 8px; }
+        .space-y-6 > * + * { margin-top: 24px; }
+        .gap-1 { gap: 4px; }
+        .gap-1\.5 { gap: 6px; }
+        .gap-2 { gap: 8px; }
+        .gap-3 { gap: 12px; }
+        .gap-4 { gap: 16px; }
+        .grid-cols-1 { grid-template-columns: repeat(1, minmax(0, 1fr)); }
+        .grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .grid-cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+        .col-span-2 { grid-column: span 2 / span 2; }
+        .col-span-3 { grid-column: span 3 / span 3; }
+        .col-span-5 { grid-column: span 5 / span 5; }
+        @media (min-width: 768px) {
+            .md\:flex { display: flex !important; }
+            .md\:hidden { display: none !important; }
+            .md\:flex-row { flex-direction: row; }
+            .md\:w-auto { width: auto; }
+            .md\:w-20 { width: 5rem; }
+            .md\:w-24 { width: 6rem; }
+            .md\:w-32 { width: 8rem; }
+            .md\:w-48 { width: 12rem; }
+            .md\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+        @media (min-width: 1280px) {
+            main > .xl\:grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        }
+        @media (max-width: 767px) {
+            #app > nav { align-items: stretch; flex-wrap: wrap; padding: 10px 12px; }
+            #app > nav > div:first-child { flex: 1 1 auto; }
+            #app > nav > div:last-child { margin-left: auto; }
+            main { padding: 16px 12px 72px; }
+            main > .grid { grid-template-columns: minmax(0, 1fr); }
+            .recovery-panel { align-items: stretch; }
+        }
     </style>
-    <script>
-        tailwind.config = { theme: { extend: { fontFamily: { sans: ['-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'sans-serif'], mono: ['ui-monospace', 'Menlo', 'monospace'], }, colors: { primary: '#6366F1', slate: { 50:'#f9fafb', 100:'#f3f4f6', 200:'#e5e7eb', 800:'#1f2937' } } } } }
-    </script>
 </head>
 <body class="text-slate-800 antialiased min-h-screen pb-20 font-sans">
 <div id="app">
