@@ -1999,10 +1999,22 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         if not search or not reply:
             return jsonify({"success": False, "msg": "查找话术和回复内容不能为空"})
 
-        try:
-            hours = max(0.1, float(data.get('hours', 5)))
-        except Exception:
-            return jsonify({"success": False, "msg": "范围小时数无效"})
+        start_time_raw = str(data.get('start_time') or '').strip()
+        start_time = None
+        if start_time_raw:
+            try:
+                start_time = datetime.fromisoformat(start_time_raw)
+                if start_time.tzinfo is None:
+                    start_time = start_time.replace(tzinfo=BJ_TZ)
+                start_time = start_time.astimezone(timezone.utc)
+            except Exception:
+                return jsonify({"success": False, "msg": "起始时间无效"})
+        else:
+            try:
+                hours = max(0.1, float(data.get('hours', 5)))
+                start_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+            except Exception:
+                return jsonify({"success": False, "msg": "起始时间无效"})
 
         try:
             min_d = max(0.0, float(data.get('min', 2.0)))
@@ -2023,13 +2035,13 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             except Exception:
                 image_bytes = None
         asyncio.run_coroutine_threadsafe(
-            run_batch_recovery_task(client, search, reply, hours, min_d, max_d, image_bytes, image_name),
+            run_batch_recovery_task(client, search, reply, start_time, min_d, max_d, image_bytes, image_name),
             bot_loop
         )
         return jsonify({"success": True, "msg": "任务已启动" + ("（含图片）" if image_bytes else "")})
 
-    async def run_batch_recovery_task(cli, search, reply, hours, min_d, max_d, image_bytes=None, image_name='image.jpg'):
-        limit_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+    async def run_batch_recovery_task(cli, search, reply, start_time, min_d, max_d, image_bytes=None, image_name='image.jpg'):
+        limit_time = start_time.astimezone(timezone.utc)
         async for msg in cli.iter_messages(None, search=search):
             if msg.date < limit_time: break
             if not msg.is_group or not msg.out: continue

@@ -252,7 +252,8 @@
         }
 
         .panel-title { display: flex; align-items: center; gap: 9px; font-weight: 800; font-size: 17px; min-width: 0; }
-        .rule-id { color: var(--muted); font-size: 13px; font-weight: 600; display: flex; gap: 8px; align-items: center; }
+        .rule-id { color: var(--muted); font-size: 13px; font-weight: 600; display: flex; gap: 8px; align-items: center; white-space: nowrap; min-width: 0; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+        .rule-id span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
         .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
         .rule-list-panel { min-height: calc(100vh - 188px); }
@@ -300,10 +301,12 @@
             grid-template-columns: 12px minmax(0, 1fr) auto;
             gap: 12px;
             align-items: center;
+            cursor: pointer;
             transition: border .18s ease, box-shadow .18s ease, transform .18s ease, background .18s ease;
         }
 
         .rule-card:hover { border-color: #cfd6ff; box-shadow: var(--shadow-soft); transform: translateY(-1px); }
+        .rule-card:focus-visible { outline: 3px solid rgba(99, 91, 255, .18); outline-offset: 2px; }
         .rule-card.selected { border-color: var(--primary); background: linear-gradient(180deg, #fff, #f8f7ff); box-shadow: 0 12px 30px rgba(99, 91, 255, .12); }
         .drag-dots { color: #9aa5b8; display: grid; gap: 3px; }
         .drag-dots span { width: 4px; height: 4px; border-radius: 999px; background: currentColor; }
@@ -323,6 +326,9 @@
             position: relative;
             transition: background .18s ease;
             flex: 0 0 auto;
+            border: 0;
+            padding: 0;
+            cursor: pointer;
         }
 
         .switch::after {
@@ -340,6 +346,7 @@
 
         .switch.on { background: var(--primary); }
         .switch.on::after { transform: translateX(14px); }
+        .switch:disabled { cursor: wait; opacity: .72; }
 
         .list-footer { padding: 12px; border-top: 1px solid var(--line); }
         .add-rule-btn {
@@ -357,15 +364,20 @@
         }
 
         .editor-panel { min-height: calc(100vh - 188px); }
-        .editor-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+        .editor-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+        .editor-title { display: grid; grid-template-columns: auto minmax(120px, 1fr) auto; align-items: center; gap: 8px; min-width: 0; }
+        .editor-label { white-space: nowrap; color: #536078; font-weight: 760; }
+        .editor-title .status-badge { white-space: nowrap; justify-self: start; }
         .editor-title input {
             min-width: 0;
-            width: min(460px, 100%);
+            width: 100%;
             border: 0;
             outline: 0;
             font-size: 17px;
             font-weight: 800;
             background: transparent;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         .tabs {
@@ -584,6 +596,38 @@
         .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .settings-grid .section { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: #fff; }
         .input.full { grid-column: 1 / -1; }
+        .file-picker { display: flex; align-items: center; gap: 8px; min-width: 0; }
+        .file-picker.full { grid-column: 1 / -1; }
+        .sr-file { display: none; }
+        .file-button {
+            min-height: 40px;
+            min-width: 0;
+            flex: 1 1 auto;
+            border: 1px solid var(--line-strong);
+            border-radius: 8px;
+            background: #fff;
+            color: #536078;
+            display: inline-flex;
+            align-items: center;
+            gap: 9px;
+            padding: 0 12px;
+            cursor: pointer;
+            font-weight: 720;
+        }
+        .file-button:hover { border-color: #aaa2ff; background: #fbfaff; }
+        .file-button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .file-clear {
+            width: 40px;
+            min-height: 40px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            color: var(--red);
+            background: var(--red-soft);
+            display: grid;
+            place-items: center;
+            flex: 0 0 auto;
+        }
+        .save-hint { color: var(--primary); font-size: 12px; font-weight: 760; white-space: nowrap; }
 
         .ops-popover {
             position: fixed;
@@ -653,6 +697,10 @@
             .mobile-nav { display: flex; }
             .stats-row { grid-template-columns: 1fr; }
             .form-grid, .form-grid.three, .flow-top { grid-template-columns: 1fr; }
+            .editor-head { grid-template-columns: 1fr; align-items: start; padding-top: 10px; padding-bottom: 10px; }
+            .editor-title { grid-template-columns: auto minmax(0, 1fr); width: 100%; }
+            .editor-title .status-badge { grid-column: 2; }
+            .rule-id { max-width: 100%; }
             .rule-list { max-height: none; }
             .ops-popover { right: 14px; top: 128px; }
             .dashboard-grid, .resource-grid, .settings-grid, .account-list.cards, .metrics-grid.wide, .records-toolbar { grid-template-columns: 1fr; }
@@ -697,7 +745,7 @@
 
         <main class="main">
             <header class="topbar">
-                <button class="env-pill" @click="config.enabled = !config.enabled">
+                <button class="env-pill" @click="toggleMonitorEnabled">
                     <span class="status-dot" :style="{background: config.enabled ? 'var(--green)' : 'var(--red)'}"></span>
                     <span>{{ config.enabled ? '生产环境' : '监听暂停' }}</span>
                     <i data-lucide="chevron-down"></i>
@@ -765,7 +813,10 @@
                 <section class="panel rule-list-panel" v-if="ui.page === 'rules'">
                     <div class="panel-head">
                         <div class="panel-title">规则列表</div>
-                        <button class="tiny-btn" @click="loadConfig"><i data-lucide="refresh-cw"></i>刷新</button>
+                        <div class="toolbar">
+                            <span v-if="ui.autoSaving" class="save-hint">自动保存中</span>
+                            <button class="tiny-btn" @click="loadConfig"><i data-lucide="refresh-cw"></i>刷新</button>
+                        </div>
                     </div>
                     <div class="list-tools">
                         <label class="rule-search">
@@ -780,7 +831,7 @@
                         </div>
                     </div>
                     <div class="rule-list">
-                        <button v-for="rule in filteredRules" :key="rule.id" class="rule-card" :class="{selected: currentRule && currentRule.id === rule.id}" @click="selectRule(rule)">
+                        <div v-for="rule in filteredRules" :key="rule.id" class="rule-card" :class="{selected: currentRule && currentRule.id === rule.id}" role="button" tabindex="0" @click="selectRule(rule)" @keydown.enter.prevent="selectRule(rule)" @keydown.space.prevent="selectRule(rule)">
                             <div class="drag-dots"><span></span><span></span><span></span></div>
                             <div>
                                 <div class="rule-name">{{ rule.name || '未命名规则' }}</div>
@@ -796,9 +847,9 @@
                             </div>
                             <div style="display:grid;gap:14px;justify-items:end;">
                                 <span class="status-badge" :class="ruleStatus(rule).kind">{{ ruleStatus(rule).text }}</span>
-                                <span class="switch" :class="{on: rule.enabled}" @click.stop="rule.enabled = !rule.enabled"></span>
+                                <button type="button" class="switch" :class="{on: rule.enabled}" :disabled="ui.saving" :aria-pressed="rule.enabled ? 'true' : 'false'" :title="rule.enabled ? '停用并保存' : '启用并保存'" @click.stop="toggleRuleEnabled(rule)"></button>
                             </div>
-                        </button>
+                        </div>
                         <div v-if="filteredRules.length === 0" class="empty-state">没有匹配的规则</div>
                     </div>
                     <div class="list-footer">
@@ -807,13 +858,13 @@
                 </section>
 
                 <section class="panel editor-panel" v-if="ui.page === 'rules' && currentRule">
-                    <div class="panel-head">
+                    <div class="panel-head editor-head">
                         <div class="editor-title">
-                            <span>编辑规则：</span>
+                            <span class="editor-label">编辑规则</span>
                             <input v-model="currentRule.name" placeholder="规则名称">
                             <span class="status-badge" :class="ruleStatus(currentRule).kind">{{ ruleStatus(currentRule).text }}</span>
                         </div>
-                        <div class="rule-id">规则ID: {{ currentRule.id }} <i data-lucide="copy"></i></div>
+                        <div class="rule-id"><span>规则ID: {{ currentRule.id }}</span> <i data-lucide="copy"></i></div>
                     </div>
                     <div class="tabs">
                         <button v-for="tab in tabs" :key="tab.key" class="tab" :class="{active: ui.activeTab === tab.key}" @click="ui.activeTab = tab.key">{{ tab.label }}</button>
@@ -951,7 +1002,7 @@
                         <section class="section">
                             <div class="section-head">
                                 <div class="section-title">同意审批检测</div>
-                                <span class="switch" :class="{on: currentRule.enable_approval}" @click="currentRule.enable_approval = !currentRule.enable_approval; ensureApprovalAction(currentRule)"></span>
+                                <button type="button" class="switch" :class="{on: currentRule.enable_approval}" :aria-pressed="currentRule.enable_approval ? 'true' : 'false'" @click="currentRule.enable_approval = !currentRule.enable_approval; ensureApprovalAction(currentRule)"></button>
                             </div>
                             <div class="field">
                                 <label>全局审批触发词</label>
@@ -1290,9 +1341,13 @@
                             <div class="form-grid">
                                 <input class="input" v-model="recovery.search" placeholder="查找我的反馈话术">
                                 <input class="input" v-model="recovery.reply" placeholder="回复给原提问者">
-                                <input class="input" type="number" v-model.number="recovery.hours" placeholder="范围小时">
+                                <input class="input" type="datetime-local" v-model="recovery.start_time" title="从这个时间之后开始查找">
                                 <div class="delay-grid"><input class="input" type="number" v-model.number="recovery.min"><span class="hint">-</span><input class="input" type="number" v-model.number="recovery.max"></div>
-                                <input class="input full" type="file" accept="image/*" @change="onRecoveryImage">
+                                <div class="file-picker full">
+                                    <input id="recovery-file-settings" data-recovery-file class="sr-file" type="file" accept="image/*" @change="onRecoveryImage">
+                                    <label class="file-button" for="recovery-file-settings"><i data-lucide="image-plus"></i><span>{{ recovery.imageName || '选择图片' }}</span></label>
+                                    <button v-if="recovery.image" type="button" class="file-clear" @click="clearRecoveryImage" aria-label="清除图片"><i data-lucide="x"></i></button>
+                                </div>
                             </div>
                             <button class="primary-btn" style="width:max-content;" :disabled="!recovery.search || !recovery.reply" @click="runRecovery"><i data-lucide="send"></i>执行回复</button>
                         </section>
@@ -1320,8 +1375,8 @@
                         <input class="input" v-model="recovery.reply" placeholder="例如: 已恢复，请刷新重试">
                     </div>
                     <div class="field">
-                        <label>范围（小时）</label>
-                        <input class="input" type="number" v-model.number="recovery.hours">
+                        <label>起始时间</label>
+                        <input class="input" type="datetime-local" v-model="recovery.start_time">
                     </div>
                     <div class="field">
                         <label>间隔（秒）</label>
@@ -1329,7 +1384,11 @@
                     </div>
                     <div class="field full">
                         <label>附带图片</label>
-                        <input class="input" type="file" accept="image/*" @change="onRecoveryImage">
+                        <div class="file-picker">
+                            <input id="recovery-file-ops" data-recovery-file class="sr-file" type="file" accept="image/*" @change="onRecoveryImage">
+                            <label class="file-button" for="recovery-file-ops"><i data-lucide="image-plus"></i><span>{{ recovery.imageName || '选择图片' }}</span></label>
+                            <button v-if="recovery.image" type="button" class="file-clear" @click="clearRecoveryImage" aria-label="清除图片"><i data-lucide="x"></i></button>
+                        </div>
                     </div>
                 </div>
                 <button class="primary-btn" style="width:max-content;" :disabled="!recovery.search || !recovery.reply" @click="runRecovery"><i data-lucide="send"></i>执行回复</button>
@@ -1382,10 +1441,21 @@ createApp({
             ruleQuery: "",
             globalSearch: "",
             showOps: false,
-            saving: false
+            saving: false,
+            autoSaving: false
         });
         const toast = reactive({ show: false, msg: "", type: "success" });
-        const recovery = reactive({ search: "", reply: "", hours: 5, min: 2, max: 5, image: "", imageName: "" });
+        const formatDateTimeLocal = (date) => {
+            const pad = value => String(value).padStart(2, "0");
+            return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+        };
+        const defaultRecoveryStartTime = () => {
+            const date = new Date();
+            date.setHours(date.getHours() - 5);
+            date.setSeconds(0, 0);
+            return formatDateTimeLocal(date);
+        };
+        const recovery = reactive({ search: "", reply: "", start_time: defaultRecoveryStartTime(), hours: 5, min: 2, max: 5, image: "", imageName: "" });
         const tabs = [
             { key: "basic", label: "基础配置" },
             { key: "advanced", label: "高级设置" },
@@ -1832,7 +1902,9 @@ createApp({
             ];
         });
 
-        const saveConfig = async () => {
+        const saveConfig = async (options = {}) => {
+            const silent = !!options.silent;
+            const successMessage = options.successMessage || "配置已保存";
             ui.saving = true;
             try {
                 const res = await fetch("/api/monitor_settings", {
@@ -1841,14 +1913,41 @@ createApp({
                     body: JSON.stringify(config)
                 });
                 const json = await res.json();
-                if (json.success) showToast("配置已保存");
-                else showToast(`保存失败：${json.msg || "未知错误"}`, "error");
+                if (json.success) {
+                    if (!silent) showToast(successMessage);
+                    return true;
+                }
+                showToast(`保存失败：${json.msg || "未知错误"}`, "error");
+                return false;
             } catch (e) {
                 showToast("网络错误，保存失败", "error");
+                return false;
             } finally {
                 ui.saving = false;
                 refreshIcons();
             }
+        };
+
+        const toggleRuleEnabled = async (rule) => {
+            const previous = !!rule.enabled;
+            rule.enabled = !previous;
+            ui.autoSaving = true;
+            const ok = await saveConfig({ silent: true });
+            ui.autoSaving = false;
+            if (ok) showToast(`${rule.name || "规则"}已${rule.enabled ? "启用" : "停用"}并保存`);
+            else rule.enabled = previous;
+            refreshIcons();
+        };
+
+        const toggleMonitorEnabled = async () => {
+            const previous = !!config.enabled;
+            config.enabled = !previous;
+            ui.autoSaving = true;
+            const ok = await saveConfig({ silent: true });
+            ui.autoSaving = false;
+            if (ok) showToast(`监听已${config.enabled ? "开启" : "暂停"}并保存`);
+            else config.enabled = previous;
+            refreshIcons();
         };
 
         const onRecoveryImage = (event) => {
@@ -1868,8 +1967,26 @@ createApp({
             reader.readAsDataURL(file);
         };
 
+        const clearRecoveryImage = () => {
+            recovery.image = "";
+            recovery.imageName = "";
+            document.querySelectorAll("[data-recovery-file]").forEach(input => input.value = "");
+            refreshIcons();
+        };
+
+        const recoveryStartText = () => {
+            if (!recovery.start_time) return "未选择";
+            const date = new Date(recovery.start_time);
+            if (Number.isNaN(date.getTime())) return recovery.start_time;
+            return date.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+        };
+
         const runRecovery = async () => {
-            if (!confirm(`确定要执行批量回复吗？\\n范围：过去 ${recovery.hours} 小时\\n目标：${recovery.search}`)) return;
+            if (!recovery.start_time) {
+                showToast("请选择起始时间", "error");
+                return;
+            }
+            if (!confirm(`确定要执行批量回复吗？\\n起始时间：${recoveryStartText()}\\n目标：${recovery.search}`)) return;
             try {
                 const res = await fetch("/api/batch_recovery", {
                     method: "POST",
@@ -1898,11 +2015,11 @@ createApp({
             currentRule, filteredRules, stats, previewSteps, estimatedTotal,
             mainAccount, avatarText, lastRefreshText, selectedRuleStats, currentRuleRecords,
             filteredRecords, hourlyBars, compactHourlyBars, topRules, accountRows, resourceCards,
-            loadConfig, loadRuntimeStats, loadAll, saveConfig, selectRule, setPage, addRule, removeRule, ruleStatus,
+            loadConfig, loadRuntimeStats, loadAll, saveConfig, toggleRuleEnabled, toggleMonitorEnabled, selectRule, setPage, addRule, removeRule, ruleStatus,
             listToString, setList, setIntList, splitInline, shortGroups, primaryKeyword, stepCount,
             addStep, duplicateStep, removeStep, normalizeStep, displayDelay,
             amountPart, setAmountPart, amountLowLines, setAmountLowLines,
-            ensureApprovalAction, onRecoveryImage, runRecovery,
+            ensureApprovalAction, onRecoveryImage, clearRecoveryImage, runRecovery,
             deltaText, statusLabel, recordClass, recordIcon, formatRecordTime, recordFilterCount
         };
     }
