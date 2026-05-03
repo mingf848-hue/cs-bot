@@ -533,13 +533,57 @@
         .metric-label { color: var(--muted); font-size: 12px; }
         .metric-value { font-weight: 820; font-size: 18px; margin-top: 4px; }
         .chart { width: 100%; height: 100px; margin-top: 8px; }
+        .bar-chart { display: flex; align-items: end; gap: 5px; padding: 14px 6px 0; border-bottom: 1px solid var(--line); }
+        .bar { flex: 1; min-width: 4px; min-height: 2px; border-radius: 5px 5px 0 0; background: linear-gradient(180deg, #756bff, #25a36b); }
         .records { display: grid; gap: 10px; }
         .record { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 9px; align-items: center; color: var(--muted); font-size: 13px; }
+        .record.rich { grid-template-columns: 22px minmax(0, 1fr) auto; align-items: start; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fff; }
+        .record.rich strong { display: block; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .record.rich em { display: block; margin-top: 3px; font-style: normal; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .record.good svg { color: var(--green); }
         .record.bad svg { color: var(--red); }
+        .record.skip svg { color: #b36b00; }
         .record-status { font-weight: 780; }
-        .record.good .record-status { color: var(--green); }
-        .record.bad .record-status { color: var(--red); }
+        .record.good .record-status, .record-status.good { color: var(--green); }
+        .record.bad .record-status, .record-status.bad { color: var(--red); }
+        .record.skip .record-status, .record-status.skip { color: #b36b00; }
+        .empty-inline { min-height: 42px; display: grid; place-items: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; font-size: 13px; }
+        .inline-link { color: var(--primary); font-weight: 760; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
+
+        .page-wide { grid-column: 1 / -1; min-width: 0; }
+        .page-panel { min-height: calc(100vh - 188px); }
+        .page-card { min-width: 0; }
+        .page-body { padding: 16px; display: grid; gap: 16px; }
+        .dashboard-grid, .resource-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(320px, .75fr); gap: 16px; align-items: start; }
+        .resource-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .span-2 { grid-row: span 2; }
+        .metrics-grid.wide { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+        .hour-bars { height: 178px; display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 5px; align-items: end; padding: 12px 4px 0; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+        .hour-bars.tall { height: 230px; }
+        .hour-cell { height: 100%; min-width: 0; display: flex; flex-direction: column; justify-content: end; align-items: center; gap: 7px; color: var(--subtle); font-size: 10px; }
+        .hour-bar { width: 100%; min-height: 2px; border-radius: 6px 6px 0 0; background: linear-gradient(180deg, var(--primary), #23a36b); box-shadow: inset 0 -1px 0 rgba(0,0,0,.08); }
+        .rank-list { gap: 12px; }
+        .rank-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(100px, 180px) 42px; gap: 10px; align-items: center; font-size: 13px; color: var(--muted); }
+        .rank-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 740; }
+        .rank-track { height: 8px; border-radius: 999px; background: #eef2f8; overflow: hidden; }
+        .rank-track b { height: 100%; display: block; border-radius: inherit; background: linear-gradient(90deg, var(--primary), #23a36b); }
+        .account-list { display: grid; gap: 10px; }
+        .account-list.cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .account-row { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fff; display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 11px; align-items: center; }
+        .avatar.small { width: 34px; height: 34px; font-size: 13px; }
+        .account-row strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .account-row span { color: var(--muted); font-size: 12px; }
+        .account-row em { font-style: normal; color: var(--red); font-weight: 780; }
+        .account-row em.ok { color: var(--green); }
+        .records-toolbar { display: grid; grid-template-columns: minmax(260px, 420px) minmax(0, 1fr); gap: 12px; align-items: center; }
+        .record-table { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #fff; }
+        .table-head, .table-row { display: grid; grid-template-columns: 130px 100px minmax(160px, 1fr) 130px 90px minmax(180px, 1.2fr); gap: 12px; align-items: center; padding: 12px 14px; }
+        .table-head { color: var(--muted); background: #f8fafc; font-size: 12px; font-weight: 790; }
+        .table-row { min-height: 52px; border-top: 1px solid var(--line); color: #536078; font-size: 13px; }
+        .table-row span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .settings-grid .section { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: #fff; }
+        .input.full { grid-column: 1 / -1; }
 
         .ops-popover {
             position: fixed;
@@ -581,6 +625,8 @@
 
         .empty-state { border: 1px dashed var(--line-strong); border-radius: 8px; min-height: 140px; display: grid; place-items: center; text-align: center; color: var(--muted); padding: 18px; }
         .mobile-bar { display: none; }
+        .mobile-nav { display: none; grid-column: 1 / -1; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+        .mobile-nav .chip { flex: 0 0 auto; }
 
         @media (prefers-reduced-motion: reduce) {
             *, *::before, *::after { transition: none !important; animation: none !important; }
@@ -591,6 +637,9 @@
             .preview-panel { grid-column: 1 / -1; }
             .stats-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             .stat-actions { grid-column: 1 / -1; }
+            .dashboard-grid, .resource-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .span-2 { grid-row: auto; grid-column: 1 / -1; }
+            .table-head, .table-row { grid-template-columns: 120px 88px minmax(130px, 1fr) 110px 78px minmax(160px, 1fr); }
         }
 
         @media (max-width: 900px) {
@@ -601,10 +650,16 @@
             .top-actions { width: 100%; justify-content: space-between; flex-wrap: wrap; }
             .search-box { width: 100%; }
             .content { padding: 14px; grid-template-columns: 1fr; }
+            .mobile-nav { display: flex; }
             .stats-row { grid-template-columns: 1fr; }
             .form-grid, .form-grid.three, .flow-top { grid-template-columns: 1fr; }
             .rule-list { max-height: none; }
             .ops-popover { right: 14px; top: 128px; }
+            .dashboard-grid, .resource-grid, .settings-grid, .account-list.cards, .metrics-grid.wide, .records-toolbar { grid-template-columns: 1fr; }
+            .hour-bars { gap: 3px; }
+            .hour-cell small { display: none; }
+            .record-table { overflow-x: auto; }
+            .table-head, .table-row { min-width: 760px; }
         }
     </style>
 </head>
@@ -627,18 +682,15 @@
                 <div class="brand-version">Pro v78</div>
             </div>
             <nav class="nav-list" aria-label="主导航">
-                <button class="nav-item"><i data-lucide="chart-no-axes-column"></i><span>监控台</span></button>
-                <button class="nav-item active"><i data-lucide="shield-check"></i><span>规则管理</span></button>
-                <button class="nav-item"><i data-lucide="clipboard-list"></i><span>执行记录</span></button>
-                <button class="nav-item"><i data-lucide="chart-column"></i><span>数据看板</span></button>
-                <button class="nav-item"><i data-lucide="layers-3"></i><span>资源管理</span></button>
-                <button class="nav-item"><i data-lucide="users-round"></i><span>成员权限</span></button>
-                <button class="nav-item"><i data-lucide="settings"></i><span>系统设置</span></button>
+                <button v-for="item in navItems" :key="item.key" class="nav-item" :class="{active: ui.page === item.key}" @click="setPage(item.key)">
+                    <i :data-lucide="item.icon"></i><span>{{ item.label }}</span>
+                </button>
             </nav>
             <div class="plan-card">
-                <div class="plan-title">企业版 <span class="plan-badge">专业版</span></div>
-                <div class="plan-meta">有效期至 2025-12-31</div>
-                <div class="plan-link">升级套餐</div>
+                <div class="plan-title">{{ config.enabled ? '监听运行中' : '监听已暂停' }} <span class="plan-badge">{{ runtime.timezone || '北京时间' }}</span></div>
+                <div class="plan-meta">主账号：{{ mainAccount }}</div>
+                <div class="plan-meta">最后刷新：{{ lastRefreshText }}</div>
+                <button class="plan-link" @click="loadAll">立即同步</button>
             </div>
             <button class="collapse-link"><i data-lucide="chevron-left"></i><span>收起菜单</span></button>
         </aside>
@@ -658,12 +710,17 @@
                     <button class="icon-btn" aria-label="通知"><i data-lucide="bell"></i></button>
                     <button class="icon-btn" aria-label="帮助"><i data-lucide="circle-help"></i></button>
                     <button class="icon-btn" aria-label="主题"><i data-lucide="sun"></i></button>
-                    <div class="avatar">A</div>
-                    <button class="ghost-btn">Admin <i data-lucide="chevron-down"></i></button>
+                    <div class="avatar">{{ avatarText }}</div>
+                    <button class="ghost-btn">{{ mainAccount }} <i data-lucide="chevron-down"></i></button>
                 </div>
             </header>
 
             <section class="content">
+                <div class="mobile-nav">
+                    <button v-for="item in navItems" :key="item.key" class="chip" :class="{active: ui.page === item.key}" @click="setPage(item.key)">
+                        <i :data-lucide="item.icon"></i>{{ item.label }}
+                    </button>
+                </div>
                 <div class="stats-row">
                     <article class="stat-card">
                         <div class="stat-icon"><i data-lucide="chart-no-axes-column"></i></div>
@@ -686,7 +743,7 @@
                         <div>
                             <div class="stat-label">今日触发</div>
                             <div class="stat-value">{{ stats.today }}</div>
-                            <div class="stat-sub">较昨日 <span class="stat-up">+18.6%</span></div>
+                            <div class="stat-sub">{{ deltaText(stats.today, stats.yesterday) }}</div>
                         </div>
                     </article>
                     <article class="stat-card">
@@ -694,7 +751,7 @@
                         <div>
                             <div class="stat-label">成功率</div>
                             <div class="stat-value">{{ stats.successRate }}%</div>
-                            <div class="stat-sub">较昨日 <span class="stat-up">+0.8%</span></div>
+                            <div class="stat-sub">成功 {{ stats.success }} / 失败 {{ stats.failed }}</div>
                         </div>
                     </article>
                     <div class="stat-actions">
@@ -705,7 +762,7 @@
                     </div>
                 </div>
 
-                <section class="panel rule-list-panel">
+                <section class="panel rule-list-panel" v-if="ui.page === 'rules'">
                     <div class="panel-head">
                         <div class="panel-title">规则列表</div>
                         <button class="tiny-btn" @click="loadConfig"><i data-lucide="refresh-cw"></i>刷新</button>
@@ -749,7 +806,7 @@
                     </div>
                 </section>
 
-                <section class="panel editor-panel" v-if="currentRule">
+                <section class="panel editor-panel" v-if="ui.page === 'rules' && currentRule">
                     <div class="panel-head">
                         <div class="editor-title">
                             <span>编辑规则：</span>
@@ -988,7 +1045,7 @@
                     </div>
                 </section>
 
-                <section class="panel preview-panel" v-if="currentRule">
+                <section class="panel preview-panel" v-if="ui.page === 'rules' && currentRule">
                     <div class="panel-head">
                         <div class="panel-title"><i data-lucide="chevron-down"></i>执行预览 <span class="live-badge"><span class="status-dot"></span>实时预览</span></div>
                     </div>
@@ -1009,30 +1066,236 @@
                         </div>
 
                         <div class="preview-card">
-                            <div class="preview-title">运行概览（今日）<span style="color:var(--primary);font-size:13px;">更多数据</span></div>
+                            <div class="preview-title">运行概览（今日）<button class="inline-link" @click="setPage('analytics')">更多数据</button></div>
                             <div class="metrics-grid">
-                                <div class="metric-tile"><div class="metric-label">触发次数</div><div class="metric-value" style="color:var(--blue);">{{ 320 + stats.running }}</div></div>
-                                <div class="metric-tile"><div class="metric-label">成功次数</div><div class="metric-value" style="color:var(--green);">{{ 318 + stats.running }}</div></div>
-                                <div class="metric-tile"><div class="metric-label">失败次数</div><div class="metric-value" style="color:var(--red);">{{ Math.max(1, stats.disabled) }}</div></div>
-                                <div class="metric-tile"><div class="metric-label">成功率</div><div class="metric-value" style="color:var(--primary);">{{ stats.successRate }}%</div></div>
+                                <div class="metric-tile"><div class="metric-label">触发次数</div><div class="metric-value" style="color:var(--blue);">{{ selectedRuleStats.total }}</div></div>
+                                <div class="metric-tile"><div class="metric-label">成功次数</div><div class="metric-value" style="color:var(--green);">{{ selectedRuleStats.success }}</div></div>
+                                <div class="metric-tile"><div class="metric-label">失败次数</div><div class="metric-value" style="color:var(--red);">{{ selectedRuleStats.failed }}</div></div>
+                                <div class="metric-tile"><div class="metric-label">成功率</div><div class="metric-value" style="color:var(--primary);">{{ selectedRuleStats.success_rate }}%</div></div>
                             </div>
-                            <svg class="chart" viewBox="0 0 360 100" role="img" aria-label="今日执行趋势">
-                                <path d="M10 82 L55 62 L95 31 L135 48 L175 38 L215 69 L255 51 L295 65 L350 57" fill="none" stroke="#635bff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>
-                                <path d="M10 82 L55 62 L95 31 L135 48 L175 38 L215 69 L255 51 L295 65 L350 57 L350 96 L10 96 Z" fill="rgba(99,91,255,.08)"></path>
-                                <g fill="#635bff">
-                                    <circle cx="10" cy="82" r="4"></circle><circle cx="95" cy="31" r="4"></circle><circle cx="175" cy="38" r="4"></circle><circle cx="255" cy="51" r="4"></circle><circle cx="350" cy="57" r="4"></circle>
-                                </g>
-                            </svg>
+                            <div class="chart bar-chart" role="img" aria-label="今日执行趋势">
+                                <span v-for="bucket in compactHourlyBars" :key="bucket.hour" class="bar" :style="{height: bucket.height + '%'}" :title="bucket.hour + ':00 ' + bucket.total + ' 次'"></span>
+                            </div>
                         </div>
 
                         <div class="preview-card">
-                            <div class="preview-title">最近执行记录 <span style="color:var(--primary);font-size:13px;">查看全部</span></div>
+                            <div class="preview-title">最近执行记录 <button class="inline-link" @click="setPage('records')">查看全部</button></div>
                             <div class="records">
-                                <div class="record good"><i data-lucide="circle-check"></i><span>今天 14:23:51</span><span class="record-status">执行成功</span></div>
-                                <div class="record good"><i data-lucide="circle-check"></i><span>今天 14:18:32</span><span class="record-status">执行成功</span></div>
-                                <div class="record bad"><i data-lucide="circle-alert"></i><span>今天 14:12:09</span><span class="record-status">执行失败</span></div>
+                                <div v-for="record in currentRuleRecords.slice(0, 4)" :key="record.id" class="record" :class="recordClass(record)">
+                                    <i :data-lucide="recordIcon(record)"></i><span>{{ formatRecordTime(record) }} · {{ record.kind_label }}</span><span class="record-status">{{ statusLabel(record) }}</span>
+                                </div>
+                                <div v-if="currentRuleRecords.length === 0" class="empty-inline">今天还没有这条规则的执行记录</div>
                             </div>
                         </div>
+                    </div>
+                </section>
+
+                <section class="page-wide dashboard-grid" v-if="ui.page === 'dashboard'">
+                    <article class="panel page-card span-2">
+                        <div class="panel-head">
+                            <div class="panel-title"><i data-lucide="activity"></i>今日监控台</div>
+                            <span class="hint">数据刷新：{{ lastRefreshText }}</span>
+                        </div>
+                        <div class="page-body">
+                            <div class="metrics-grid wide">
+                                <div class="metric-tile"><div class="metric-label">今日触发</div><div class="metric-value" style="color:var(--blue);">{{ runtime.today.total }}</div></div>
+                                <div class="metric-tile"><div class="metric-label">执行动作</div><div class="metric-value" style="color:var(--primary);">{{ runtime.today.action_count }}</div></div>
+                                <div class="metric-tile"><div class="metric-label">成功</div><div class="metric-value" style="color:var(--green);">{{ runtime.today.success }}</div></div>
+                                <div class="metric-tile"><div class="metric-label">失败</div><div class="metric-value" style="color:var(--red);">{{ runtime.today.failed }}</div></div>
+                            </div>
+                            <div class="section">
+                                <div class="section-head">
+                                    <div class="section-title">24 小时触发分布</div>
+                                    <span class="hint">{{ runtime.today.total ? '按北京时间统计' : '今天暂无触发' }}</span>
+                                </div>
+                                <div class="hour-bars">
+                                    <div v-for="bucket in hourlyBars" :key="bucket.hour" class="hour-cell" :title="bucket.hour + ':00 · ' + bucket.total + ' 次'">
+                                        <span class="hour-bar" :style="{height: bucket.height + '%'}"></span>
+                                        <small>{{ bucket.hour }}</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </article>
+
+                    <article class="panel page-card">
+                        <div class="panel-head">
+                            <div class="panel-title"><i data-lucide="clipboard-list"></i>最近执行</div>
+                            <button class="tiny-btn" @click="setPage('records')">全部</button>
+                        </div>
+                        <div class="page-body records">
+                            <div v-for="record in runtime.records.slice(0, 6)" :key="record.id" class="record rich" :class="recordClass(record)">
+                                <i :data-lucide="recordIcon(record)"></i>
+                                <span><strong>{{ record.rule_name }}</strong><em>{{ formatRecordTime(record) }} · {{ record.detail || record.kind_label }}</em></span>
+                                <span class="record-status">{{ statusLabel(record) }}</span>
+                            </div>
+                            <div v-if="runtime.records.length === 0" class="empty-state">暂无执行记录</div>
+                        </div>
+                    </article>
+
+                    <article class="panel page-card">
+                        <div class="panel-head">
+                            <div class="panel-title"><i data-lucide="list-ordered"></i>规则热度</div>
+                            <button class="tiny-btn" @click="setPage('analytics')">分析</button>
+                        </div>
+                        <div class="page-body rank-list">
+                            <div v-for="rule in topRules" :key="rule.id" class="rank-row">
+                                <span>{{ rule.name }}</span>
+                                <div class="rank-track"><b :style="{width: rule.percent + '%'}"></b></div>
+                                <strong>{{ rule.total }}</strong>
+                            </div>
+                            <div v-if="topRules.length === 0" class="empty-state">今天还没有规则触发</div>
+                        </div>
+                    </article>
+
+                    <article class="panel page-card">
+                        <div class="panel-head">
+                            <div class="panel-title"><i data-lucide="users-round"></i>账号状态</div>
+                            <button class="tiny-btn" @click="setPage('members')">成员</button>
+                        </div>
+                        <div class="page-body account-list">
+                            <div v-for="account in accountRows" :key="account.name" class="account-row">
+                                <div class="avatar small">{{ account.name.slice(0, 1) }}</div>
+                                <div><strong>{{ account.name }}</strong><span>{{ account.role }} · {{ account.user_id || '未读取 ID' }}</span></div>
+                                <em :class="{ok: account.connected}">{{ account.connected ? '在线' : '离线' }}</em>
+                            </div>
+                            <div v-if="accountRows.length === 0" class="empty-state">暂无已注册账号</div>
+                        </div>
+                    </article>
+                </section>
+
+                <section class="panel page-wide page-panel" v-if="ui.page === 'records'">
+                    <div class="panel-head">
+                        <div class="panel-title"><i data-lucide="clipboard-list"></i>执行记录</div>
+                        <button class="tiny-btn" @click="loadRuntimeStats"><i data-lucide="refresh-cw"></i>刷新</button>
+                    </div>
+                    <div class="page-body">
+                        <div class="records-toolbar">
+                            <label class="rule-search">
+                                <i data-lucide="search"></i>
+                                <input v-model="ui.recordQuery" placeholder="搜索规则、账号、群 ID、详情">
+                            </label>
+                            <div class="filter-row">
+                                <button v-for="filter in recordFilters" :key="filter.key" class="chip" :class="{active: ui.recordFilter === filter.key}" @click="ui.recordFilter = filter.key">{{ filter.label }} <span class="count">{{ recordFilterCount(filter.key) }}</span></button>
+                            </div>
+                        </div>
+                        <div class="record-table">
+                            <div class="table-head"><span>时间</span><span>类型</span><span>规则</span><span>账号</span><span>状态</span><span>详情</span></div>
+                            <div v-for="record in filteredRecords" :key="record.id" class="table-row">
+                                <span>{{ formatRecordTime(record) }}</span>
+                                <span>{{ record.kind_label }}</span>
+                                <span>{{ record.rule_name }}</span>
+                                <span>{{ record.target_account || '-' }}</span>
+                                <span class="record-status" :class="recordClass(record)">{{ statusLabel(record) }}</span>
+                                <span>{{ record.detail || record.message_text || '-' }}</span>
+                            </div>
+                            <div v-if="filteredRecords.length === 0" class="empty-state">没有匹配的执行记录</div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="panel page-wide page-panel" v-if="ui.page === 'analytics'">
+                    <div class="panel-head">
+                        <div class="panel-title"><i data-lucide="chart-column"></i>数据看板</div>
+                        <span class="hint">今日与昨日来自真实执行记录</span>
+                    </div>
+                    <div class="page-body">
+                        <div class="metrics-grid wide">
+                            <div class="metric-tile"><div class="metric-label">今日触发</div><div class="metric-value">{{ runtime.today.total }}</div><div class="hint">昨日 {{ runtime.yesterday.total }}</div></div>
+                            <div class="metric-tile"><div class="metric-label">今日执行次数</div><div class="metric-value">{{ runtime.today.action_count }}</div><div class="hint">昨日 {{ runtime.yesterday.action_count }}</div></div>
+                            <div class="metric-tile"><div class="metric-label">成功率</div><div class="metric-value">{{ runtime.today.success_rate }}%</div><div class="hint">昨日 {{ runtime.yesterday.success_rate }}%</div></div>
+                            <div class="metric-tile"><div class="metric-label">跳过</div><div class="metric-value">{{ runtime.today.skipped }}</div><div class="hint">未发送/暂停/抢答自删</div></div>
+                        </div>
+                        <div class="section">
+                            <div class="section-title">分时趋势</div>
+                            <div class="hour-bars tall">
+                                <div v-for="bucket in hourlyBars" :key="bucket.hour" class="hour-cell" :title="bucket.hour + ':00 · 成功 ' + bucket.success + ' / 失败 ' + bucket.failed">
+                                    <span class="hour-bar" :style="{height: bucket.height + '%'}"></span>
+                                    <small>{{ bucket.hour }}</small>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="record-table">
+                            <div class="table-head"><span>规则</span><span>触发</span><span>执行动作</span><span>成功</span><span>失败</span><span>成功率</span></div>
+                            <div v-for="rule in runtime.by_rule" :key="rule.id" class="table-row">
+                                <span>{{ rule.name }}</span><span>{{ rule.total }}</span><span>{{ rule.action_count }}</span><span>{{ rule.success }}</span><span>{{ rule.failed }}</span><span>{{ rule.success_rate }}%</span>
+                            </div>
+                            <div v-if="runtime.by_rule.length === 0" class="empty-state">暂无规则统计</div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="page-wide resource-grid" v-if="ui.page === 'resources'">
+                    <article class="panel page-card" v-for="item in resourceCards" :key="item.key">
+                        <div class="panel-head"><div class="panel-title"><i :data-lucide="item.icon"></i>{{ item.label }}</div><strong>{{ item.count }}</strong></div>
+                        <div class="page-body tag-row">
+                            <span v-for="value in item.items" :key="value" class="tag">{{ value }}</span>
+                            <div v-if="item.items.length === 0" class="empty-state">暂无数据</div>
+                        </div>
+                    </article>
+                </section>
+
+                <section class="panel page-wide page-panel" v-if="ui.page === 'members'">
+                    <div class="panel-head">
+                        <div class="panel-title"><i data-lucide="users-round"></i>成员权限</div>
+                        <span class="hint">账号来自当前已注册 Telegram Client</span>
+                    </div>
+                    <div class="page-body">
+                        <div class="account-list cards">
+                            <div v-for="account in accountRows" :key="account.name" class="account-row">
+                                <div class="avatar small">{{ account.name.slice(0, 1) }}</div>
+                                <div><strong>{{ account.name }}</strong><span>{{ account.role }} · {{ account.user_id || '未读取 ID' }}</span></div>
+                                <em :class="{ok: account.connected}">{{ account.connected ? '在线' : '离线' }}</em>
+                            </div>
+                        </div>
+                        <div class="record-table">
+                            <div class="table-head"><span>规则</span><span>回复账号</span><span>过滤方式</span><span>用户/标签</span><span>状态</span><span>操作</span></div>
+                            <div v-for="rule in config.rules" :key="rule.id" class="table-row">
+                                <span>{{ rule.name }}</span>
+                                <span>{{ rule.reply_account || mainAccount }}</span>
+                                <span>{{ rule.sender_mode === 'include' ? '仅允许' : '排除前缀' }}</span>
+                                <span>{{ (rule.sender_prefixes || []).join(', ') || '-' }}</span>
+                                <span>{{ ruleStatus(rule).text }}</span>
+                                <button class="inline-link" @click="selectRule(rule); setPage('rules'); ui.activeTab = 'permissions'">编辑</button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="panel page-wide page-panel" v-if="ui.page === 'settings'">
+                    <div class="panel-head">
+                        <div class="panel-title"><i data-lucide="settings"></i>系统设置</div>
+                        <button class="primary-btn" @click="saveConfig" :disabled="ui.saving"><i data-lucide="check"></i>{{ ui.saving ? '保存中' : '保存设置' }}</button>
+                    </div>
+                    <div class="page-body settings-grid">
+                        <section class="section">
+                            <div class="section-title">监听开关</div>
+                            <label class="inline-check"><input class="checkbox" type="checkbox" v-model="config.enabled">主监听启用</label>
+                            <label class="inline-check"><input class="checkbox" type="checkbox" v-model="config.extra_enabled">副账号分身模式启用</label>
+                        </section>
+                        <section class="section">
+                            <div class="section-title">自动排班</div>
+                            <label class="inline-check"><input class="checkbox" type="checkbox" v-model="config.schedule.active">启用排班</label>
+                            <div class="form-grid">
+                                <input class="input" type="time" v-model="config.schedule.start">
+                                <input class="input" type="time" v-model="config.schedule.end">
+                            </div>
+                        </section>
+                        <section class="section">
+                            <div class="section-title">审批触发词</div>
+                            <input class="input" :value="(config.approval_keywords || []).join(', ')" @input="config.approval_keywords = splitInline($event.target.value)" placeholder="同意, 批准, ok">
+                        </section>
+                        <section class="section">
+                            <div class="section-title">突发事件批量回复</div>
+                            <div class="form-grid">
+                                <input class="input" v-model="recovery.search" placeholder="查找我的反馈话术">
+                                <input class="input" v-model="recovery.reply" placeholder="回复给原提问者">
+                                <input class="input" type="number" v-model.number="recovery.hours" placeholder="范围小时">
+                                <div class="delay-grid"><input class="input" type="number" v-model.number="recovery.min"><span class="hint">-</span><input class="input" type="number" v-model.number="recovery.max"></div>
+                                <input class="input full" type="file" accept="image/*" @change="onRecoveryImage">
+                            </div>
+                            <button class="primary-btn" style="width:max-content;" :disabled="!recovery.search || !recovery.reply" @click="runRecovery"><i data-lucide="send"></i>执行回复</button>
+                        </section>
                     </div>
                 </section>
             </section>
@@ -1092,11 +1355,30 @@ createApp({
             schedule: { active: false, start: "09:00", end: "21:00" },
             rules: []
         });
+        const identity = reactive({ mainAccount: "主账号" });
+        const emptySummary = () => ({ total: 0, success: 0, failed: 0, skipped: 0, action_count: 0, success_rate: 0 });
+        const runtime = reactive({
+            server_time: "",
+            timezone: "北京时间",
+            service_started_at: "",
+            main_account: "",
+            accounts: [],
+            rules: { total: 0, running: 0, disabled: 0, draft: 0, active: 0 },
+            today: emptySummary(),
+            yesterday: emptySummary(),
+            hourly: [],
+            by_rule: [],
+            records: [],
+            last_record: null
+        });
         const available_accounts = reactive([]);
         const ui = reactive({
+            page: "dashboard",
             selectedId: "",
             activeTab: "basic",
             statusFilter: "all",
+            recordFilter: "all",
+            recordQuery: "",
             ruleQuery: "",
             globalSearch: "",
             showOps: false,
@@ -1109,6 +1391,21 @@ createApp({
             { key: "advanced", label: "高级设置" },
             { key: "notes", label: "备注说明" },
             { key: "permissions", label: "权限设置" }
+        ];
+        const navItems = [
+            { key: "dashboard", label: "监控台", icon: "chart-no-axes-column" },
+            { key: "rules", label: "规则管理", icon: "shield-check" },
+            { key: "records", label: "执行记录", icon: "clipboard-list" },
+            { key: "analytics", label: "数据看板", icon: "chart-column" },
+            { key: "resources", label: "资源管理", icon: "layers-3" },
+            { key: "members", label: "成员权限", icon: "users-round" },
+            { key: "settings", label: "系统设置", icon: "settings" }
+        ];
+        const recordFilters = [
+            { key: "all", label: "全部" },
+            { key: "success", label: "成功" },
+            { key: "failed", label: "失败" },
+            { key: "skipped", label: "跳过" }
         ];
 
         const refreshIcons = () => nextTick(() => {
@@ -1191,7 +1488,11 @@ createApp({
                 config.approval_keywords = Array.isArray(data.approval_keywords) ? data.approval_keywords : ["同意", "批准", "ok"];
                 config.schedule = data.schedule || { active: false, start: "09:00", end: "21:00" };
                 config.rules = (data.rules || []).map(hydrateRule);
+                identity.mainAccount = data.main_account || identity.mainAccount;
                 available_accounts.splice(0, available_accounts.length, ...((data.available_accounts || [])));
+                if (Array.isArray(data.accounts) && data.accounts.length) {
+                    runtime.accounts.splice(0, runtime.accounts.length, ...data.accounts);
+                }
                 if (!ui.selectedId || !config.rules.some(rule => rule.id === ui.selectedId)) {
                     ui.selectedId = config.rules[0]?.id || "";
                 }
@@ -1201,15 +1502,58 @@ createApp({
             }
         };
 
+        const kindLabel = (kind) => ({
+            monitor: "规则监听",
+            approval: "同意审批",
+            recovery: "批量恢复"
+        }[kind] || "系统任务");
+
+        const decorateRecord = (record = {}) => ({
+            ...record,
+            kind_label: kindLabel(record.kind)
+        });
+
+        const loadRuntimeStats = async (silent = false) => {
+            try {
+                const res = await fetch("/api/monitor_runtime_stats?limit=300");
+                const data = await res.json();
+                runtime.server_time = data.server_time || "";
+                runtime.timezone = data.timezone || "北京时间";
+                runtime.service_started_at = data.service_started_at || "";
+                runtime.main_account = data.main_account || runtime.main_account || identity.mainAccount;
+                if (runtime.main_account) identity.mainAccount = runtime.main_account;
+                runtime.rules = data.rules || runtime.rules;
+                Object.assign(runtime.today, { ...emptySummary(), ...(data.today || {}) });
+                Object.assign(runtime.yesterday, { ...emptySummary(), ...(data.yesterday || {}) });
+                runtime.hourly.splice(0, runtime.hourly.length, ...((data.hourly || [])));
+                runtime.by_rule.splice(0, runtime.by_rule.length, ...((data.by_rule || [])));
+                runtime.records.splice(0, runtime.records.length, ...((data.records || []).map(decorateRecord)));
+                runtime.last_record = data.last_record ? decorateRecord(data.last_record) : null;
+                runtime.accounts.splice(0, runtime.accounts.length, ...((data.accounts || [])));
+                refreshIcons();
+            } catch (e) {
+                if (!silent) showToast("运行数据加载失败", "error");
+            }
+        };
+
+        const loadAll = async () => {
+            await Promise.all([loadConfig(), loadRuntimeStats()]);
+        };
+
         const refreshStatus = async () => {
             try {
                 const res = await fetch("/tool/monitor_settings_json");
                 const data = await res.json();
                 if (data.enabled !== undefined) config.enabled = data.enabled;
                 if (data.extra_enabled !== undefined) config.extra_enabled = data.extra_enabled;
+                if (data.main_account) identity.mainAccount = data.main_account;
                 available_accounts.splice(0, available_accounts.length, ...((data.available_accounts || [])));
+                if (Array.isArray(data.accounts) && data.accounts.length) {
+                    runtime.accounts.splice(0, runtime.accounts.length, ...data.accounts);
+                }
                 refreshIcons();
             } catch (e) {}
+            await loadRuntimeStats(true);
         };
 
         const currentRule = computed(() => config.rules.find(rule => rule.id === ui.selectedId) || config.rules[0] || null);
@@ -1235,9 +1579,11 @@ createApp({
             const running = config.rules.filter(rule => (ruleStatus(rule).kind || "running") === "running").length;
             const disabled = config.rules.filter(rule => ruleStatus(rule).kind === "disabled").length;
             const draft = config.rules.filter(rule => ruleStatus(rule).kind === "draft").length;
-            const today = Math.max(1, running * 54 + total * 3);
-            const successRate = Math.max(90, Math.min(99.9, 99.4 - disabled * .1)).toFixed(1);
-            return { total, active: total - disabled, running, disabled, draft, today, successRate };
+            const today = Number(runtime.today.total || 0);
+            const success = Number(runtime.today.success || 0);
+            const failed = Number(runtime.today.failed || 0);
+            const successRate = Number(runtime.today.success_rate || 0).toFixed(1);
+            return { total, active: running, running, disabled, draft, today, yesterday: Number(runtime.yesterday.total || 0), success, failed, successRate };
         });
 
         const splitInline = (text) => String(text || "").split(/[\r\n,，]+/).map(s => s.trim()).filter(Boolean);
@@ -1367,6 +1713,125 @@ createApp({
             return (stepTotal + approval).toFixed(1);
         });
 
+        const mainAccount = computed(() => runtime.main_account || identity.mainAccount || "主账号");
+        const avatarText = computed(() => String(mainAccount.value || "A").trim().slice(0, 1).toUpperCase() || "A");
+        const lastRefreshText = computed(() => runtime.server_time ? new Date(runtime.server_time).toLocaleTimeString("zh-CN", { hour12: false }) : "未同步");
+
+        const setPage = (page) => {
+            ui.page = page;
+            ui.showOps = false;
+            refreshIcons();
+        };
+
+        const deltaText = (today, yesterday) => {
+            const t = Number(today || 0);
+            const y = Number(yesterday || 0);
+            if (!y && !t) return "昨日 0";
+            if (!y) return `昨日 0，今日 +${t}`;
+            const diff = t - y;
+            const pct = Math.abs(diff / y * 100).toFixed(1);
+            if (diff === 0) return "较昨日持平";
+            return `较昨日 ${diff > 0 ? "+" : "-"}${pct}%`;
+        };
+
+        const statusLabel = (record) => ({
+            success: "执行成功",
+            failed: "执行失败",
+            skipped: "已跳过"
+        }[record?.status] || "未知");
+
+        const recordClass = (record) => {
+            if (record?.status === "success") return "good";
+            if (record?.status === "failed") return "bad";
+            if (record?.status === "skipped") return "skip";
+            return "";
+        };
+
+        const recordIcon = (record) => ({
+            success: "circle-check",
+            failed: "circle-alert",
+            skipped: "circle-minus"
+        }[record?.status] || "circle-dot");
+
+        const formatRecordTime = (record) => {
+            if (!record?.ts) return "-";
+            const dt = new Date(record.ts);
+            if (Number.isNaN(dt.getTime())) return record.time || "-";
+            return dt.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+        };
+
+        const selectedRuleStats = computed(() => {
+            const rule = currentRule.value;
+            const item = runtime.by_rule.find(row => row.id === rule?.id);
+            return { total: 0, success: 0, failed: 0, skipped: 0, action_count: 0, success_rate: 0, ...(item || {}) };
+        });
+
+        const currentRuleRecords = computed(() => {
+            const ruleId = currentRule.value?.id;
+            if (!ruleId) return [];
+            return runtime.records.filter(record => record.rule_id === ruleId);
+        });
+
+        const filteredRecords = computed(() => {
+            const query = ui.recordQuery.trim().toLowerCase();
+            return runtime.records.filter(record => {
+                const statusOk = ui.recordFilter === "all" || record.status === ui.recordFilter;
+                const hay = [record.rule_name, record.kind_label, record.target_account, record.detail, record.message_text, record.chat_id, record.sender_name].join(" ").toLowerCase();
+                return statusOk && (!query || hay.includes(query));
+            });
+        });
+
+        const recordFilterCount = (key) => key === "all" ? runtime.records.length : runtime.records.filter(record => record.status === key).length;
+
+        const hourlyBars = computed(() => {
+            const source = runtime.hourly.length ? runtime.hourly : Array.from({ length: 24 }, (_, hour) => ({ hour: String(hour).padStart(2, "0"), total: 0, success: 0, failed: 0, skipped: 0 }));
+            const max = Math.max(1, ...source.map(item => Number(item.total || 0)));
+            return source.map(item => ({
+                ...item,
+                height: item.total ? Math.max(8, Math.round(Number(item.total || 0) / max * 100)) : 2
+            }));
+        });
+
+        const compactHourlyBars = computed(() => hourlyBars.value);
+
+        const topRules = computed(() => {
+            const rows = runtime.by_rule.filter(rule => Number(rule.total || 0) > 0).slice(0, 6);
+            const max = Math.max(1, ...rows.map(rule => Number(rule.total || 0)));
+            return rows.map(rule => ({ ...rule, percent: Math.max(6, Math.round(Number(rule.total || 0) / max * 100)) }));
+        });
+
+        const accountRows = computed(() => runtime.accounts.length ? runtime.accounts : []);
+
+        const unique = (items) => Array.from(new Set(items.map(item => String(item || "").trim()).filter(Boolean)));
+        const actionLabels = {
+            text: "发送文本",
+            forward: "直接转发",
+            copy_file: "转发+新文案",
+            amount_logic: "金额分流",
+            preempt_check: "抢答检测",
+            notify_user: "Bot通知"
+        };
+        const resourceCards = computed(() => {
+            const groups = unique(config.rules.flatMap(rule => rule.groups || []));
+            const keywords = unique(config.rules.flatMap(rule => rule.keywords || []));
+            const fileTypes = unique(config.rules.flatMap(rule => rule.file_extensions || []));
+            const approvalRules = unique(config.rules.filter(rule => rule.enable_approval).map(rule => rule.name || rule.id));
+            const actionCounts = {};
+            config.rules.forEach(rule => (rule.replies || []).forEach(step => {
+                const label = actionLabels[step.type] || step.type || "发送文本";
+                actionCounts[label] = (actionCounts[label] || 0) + 1;
+            }));
+            const actions = Object.entries(actionCounts).map(([name, count]) => `${name} x${count}`);
+            return [
+                { key: "groups", label: "监听群", icon: "messages-square", count: groups.length, items: groups },
+                { key: "keywords", label: "文本关键词", icon: "search", count: keywords.length, items: keywords },
+                { key: "files", label: "文件类型", icon: "files", count: fileTypes.length, items: fileTypes.map(item => `.${item}`) },
+                { key: "actions", label: "动作类型", icon: "workflow", count: actions.length, items: actions },
+                { key: "approval", label: "审批规则", icon: "stamp", count: approvalRules.length, items: approvalRules },
+                { key: "accounts", label: "回复账号", icon: "users-round", count: accountRows.value.length, items: accountRows.value.map(item => `${item.name} · ${item.connected ? "在线" : "离线"}`) }
+            ];
+        });
+
         const saveConfig = async () => {
             ui.saving = true;
             try {
@@ -1420,21 +1885,25 @@ createApp({
         };
 
         watch(() => [ui.activeTab, ui.showOps, config.rules.length, ui.selectedId], refreshIcons);
+        watch(() => [ui.page, ui.recordFilter, ui.recordQuery], refreshIcons);
         watch(currentRule, refreshIcons);
         onMounted(() => {
-            loadConfig();
+            loadAll();
             setInterval(refreshStatus, 3000);
             refreshIcons();
         });
 
         return {
-            config, available_accounts, ui, toast, recovery, tabs,
+            config, runtime, available_accounts, ui, toast, recovery, tabs, navItems, recordFilters,
             currentRule, filteredRules, stats, previewSteps, estimatedTotal,
-            loadConfig, saveConfig, selectRule, addRule, removeRule, ruleStatus,
+            mainAccount, avatarText, lastRefreshText, selectedRuleStats, currentRuleRecords,
+            filteredRecords, hourlyBars, compactHourlyBars, topRules, accountRows, resourceCards,
+            loadConfig, loadRuntimeStats, loadAll, saveConfig, selectRule, setPage, addRule, removeRule, ruleStatus,
             listToString, setList, setIntList, splitInline, shortGroups, primaryKeyword, stepCount,
             addStep, duplicateStep, removeStep, normalizeStep, displayDelay,
             amountPart, setAmountPart, amountLowLines, setAmountLowLines,
-            ensureApprovalAction, onRecoveryImage, runRecovery
+            ensureApprovalAction, onRecoveryImage, runRecovery,
+            deltaText, statusLabel, recordClass, recordIcon, formatRecordTime, recordFilterCount
         };
     }
 }).mount("#app");

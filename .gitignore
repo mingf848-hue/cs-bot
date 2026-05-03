@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+.playwright-cli/
+bot_debug.log
+monitor_config_v2.json
+monitor_runtime_stats.json

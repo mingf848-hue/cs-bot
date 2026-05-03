@@ -8,6 +8,7 @@ import re
 import unicodedata
 import warnings
 import urllib.request
+import threading
 from datetime import datetime, timedelta, timezone
 from flask import request, jsonify, Response, render_template_string
 from telethon import events, TelegramClient, functions
@@ -32,6 +33,10 @@ logger = logging.getLogger("BotLogger")
 
 CONFIG_FILE = "monitor_config_v2.json"
 REDIS_KEY = "monitor_config"
+RUNTIME_STATS_FILE = "monitor_runtime_stats.json"
+RUNTIME_STATS_KEY = "monitor_runtime_stats_v1"
+MAX_RUNTIME_RECORDS = 800
+MAX_DAILY_STATS_DAYS = 60
 global_main_handler = None
 
 # ==========================================
@@ -49,6 +54,9 @@ client_user_ids = {}  # 缓存已知账号的 Telegram user id {name: id}
 MAIN_NAME = "主账号" # 全局记录主账号名称
 redis_client = None  # 全局 Redis 客户端
 system_cs_prefixes = []
+service_started_at = datetime.now(BJ_TZ)
+runtime_stats_lock = threading.Lock()
+runtime_stats = {"records": [], "daily": {}}
 
 # --- 核心工具函数 ---
 
@@ -108,6 +116,365 @@ def get_sender_name(sender):
     if uname:
         return f"{fullname} (@{uname})".strip()
     return fullname or "Unknown"
+
+def now_bj():
+    return datetime.now(BJ_TZ)
+
+def parse_bj_datetime(raw):
+    if not raw:
+        return None
+    try:
+        text = str(raw).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=BJ_TZ)
+        return dt.astimezone(BJ_TZ)
+    except Exception:
+        return None
+
+def empty_daily_summary():
+    return {
+        "total": 0,
+        "success": 0,
+        "failed": 0,
+        "skipped": 0,
+        "action_count": 0,
+        "hourly": [
+            {"hour": f"{hour:02d}", "total": 0, "success": 0, "failed": 0, "skipped": 0}
+            for hour in range(24)
+        ],
+        "by_rule": {}
+    }
+
+def apply_record_to_daily(daily, record):
+    ts = parse_bj_datetime(record.get("ts")) or now_bj()
+    day = record.get("day") or ts.strftime("%Y-%m-%d")
+    day_summary = daily.setdefault(day, empty_daily_summary())
+    status = record.get("status")
+    action_count = int(record.get("action_count") or 0)
+
+    day_summary["total"] = int(day_summary.get("total") or 0) + 1
+    day_summary["action_count"] = int(day_summary.get("action_count") or 0) + action_count
+    if status in ("success", "failed", "skipped"):
+        day_summary[status] = int(day_summary.get(status) or 0) + 1
+
+    hourly = day_summary.get("hourly")
+    if not isinstance(hourly, list) or len(hourly) != 24:
+        hourly = empty_daily_summary()["hourly"]
+        day_summary["hourly"] = hourly
+    bucket = hourly[ts.hour]
+    bucket["total"] = int(bucket.get("total") or 0) + 1
+    if status in ("success", "failed", "skipped"):
+        bucket[status] = int(bucket.get(status) or 0) + 1
+
+    rule_id = str(record.get("rule_id") or "__system__")
+    by_rule = day_summary.setdefault("by_rule", {})
+    rule_summary = by_rule.setdefault(rule_id, {
+        "id": rule_id,
+        "name": record.get("rule_name") or "系统任务",
+        "total": 0,
+        "success": 0,
+        "failed": 0,
+        "skipped": 0,
+        "action_count": 0,
+        "last_record": None
+    })
+    rule_summary["name"] = record.get("rule_name") or rule_summary.get("name") or "系统任务"
+    rule_summary["total"] = int(rule_summary.get("total") or 0) + 1
+    rule_summary["action_count"] = int(rule_summary.get("action_count") or 0) + action_count
+    if status in ("success", "failed", "skipped"):
+        rule_summary[status] = int(rule_summary.get(status) or 0) + 1
+    if not rule_summary.get("last_record") or str(record.get("ts", "")) > str(rule_summary["last_record"].get("ts", "")):
+        rule_summary["last_record"] = record
+
+def normalize_daily_stats(raw_daily, records):
+    daily = raw_daily if isinstance(raw_daily, dict) else {}
+    if not daily:
+        rebuilt = {}
+        for record in reversed(records):
+            apply_record_to_daily(rebuilt, record)
+        daily = rebuilt
+
+    normalized = {}
+    for day in sorted(daily.keys(), reverse=True)[:MAX_DAILY_STATS_DAYS]:
+        source = daily.get(day) if isinstance(daily.get(day), dict) else {}
+        summary = empty_daily_summary()
+        for key in ("total", "success", "failed", "skipped", "action_count"):
+            try:
+                summary[key] = int(source.get(key) or 0)
+            except Exception:
+                summary[key] = 0
+
+        source_hourly = source.get("hourly")
+        if isinstance(source_hourly, list):
+            for idx, item in enumerate(source_hourly[:24]):
+                if not isinstance(item, dict):
+                    continue
+                for key in ("total", "success", "failed", "skipped"):
+                    try:
+                        summary["hourly"][idx][key] = int(item.get(key) or 0)
+                    except Exception:
+                        summary["hourly"][idx][key] = 0
+
+        source_by_rule = source.get("by_rule")
+        if isinstance(source_by_rule, dict):
+            for rule_id, item in source_by_rule.items():
+                if not isinstance(item, dict):
+                    continue
+                rule_summary = {
+                    "id": str(item.get("id") or rule_id),
+                    "name": item.get("name") or "系统任务",
+                    "total": int(item.get("total") or 0),
+                    "success": int(item.get("success") or 0),
+                    "failed": int(item.get("failed") or 0),
+                    "skipped": int(item.get("skipped") or 0),
+                    "action_count": int(item.get("action_count") or 0),
+                    "last_record": item.get("last_record") if isinstance(item.get("last_record"), dict) else None
+                }
+                summary["by_rule"][str(rule_summary["id"])] = rule_summary
+        normalized[day] = summary
+    return normalized
+
+def normalize_runtime_stats(data):
+    if not isinstance(data, dict):
+        return {"records": [], "daily": {}}
+    records = data.get("records", [])
+    if not isinstance(records, list):
+        records = []
+    clean_records = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        ts = parse_bj_datetime(record.get("ts"))
+        if ts:
+            record["ts"] = ts.isoformat()
+            record["day"] = ts.strftime("%Y-%m-%d")
+            record["time"] = ts.strftime("%H:%M:%S")
+        clean_records.append(record)
+    clean_records.sort(key=lambda item: item.get("ts", ""), reverse=True)
+    return {
+        "records": clean_records[:MAX_RUNTIME_RECORDS],
+        "daily": normalize_daily_stats(data.get("daily"), clean_records)
+    }
+
+def load_runtime_stats():
+    global runtime_stats
+    loaded = False
+
+    if redis_client:
+        try:
+            data = redis_client.get(RUNTIME_STATS_KEY)
+            if data:
+                runtime_stats = normalize_runtime_stats(json.loads(data))
+                loaded = True
+                logger.info("📈 [Monitor] 已从 Redis 恢复运行统计")
+        except Exception as e:
+            logger.error(f"⚠️ [Monitor] Redis 运行统计读取出错: {e}")
+
+    if not loaded and os.path.exists(RUNTIME_STATS_FILE):
+        try:
+            with open(RUNTIME_STATS_FILE, "r", encoding="utf-8") as f:
+                runtime_stats = normalize_runtime_stats(json.load(f))
+                loaded = True
+                logger.info("📈 [Monitor] 已从本地文件恢复运行统计")
+        except Exception as e:
+            logger.error(f"⚠️ [Monitor] 本地运行统计读取出错: {e}")
+
+    if not loaded:
+        runtime_stats = {"records": [], "daily": {}}
+
+def persist_runtime_stats():
+    with runtime_stats_lock:
+        data = normalize_runtime_stats(runtime_stats)
+
+    if redis_client:
+        try:
+            redis_client.set(RUNTIME_STATS_KEY, json.dumps(data, ensure_ascii=False))
+        except Exception as e:
+            logger.error(f"⚠️ [Monitor] Redis 运行统计保存失败: {e}")
+
+    try:
+        with open(RUNTIME_STATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"⚠️ [Monitor] 本地运行统计保存失败: {e}")
+
+def event_text_preview(event, limit=120):
+    text = ""
+    if event is not None:
+        text = getattr(event, "raw_text", None) or getattr(event, "text", "") or ""
+        if not text and getattr(event, "message", None) is not None:
+            text = getattr(event.message, "raw_text", None) or getattr(event.message, "text", "") or ""
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(text) > limit:
+        return text[:limit] + "..."
+    return text
+
+def record_runtime_event(kind, status, detail="", rule=None, event=None, sender_name="", target_account="", action_count=0, duration_ms=0):
+    ts = now_bj()
+    rule_id = str((rule or {}).get("id") or "")
+    rule_name = str((rule or {}).get("name") or "系统任务")
+    message = getattr(event, "message", event)
+    record = {
+        "id": f"{int(time.time() * 1000)}_{random.randint(1000, 9999)}",
+        "kind": str(kind or "monitor"),
+        "status": str(status or "success"),
+        "detail": str(detail or ""),
+        "rule_id": rule_id,
+        "rule_name": rule_name,
+        "target_account": str(target_account or ""),
+        "sender_name": str(sender_name or ""),
+        "sender_id": getattr(event, "sender_id", None),
+        "chat_id": getattr(event, "chat_id", None) if event is not None else None,
+        "message_id": getattr(message, "id", None) or getattr(event, "id", None),
+        "message_text": event_text_preview(event),
+        "action_count": int(action_count or 0),
+        "duration_ms": int(duration_ms or 0),
+        "ts": ts.isoformat(),
+        "day": ts.strftime("%Y-%m-%d"),
+        "time": ts.strftime("%H:%M:%S")
+    }
+
+    with runtime_stats_lock:
+        runtime_stats.setdefault("records", []).insert(0, record)
+        apply_record_to_daily(runtime_stats.setdefault("daily", {}), record)
+        normalized = normalize_runtime_stats(runtime_stats)
+        runtime_stats["records"] = normalized["records"]
+        runtime_stats["daily"] = normalized["daily"]
+    persist_runtime_stats()
+    return record
+
+def get_account_summaries():
+    accounts = []
+    for name, cli in global_clients.items():
+        connected = True
+        try:
+            if hasattr(cli, "is_connected"):
+                connected = bool(cli.is_connected())
+        except Exception:
+            connected = False
+        accounts.append({
+            "name": name,
+            "role": "主账号" if name == MAIN_NAME else "副账号",
+            "connected": connected,
+            "user_id": client_user_ids.get(name)
+        })
+    return accounts
+
+def build_monitor_runtime_stats(limit=160):
+    now = now_bj()
+    today = now.strftime("%Y-%m-%d")
+    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    with runtime_stats_lock:
+        records = list(runtime_stats.get("records", []))
+        daily = normalize_daily_stats(runtime_stats.get("daily", {}), records)
+
+    today_daily = daily.get(today, empty_daily_summary())
+    yesterday_daily = daily.get(yesterday, empty_daily_summary())
+
+    def summarize(day_summary):
+        success = int(day_summary.get("success") or 0)
+        failed = int(day_summary.get("failed") or 0)
+        skipped = int(day_summary.get("skipped") or 0)
+        actions = int(day_summary.get("action_count") or 0)
+        finished = success + failed
+        success_rate = round((success / finished * 100), 1) if finished else 0.0
+        return {
+            "total": int(day_summary.get("total") or 0),
+            "success": success,
+            "failed": failed,
+            "skipped": skipped,
+            "action_count": actions,
+            "success_rate": success_rate
+        }
+
+    today_summary = summarize(today_daily)
+    yesterday_summary = summarize(yesterday_daily)
+
+    hourly = today_daily.get("hourly")
+    if not isinstance(hourly, list) or len(hourly) != 24:
+        hourly = empty_daily_summary()["hourly"]
+
+    by_rule = {}
+    for rule in current_config.get("rules", []):
+        rule_id = str(rule.get("id") or "")
+        if not rule_id:
+            continue
+        by_rule[rule_id] = {
+            "id": rule_id,
+            "name": rule.get("name") or "未命名规则",
+            "total": 0,
+            "success": 0,
+            "failed": 0,
+            "skipped": 0,
+            "action_count": 0,
+            "success_rate": 0.0,
+            "last_record": None
+        }
+
+    aggregate_by_rule = today_daily.get("by_rule", {})
+    if not isinstance(aggregate_by_rule, dict):
+        aggregate_by_rule = {}
+    for rule_id, record in aggregate_by_rule.items():
+        rule_id = str(rule_id or "__system__")
+        if rule_id not in by_rule:
+            by_rule[rule_id] = {
+                "id": rule_id,
+                "name": record.get("name") or "系统任务",
+                "total": 0,
+                "success": 0,
+                "failed": 0,
+                "skipped": 0,
+                "action_count": 0,
+                "success_rate": 0.0,
+                "last_record": None
+            }
+        item = by_rule[rule_id]
+        item["name"] = record.get("name") or item["name"]
+        item["total"] = int(record.get("total") or 0)
+        item["success"] = int(record.get("success") or 0)
+        item["failed"] = int(record.get("failed") or 0)
+        item["skipped"] = int(record.get("skipped") or 0)
+        item["action_count"] = int(record.get("action_count") or 0)
+        item["last_record"] = record.get("last_record")
+
+    for item in by_rule.values():
+        finished = item["success"] + item["failed"]
+        item["success_rate"] = round(item["success"] / finished * 100, 1) if finished else 0.0
+
+    total_rules = len(current_config.get("rules", []))
+    running_rules = 0
+    disabled_rules = 0
+    draft_rules = 0
+    for rule in current_config.get("rules", []):
+        if not rule.get("groups"):
+            draft_rules += 1
+        elif not rule.get("enabled", True) or (rule.get("reply_account") and not current_config.get("extra_enabled", True)):
+            disabled_rules += 1
+        else:
+            running_rules += 1
+
+    last_record = records[0] if records else None
+    return {
+        "server_time": now.isoformat(),
+        "timezone": TZ_NAME,
+        "service_started_at": service_started_at.isoformat(),
+        "main_account": MAIN_NAME,
+        "accounts": get_account_summaries(),
+        "rules": {
+            "total": total_rules,
+            "running": running_rules,
+            "disabled": disabled_rules,
+            "draft": draft_rules,
+            "active": running_rules
+        },
+        "today": today_summary,
+        "yesterday": yesterday_summary,
+        "hourly": hourly,
+        "by_rule": sorted(by_rule.values(), key=lambda item: (item["total"], item["success"]), reverse=True),
+        "records": records[:limit],
+        "last_record": last_record
+    }
 
 def split_config_items(raw, split_commas=False):
     if raw is None:
@@ -1564,6 +1931,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     system_cs_prefixes = list(main_cs_prefixes or [])
     init_redis_connection() # [v78] 确保调用全局函数
     load_config(main_cs_prefixes)
+    load_runtime_stats()
     
     try: bot_loop = client.loop
     except:
@@ -1606,7 +1974,17 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     def monitor_settings_json():
         data = current_config.copy()
         data["available_accounts"] = [k for k in global_clients.keys() if k != MAIN_NAME]
+        data["main_account"] = MAIN_NAME
+        data["accounts"] = get_account_summaries()
         return jsonify(data)
+
+    @app.route('/api/monitor_runtime_stats')
+    def monitor_runtime_stats_api():
+        try:
+            limit = max(1, min(500, int(request.args.get("limit", 160))))
+        except Exception:
+            limit = 160
+        return jsonify(build_monitor_runtime_stats(limit=limit))
 
     @app.route('/api/monitor_settings', methods=['POST'])
     def update_monitor_settings():
@@ -1666,8 +2044,26 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     await cli.send_file(msg.chat_id, buf, caption=caption, reply_to=target_id)
                 else:
                     await cli.send_message(msg.chat_id, caption, reply_to=target_id)
+                record_runtime_event(
+                    "recovery",
+                    "success",
+                    f"批量恢复回复：{search}",
+                    rule={"id": "__recovery__", "name": "突发事件批量回复"},
+                    event=msg,
+                    target_account=MAIN_NAME,
+                    action_count=1
+                )
                 await asyncio.sleep(random.uniform(min_d, max_d))
             except Exception as e:
+                record_runtime_event(
+                    "recovery",
+                    "failed",
+                    f"批量恢复失败：{e}",
+                    rule={"id": "__recovery__", "name": "突发事件批量回复"},
+                    event=msg,
+                    target_account=MAIN_NAME,
+                    action_count=0
+                )
                 logger.error(f"❌ [Recovery] 批量回复失败 Msg={getattr(msg, 'id', 'unknown')}: {e}")
 
     def create_otp_handler(account_name):
@@ -1824,6 +2220,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                     continue
 
                                 logger.info(f"👮 [Approval] 批准通过! 匹配规则: {rule.get('name')}")
+                                approval_started = time.time()
+                                approval_actions = 0
+                                approval_errors = []
                                 action = rule.get("approval_action", {})
                                 
                                 target_name = rule.get("reply_account")
@@ -1834,33 +2233,81 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                 
                                 if target_name != MAIN_NAME and not extra_on:
                                     logger.info(f"⏸️ [Approval] 副号开关已关，规则已暂停")
+                                    record_runtime_event(
+                                        "approval",
+                                        "skipped",
+                                        "副号总开关已关闭，审批动作暂停",
+                                        rule=rule,
+                                        event=event,
+                                        sender_name=get_sender_name(approver),
+                                        target_account=target_name,
+                                        duration_ms=(time.time() - approval_started) * 1000
+                                    )
                                     return
 
                                 if target_name not in global_clients:
                                     logger.error(f"❌ [Approval] 指定回复账号不存在或未注册: {target_name}，已取消执行")
+                                    record_runtime_event(
+                                        "approval",
+                                        "failed",
+                                        f"指定回复账号不存在或未注册：{target_name}",
+                                        rule=rule,
+                                        event=event,
+                                        sender_name=get_sender_name(approver),
+                                        target_account=target_name,
+                                        duration_ms=(time.time() - approval_started) * 1000
+                                    )
                                     return
 
                                 replier_client = global_clients[target_name]
                                 if target_name != MAIN_NAME and hasattr(replier_client, "is_connected") and not replier_client.is_connected():
                                     logger.error(f"❌ [Approval] 指定回复账号未连接: {target_name}，已取消执行")
+                                    record_runtime_event(
+                                        "approval",
+                                        "failed",
+                                        f"指定回复账号未连接：{target_name}",
+                                        rule=rule,
+                                        event=event,
+                                        sender_name=get_sender_name(approver),
+                                        target_account=target_name,
+                                        duration_ms=(time.time() - approval_started) * 1000
+                                    )
                                     return
 
                                 await asyncio.sleep(random.uniform(float(action.get("delay_1_min", 1.0)), float(action.get("delay_1_max", 2.0))))
                                 if action.get("reply_admin"):
                                     await replier_client.send_message(event.chat_id, format_caption(action["reply_admin"]), reply_to=event.id)
+                                    approval_actions += 1
                                 
                                 await asyncio.sleep(random.uniform(float(action.get("delay_2_min", 1.0)), float(action.get("delay_2_max", 3.0))))
                                 fwd_tgt = action.get("forward_to")
                                 if fwd_tgt:
-                                    try: await replier_client.forward_messages(parse_peer_target(fwd_tgt), original_msg)
-                                    except Exception as e: logger.error(f"❌ [Approval] 转发失败: {e}")
+                                    try:
+                                        await replier_client.forward_messages(parse_peer_target(fwd_tgt), original_msg)
+                                        approval_actions += 1
+                                    except Exception as e:
+                                        approval_errors.append(f"转发失败：{e}")
+                                        logger.error(f"❌ [Approval] 转发失败: {e}")
 
                                 await asyncio.sleep(random.uniform(float(action.get("delay_3_min", 1.0)), float(action.get("delay_3_max", 2.0))))
                                 if action.get("reply_origin"):
                                     try:
                                         await replier_client.send_message(original_msg.chat_id, format_caption(action["reply_origin"]), reply_to=original_msg.id)
+                                        approval_actions += 1
                                     except Exception as e:
+                                        approval_errors.append(f"回复原消息失败：{e}")
                                         logger.error(f"❌ [Approval] 回复原消息失败: {e}")
+                                record_runtime_event(
+                                    "approval",
+                                    "failed" if approval_errors else "success",
+                                    "；".join(approval_errors) if approval_errors else "审批动作执行完成",
+                                    rule=rule,
+                                    event=event,
+                                    sender_name=get_sender_name(approver),
+                                    target_account=target_name,
+                                    action_count=approval_actions,
+                                    duration_ms=(time.time() - approval_started) * 1000
+                                )
                                 return
                 except Exception as e: logger.error(f"❌ [Approval] 处理出错: {e}")
 
@@ -1879,6 +2326,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                 is_match, reason, extracted_data = await analyze_message(client, rule, event, other_cs_ids, event.sender)
                 if is_match:
                     rule_id = ensure_rule_id(rule)
+                    match_started = time.time()
                     logger.info(f"✅ [Monitor] 规则 '{rule.get('name')}' 触发!")
                     
                     # v72: Strict Routing (No Fallback)
@@ -1891,22 +2339,53 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     # 2. Check Permission (Strict Pause)
                     if target_name != MAIN_NAME and not extra_on:
                         logger.info(f"⏸️ [Routing] 副号开关已关，规则 '{rule.get('name')}' 已暂停 (不转交给主号)")
+                        record_runtime_event(
+                            "monitor",
+                            "skipped",
+                            "副号总开关已关闭，规则暂停执行",
+                            rule=rule,
+                            event=event,
+                            sender_name=sender_name,
+                            target_account=target_name,
+                            duration_ms=(time.time() - match_started) * 1000
+                        )
                         break # Stop checking other rules
 
                     # 3. Assign Client
                     if target_name not in global_clients:
                         logger.error(f"❌ [Routing] 指定回复账号不存在或未注册: {target_name}，规则 '{rule.get('name')}' 已取消")
+                        record_runtime_event(
+                            "monitor",
+                            "failed",
+                            f"指定回复账号不存在或未注册：{target_name}",
+                            rule=rule,
+                            event=event,
+                            sender_name=sender_name,
+                            target_account=target_name,
+                            duration_ms=(time.time() - match_started) * 1000
+                        )
                         break
 
                     target_client = global_clients[target_name]
                     if target_name != MAIN_NAME and hasattr(target_client, "is_connected") and not target_client.is_connected():
                         logger.error(f"❌ [Routing] 指定回复账号未连接: {target_name}，规则 '{rule.get('name')}' 已取消")
+                        record_runtime_event(
+                            "monitor",
+                            "failed",
+                            f"指定回复账号未连接：{target_name}",
+                            rule=rule,
+                            event=event,
+                            sender_name=sender_name,
+                            target_account=target_name,
+                            duration_ms=(time.time() - match_started) * 1000
+                        )
                         break
                     if target_name != MAIN_NAME: logger.info(f"🔀 [Routing] 使用指定账号回复: {target_name}")
 
                     sent_msgs = []
                     notify_sent = False
                     action_failed = False
+                    preempted = False
                     try:
                         for step in rule.get("replies", []):
                             await asyncio.sleep(random.uniform(step.get("min", 1), step.get("max", 3)))
@@ -1978,6 +2457,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                 if has_preempt:
                                     await delete_sent_messages(target_client, sent_msgs)
                                     sent_msgs = []
+                                    preempted = True
                                     logger.info(f"🧹 [Preempt] 检测到抢答，已删除规则 '{rule.get('name')}' 的已发送消息")
                                     break
 
@@ -2001,12 +2481,58 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                             rule_timers[rule_id] = time.time()
                             logger.warning(f"⚠️ [Monitor] 规则 '{rule.get('name')}' 已部分发送，已进入冷却")
                         logger.error(f"❌ [Monitor] 规则 '{rule.get('name')}' 执行动作失败: {e}")
+                        record_runtime_event(
+                            "monitor",
+                            "failed",
+                            f"执行动作失败：{e}",
+                            rule=rule,
+                            event=event,
+                            sender_name=sender_name,
+                            target_account=target_name,
+                            action_count=len(sent_msgs) + (1 if notify_sent else 0),
+                            duration_ms=(time.time() - match_started) * 1000
+                        )
 
                     if not action_failed:
-                        if sent_msgs or notify_sent:
+                        action_count = len(sent_msgs) + (1 if notify_sent else 0)
+                        if preempted:
+                            record_runtime_event(
+                                "monitor",
+                                "skipped",
+                                "抢答检测命中，已删除本规则已发送消息",
+                                rule=rule,
+                                event=event,
+                                sender_name=sender_name,
+                                target_account=target_name,
+                                action_count=action_count,
+                                duration_ms=(time.time() - match_started) * 1000
+                            )
+                        elif sent_msgs or notify_sent:
                             rule_timers[rule_id] = time.time()
+                            record_runtime_event(
+                                "monitor",
+                                "success",
+                                "规则动作执行完成",
+                                rule=rule,
+                                event=event,
+                                sender_name=sender_name,
+                                target_account=target_name,
+                                action_count=action_count,
+                                duration_ms=(time.time() - match_started) * 1000
+                            )
                         else:
                             logger.warning(f"⚠️ [Monitor] 规则 '{rule.get('name')}' 未完成任何发送动作，不进入冷却")
+                            record_runtime_event(
+                                "monitor",
+                                "skipped",
+                                "规则触发但没有完成任何发送动作",
+                                rule=rule,
+                                event=event,
+                                sender_name=sender_name,
+                                target_account=target_name,
+                                action_count=0,
+                                duration_ms=(time.time() - match_started) * 1000
+                            )
                     break
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
