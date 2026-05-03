@@ -252,6 +252,33 @@ def get_first_sent_id_for_chat(sent_records, chat_id):
         return None
     return min(ids)
 
+def get_ordered_message_reply_target_ids(message):
+    ids = []
+    seen = set()
+
+    def add_id(val):
+        if val and val not in seen:
+            seen.add(val)
+            ids.append(val)
+
+    for attr in ("reply_to_msg_id",):
+        add_id(getattr(message, attr, None))
+
+    reply_to = getattr(message, "reply_to", None)
+    if reply_to:
+        for attr in ("reply_to_msg_id", "reply_to_top_id"):
+            add_id(getattr(reply_to, attr, None))
+    return ids
+
+def get_message_reply_target_ids(message):
+    return set(get_ordered_message_reply_target_ids(message))
+
+def is_same_reply_flow(message, origin_message):
+    origin_id = getattr(origin_message, "id", None)
+    if not origin_id:
+        return False
+    return origin_id in get_message_reply_target_ids(message)
+
 async def delete_sent_messages(client, sent_records):
     ids_by_chat = {}
     for chat_id, sent in sent_records:
@@ -332,6 +359,16 @@ def format_caption(tpl):
     res = tpl.replace('{time}', now_str)
     return res
 
+def approval_keyword_matches(text, keywords):
+    normalized_text = unicodedata.normalize("NFKC", str(text or "")).strip().lower()
+    if not normalized_text:
+        return False
+    for keyword in keywords or []:
+        normalized_keyword = unicodedata.normalize("NFKC", str(keyword or "")).strip().lower()
+        if normalized_keyword and normalized_text == normalized_keyword:
+            return True
+    return False
+
 def parse_smart_amount(text):
     """
     [v76 修复版] 从文本中提取金额，支持 k/w/万 等单位
@@ -392,6 +429,62 @@ def parse_smart_amount(text):
         return True, max(valid_nums)
 
     return False, 0.0
+
+class MessageEventView:
+    def __init__(self, message):
+        self.message = message
+        self.id = getattr(message, "id", None)
+        self.chat_id = getattr(message, "chat_id", None)
+        self.sender_id = getattr(message, "sender_id", None)
+        self.out = bool(getattr(message, "out", False))
+        self.text = getattr(message, "text", None) or getattr(message, "raw_text", "") or ""
+        self.raw_text = self.text
+        self.is_reply = bool(get_message_reply_target_ids(message))
+
+async def collect_approval_candidate_messages(client, replied_msg):
+    candidates = []
+    seen = set()
+
+    def add_candidate(msg):
+        msg_id = getattr(msg, "id", None)
+        if not msg or not msg_id or msg_id in seen:
+            return
+        seen.add(msg_id)
+        candidates.append(msg)
+
+    add_candidate(replied_msg)
+    chat_id = getattr(replied_msg, "chat_id", None)
+    if not chat_id:
+        return candidates
+
+    for target_id in get_ordered_message_reply_target_ids(replied_msg):
+        if target_id in seen:
+            continue
+        try:
+            parent = await client.get_messages(chat_id, ids=target_id)
+            add_candidate(parent)
+        except Exception as e:
+            logger.warning(f"⚠️ [Approval] 无法追溯被引用消息 Msg={target_id}: {e}")
+    return candidates
+
+def approval_amount_gate_passes(rule, message):
+    amount_steps = [s for s in rule.get("replies", []) if isinstance(s, dict) and s.get("type") == "amount_logic"]
+    if not amount_steps:
+        return True
+
+    text = getattr(message, "text", None) or getattr(message, "raw_text", "") or ""
+    found, amt = parse_smart_amount(text)
+    if not found:
+        return False
+
+    for step in amount_steps:
+        try:
+            thresh = float(str(step.get("text", "")).split("|", 1)[0])
+        except Exception:
+            continue
+        if amt >= thresh:
+            return True
+    return False
 
 # --- 默认配置 ---
 DEFAULT_CONFIG = {
@@ -689,6 +782,11 @@ SETTINGS_HTML = """
         .section-label { font-size: 10px; font-weight: 700; color: #6B7280; text-transform: uppercase; letter-spacing: 0.05em; }
         .recovery-panel { background: linear-gradient(135deg, #FFF1F2 0%, #FFF 100%); border: 1px solid #FECDD3; }
         .approval-bg { background-color: #EFF6FF; border-top: 1px solid #DBEAFE; }
+        .approval-panel { border: 1px solid #BFDBFE; background: #EFF6FF; border-radius: 8px; padding: 8px; }
+        .approval-panel.is-off { border-color: #E5E7EB; background: #F9FAFB; }
+        .approval-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+        .approval-delay { display: grid; grid-template-columns: minmax(0, 1fr) 12px minmax(0, 1fr); gap: 4px; align-items: center; }
+        .approval-delay input { text-align: center; }
         .flow-step { display: flex; gap: 8px; align-items: stretch; }
         .delay-box { width: 56px; flex: 0 0 56px; border: 1px solid #E5E7EB; border-radius: 8px; background: #FAFAFA; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; color: #9CA3AF; }
         .delay-box input { width: 38px; height: 20px; text-align: center; background: transparent; border: 0; padding: 0; color: #6B7280; font-weight: 700; }
@@ -788,6 +886,8 @@ SETTINGS_HTML = """
             #app > nav > div:last-child { margin-left: auto; }
             main { padding: 16px 12px 72px; }
             main > .grid { grid-template-columns: minmax(0, 1fr); }
+            .flow-step { gap: 6px; }
+            .delay-box { width: 48px; flex-basis: 48px; }
             .recovery-panel { align-items: stretch; }
         }
     </style>
@@ -906,6 +1006,47 @@ SETTINGS_HTML = """
                                 <option v-for="acc in available_accounts" :value="acc">{{ acc }}</option>
                             </select>
                         </div>
+                        <div class="approval-panel" :class="{'is-off': !rule.enable_approval}">
+                            <div class="flex items-center justify-between gap-2">
+                                <span class="text-[10px] font-bold text-blue-700 uppercase"><i class="fa-solid fa-stamp mr-1"></i>同意审批检测</span>
+                                <label class="relative inline-flex items-center cursor-pointer" title="监听别人引用报备并发送全局审批触发词">
+                                    <input type="checkbox" v-model="rule.enable_approval" @change="ensureApprovalAction(rule)" class="sr-only peer">
+                                    <div class="w-7 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-500"></div>
+                                </label>
+                            </div>
+                            <div v-if="rule.enable_approval && rule.approval_action" class="mt-2 space-y-2">
+                                <div class="grid grid-cols-1 gap-2">
+                                    <div class="visual-field">
+                                        <div class="visual-label"><i class="fa-solid fa-reply"></i>回复领导引用消息</div>
+                                        <textarea v-model="rule.approval_action.reply_admin" rows="2" class="bento-input w-full px-2 py-1.5 text-[11px] resize-none bg-white border-blue-100" placeholder="请稍等ART"></textarea>
+                                    </div>
+                                    <div class="approval-grid">
+                                        <div class="visual-field">
+                                            <div class="visual-label"><i class="fa-solid fa-share"></i>转发原始报备到群</div>
+                                            <input v-model="rule.approval_action.forward_to" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] text-blue-600 bg-white" placeholder="-1001234567890">
+                                        </div>
+                                        <div class="visual-field">
+                                            <div class="visual-label"><i class="fa-solid fa-reply-all"></i>回复原始报备</div>
+                                            <textarea v-model="rule.approval_action.reply_origin" rows="2" class="bento-input w-full px-2 py-1.5 text-[11px] resize-none bg-white border-blue-100" placeholder="请稍等ART"></textarea>
+                                        </div>
+                                    </div>
+                                    <div class="approval-grid">
+                                        <div class="visual-field">
+                                            <div class="visual-label"><i class="fa-regular fa-clock"></i>先回领导延迟</div>
+                                            <div class="approval-delay"><input type="number" v-model.number="rule.approval_action.delay_1_min" class="bento-input h-7 px-1"><span class="text-center text-slate-400">-</span><input type="number" v-model.number="rule.approval_action.delay_1_max" class="bento-input h-7 px-1"></div>
+                                        </div>
+                                        <div class="visual-field">
+                                            <div class="visual-label"><i class="fa-regular fa-clock"></i>转发延迟</div>
+                                            <div class="approval-delay"><input type="number" v-model.number="rule.approval_action.delay_2_min" class="bento-input h-7 px-1"><span class="text-center text-slate-400">-</span><input type="number" v-model.number="rule.approval_action.delay_2_max" class="bento-input h-7 px-1"></div>
+                                        </div>
+                                        <div class="visual-field col-span-2">
+                                            <div class="visual-label"><i class="fa-regular fa-clock"></i>回原始报备延迟</div>
+                                            <div class="approval-delay"><input type="number" v-model.number="rule.approval_action.delay_3_min" class="bento-input h-7 px-1"><span class="text-center text-slate-400">-</span><input type="number" v-model.number="rule.approval_action.delay_3_max" class="bento-input h-7 px-1"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                         <div v-if="rule.replies.length === 0" class="text-center py-2 text-[10px] text-slate-300 border border-dashed border-slate-200 rounded font-medium">无动作</div>
                         <div class="space-y-2">
                             <div v-for="(reply, rIndex) in rule.replies" :key="rIndex" class="flow-step group/item">
@@ -978,7 +1119,7 @@ SETTINGS_HTML = """
                                     </template>
 
                                     <template v-if="reply.type === 'preempt_check'">
-                                        <div class="step-help"><i class="fa-solid fa-user-shield mr-1"></i>只检测在本规则第一条回复之前插入的他人消息；若有人更快，会删除本规则已发出的消息。</div>
+                                        <div class="step-help"><i class="fa-solid fa-user-shield mr-1"></i>只检测在本规则第一条回复之前、且引用同一条原始消息的他人回复；若有人更快，会删除本规则已发出的消息。</div>
                                     </template>
 
                                     <template v-if="reply.type === 'notify_user'">
@@ -1031,6 +1172,31 @@ SETTINGS_HTML = """
             const syncAvailableAccounts = (accounts) => {
                 if (!Array.isArray(accounts)) return;
                 available_accounts.splice(0, available_accounts.length, ...accounts);
+            };
+            const defaultApprovalAction = () => ({
+                reply_admin: '',
+                reply_origin: '',
+                forward_to: '',
+                delay_1_min: 1,
+                delay_1_max: 2,
+                delay_2_min: 1,
+                delay_2_max: 3,
+                delay_3_min: 1,
+                delay_3_max: 2
+            });
+            const hydrateApprovalAction = (action = {}) => {
+                const base = defaultApprovalAction();
+                const merged = { ...base, ...(action || {}) };
+                ['reply_admin', 'reply_origin', 'forward_to'].forEach(key => merged[key] = merged[key] || '');
+                for (let i = 1; i <= 3; i++) {
+                    merged[`delay_${i}_min`] = Number(merged[`delay_${i}_min`] ?? base[`delay_${i}_min`]);
+                    merged[`delay_${i}_max`] = Number(merged[`delay_${i}_max`] ?? base[`delay_${i}_max`]);
+                }
+                return merged;
+            };
+            const ensureApprovalAction = (rule) => {
+                if (!rule.approval_action) rule.approval_action = defaultApprovalAction();
+                else rule.approval_action = hydrateApprovalAction(rule.approval_action);
             };
             const hydrateReply = (rep = {}) => ({
                 ...rep,
@@ -1108,7 +1274,7 @@ SETTINGS_HTML = """
                         if(!r.filename_keywords) r.filename_keywords = [];
                         if(!r.sender_prefixes) r.sender_prefixes = [];
                         if(!r.keywords) r.keywords = [];
-                        if(!r.approval_action) r.approval_action = {reply_admin:'', reply_origin:'', forward_to:'', delay_1_min:1, delay_1_max:2, delay_2_min:1, delay_2_max:3, delay_3_min:1, delay_3_max:2};
+                        r.approval_action = hydrateApprovalAction(r.approval_action);
                         return r;
                     });
                 });
@@ -1135,7 +1301,7 @@ SETTINGS_HTML = """
                     enabled: true,
                     groups: [], check_file: false, keywords: [], file_extensions: [], filename_keywords: [],
                     enable_approval: false,
-                    approval_action: {reply_admin:'', reply_origin:'', forward_to:'', delay_1_min:1, delay_1_max:2, delay_2_min:1, delay_2_max:3, delay_3_min:1, delay_3_max:2},
+                    approval_action: defaultApprovalAction(),
                     sender_mode: 'exclude', sender_prefixes: [], cooldown: 60,
                     replies: [hydrateReply({type:'text', text: '', min: 1, max: 2})],
                     reply_account: ''
@@ -1180,7 +1346,7 @@ SETTINGS_HTML = """
 
             const showToast = (msg, type) => { toast.msg = msg; toast.type = type; toast.show = true; setTimeout(() => toast.show = false, 3000); };
 
-            return { config, toast, recovery, available_accounts, listToString, stringToList, stringToIntList, addRule, addStep, removeRule, saveConfig, runRecovery, onRecoveryImage, clearRecoveryImage, normalizeStep, amountPart, setAmountPart, amountLowLines, setAmountLowLines };
+            return { config, toast, recovery, available_accounts, listToString, stringToList, stringToIntList, addRule, addStep, removeRule, saveConfig, runRecovery, onRecoveryImage, clearRecoveryImage, normalizeStep, ensureApprovalAction, amountPart, setAmountPart, amountLowLines, setAmountLowLines };
         }
     }).mount('#app');
 </script>
@@ -1312,6 +1478,15 @@ poll();setInterval(poll,2000);
 </html>
 """
 
+def get_monitor_settings_html():
+    template_path = os.path.join(os.path.dirname(__file__), "templates", "monitor_settings.html")
+    try:
+        with open(template_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        logger.error(f"❌ [Monitor UI] 无法加载新版控制面板模板，使用内置旧版: {e}")
+        return SETTINGS_HTML
+
 async def analyze_message(client, rule, event, other_cs_ids, sender_obj, check_cooldown=True):
     if not rule.get("enabled", True): 
         return False, "规则已关闭", None
@@ -1400,7 +1575,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @app.route('/zd')
     def monitor_settings_page(): 
-        return Response(SETTINGS_HTML, mimetype='text/html; charset=utf-8')
+        return Response(get_monitor_settings_html(), mimetype='text/html; charset=utf-8')
         
     @app.route('/otp')
     def view_otp_page():
@@ -1615,26 +1790,38 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         if event.is_reply:
             app_kws = current_config.get("approval_keywords", ["同意", "批准", "ok"])
             event_text = event.text or ""
-            if any(k and k in event_text for k in app_kws):
+            if approval_keyword_matches(event_text, app_kws):
                 try:
                     approver = await event.get_sender()
-                    # v69: Approval also checks username strictly
-                    # if not check_sender_allowed(approver, rule): return # BUG Fix: rule not defined yet
+                    if await is_monitor_sender_cs(client, event, other_cs_ids, approver):
+                        logger.info("🛡️ [Approval] 忽略自己/客服账号发出的审批触发词")
+                        return
 
-                    original_msg = await event.get_reply_message()
-                    if original_msg:
-                        orig_sender = await original_msg.get_sender()
-                        
-                        for rule in current_config.get("rules", []):
-                            if not rule.get("enabled", True): continue
-                            
-                            # 1. Match original message
-                            is_match, _, _ = await analyze_message(client, rule, events.NewMessage.Event(original_msg), other_cs_ids, orig_sender, check_cooldown=False)
-                            
-                            if is_match and rule.get("enable_approval", False):
+                    replied_msg = await event.get_reply_message()
+                    if replied_msg:
+                        for original_msg in await collect_approval_candidate_messages(client, replied_msg):
+                            try:
+                                orig_sender = await original_msg.get_sender()
+                            except Exception:
+                                orig_sender = None
+
+                            for rule in current_config.get("rules", []):
+                                if not rule.get("enabled", True): continue
+                                if not rule.get("enable_approval", False): continue
+
+                                # 1. Match the real report. If the leader replied to our prompt,
+                                #    the parent message is also tested as the original report.
+                                is_match, _, _ = await analyze_message(client, rule, MessageEventView(original_msg), other_cs_ids, orig_sender, check_cooldown=False)
+                                if not is_match:
+                                    continue
+
+                                if not approval_amount_gate_passes(rule, original_msg):
+                                    logger.info(f"💰 [Approval] 规则 '{rule.get('name')}' 原消息金额未达到审批阈值，跳过")
+                                    continue
+
                                 # 2. [Fixed] Check if APPROVER is allowed for THIS rule
                                 if not check_sender_allowed(approver, rule):
-                                    continue 
+                                    continue
 
                                 logger.info(f"👮 [Approval] 批准通过! 匹配规则: {rule.get('name')}")
                                 action = rule.get("approval_action", {})
@@ -1659,7 +1846,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                     return
 
                                 await asyncio.sleep(random.uniform(float(action.get("delay_1_min", 1.0)), float(action.get("delay_1_max", 2.0))))
-                                if action.get("reply_admin"): await event.reply(format_caption(action["reply_admin"]))
+                                if action.get("reply_admin"):
+                                    await replier_client.send_message(event.chat_id, format_caption(action["reply_admin"]), reply_to=event.id)
                                 
                                 await asyncio.sleep(random.uniform(float(action.get("delay_2_min", 1.0)), float(action.get("delay_2_max", 3.0))))
                                 fwd_tgt = action.get("forward_to")
@@ -1775,13 +1963,18 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                     continue
                                 hist_limit = max(20, len(source_sent_ids) + 10)
                                 hist = await target_client.get_messages(event.chat_id, limit=hist_limit, min_id=event.id)
-                                has_preempt = any(
-                                    m.id < first_source_sent_id and
-                                    m.id not in source_sent_ids and
-                                    m.sender_id != me.id and
-                                    m.sender_id != event.sender_id
-                                    for m in hist
-                                )
+                                has_preempt = False
+                                for m in hist:
+                                    if not getattr(m, "id", None) or m.id >= first_source_sent_id:
+                                        continue
+                                    if m.id in source_sent_ids:
+                                        continue
+                                    if not getattr(m, "sender_id", None) or m.sender_id in (me.id, event.sender_id):
+                                        continue
+                                    if not is_same_reply_flow(m, event.message):
+                                        continue
+                                    has_preempt = True
+                                    break
                                 if has_preempt:
                                     await delete_sent_messages(target_client, sent_msgs)
                                     sent_msgs = []
