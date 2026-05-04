@@ -358,6 +358,7 @@ cs_activity_log = {}
 IS_WORKING = False
 MY_ID = None
 bot_loop = None
+stop_work_lock = None
 wait_check_all_rate_lock = Lock()
 wait_check_all_last_request_ts = 0.0
 
@@ -562,8 +563,8 @@ DASHBOARD_HTML = """
         </h1>
         <div class="hd-right">
             <div class="abtn" onclick="toggleAudio()" title="报警音" id="audio-icon"></div>
-            <a href="#" onclick="ctrl(1)" class="cbtn">上班</a>
-            <a href="#" onclick="ctrl(0)" class="cbtn">下班</a>
+            <a href="#" onclick="ctrl(1);return false;" class="cbtn">上班</a>
+            <a href="#" onclick="ctrl(0);return false;" class="cbtn">下班</a>
             <div id="status-tag-area">
                 <div class="tag {{ 'on' if working else 'off' }}">{{ 'ON' if working else 'OFF' }}</div>
             </div>
@@ -645,10 +646,15 @@ DASHBOARD_HTML = """
             } 
         }
 
-        function ctrl(s) { 
-            fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime()).then(() => {
-                silentUpdate(); // 按钮点完立即静默刷一次
-            }); 
+        function renderStatusTag(s) {
+            document.getElementById('status-tag-area').innerHTML = `<div class="tag ${s ? 'on' : 'off'}">${s ? 'ON' : 'OFF'}</div>`;
+        }
+
+        function ctrl(s) {
+            renderStatusTag(s);
+            fetch('/api/ctrl?s=' + s + '&_t=' + new Date().getTime())
+                .then(() => silentUpdate())
+                .catch(() => silentUpdate());
         }
 
         function copyLink(link, btnElement) { 
@@ -662,14 +668,11 @@ DASHBOARD_HTML = """
         // --- 新增：静默更新逻辑 ---
         async function silentUpdate() {
             try {
-                // 后台偷偷请求一次主页
                 const response = await fetch(window.location.href + '?_t=' + Date.now());
                 const text = await response.text();
-                // 像剥洋葱一样解析网页
                 const parser = new DOMParser();
                 const doc = parser.parseFromString(text, 'text/html');
                 
-                // 只把“任务区域”和“上班状态区域”替换掉
                 document.getElementById('silent-task-container').innerHTML = doc.getElementById('silent-task-container').innerHTML;
                 document.getElementById('status-tag-area').innerHTML = doc.getElementById('status-tag-area').innerHTML;
             } catch (e) {
@@ -2126,11 +2129,13 @@ async def check_msg_exists(channel_id, msg_id):
 # 模块 6: 任务管理与核心逻辑
 # ==========================================
 async def audit_pending_tasks():
-    log_tree(4, "开始执行【下班巡检】(关键词分批扫描)...")
-    await send_alert("👮 **开始执行下班自动巡检...**\n正在分批扫描专属关键词...", "")
+    log_tree(4, "开始执行【下班巡检】(扫描全部稍等关键词)...")
     
     all_keywords = sorted(list(WAIT_SIGNATURES))
     all_keywords = sorted(list(set(all_keywords)), key=lambda x: (len(x), x), reverse=True) 
+    if not all_keywords:
+        log_tree(4, "下班巡检跳过：WAIT_KEYWORDS 为空")
+        return
     
     history_cache = {}
     cutoff_time = datetime.now(timezone.utc) - timedelta(hours=10) 
@@ -2151,10 +2156,12 @@ async def audit_pending_tasks():
             logger.error(f"Group {chat_id} fetch failed: {e}")
 
     total_issues = 0
+    notified_targets = set()
 
     for keyword in all_keywords:
-        if not keyword.strip(): continue
-        
+        if not keyword.strip():
+            continue
+        keyword_targets = get_alert_targets_for_keyword(keyword)
         kw_issues = []
         found_count = 0
         closed_count = 0
@@ -2254,35 +2261,58 @@ async def audit_pending_tasks():
             if len(kw_issues) > 8:
                 report_text += f"... (还有 {len(kw_issues)-8} 条未显示)"
             
-            await send_alert(report_text, audit_copy_links, f"Audit-{keyword}", target_ids=get_alert_targets_for_keyword(keyword))
+            await send_alert(report_text, audit_copy_links, f"Audit-{keyword}", target_ids=keyword_targets)
+            for target in extract_target_list(keyword_targets or ALERT_GROUP_IDS):
+                notified_targets.add(str(target))
             await asyncio.sleep(2) 
         else:
             log_tree(4, f"关键词 '{keyword}' 巡检完成，无异常 (总数: {found_count})")
 
-    await send_alert(f"🏁 **下班巡检结束**\n总计发现 **{total_issues}** 个未闭环问题。", "")
+    if total_issues:
+        log_tree(4, f"下班巡检结束：总计发现 {total_issues} 个未闭环问题，已推送到 {len(notified_targets)} 个接收人")
+    else:
+        log_tree(4, "下班巡检结束：全部稍等关键词无未闭环问题")
 
 async def perform_stop_work():
-    global IS_WORKING
-    if IS_WORKING:
+    global IS_WORKING, stop_work_lock
+    if stop_work_lock is None:
+        stop_work_lock = asyncio.Lock()
+
+    if stop_work_lock.locked():
+        log_tree(1, "下班流程已在执行，忽略重复下班请求")
+        return
+
+    async with stop_work_lock:
+        if not IS_WORKING:
+            log_tree(1, "当前已是下班模式，忽略重复下班请求")
+            return
+
+        IS_WORKING = False
         await audit_pending_tasks()
-    IS_WORKING = False
-    for t in list(wait_tasks.values()) + list(followup_tasks.values()) + list(reply_tasks.values()) + list(self_reply_tasks.values()): t.cancel()
-    wait_tasks.clear(); followup_tasks.clear(); reply_tasks.clear(); self_reply_tasks.clear()
-    wait_task_keywords.clear()
-    wait_timers.clear(); followup_timers.clear(); reply_timers.clear(); self_reply_timers.clear()
-    wait_msg_map.clear(); followup_msg_map.clear()
-    chat_user_active_msgs.clear()
-    chat_thread_active_msgs.clear()
-    msg_to_user_cache.clear()
-    msg_content_cache.clear()
-    group_to_user_cache.clear()
-    cs_activity_log.clear()
-    await send_alert("🔴 **已切换为：下班模式 (网页/指令)**", "")
+        for t in list(wait_tasks.values()) + list(followup_tasks.values()) + list(reply_tasks.values()) + list(self_reply_tasks.values()): t.cancel()
+        wait_tasks.clear(); followup_tasks.clear(); reply_tasks.clear(); self_reply_tasks.clear()
+        wait_task_keywords.clear()
+        wait_timers.clear(); followup_timers.clear(); reply_timers.clear(); self_reply_timers.clear()
+        wait_msg_map.clear(); followup_msg_map.clear()
+        chat_user_active_msgs.clear()
+        chat_thread_active_msgs.clear()
+        msg_to_user_cache.clear()
+        msg_content_cache.clear()
+        group_to_user_cache.clear()
+        cs_activity_log.clear()
+        log_tree(2, "🔴 已切换为：下班模式 (网页/指令)")
 
 async def perform_start_work():
     global IS_WORKING
+    if stop_work_lock and stop_work_lock.locked():
+        log_tree(1, "下班巡检正在执行，忽略上班请求")
+        return
+    if IS_WORKING:
+        log_tree(1, "当前已是工作模式，忽略重复上班请求")
+        return
+
     IS_WORKING = True
-    await send_alert(f"🟢 **已切换为：工作模式 (网页/指令)**", "")
+    log_tree(2, "🟢 已切换为：工作模式 (网页/指令)")
 
 def register_task(chat_id, user_id, msg_id, thread_id=None):
     if user_id:
