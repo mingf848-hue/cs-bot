@@ -326,6 +326,8 @@ REPLY_TIMEOUT = 5 * 60
 SELF_REPLY_TIMEOUT = 3 * 60 
 
 MAX_CACHE_SIZE = 50000 
+WAIT_CHECK_ALL_RATE_LIMIT_SECONDS = 60 * 60
+WAIT_CHECK_ALL_RATE_LIMIT_REDIS_KEY = "wait_check_all_rate_limit_v1"
 
 wait_tasks = {}
 followup_tasks = {} 
@@ -356,6 +358,51 @@ cs_activity_log = {}
 IS_WORKING = False
 MY_ID = None
 bot_loop = None
+wait_check_all_rate_lock = Lock()
+wait_check_all_last_request_ts = 0.0
+
+def is_all_wait_check_keyword(keyword):
+    return keyword in ["全体", "全体检测"]
+
+def format_wait_seconds(seconds):
+    seconds = max(0, int(seconds))
+    minutes, sec = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}小时{minutes}分钟"
+    if minutes:
+        return f"{minutes}分钟{sec}秒"
+    return f"{sec}秒"
+
+def try_acquire_wait_check_all_slot():
+    global wait_check_all_last_request_ts
+
+    now = time.time()
+    with wait_check_all_rate_lock:
+        client = get_wait_alert_redis_client()
+        if client:
+            try:
+                acquired = client.set(
+                    WAIT_CHECK_ALL_RATE_LIMIT_REDIS_KEY,
+                    str(now),
+                    nx=True,
+                    ex=WAIT_CHECK_ALL_RATE_LIMIT_SECONDS
+                )
+                if acquired:
+                    return True, 0
+                ttl = client.ttl(WAIT_CHECK_ALL_RATE_LIMIT_REDIS_KEY)
+                if ttl is None or ttl < 0:
+                    ttl = WAIT_CHECK_ALL_RATE_LIMIT_SECONDS
+                return False, ttl
+            except Exception as e:
+                log_tree(9, f"全体闭环检测限频 Redis 异常，改用当前进程限频: {e}")
+
+        remaining = wait_check_all_last_request_ts + WAIT_CHECK_ALL_RATE_LIMIT_SECONDS - now
+        if remaining > 0:
+            return False, remaining
+
+        wait_check_all_last_request_ts = now
+        return True, 0
 
 def update_msg_cache(chat_id, msg_id, user_id, grouped_id=None):
     key = (chat_id, msg_id)
@@ -551,16 +598,16 @@ DASHBOARD_HTML = """
     </div>
 
     <div style="margin-top:24px;border-top:1px solid var(--border);padding-top:18px">
-        <a href="/log" target="_blank" class="navbtn">
+        <a href="/log" class="navbtn">
             <svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 日志分析
         </a>
-        <a href="/tool/wait_check" target="_blank" class="navbtn" style="background:#0f766e">
+        <a href="/tool/wait_check" class="navbtn" style="background:#0f766e">
             <svg class="ic" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 9.36l-7.1 7.1a1 1 0 0 1-1.41 0l-1.42-1.42a1 1 0 0 1 0-1.4l7.1-7.1a6 6 0 0 1 9.36-7.94l-3.76 3.76z"/></svg> 闭环检测
         </a>
-        <a href="/tool/wait_alerts" target="_blank" class="navbtn" style="background:#be123c">
+        <a href="/tool/wait_alerts" class="navbtn" style="background:#be123c">
             <svg class="ic" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg> 稍等预警名单
         </a>
-        <a href="/tool/work_stats" target="_blank" class="navbtn" style="background:#6d28d9">
+        <a href="/tool/work_stats" class="navbtn" style="background:#6d28d9">
             <svg class="ic" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg> 工作量统计
         </a>
     </div>
@@ -942,6 +989,15 @@ WAIT_CHECK_HTML = """
 
             try {
                 const response = await fetch(`/api/wait_check_stream?keyword=${encodeURIComponent(keyword)}`);
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    let message = errorText || `请求失败 (${response.status})`;
+                    try {
+                        const errorData = JSON.parse(errorText);
+                        message = errorData.error || message;
+                    } catch (e) {}
+                    throw new Error(message);
+                }
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let buffer = '';
@@ -1330,9 +1386,16 @@ def api_wait_alerts():
 def wait_check_stream():
     keyword = request.args.get('keyword', '').strip()
     if not keyword: return "Keyword required", 400
+    if not bot_loop:
+        return jsonify({"ok": False, "error": "Bot loop not ready"}), 503
+    if is_all_wait_check_keyword(keyword):
+        allowed, remaining = try_acquire_wait_check_all_slot()
+        if not allowed:
+            msg = f"全体漏回检测 1 小时内仅允许请求一次，请 {format_wait_seconds(remaining)} 后再试。"
+            return jsonify({"ok": False, "error": msg, "retry_after": int(remaining)}), 429
+
     def generate():
         result_queue = queue.Queue()
-        if not bot_loop: yield "Error: Bot loop not ready\n"; return
         asyncio.run_coroutine_threadsafe(check_wait_keyword_logic(keyword, result_queue), bot_loop)
         
         yield (" " * 4096) + "\n"
@@ -1473,7 +1536,7 @@ async def check_wait_keyword_logic(keyword, result_queue):
     try:
         cutoff_hours = 10
         limit_count = 3000
-        if keyword in ["全体", "全体检测"]:
+        if is_all_wait_check_keyword(keyword):
             cutoff_hours = 20
             limit_count = 6000 
             
@@ -1497,7 +1560,7 @@ async def check_wait_keyword_logic(keyword, result_queue):
                     if getattr(m, 'action', None): continue # 过滤拉人、置顶等系统服务消息
                     history.append(m)
                 
-                if keyword in ["全体", "全体检测"]:
+                if is_all_wait_check_keyword(keyword):
                     msg_grouped_map = {}
                     user_msg_map = defaultdict(list)
                     for m in history:
@@ -1712,8 +1775,50 @@ def md_inline(value, max_len=120):
         text = text[:max_len] + "..."
     return f"`{md_escape(text)}`"
 
-def format_copy_link(link):
-    return f"🔗 复制链接：{md_escape(link)}" if link else "🔗 复制链接：无"
+def normalize_copy_links(raw_link):
+    if not raw_link:
+        return []
+    if isinstance(raw_link, str):
+        return [("点击复制消息链接", raw_link)] if raw_link.strip() else []
+
+    items = []
+    if isinstance(raw_link, dict):
+        raw_link = raw_link.items()
+    elif not isinstance(raw_link, (list, tuple, set)):
+        return []
+
+    for idx, item in enumerate(raw_link, start=1):
+        label = f"复制第{idx}条消息链接"
+        link = None
+        if isinstance(item, dict):
+            label = str(item.get("label") or label)
+            link = item.get("link") or item.get("url") or item.get("text")
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            label = str(item[0] or label)
+            link = item[1]
+        else:
+            link = item
+
+        link = str(link or "").strip()
+        if link:
+            items.append((label[:64], link))
+    return items
+
+def build_copy_link_markup(raw_link):
+    rows = []
+    for label, link in normalize_copy_links(raw_link)[:8]:
+        if len(link) > 256:
+            log_tree(9, f"复制按钮链接超过 Telegram 256 字符限制，已跳过: {link[:80]}...")
+            continue
+        rows.append([{"text": label, "copy_text": {"text": link}}])
+    return {"inline_keyboard": rows} if rows else None
+
+def format_copy_link(link, index=None):
+    if not link:
+        return "🔗 消息链接：无"
+    if index:
+        return f"🔗 消息链接：点击下方「复制第{index}条消息链接」按钮"
+    return "🔗 消息链接：点击下方按钮复制"
 
 def format_alert_message(title, rows, content_label=None, content=None, link=None):
     lines = [f"{title}"]
@@ -1787,13 +1892,14 @@ def setup_bot_commands():
         resp = requests.get(get_url, timeout=20)
         data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
         commands = data.get("result", []) if resp.status_code == 200 and data.get("ok") else []
-        merged = [cmd for cmd in commands if cmd.get("command") != "id"]
+        merged = [cmd for cmd in commands if cmd.get("command") not in ("start", "id")]
+        merged.append({"command": "start", "description": "查看使用引导"})
         merged.append({"command": "id", "description": "查看当前聊天和用户ID"})
 
         set_resp = requests.post(set_url, json={"commands": merged}, timeout=20)
         set_data = set_resp.json() if set_resp.headers.get("content-type", "").startswith("application/json") else {}
         if set_resp.status_code == 200 and set_data.get("ok"):
-            log_tree(1, "Bot 命令已设置: /id")
+            log_tree(1, "Bot 命令已设置: /start /id")
         else:
             log_tree(9, f"Bot 命令设置失败: HTTP {set_resp.status_code} {str(set_data)[:200]}")
     except Exception as e:
@@ -1871,6 +1977,31 @@ def format_id_command_reply(message):
 
     return "\n".join(lines)
 
+def format_start_command_reply(message):
+    sender = message.get("from", {}) if isinstance(message, dict) else {}
+    sender_id = sender.get("id", "未知")
+    menu_url = get_bot_menu_url()
+
+    lines = [
+        "已开启 Bot 通知。",
+        "",
+        f"你的 Telegram ID：{sender_id}",
+        "",
+        "常用操作：",
+        "1. 发送 /id 可以再次查看自己的 ID。",
+        "2. 在群里回复某个人的消息发送 /id，可以获取那个人的 ID。",
+        "3. 打开网页面板的「稍等预警名单」，勾选要预警的稍等关键词。",
+        "4. 把要接收预警的人的 ID 填到对应关键词的接收人 Chat ID，保存后生效。",
+        "",
+        "注意：要私聊接收预警的人，必须先点过这个 Bot 的 Start。"
+    ]
+    if menu_url:
+        lines.insert(9, f"网页面板：{menu_url}")
+    else:
+        lines.append("网页面板入口未配置：需要设置 BOT_MENU_URL 为 Zeabur 的 https 域名。")
+
+    return "\n".join(lines)
+
 def _bot_get_updates(offset=None, timeout=50):
     if not BOT_TOKEN:
         return None
@@ -1892,7 +2023,7 @@ def _bot_get_updates(offset=None, timeout=50):
         log_tree(9, f"Bot 命令轮询异常: {e}")
     return None
 
-def _bot_send_id_reply(chat_id, text, reply_to_message_id=None, message_thread_id=None):
+def _bot_send_reply(chat_id, text, reply_to_message_id=None, message_thread_id=None):
     if not BOT_TOKEN:
         return
 
@@ -1911,12 +2042,12 @@ def _bot_send_id_reply(chat_id, text, reply_to_message_id=None, message_thread_i
         resp = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json=payload, timeout=20)
         data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
         if resp.status_code != 200 or not data.get("ok"):
-            log_tree(9, f"/id 回复失败: HTTP {resp.status_code} {str(data)[:200]}")
+            log_tree(9, f"Bot 命令回复失败: HTTP {resp.status_code} {str(data)[:200]}")
     except Exception as e:
-        log_tree(9, f"/id 回复异常: {e}")
+        log_tree(9, f"Bot 命令回复异常: {e}")
 
-def is_id_command(text):
-    return bool(re.match(r"^/id(?:@[A-Za-z0-9_]+)?(?:\s|$)", str(text or "").strip(), re.IGNORECASE))
+def is_bot_command(text, command):
+    return bool(re.match(rf"^/{re.escape(command)}(?:@[A-Za-z0-9_]+)?(?:\s|$)", str(text or "").strip(), re.IGNORECASE))
 
 async def bot_command_polling_task():
     if not BOT_TOKEN:
@@ -1927,7 +2058,7 @@ async def bot_command_polling_task():
     first_batch = await loop.run_in_executor(None, lambda: _bot_get_updates(timeout=0))
     if first_batch and first_batch.get("result"):
         offset = max(item.get("update_id", 0) for item in first_batch["result"]) + 1
-    log_tree(1, "Bot /id 命令轮询已启动")
+    log_tree(1, "Bot /start /id 命令轮询已启动")
 
     while True:
         try:
@@ -1942,7 +2073,12 @@ async def bot_command_polling_task():
                     offset = update_id + 1
 
                 message = update.get("message") or {}
-                if not is_id_command(message.get("text")):
+                text = message.get("text")
+                if is_bot_command(text, "start"):
+                    reply_text = format_start_command_reply(message)
+                elif is_bot_command(text, "id"):
+                    reply_text = format_id_command_reply(message)
+                else:
                     continue
 
                 chat = message.get("chat", {})
@@ -1950,13 +2086,12 @@ async def bot_command_polling_task():
                 if chat_id is None:
                     continue
 
-                reply_text = format_id_command_reply(message)
                 await loop.run_in_executor(
                     None,
-                    lambda cid=chat_id, txt=reply_text, mid=message.get("message_id"), thread=message.get("message_thread_id"): _bot_send_id_reply(cid, txt, mid, thread)
+                    lambda cid=chat_id, txt=reply_text, mid=message.get("message_id"), thread=message.get("message_thread_id"): _bot_send_reply(cid, txt, mid, thread)
                 )
         except Exception as e:
-            log_tree(9, f"Bot /id 命令处理异常: {e}")
+            log_tree(9, f"Bot /start /id 命令处理异常: {e}")
             await asyncio.sleep(5)
 
 async def send_alert(text, link, extra_log="", target_ids=None):
@@ -1973,6 +2108,9 @@ async def send_alert(text, link, extra_log="", target_ids=None):
     for chat_id in raw_targets:
         chat_id = normalize_chat_id(chat_id)
         payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": True}
+        reply_markup = build_copy_link_markup(link)
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
         tasks.append(loop.run_in_executor(None, lambda p=payload: _post_request(url, p)))
     if tasks: await asyncio.gather(*tasks)
 
@@ -2099,6 +2237,7 @@ async def audit_pending_tasks():
         if kw_issues:
             total_issues += len(kw_issues)
             open_count = found_count - closed_count
+            audit_copy_links = []
             report_text = (
                 f"👮 **下班巡检报告**\n"
                 f"🔑 关键词: `{keyword}`\n"
@@ -2106,17 +2245,19 @@ async def audit_pending_tasks():
             )
             
             for i, iss in enumerate(kw_issues[:8]): 
+                item_index = i + 1
+                audit_copy_links.append((f"复制第{item_index}条消息链接", iss['link']))
                 report_text += (
-                    f"{i+1}. 👤 {md_escape(iss['cs_name'])}\n"
+                    f"{item_index}. 👤 {md_escape(iss['cs_name'])}\n"
                     f"   💬 客户: {md_inline(iss['customer_text'], 40)}\n"
                     f"   👉 结果: {md_inline(iss['cs_reply'], 40)} ({md_escape(iss['reason'])})\n"
-                    f"   {format_copy_link(iss['link'])}\n\n"
+                    f"   {format_copy_link(iss['link'], item_index)}\n\n"
                 )
             
             if len(kw_issues) > 8:
                 report_text += f"... (还有 {len(kw_issues)-8} 条未显示)"
             
-            await send_alert(report_text, "", f"Audit-{keyword}", target_ids=get_alert_targets_for_keyword(keyword))
+            await send_alert(report_text, audit_copy_links, f"Audit-{keyword}", target_ids=get_alert_targets_for_keyword(keyword))
             await asyncio.sleep(2) 
         else:
             log_tree(4, f"关键词 '{keyword}' 巡检完成，无异常 (总数: {found_count})")
