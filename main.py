@@ -116,6 +116,47 @@ def extract_signature_set(env_str):
         clean_str = clean_str.replace(sep, ",")
     return {x.strip() for x in clean_str.split(',') if x.strip()}
 
+def extract_target_list(raw):
+    if not raw:
+        return []
+    if isinstance(raw, (list, tuple, set)):
+        items = raw
+    else:
+        items = re.split(r'[,，;；\s]+', str(raw))
+
+    result = []
+    seen = set()
+    for item in items:
+        target = str(item).strip()
+        if not target or target in seen:
+            continue
+        seen.add(target)
+        result.append(target)
+    return result
+
+def normalize_alert_routes(raw_routes, wait_signatures=None):
+    if not isinstance(raw_routes, dict):
+        return {}
+    allowed = set(wait_signatures or [])
+    routes = {}
+    for keyword, targets in raw_routes.items():
+        keyword = str(keyword).strip()
+        if not keyword or (allowed and keyword not in allowed):
+            continue
+        clean_targets = extract_target_list(targets)
+        if clean_targets:
+            routes[keyword] = clean_targets
+    return routes
+
+def normalize_chat_id(target):
+    target = str(target).strip()
+    if re.fullmatch(r'-?\d+', target):
+        try:
+            return int(target)
+        except Exception:
+            return target
+    return target
+
 def get_wait_alert_redis_client():
     global wait_alert_redis_client, wait_alert_redis_checked, wait_alert_store_status
     if wait_alert_redis_checked:
@@ -139,24 +180,26 @@ def get_wait_alert_redis_client():
         logger.warning(f"⚠️ [WaitAlert] Redis 连接失败，将仅使用内存配置: {e}")
     return wait_alert_redis_client
 
-def load_wait_alert_signatures_from_store():
+def load_wait_alert_config_from_store(wait_signatures):
     client = get_wait_alert_redis_client()
     if not client:
-        return None, None
+        return None, None, None
     try:
         raw = client.get(WAIT_ALERT_REDIS_KEY)
         if not raw:
-            return None, None
+            return None, None, None
         data = json.loads(raw)
-        return extract_signature_set(data.get("alert_wait_keywords", [])), "Redis网页配置"
+        signatures = extract_signature_set(data.get("alert_wait_keywords", []))
+        routes = normalize_alert_routes(data.get("alert_routes", {}), wait_signatures)
+        return signatures, routes, "Redis网页配置"
     except Exception as e:
         logger.warning(f"⚠️ [WaitAlert] Redis 配置读取失败，回退环境变量: {e}")
-        return None, None
+        return None, None, None
 
-def resolve_wait_alert_signatures(wait_signatures):
-    stored_signatures, stored_source = load_wait_alert_signatures_from_store()
+def resolve_wait_alert_config(wait_signatures):
+    stored_signatures, stored_routes, stored_source = load_wait_alert_config_from_store(wait_signatures)
     if stored_signatures is not None:
-        return stored_signatures, stored_source
+        return stored_signatures, stored_routes, stored_source
 
     raw = os.environ.get("ALERT_WAIT_KEYWORDS")
     source = "ALERT_WAIT_KEYWORDS"
@@ -165,15 +208,15 @@ def resolve_wait_alert_signatures(wait_signatures):
         source = "WAIT_ALERT_KEYWORDS"
 
     if raw is None:
-        return set(wait_signatures), "默认全部"
+        return set(wait_signatures), {}, "默认全部"
 
     raw_text = str(raw).strip()
     raw_lower = raw_text.lower()
     if not raw_text or raw_lower in ("all", "*") or raw_text in ("全部", "全体"):
-        return set(wait_signatures), f"{source}=全部"
+        return set(wait_signatures), {}, f"{source}=全部"
     if raw_lower in ("none", "off", "false", "0") or raw_text in ("关闭", "不预警"):
-        return set(), f"{source}=关闭"
-    return extract_signature_set(raw), source
+        return set(), {}, f"{source}=关闭"
+    return extract_signature_set(raw), {}, source
 
 def match_signature(text, signatures):
     if not text or not signatures: return None
@@ -186,15 +229,25 @@ def get_wait_alert_signatures():
     with wait_alert_config_lock:
         return set(WAIT_ALERT_SIGNATURES)
 
+def get_wait_alert_routes():
+    with wait_alert_config_lock:
+        return {keyword: list(targets) for keyword, targets in WAIT_ALERT_ROUTES.items()}
+
+def get_alert_targets_for_keyword(keyword):
+    if not keyword:
+        return None
+    return get_wait_alert_routes().get(keyword)
+
 def is_wait_keyword_alert_enabled(keyword):
     if not keyword:
         return True
     return keyword in get_wait_alert_signatures()
 
-def persist_wait_alert_signatures(signatures):
+def persist_wait_alert_config(signatures, routes):
     global wait_alert_store_status
     payload = {
         "alert_wait_keywords": sorted(list(signatures)),
+        "alert_routes": normalize_alert_routes(routes, WAIT_SIGNATURES),
         "updated_at": datetime.now(timezone(timedelta(hours=8))).isoformat()
     }
     client = get_wait_alert_redis_client()
@@ -226,11 +279,12 @@ try:
     
     wait_keywords_env = os.environ["WAIT_KEYWORDS"]
     WAIT_SIGNATURES = extract_signature_set(wait_keywords_env)
-    WAIT_ALERT_SIGNATURES, WAIT_ALERT_SOURCE = resolve_wait_alert_signatures(WAIT_SIGNATURES)
+    WAIT_ALERT_SIGNATURES, WAIT_ALERT_ROUTES, WAIT_ALERT_SOURCE = resolve_wait_alert_config(WAIT_SIGNATURES)
     unknown_alert_wait = WAIT_ALERT_SIGNATURES - WAIT_SIGNATURES
     if unknown_alert_wait:
         logger.warning(f"⚠️ {WAIT_ALERT_SOURCE} 中有 {len(unknown_alert_wait)} 个词不在 WAIT_KEYWORDS 内，不会触发稍等预警: {sorted(list(unknown_alert_wait))}")
         WAIT_ALERT_SIGNATURES = WAIT_ALERT_SIGNATURES & WAIT_SIGNATURES
+    WAIT_ALERT_ROUTES = normalize_alert_routes(WAIT_ALERT_ROUTES, WAIT_SIGNATURES)
 
     keep_keywords_env = os.environ.get("KEEP_KEYWORDS", "") 
     if '|' in keep_keywords_env:
@@ -355,9 +409,9 @@ async def is_official_cs(message):
     except: pass
     return False
 
-async def is_cs_message_with_signature(message, signatures):
+async def get_cs_message_signature(message, signatures):
     if not message or not getattr(message, "text", None):
-        return False
+        return None
 
     is_cs = False
     if message.sender_id in ([MY_ID] + OTHER_CS_IDS):
@@ -370,28 +424,39 @@ async def is_cs_message_with_signature(message, signatures):
         except Exception:
             pass
 
-    return is_cs and bool(match_signature(message.text, signatures))
+    if not is_cs:
+        return None
+    return match_signature(message.text, signatures)
 
-async def check_wait_in_history(chat_id, thread_id=None, limit=30, signatures=None):
+async def find_wait_keyword_in_history(chat_id, thread_id=None, limit=30, signatures=None):
     try:
         target_signatures = WAIT_SIGNATURES if signatures is None else signatures
         if not target_signatures:
-            return False
+            return None
 
         kwargs = {'limit': limit}
         if thread_id:
             root_msg = await client.get_messages(chat_id, ids=thread_id)
-            if await is_cs_message_with_signature(root_msg, target_signatures):
-                return True
+            root_keyword = await get_cs_message_signature(root_msg, target_signatures)
+            if root_keyword:
+                return root_keyword
             kwargs['reply_to'] = thread_id
              
         async for m in client.iter_messages(chat_id, **kwargs):
-            if await is_cs_message_with_signature(m, target_signatures):
-                return True
+            keyword = await get_cs_message_signature(m, target_signatures)
+            if keyword:
+                return keyword
+    except Exception as e:
+        logger.error(f"History check failed: {e}")
+        return None
+    return None
+
+async def check_wait_in_history(chat_id, thread_id=None, limit=30, signatures=None):
+    try:
+        return bool(await find_wait_keyword_in_history(chat_id, thread_id, limit, signatures))
     except Exception as e:
         logger.error(f"History check failed: {e}")
         return False
-    return False
 
 async def maintenance_task():
     while True:
@@ -497,12 +562,6 @@ DASHBOARD_HTML = """
         </a>
         <a href="/tool/work_stats" target="_blank" class="navbtn" style="background:#6d28d9">
             <svg class="ic" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg> 工作量统计
-        </a>
-        <a href="/zd" target="_blank" class="navbtn" style="background:#b45309">
-            <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg> 自动回复设置
-        </a>
-        <a href="/otp" target="_blank" class="navbtn" style="background:#0369a1">
-            <svg class="ic" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> 验证码
         </a>
     </div>
     <div class="navfoot">v45.22</div>
@@ -1038,11 +1097,14 @@ WAIT_ALERTS_HTML = """
         button.primary{background:#be123c;border-color:#be123c;color:#fff}
         button:disabled{opacity:.55;cursor:not-allowed}
         .hint{font-size:12px;color:#64748b;line-height:1.6;margin:0}
-        .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px}
-        label.item{display:flex;align-items:center;gap:9px;border:1px solid #e2e8f0;border-radius:7px;padding:10px 11px;background:#f8fafc;cursor:pointer;min-height:42px}
-        label.item:hover{border-color:#fda4af;background:#fff1f2}
+        .grid{display:flex;flex-direction:column;gap:8px}
+        .item{display:grid;grid-template-columns:minmax(180px,1fr) minmax(220px,1.2fr);gap:10px;align-items:center;border:1px solid #e2e8f0;border-radius:7px;padding:10px 11px;background:#f8fafc;min-height:42px}
+        .item:hover{border-color:#fda4af;background:#fff1f2}
+        .kw-line{display:flex;align-items:center;gap:9px;cursor:pointer;min-width:0}
         input[type="checkbox"]{width:16px;height:16px;accent-color:#be123c;flex:0 0 auto}
         .kw{font-size:14px;word-break:break-word}
+        .targets{width:100%;border:1px solid #cbd5e1;border-radius:6px;padding:8px 10px;font-size:13px;background:#fff}
+        @media(max-width:640px){.item{grid-template-columns:1fr}}
         .toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:#0f172a;color:#fff;padding:9px 14px;border-radius:999px;font-size:13px;opacity:0;transition:.2s;pointer-events:none}
         .toast.show{opacity:1}
         .empty{padding:28px;text-align:center;color:#64748b;border:1px dashed #cbd5e1;border-radius:8px;background:#f8fafc}
@@ -1056,7 +1118,7 @@ WAIT_ALERTS_HTML = """
     </div>
 
     <div class="panel">
-        <p class="hint">这里控制哪些稍等关键词会启动超时预警。所有稍等词仍然来自 WAIT_KEYWORDS；未勾选的词只参与普通识别，不启动倒计时预警。</p>
+        <p class="hint">这里控制哪些稍等关键词会启动超时预警，以及每个关键词推送给谁。接收人填 Telegram Chat ID，多个用逗号分隔；留空则发送到默认报警群。</p>
     </div>
 
     <div class="panel">
@@ -1072,6 +1134,7 @@ WAIT_ALERTS_HTML = """
 <script>
     let waitKeywords = [];
     let selectedKeywords = new Set();
+    let alertRoutes = {};
 
     function showToast(text) {
         const toast = document.getElementById('toast');
@@ -1085,6 +1148,7 @@ WAIT_ALERTS_HTML = """
         const data = await res.json();
         waitKeywords = data.wait_keywords || [];
         selectedKeywords = new Set(data.alert_wait_keywords || []);
+        alertRoutes = data.alert_routes || {};
         document.getElementById('store-status').textContent = data.store || '';
         render();
     }
@@ -1095,11 +1159,14 @@ WAIT_ALERTS_HTML = """
             grid.innerHTML = '<div class="empty">WAIT_KEYWORDS 为空</div>';
             return;
         }
-        grid.innerHTML = waitKeywords.map((kw, idx) => `
-            <label class="item">
-                <input type="checkbox" data-kw="${escapeHtml(kw)}" ${selectedKeywords.has(kw) ? 'checked' : ''}>
-                <span class="kw">${escapeHtml(kw)}</span>
-            </label>
+        grid.innerHTML = waitKeywords.map((kw) => `
+            <div class="item">
+                <label class="kw-line">
+                    <input type="checkbox" data-kw="${escapeAttr(kw)}" ${selectedKeywords.has(kw) ? 'checked' : ''}>
+                    <span class="kw">${escapeHtml(kw)}</span>
+                </label>
+                <input class="targets" data-kw="${escapeAttr(kw)}" value="${escapeAttr((alertRoutes[kw] || []).join(', '))}" placeholder="接收人 Chat ID，例如 123456789, -100123">
+            </div>
         `).join('');
     }
 
@@ -1107,6 +1174,10 @@ WAIT_ALERTS_HTML = """
         return String(text).replace(/[&<>"']/g, ch => ({
             '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
         }[ch]));
+    }
+
+    function escapeAttr(text) {
+        return escapeHtml(text);
     }
 
     function selectAll() {
@@ -1122,16 +1193,22 @@ WAIT_ALERTS_HTML = """
     async function saveConfig() {
         const btn = document.getElementById('save-btn');
         const checked = Array.from(document.querySelectorAll('input[type="checkbox"]:checked')).map(el => el.dataset.kw);
+        const routes = {};
+        document.querySelectorAll('.targets').forEach(el => {
+            const value = el.value.trim();
+            if (value) routes[el.dataset.kw] = value;
+        });
         btn.disabled = true;
         try {
             const res = await fetch('/api/wait_alerts', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({alert_wait_keywords: checked})
+                body: JSON.stringify({alert_wait_keywords: checked, alert_routes: routes})
             });
             const data = await res.json();
             if (!data.ok) throw new Error(data.error || '保存失败');
             selectedKeywords = new Set(data.alert_wait_keywords || []);
+            alertRoutes = data.alert_routes || {};
             document.getElementById('store-status').textContent = data.store || '';
             render();
             showToast(data.persisted ? '已保存到 Redis' : '已保存到当前进程内存');
@@ -1206,6 +1283,7 @@ def api_config():
     data = json.dumps({
         "wait_keywords": sorted(list(WAIT_SIGNATURES)),
         "alert_wait_keywords": sorted(list(get_wait_alert_signatures())),
+        "alert_routes": get_wait_alert_routes(),
         "wait_alert_store": wait_alert_store_status,
     })
     response = Response(data, mimetype='application/json')
@@ -1214,13 +1292,14 @@ def api_config():
 
 @app.route('/api/wait_alerts', methods=['GET', 'POST'])
 def api_wait_alerts():
-    global WAIT_ALERT_SIGNATURES
+    global WAIT_ALERT_SIGNATURES, WAIT_ALERT_ROUTES
 
     if request.method == 'GET':
         return jsonify({
             "ok": True,
             "wait_keywords": sorted(list(WAIT_SIGNATURES)),
             "alert_wait_keywords": sorted(list(get_wait_alert_signatures())),
+            "alert_routes": get_wait_alert_routes(),
             "store": wait_alert_store_status,
         })
 
@@ -1228,11 +1307,13 @@ def api_wait_alerts():
     selected = extract_signature_set(data.get("alert_wait_keywords", []))
     unknown = selected - WAIT_SIGNATURES
     selected = selected & WAIT_SIGNATURES
+    routes = normalize_alert_routes(data.get("alert_routes", {}), WAIT_SIGNATURES)
 
     with wait_alert_config_lock:
         WAIT_ALERT_SIGNATURES = set(selected)
+        WAIT_ALERT_ROUTES = dict(routes)
 
-    persisted, store_status = persist_wait_alert_signatures(selected)
+    persisted, store_status = persist_wait_alert_config(selected, routes)
     cancel_disabled_wait_tasks(selected)
 
     return jsonify({
@@ -1241,6 +1322,7 @@ def api_wait_alerts():
         "store": store_status,
         "wait_keywords": sorted(list(WAIT_SIGNATURES)),
         "alert_wait_keywords": sorted(list(selected)),
+        "alert_routes": routes,
         "ignored_keywords": sorted(list(unknown)),
     })
 
@@ -1620,14 +1702,276 @@ def _post_request(url, payload):
         if resp.status_code != 200: log_tree(9, f"API推送失败: {resp.status_code}")
     except Exception as e: log_tree(9, f"网络异常: {e}")
 
-async def send_alert(text, link, extra_log=""):
+def md_escape(value):
+    text = str(value or "")
+    return text.replace("\\", "\\\\").replace("`", "'").replace("*", "\\*").replace("_", "\\_").replace("[", "\\[").replace("]", "\\]")
+
+def md_inline(value, max_len=120):
+    text = str(value or "").replace("\n", " ").strip()
+    if len(text) > max_len:
+        text = text[:max_len] + "..."
+    return f"`{md_escape(text)}`"
+
+def format_copy_link(link):
+    return f"🔗 复制链接：{md_escape(link)}" if link else "🔗 复制链接：无"
+
+def format_alert_message(title, rows, content_label=None, content=None, link=None):
+    lines = [f"{title}"]
+    for label, value in rows:
+        if value is None or value == "":
+            continue
+        lines.append(f"{label}：{md_escape(value)}")
+    if content_label is not None:
+        lines.append(f"{content_label}：{md_inline(content)}")
+    lines.append(format_copy_link(link))
+    return "\n".join(lines)
+
+def get_bot_menu_url():
+    raw_url = (
+        os.environ.get("BOT_MENU_URL")
+        or os.environ.get("WEBAPP_URL")
+        or os.environ.get("WEB_APP_URL")
+        or os.environ.get("PUBLIC_URL")
+        or os.environ.get("ZEABUR_WEB_URL")
+    )
+    if not raw_url:
+        return None
+
+    raw_url = raw_url.strip()
+    if not raw_url.startswith("https://"):
+        log_tree(9, f"Bot 菜单地址必须是 https:// 开头，当前值已忽略: {raw_url}")
+        return None
+
+    menu_path = os.environ.get("BOT_MENU_PATH", "/").strip() or "/"
+    if not menu_path.startswith("/"):
+        menu_path = "/" + menu_path
+    return raw_url.rstrip("/") + menu_path
+
+def setup_bot_menu_button():
+    if not BOT_TOKEN:
+        return
+
+    menu_url = get_bot_menu_url()
+    if not menu_url:
+        log_tree(1, "Bot 菜单未配置：设置 BOT_MENU_URL=https://你的Zeabur域名 后会自动启用")
+        return
+
+    menu_text = (os.environ.get("BOT_MENU_TEXT", "监控面板").strip() or "监控面板")[:20]
+    api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/setChatMenuButton"
+    payload = {
+        "menu_button": {
+            "type": "web_app",
+            "text": menu_text,
+            "web_app": {"url": menu_url}
+        }
+    }
+
+    try:
+        resp = requests.post(api_url, json=payload, timeout=20)
+        data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+        if resp.status_code == 200 and data.get("ok"):
+            log_tree(1, f"Bot 菜单按钮已设置: {menu_text} -> {menu_url}")
+        else:
+            log_tree(9, f"Bot 菜单按钮设置失败: HTTP {resp.status_code} {str(data)[:200]}")
+    except Exception as e:
+        log_tree(9, f"Bot 菜单按钮设置异常: {e}")
+
+def setup_bot_commands():
+    if not BOT_TOKEN:
+        return
+
+    get_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getMyCommands"
+    set_url = f"https://api.telegram.org/bot{BOT_TOKEN}/setMyCommands"
+
+    try:
+        resp = requests.get(get_url, timeout=20)
+        data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+        commands = data.get("result", []) if resp.status_code == 200 and data.get("ok") else []
+        merged = [cmd for cmd in commands if cmd.get("command") != "id"]
+        merged.append({"command": "id", "description": "查看当前聊天和用户ID"})
+
+        set_resp = requests.post(set_url, json={"commands": merged}, timeout=20)
+        set_data = set_resp.json() if set_resp.headers.get("content-type", "").startswith("application/json") else {}
+        if set_resp.status_code == 200 and set_data.get("ok"):
+            log_tree(1, "Bot 命令已设置: /id")
+        else:
+            log_tree(9, f"Bot 命令设置失败: HTTP {set_resp.status_code} {str(set_data)[:200]}")
+    except Exception as e:
+        log_tree(9, f"Bot 命令设置异常: {e}")
+
+def _bot_user_display(user):
+    if not isinstance(user, dict):
+        return "未知"
+    parts = [user.get("first_name"), user.get("last_name")]
+    name = " ".join([str(x).strip() for x in parts if x]).strip()
+    username = user.get("username")
+    if username:
+        return f"{name} (@{username})" if name else f"@{username}"
+    return name or "未知"
+
+def _bot_forward_identity(message):
+    if not isinstance(message, dict):
+        return None, None
+
+    if isinstance(message.get("forward_from"), dict):
+        user = message["forward_from"]
+        return user.get("id"), _bot_user_display(user)
+
+    origin = message.get("forward_origin")
+    if isinstance(origin, dict):
+        if isinstance(origin.get("sender_user"), dict):
+            user = origin["sender_user"]
+            return user.get("id"), _bot_user_display(user)
+        if isinstance(origin.get("chat"), dict):
+            chat = origin["chat"]
+            return chat.get("id"), chat.get("title") or chat.get("username") or "转发来源聊天"
+        if origin.get("sender_user_name"):
+            return None, f"{origin.get('sender_user_name')}（已隐藏ID）"
+
+    return None, None
+
+def format_id_command_reply(message):
+    chat = message.get("chat", {}) if isinstance(message, dict) else {}
+    sender = message.get("from", {}) if isinstance(message, dict) else {}
+    chat_id = chat.get("id", "未知")
+    chat_type = chat.get("type", "未知")
+    chat_title = chat.get("title") or chat.get("username") or "私聊"
+    sender_id = sender.get("id", "未知")
+
+    lines = [
+        "ID 信息",
+        f"当前聊天ID：{chat_id}",
+        f"聊天类型：{chat_type}",
+        f"聊天名称：{chat_title}",
+        f"发命令的人ID：{sender_id}",
+        f"发命令的人：{_bot_user_display(sender)}",
+    ]
+
+    reply_msg = message.get("reply_to_message") if isinstance(message, dict) else None
+    if isinstance(reply_msg, dict):
+        reply_sender = reply_msg.get("from")
+        if isinstance(reply_sender, dict):
+            lines.append(f"被回复的人ID：{reply_sender.get('id', '未知')}")
+            lines.append(f"被回复的人：{_bot_user_display(reply_sender)}")
+
+        sender_chat = reply_msg.get("sender_chat")
+        if isinstance(sender_chat, dict):
+            lines.append(f"被回复的频道/群ID：{sender_chat.get('id', '未知')}")
+            lines.append(f"被回复的频道/群：{sender_chat.get('title') or sender_chat.get('username') or '未知'}")
+
+        forward_id, forward_name = _bot_forward_identity(reply_msg)
+        if forward_name:
+            lines.append(f"被回复转发来源：{forward_name}")
+            lines.append(f"被回复转发来源ID：{forward_id if forward_id else '隐藏，Bot拿不到'}")
+
+    if chat_type == "private":
+        lines.append("获取别人ID：让对方私聊这个Bot发送 /id，或在共同群里回复他的消息发送 /id。")
+    else:
+        lines.append("获取某个人ID：回复他的任意消息发送 /id。")
+
+    return "\n".join(lines)
+
+def _bot_get_updates(offset=None, timeout=50):
+    if not BOT_TOKEN:
+        return None
+
+    params = {
+        "timeout": timeout,
+        "allowed_updates": json.dumps(["message"]),
+    }
+    if offset is not None:
+        params["offset"] = offset
+
+    try:
+        resp = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates", params=params, timeout=timeout + 10)
+        data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+        if resp.status_code == 200 and data.get("ok"):
+            return data
+        log_tree(9, f"Bot 命令轮询失败: HTTP {resp.status_code} {str(data)[:200]}")
+    except Exception as e:
+        log_tree(9, f"Bot 命令轮询异常: {e}")
+    return None
+
+def _bot_send_id_reply(chat_id, text, reply_to_message_id=None, message_thread_id=None):
+    if not BOT_TOKEN:
+        return
+
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "disable_web_page_preview": True,
+    }
+    if reply_to_message_id:
+        payload["reply_to_message_id"] = reply_to_message_id
+        payload["allow_sending_without_reply"] = True
+    if message_thread_id:
+        payload["message_thread_id"] = message_thread_id
+
+    try:
+        resp = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json=payload, timeout=20)
+        data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+        if resp.status_code != 200 or not data.get("ok"):
+            log_tree(9, f"/id 回复失败: HTTP {resp.status_code} {str(data)[:200]}")
+    except Exception as e:
+        log_tree(9, f"/id 回复异常: {e}")
+
+def is_id_command(text):
+    return bool(re.match(r"^/id(?:@[A-Za-z0-9_]+)?(?:\s|$)", str(text or "").strip(), re.IGNORECASE))
+
+async def bot_command_polling_task():
+    if not BOT_TOKEN:
+        return
+
+    loop = asyncio.get_event_loop()
+    offset = None
+    first_batch = await loop.run_in_executor(None, lambda: _bot_get_updates(timeout=0))
+    if first_batch and first_batch.get("result"):
+        offset = max(item.get("update_id", 0) for item in first_batch["result"]) + 1
+    log_tree(1, "Bot /id 命令轮询已启动")
+
+    while True:
+        try:
+            data = await loop.run_in_executor(None, lambda current_offset=offset: _bot_get_updates(offset=current_offset, timeout=50))
+            if not data:
+                await asyncio.sleep(5)
+                continue
+
+            for update in data.get("result", []):
+                update_id = update.get("update_id")
+                if update_id is not None:
+                    offset = update_id + 1
+
+                message = update.get("message") or {}
+                if not is_id_command(message.get("text")):
+                    continue
+
+                chat = message.get("chat", {})
+                chat_id = chat.get("id")
+                if chat_id is None:
+                    continue
+
+                reply_text = format_id_command_reply(message)
+                await loop.run_in_executor(
+                    None,
+                    lambda cid=chat_id, txt=reply_text, mid=message.get("message_id"), thread=message.get("message_thread_id"): _bot_send_id_reply(cid, txt, mid, thread)
+                )
+        except Exception as e:
+            log_tree(9, f"Bot /id 命令处理异常: {e}")
+            await asyncio.sleep(5)
+
+async def send_alert(text, link, extra_log="", target_ids=None):
     if not BOT_TOKEN: return
     summary = text.splitlines()[1] if len(text.splitlines()) > 1 else '通知'
     log_tree(3, f"{extra_log} [ALERT] 发送报警 -> 全文:\n{text}")
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     loop = asyncio.get_event_loop()
     tasks = []
-    for chat_id in ALERT_GROUP_IDS:
+    raw_targets = extract_target_list(target_ids) if target_ids else [str(x) for x in ALERT_GROUP_IDS]
+    if not raw_targets:
+        raw_targets = [str(x) for x in ALERT_GROUP_IDS]
+
+    for chat_id in raw_targets:
+        chat_id = normalize_chat_id(chat_id)
         payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": True}
         tasks.append(loop.run_in_executor(None, lambda p=payload: _post_request(url, p)))
     if tasks: await asyncio.gather(*tasks)
@@ -1763,16 +2107,16 @@ async def audit_pending_tasks():
             
             for i, iss in enumerate(kw_issues[:8]): 
                 report_text += (
-                    f"{i+1}. 👤 {iss['cs_name']}\n"
-                    f"   💬 客户: {iss['customer_text']}\n"
-                    f"   👉 结果: {iss['cs_reply']} ({iss['reason']})\n"
-                    f"   🔗 [点击跳转]({iss['link']})\n\n"
+                    f"{i+1}. 👤 {md_escape(iss['cs_name'])}\n"
+                    f"   💬 客户: {md_inline(iss['customer_text'], 40)}\n"
+                    f"   👉 结果: {md_inline(iss['cs_reply'], 40)} ({md_escape(iss['reason'])})\n"
+                    f"   {format_copy_link(iss['link'])}\n\n"
                 )
             
             if len(kw_issues) > 8:
                 report_text += f"... (还有 {len(kw_issues)-8} 条未显示)"
             
-            await send_alert(report_text, "", f"Audit-{keyword}")
+            await send_alert(report_text, "", f"Audit-{keyword}", target_ids=get_alert_targets_for_keyword(keyword))
             await asyncio.sleep(2) 
         else:
             log_tree(4, f"关键词 '{keyword}' 巡检完成，无异常 (总数: {found_count})")
@@ -1931,7 +2275,16 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
             return
 
         log_tree(2, f"触发 [稍等] 超时 Msg={key_id}")
-        await send_alert(f"📩 消息: `{original_text.replace('`', '')}`\n🚨 **稍等-超时预警**\n👤 客服: {agent_name}\n⚠️ 状态: 已过 {WAIT_TIMEOUT // 60} 分钟 (无后续回复)\n🔗 [点击处理]({link})", link, ids_str)
+        await send_alert(format_alert_message(
+            "🚨 **稍等超时预警**",
+            [
+                ("客服", agent_name),
+                ("关键词", wait_keyword),
+                ("状态", f"已过 {WAIT_TIMEOUT // 60} 分钟，无后续客服回复"),
+            ],
+            "消息", original_text,
+            link
+        ), link, ids_str, target_ids=get_alert_targets_for_keyword(wait_keyword))
 
         CRITICAL_TIMEOUT = 10 * 60
         await asyncio.sleep(CRITICAL_TIMEOUT)
@@ -1948,15 +2301,16 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
              return
 
         log_tree(3, f"🔥 触发 [稍等] 严重超时 Msg={key_id}")
-        await send_alert(
-            f"🔥 **严重超时警报 (已超{int((WAIT_TIMEOUT+CRITICAL_TIMEOUT)/60)}分钟)**\n"
-            f"👤 客服: {agent_name}\n"
-            f"⚠️ 状态: 第一次报警后10分钟仍未回复！\n"
-            f"❌ **即将执行扣分处理，请立即回复！**\n"
-            f"📩 原消息: `{original_text.replace('`', '')}`\n"
-            f"🔗 [点击处理]({link})",
-            link, ids_str
-        )
+        await send_alert(format_alert_message(
+            f"🔥 **稍等严重超时（{int((WAIT_TIMEOUT+CRITICAL_TIMEOUT)/60)}分钟）**",
+            [
+                ("客服", agent_name),
+                ("关键词", wait_keyword),
+                ("状态", "第一次预警后 10 分钟仍无后续客服回复"),
+            ],
+            "原消息", original_text,
+            link
+        ), link, ids_str, target_ids=get_alert_targets_for_keyword(wait_keyword))
 
     except asyncio.CancelledError: pass 
     finally:
@@ -1967,7 +2321,7 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
             if my_msg_id in wait_msg_map: del wait_msg_map[my_msg_id]
             for uid in user_ids_list: remove_task_record(chat_id, uid, key_id, thread_id)
 
-async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, user_ids_list, trigger_timestamp, thread_id=None):
+async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, user_ids_list, trigger_timestamp, thread_id=None, wait_keyword=None):
     try:
         current_task = asyncio.current_task()
         ids_str = f"Msg={key_id}"
@@ -1988,7 +2342,16 @@ async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_
             return
 
         log_tree(2, f"触发 [跟进] 超时 Msg={key_id}")
-        await send_alert(f"📩 消息: `{original_text.replace('`', '')}`\n🚨 **跟进-超时预警**\n👤 客服: {agent_name}\n⚠️ 状态: **反馈核实内容超时未跟进回复** ({FOLLOWUP_TIMEOUT // 60} 分钟)\n🔗 [点击处理]({link})", link, ids_str)
+        await send_alert(format_alert_message(
+            "🚨 **跟进超时预警**",
+            [
+                ("客服", agent_name),
+                ("关键词", wait_keyword),
+                ("状态", f"反馈核实内容 {FOLLOWUP_TIMEOUT // 60} 分钟未跟进回复"),
+            ],
+            "消息", original_text,
+            link
+        ), link, ids_str, target_ids=get_alert_targets_for_keyword(wait_keyword))
     except asyncio.CancelledError: pass
     finally:
         if key_id in followup_tasks and followup_tasks[key_id] == current_task:
@@ -1997,7 +2360,7 @@ async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_
             if my_msg_id in followup_msg_map: del followup_msg_map[my_msg_id]
             for uid in user_ids_list: remove_task_record(chat_id, uid, key_id, thread_id)
 
-async def task_reply_timeout(trigger_msg_id, sender_name, content, link, chat_id, user_id, target_name, trigger_timestamp, thread_id=None):
+async def task_reply_timeout(trigger_msg_id, sender_name, content, link, chat_id, user_id, target_name, trigger_timestamp, thread_id=None, wait_keyword=None):
     try:
         current_task = asyncio.current_task()
         ids_str = f"Msg={trigger_msg_id} User={user_id}"
@@ -2011,7 +2374,17 @@ async def task_reply_timeout(trigger_msg_id, sender_name, content, link, chat_id
         if not IS_WORKING: return
         
         log_tree(2, f"触发 [漏回] 报警 Msg={trigger_msg_id}")
-        await send_alert(f"📩 内容: `{content.replace('`', '')}`\n🔔 **漏回消息提醒**\n👤 用户: {sender_name} 回复了客服 {target_name}\n⚠️ 状态: 已 {REPLY_TIMEOUT // 60} 分钟未回复\n🔗 [点击回复]({link})", link, ids_str)
+        await send_alert(format_alert_message(
+            "🔔 **漏回消息提醒**",
+            [
+                ("用户", sender_name),
+                ("回复客服", target_name),
+                ("关键词", wait_keyword),
+                ("状态", f"已 {REPLY_TIMEOUT // 60} 分钟未回复"),
+            ],
+            "内容", content,
+            link
+        ), link, ids_str, target_ids=get_alert_targets_for_keyword(wait_keyword))
     except asyncio.CancelledError: pass 
     finally:
         if trigger_msg_id in reply_tasks and reply_tasks[trigger_msg_id] == current_task:
@@ -2019,7 +2392,7 @@ async def task_reply_timeout(trigger_msg_id, sender_name, content, link, chat_id
             if trigger_msg_id in reply_timers: del reply_timers[trigger_msg_id]
             remove_task_record(chat_id, user_id, trigger_msg_id, thread_id)
 
-async def task_self_reply_timeout(trigger_msg_id, user_name, content, link, chat_id, user_id, trigger_timestamp, thread_id=None):
+async def task_self_reply_timeout(trigger_msg_id, user_name, content, link, chat_id, user_id, trigger_timestamp, thread_id=None, wait_keyword=None):
     try:
         current_task = asyncio.current_task()
         ids_str = f"Msg={trigger_msg_id} User={user_id}"
@@ -2032,7 +2405,16 @@ async def task_self_reply_timeout(trigger_msg_id, user_name, content, link, chat
         if not IS_WORKING: return
         
         log_tree(2, f"触发 [自回] 报警 Msg={trigger_msg_id}")
-        await send_alert(f"📩 内容: `{content.replace('`', '')}`\n🔔 **自回防漏监测**\n👤 用户: {user_name} (自行追加消息)\n⚠️ 状态: 已 {SELF_REPLY_TIMEOUT // 60} 分钟未处理\n🔗 [点击回复]({link})", link, ids_str)
+        await send_alert(format_alert_message(
+            "🔔 **自回防漏监测**",
+            [
+                ("用户", user_name),
+                ("关键词", wait_keyword),
+                ("状态", f"自行追加消息后 {SELF_REPLY_TIMEOUT // 60} 分钟未处理"),
+            ],
+            "内容", content,
+            link
+        ), link, ids_str, target_ids=get_alert_targets_for_keyword(wait_keyword))
     except asyncio.CancelledError: pass 
     finally:
         if trigger_msg_id in self_reply_tasks and self_reply_tasks[trigger_msg_id] == current_task:
@@ -2289,9 +2671,9 @@ async def handler(event):
 
                 if related_users:
                     if is_keep_cmd:
-                        should_monitor_keep = await check_wait_in_history(chat_id, current_thread_id, signatures=get_wait_alert_signatures())
+                        history_wait_keyword = await find_wait_keyword_in_history(chat_id, current_thread_id, signatures=get_wait_alert_signatures())
                         
-                        if not should_monitor_keep:
+                        if not history_wait_keyword:
                              log_tree(1, f"🛡️ 豁免 [跟进] | Msg={event.id} | 原因: 历史流无已选择的[稍等]预警关键词")
                         else:
                             if reply_to_msg_id in wait_tasks:
@@ -2311,7 +2693,8 @@ async def handler(event):
                             task = asyncio.create_task(task_followup_timeout(
                                 reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users, 
                                 trigger_timestamp=msg_timestamp,
-                                thread_id=current_thread_id
+                                thread_id=current_thread_id,
+                                wait_keyword=history_wait_keyword
                             ))
                             followup_tasks[reply_to_msg_id] = task
                             followup_msg_map[event.id] = reply_to_msg_id
@@ -2365,9 +2748,9 @@ async def handler(event):
                                  self_reply_dedup.append(grouped_id)
                          
                          if should_monitor:
-                             has_wait = await check_wait_in_history(chat_id, current_thread_id, signatures=get_wait_alert_signatures())
+                             history_wait_keyword = await find_wait_keyword_in_history(chat_id, current_thread_id, signatures=get_wait_alert_signatures())
                              
-                             if not has_wait:
+                             if not history_wait_keyword:
                                  log_tree(1, f"🛡️ 豁免 [自回-无已选择稍等历史] | User={sender_id} | Msg={event.id}")
                              else:
                                  cancel_tasks(chat_id, sender_id, current_thread_id, reason="新自回覆盖旧自回", types=['self_reply'])
@@ -2377,7 +2760,8 @@ async def handler(event):
                                  task = asyncio.create_task(task_self_reply_timeout(
                                      event.id, sender_name, text[:50], msg_link, chat_id, sender_id, 
                                      trigger_timestamp=msg_timestamp,
-                                     thread_id=current_thread_id
+                                     thread_id=current_thread_id,
+                                     wait_keyword=history_wait_keyword
                                  ))
                                  
                                  def cleanup_self_reply(_):
@@ -2407,8 +2791,8 @@ async def handler(event):
 
                     if (target_id == MY_ID) or (target_id in OTHER_CS_IDS):
                         if normalize(text.strip()) in IGNORE_SIGNATURES: return
-                        has_alert_wait = await check_wait_in_history(chat_id, current_thread_id, signatures=get_wait_alert_signatures())
-                        if not has_alert_wait:
+                        history_wait_keyword = await find_wait_keyword_in_history(chat_id, current_thread_id, signatures=get_wait_alert_signatures())
+                        if not history_wait_keyword:
                             log_tree(1, f"🛡️ 豁免 [漏回-无已选择稍等历史] | User={sender_id} | Msg={event.id} -> Target={target_name}")
                             return
 
@@ -2416,7 +2800,8 @@ async def handler(event):
                         task = asyncio.create_task(task_reply_timeout(
                             event.id, sender_name, text[:50], msg_link, chat_id, sender_id, target_name, 
                             trigger_timestamp=msg_timestamp,
-                            thread_id=current_thread_id
+                            thread_id=current_thread_id,
+                            wait_keyword=history_wait_keyword
                         ))
                         reply_tasks[event.id] = task
                 except Exception as e:
@@ -2434,6 +2819,7 @@ if __name__ == '__main__':
             
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
+        bot_loop.create_task(bot_command_polling_task())
         
         if init_stats_blueprint:
             init_stats_blueprint(app, client, bot_loop, CS_GROUP_IDS)
@@ -2442,6 +2828,8 @@ if __name__ == '__main__':
             init_monitor(client, app, OTHER_CS_IDS, CS_NAME_PREFIXES, handler)
             
         Thread(target=run_web).start()
+        setup_bot_menu_button()
+        setup_bot_commands()
         log_tree(0, "✅ 系统启动 (Ver 45.22 Final Consolidated)")
         client.start()
         client.run_until_disconnected()
