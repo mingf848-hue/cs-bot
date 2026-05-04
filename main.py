@@ -598,9 +598,6 @@ DASHBOARD_HTML = """
     </div>
 
     <div style="margin-top:24px;border-top:1px solid var(--border);padding-top:18px">
-        <a href="/log" class="navbtn">
-            <svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 日志分析
-        </a>
         <a href="/tool/wait_check" class="navbtn" style="background:#0f766e">
             <svg class="ic" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 9.36l-7.1 7.1a1 1 0 0 1-1.41 0l-1.42-1.42a1 1 0 0 1 0-1.4l7.1-7.1a6 6 0 0 1 9.36-7.94l-3.76 3.76z"/></svg> 闭环检测
         </a>
