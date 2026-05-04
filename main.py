@@ -9,11 +9,16 @@ import json
 import queue
 from collections import deque, defaultdict
 from datetime import datetime, timedelta, timezone
-from threading import Thread
-from flask import Flask, render_template_string, Response, request, stream_with_context
+from threading import Thread, Lock
+from flask import Flask, render_template_string, Response, request, stream_with_context, jsonify
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import AuthKeyDuplicatedError
+
+try:
+    import redis
+except ImportError:
+    redis = None
 
 # ==========================================
 # 模块 0: 北京时间树状日志系统
@@ -96,6 +101,114 @@ def extract_id_list(env_str):
             except: pass
     return result
 
+WAIT_ALERT_REDIS_KEY = "wait_alert_config_v1"
+wait_alert_config_lock = Lock()
+wait_alert_redis_client = None
+wait_alert_redis_checked = False
+wait_alert_store_status = "未初始化"
+
+def extract_signature_set(env_str):
+    if not env_str: return set()
+    if isinstance(env_str, (list, tuple, set)):
+        return {str(x).strip() for x in env_str if str(x).strip()}
+    clean_str = str(env_str)
+    for sep in ("，", "；", ";", "|", "\n", "\r"):
+        clean_str = clean_str.replace(sep, ",")
+    return {x.strip() for x in clean_str.split(',') if x.strip()}
+
+def get_wait_alert_redis_client():
+    global wait_alert_redis_client, wait_alert_redis_checked, wait_alert_store_status
+    if wait_alert_redis_checked:
+        return wait_alert_redis_client
+    wait_alert_redis_checked = True
+
+    redis_url = os.environ.get("REDIS_URL") or os.environ.get("REDIS_URI") or os.environ.get("REDIS_PUBLIC_URL")
+    if not redis or not redis_url:
+        wait_alert_store_status = "内存模式：未配置 Redis，重启后恢复环境变量默认值"
+        return None
+
+    try:
+        redis_url = redis_url.strip()
+        wait_alert_redis_client = redis.from_url(redis_url, decode_responses=True, socket_timeout=5, socket_connect_timeout=5)
+        wait_alert_redis_client.ping()
+        wait_alert_store_status = "Redis：已持久化"
+        logger.info("✅ [WaitAlert] Redis 配置存储连接成功")
+    except Exception as e:
+        wait_alert_redis_client = None
+        wait_alert_store_status = f"内存模式：Redis 连接失败 ({e})"
+        logger.warning(f"⚠️ [WaitAlert] Redis 连接失败，将仅使用内存配置: {e}")
+    return wait_alert_redis_client
+
+def load_wait_alert_signatures_from_store():
+    client = get_wait_alert_redis_client()
+    if not client:
+        return None, None
+    try:
+        raw = client.get(WAIT_ALERT_REDIS_KEY)
+        if not raw:
+            return None, None
+        data = json.loads(raw)
+        return extract_signature_set(data.get("alert_wait_keywords", [])), "Redis网页配置"
+    except Exception as e:
+        logger.warning(f"⚠️ [WaitAlert] Redis 配置读取失败，回退环境变量: {e}")
+        return None, None
+
+def resolve_wait_alert_signatures(wait_signatures):
+    stored_signatures, stored_source = load_wait_alert_signatures_from_store()
+    if stored_signatures is not None:
+        return stored_signatures, stored_source
+
+    raw = os.environ.get("ALERT_WAIT_KEYWORDS")
+    source = "ALERT_WAIT_KEYWORDS"
+    if raw is None:
+        raw = os.environ.get("WAIT_ALERT_KEYWORDS")
+        source = "WAIT_ALERT_KEYWORDS"
+
+    if raw is None:
+        return set(wait_signatures), "默认全部"
+
+    raw_text = str(raw).strip()
+    raw_lower = raw_text.lower()
+    if not raw_text or raw_lower in ("all", "*") or raw_text in ("全部", "全体"):
+        return set(wait_signatures), f"{source}=全部"
+    if raw_lower in ("none", "off", "false", "0") or raw_text in ("关闭", "不预警"):
+        return set(), f"{source}=关闭"
+    return extract_signature_set(raw), source
+
+def match_signature(text, signatures):
+    if not text or not signatures: return None
+    for signature in sorted(signatures, key=len, reverse=True):
+        if signature and signature in text:
+            return signature
+    return None
+
+def get_wait_alert_signatures():
+    with wait_alert_config_lock:
+        return set(WAIT_ALERT_SIGNATURES)
+
+def is_wait_keyword_alert_enabled(keyword):
+    if not keyword:
+        return True
+    return keyword in get_wait_alert_signatures()
+
+def persist_wait_alert_signatures(signatures):
+    global wait_alert_store_status
+    payload = {
+        "alert_wait_keywords": sorted(list(signatures)),
+        "updated_at": datetime.now(timezone(timedelta(hours=8))).isoformat()
+    }
+    client = get_wait_alert_redis_client()
+    if not client:
+        return False, wait_alert_store_status
+    try:
+        client.set(WAIT_ALERT_REDIS_KEY, json.dumps(payload, ensure_ascii=False))
+        wait_alert_store_status = "Redis：已持久化"
+        return True, wait_alert_store_status
+    except Exception as e:
+        wait_alert_store_status = f"内存模式：Redis 保存失败 ({e})"
+        logger.warning(f"⚠️ [WaitAlert] Redis 配置保存失败: {e}")
+        return False, wait_alert_store_status
+
 # ==========================================
 # 模块 2: 配置加载
 # ==========================================
@@ -112,8 +225,12 @@ try:
     OTHER_CS_IDS = extract_id_list(other_cs_env)
     
     wait_keywords_env = os.environ["WAIT_KEYWORDS"]
-    clean_env = wait_keywords_env.replace("，", ",") 
-    WAIT_SIGNATURES = {x.strip() for x in clean_env.split(',') if x.strip()} 
+    WAIT_SIGNATURES = extract_signature_set(wait_keywords_env)
+    WAIT_ALERT_SIGNATURES, WAIT_ALERT_SOURCE = resolve_wait_alert_signatures(WAIT_SIGNATURES)
+    unknown_alert_wait = WAIT_ALERT_SIGNATURES - WAIT_SIGNATURES
+    if unknown_alert_wait:
+        logger.warning(f"⚠️ {WAIT_ALERT_SOURCE} 中有 {len(unknown_alert_wait)} 个词不在 WAIT_KEYWORDS 内，不会触发稍等预警: {sorted(list(unknown_alert_wait))}")
+        WAIT_ALERT_SIGNATURES = WAIT_ALERT_SIGNATURES & WAIT_SIGNATURES
 
     keep_keywords_env = os.environ.get("KEEP_KEYWORDS", "") 
     if '|' in keep_keywords_env:
@@ -124,7 +241,7 @@ try:
         
     KEEP_SIGNATURES = {x.strip() for x in keep_list if x.strip()}
     
-    log_tree(0, f"🔍 关键词配置: WAIT={len(WAIT_SIGNATURES)} | KEEP={len(KEEP_SIGNATURES)}")
+    log_tree(0, f"🔍 关键词配置: WAIT={len(WAIT_SIGNATURES)} | WAIT_ALERT={len(WAIT_ALERT_SIGNATURES)} ({WAIT_ALERT_SOURCE}) | KEEP={len(KEEP_SIGNATURES)}")
 
     default_ignore = (
         "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴,"
@@ -144,7 +261,7 @@ except Exception as e:
     logger.error(f"❌ 配置错误: {e}")
     sys.exit(1)
 
-log_tree(0, f"系统启动 | 稍等词: {len(WAIT_SIGNATURES)} | 跟进词: {len(KEEP_SIGNATURES)} | 忽略词: {len(IGNORE_SIGNATURES)}")
+log_tree(0, f"系统启动 | 稍等词: {len(WAIT_SIGNATURES)} | 稍等预警词: {len(WAIT_ALERT_SIGNATURES)} | 跟进词: {len(KEEP_SIGNATURES)} | 忽略词: {len(IGNORE_SIGNATURES)}")
 
 # ==========================================
 # 模块 3: 全局状态
@@ -160,6 +277,7 @@ wait_tasks = {}
 followup_tasks = {} 
 reply_tasks = {}
 self_reply_tasks = {} 
+wait_task_keywords = {}
 
 wait_timers = {}
 followup_timers = {}
@@ -237,8 +355,12 @@ async def is_official_cs(message):
     except: pass
     return False
 
-async def check_wait_in_history(chat_id, thread_id=None, limit=30):
+async def check_wait_in_history(chat_id, thread_id=None, limit=30, signatures=None):
     try:
+        target_signatures = WAIT_SIGNATURES if signatures is None else signatures
+        if not target_signatures:
+            return False
+
         kwargs = {'limit': limit}
         if thread_id:
              kwargs['reply_to'] = thread_id
@@ -256,7 +378,7 @@ async def check_wait_in_history(chat_id, thread_id=None, limit=30):
                 except: pass
             
             if is_cs:
-                if any(k in m.text for k in WAIT_SIGNATURES):
+                if match_signature(m.text, target_signatures):
                     return True
     except Exception as e:
         logger.error(f"History check failed: {e}")
@@ -361,6 +483,9 @@ DASHBOARD_HTML = """
         </a>
         <a href="/tool/wait_check" target="_blank" class="navbtn" style="background:#0f766e">
             <svg class="ic" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 9.36l-7.1 7.1a1 1 0 0 1-1.41 0l-1.42-1.42a1 1 0 0 1 0-1.4l7.1-7.1a6 6 0 0 1 9.36-7.94l-3.76 3.76z"/></svg> 闭环检测
+        </a>
+        <a href="/tool/wait_alerts" target="_blank" class="navbtn" style="background:#be123c">
+            <svg class="ic" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg> 稍等预警名单
         </a>
         <a href="/tool/work_stats" target="_blank" class="navbtn" style="background:#6d28d9">
             <svg class="ic" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg> 工作量统计
@@ -885,6 +1010,139 @@ WAIT_CHECK_HTML = """
 </html>
 """
 
+WAIT_ALERTS_HTML = """
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>稍等预警名单</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        *{box-sizing:border-box}
+        body{margin:0;background:#f8fafc;color:#0f172a;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+        main{max-width:760px;margin:0 auto;padding:18px 14px 36px}
+        .top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px}
+        h1{font-size:18px;margin:0}
+        .status{font-size:12px;color:#64748b;text-align:right}
+        .panel{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-bottom:12px}
+        .toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+        button{border:1px solid #cbd5e1;background:#fff;color:#334155;border-radius:6px;padding:8px 11px;font-size:13px;cursor:pointer;font-weight:600}
+        button.primary{background:#be123c;border-color:#be123c;color:#fff}
+        button:disabled{opacity:.55;cursor:not-allowed}
+        .hint{font-size:12px;color:#64748b;line-height:1.6;margin:0}
+        .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px}
+        label.item{display:flex;align-items:center;gap:9px;border:1px solid #e2e8f0;border-radius:7px;padding:10px 11px;background:#f8fafc;cursor:pointer;min-height:42px}
+        label.item:hover{border-color:#fda4af;background:#fff1f2}
+        input[type="checkbox"]{width:16px;height:16px;accent-color:#be123c;flex:0 0 auto}
+        .kw{font-size:14px;word-break:break-word}
+        .toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:#0f172a;color:#fff;padding:9px 14px;border-radius:999px;font-size:13px;opacity:0;transition:.2s;pointer-events:none}
+        .toast.show{opacity:1}
+        .empty{padding:28px;text-align:center;color:#64748b;border:1px dashed #cbd5e1;border-radius:8px;background:#f8fafc}
+    </style>
+</head>
+<body>
+<main>
+    <div class="top">
+        <h1>稍等预警名单</h1>
+        <div class="status" id="store-status">加载中...</div>
+    </div>
+
+    <div class="panel">
+        <p class="hint">这里控制哪些稍等关键词会启动超时预警。所有稍等词仍然来自 WAIT_KEYWORDS；未勾选的词只参与普通识别，不启动倒计时预警。</p>
+    </div>
+
+    <div class="panel">
+        <div class="toolbar">
+            <button onclick="selectAll()">全选</button>
+            <button onclick="selectNone()">全不选</button>
+            <button class="primary" id="save-btn" onclick="saveConfig()">保存名单</button>
+        </div>
+        <div class="grid" id="kw-grid"></div>
+    </div>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+    let waitKeywords = [];
+    let selectedKeywords = new Set();
+
+    function showToast(text) {
+        const toast = document.getElementById('toast');
+        toast.textContent = text;
+        toast.classList.add('show');
+        setTimeout(() => toast.classList.remove('show'), 1800);
+    }
+
+    async function loadConfig() {
+        const res = await fetch('/api/wait_alerts?_t=' + Date.now());
+        const data = await res.json();
+        waitKeywords = data.wait_keywords || [];
+        selectedKeywords = new Set(data.alert_wait_keywords || []);
+        document.getElementById('store-status').textContent = data.store || '';
+        render();
+    }
+
+    function render() {
+        const grid = document.getElementById('kw-grid');
+        if (!waitKeywords.length) {
+            grid.innerHTML = '<div class="empty">WAIT_KEYWORDS 为空</div>';
+            return;
+        }
+        grid.innerHTML = waitKeywords.map((kw, idx) => `
+            <label class="item">
+                <input type="checkbox" data-kw="${escapeHtml(kw)}" ${selectedKeywords.has(kw) ? 'checked' : ''}>
+                <span class="kw">${escapeHtml(kw)}</span>
+            </label>
+        `).join('');
+    }
+
+    function escapeHtml(text) {
+        return String(text).replace(/[&<>"']/g, ch => ({
+            '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+        }[ch]));
+    }
+
+    function selectAll() {
+        selectedKeywords = new Set(waitKeywords);
+        render();
+    }
+
+    function selectNone() {
+        selectedKeywords = new Set();
+        render();
+    }
+
+    async function saveConfig() {
+        const btn = document.getElementById('save-btn');
+        const checked = Array.from(document.querySelectorAll('input[type="checkbox"]:checked')).map(el => el.dataset.kw);
+        btn.disabled = true;
+        try {
+            const res = await fetch('/api/wait_alerts', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({alert_wait_keywords: checked})
+            });
+            const data = await res.json();
+            if (!data.ok) throw new Error(data.error || '保存失败');
+            selectedKeywords = new Set(data.alert_wait_keywords || []);
+            document.getElementById('store-status').textContent = data.store || '';
+            render();
+            showToast(data.persisted ? '已保存到 Redis' : '已保存到当前进程内存');
+        } catch (e) {
+            showToast(e.message);
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    loadConfig().catch(e => {
+        document.getElementById('store-status').textContent = '加载失败';
+        showToast(e.message);
+    });
+</script>
+</body>
+</html>
+"""
+
 # ==========================================
 # Web 路由区域
 # ==========================================
@@ -899,6 +1157,10 @@ def log_ui(): return Response(LOG_VIEWER_HTML, mimetype='text/html')
 @app.route('/tool/wait_check')
 def wait_check_ui(): 
     return render_template_string(WAIT_CHECK_HTML, wait_keywords=sorted(list(WAIT_SIGNATURES)))
+
+@app.route('/tool/wait_alerts')
+def wait_alerts_ui():
+    return Response(WAIT_ALERTS_HTML, mimetype='text/html')
 
 @app.route('/log_raw')
 def log_raw():
@@ -933,10 +1195,46 @@ def api_ctrl():
 @app.route('/api/config')
 def api_config():
     import json
-    data = json.dumps({"wait_keywords": sorted(list(WAIT_SIGNATURES))})
+    data = json.dumps({
+        "wait_keywords": sorted(list(WAIT_SIGNATURES)),
+        "alert_wait_keywords": sorted(list(get_wait_alert_signatures())),
+        "wait_alert_store": wait_alert_store_status,
+    })
     response = Response(data, mimetype='application/json')
     response.headers['Access-Control-Allow-Origin'] = '*' # 允许跨域
     return response
+
+@app.route('/api/wait_alerts', methods=['GET', 'POST'])
+def api_wait_alerts():
+    global WAIT_ALERT_SIGNATURES
+
+    if request.method == 'GET':
+        return jsonify({
+            "ok": True,
+            "wait_keywords": sorted(list(WAIT_SIGNATURES)),
+            "alert_wait_keywords": sorted(list(get_wait_alert_signatures())),
+            "store": wait_alert_store_status,
+        })
+
+    data = request.get_json(silent=True) or {}
+    selected = extract_signature_set(data.get("alert_wait_keywords", []))
+    unknown = selected - WAIT_SIGNATURES
+    selected = selected & WAIT_SIGNATURES
+
+    with wait_alert_config_lock:
+        WAIT_ALERT_SIGNATURES = set(selected)
+
+    persisted, store_status = persist_wait_alert_signatures(selected)
+    cancel_disabled_wait_tasks(selected)
+
+    return jsonify({
+        "ok": True,
+        "persisted": persisted,
+        "store": store_status,
+        "wait_keywords": sorted(list(WAIT_SIGNATURES)),
+        "alert_wait_keywords": sorted(list(selected)),
+        "ignored_keywords": sorted(list(unknown)),
+    })
 
 @app.route('/api/wait_check_stream')
 def wait_check_stream():
@@ -1480,6 +1778,7 @@ async def perform_stop_work():
     IS_WORKING = False
     for t in list(wait_tasks.values()) + list(followup_tasks.values()) + list(reply_tasks.values()) + list(self_reply_tasks.values()): t.cancel()
     wait_tasks.clear(); followup_tasks.clear(); reply_tasks.clear(); self_reply_tasks.clear()
+    wait_task_keywords.clear()
     wait_timers.clear(); followup_timers.clear(); reply_timers.clear(); self_reply_timers.clear()
     wait_msg_map.clear(); followup_msg_map.clear()
     chat_user_active_msgs.clear()
@@ -1559,6 +1858,24 @@ def cancel_tasks(chat_id, user_id, thread_id=None, target_msg_id=None, reason="�
     if count > 0:
         log_tree(2, f"销单成功 | {reason} | 流: {thread_id} | 任务: {cleared_ids}")
 
+def cancel_disabled_wait_tasks(enabled_signatures):
+    cancelled = []
+    for key_id, keyword in list(wait_task_keywords.items()):
+        if keyword in enabled_signatures:
+            continue
+        task = wait_tasks.get(key_id)
+        if not task:
+            continue
+        cancelled.append((key_id, keyword))
+        if bot_loop:
+            bot_loop.call_soon_threadsafe(task.cancel)
+        else:
+            task.cancel()
+
+    if cancelled:
+        log_tree(2, f"网页预警名单更新，已取消 {len(cancelled)} 个未选中稍等倒计时任务: {cancelled}")
+    return cancelled
+
 def check_recent_activity_safe(chat_id, task_start_time, user_ids=None, thread_id=None):
     buffer_seconds = 10
     if user_ids:
@@ -1575,7 +1892,7 @@ def check_recent_activity_safe(chat_id, task_start_time, user_ids=None, thread_i
 # ==========================================
 # 模块 7: 倒计时任务
 # ==========================================
-async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, user_ids_list, trigger_timestamp, thread_id=None):
+async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, chat_id, user_ids_list, trigger_timestamp, thread_id=None, wait_keyword=None):
     try:
         current_task = asyncio.current_task() 
         ids_str = f"Msg={key_id}"
@@ -1584,12 +1901,15 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
         log_tree(1, f"启动 [稍等] 倒计时 (12m) {ids_str} | Thread={thread_id}")
         
         end_time = trigger_timestamp + WAIT_TIMEOUT
-        wait_timers[key_id] = {'ts': end_time, 'user': agent_name, 'url': link}
+        wait_timers[key_id] = {'ts': end_time, 'user': agent_name, 'url': link, 'keyword': wait_keyword or ''}
         for uid in user_ids_list: register_task(chat_id, uid, key_id, thread_id)
 
         await asyncio.sleep(WAIT_TIMEOUT)
         
         if not IS_WORKING: return
+        if not is_wait_keyword_alert_enabled(wait_keyword):
+            log_tree(1, f"🛡️ 拦截 [稍等] 超时预警 Msg={key_id} | 关键词={wait_keyword} 已从网页预警名单取消")
+            return
         if my_msg_id and not await check_msg_exists(chat_id, my_msg_id): return
 
         is_safe, safe_reason = check_recent_activity_safe(chat_id, trigger_timestamp, user_ids_list, thread_id)
@@ -1604,6 +1924,9 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
         await asyncio.sleep(CRITICAL_TIMEOUT)
         
         if not IS_WORKING: return
+        if not is_wait_keyword_alert_enabled(wait_keyword):
+            log_tree(1, f"🛡️ 拦截 [稍等] 严重超时 Msg={key_id} | 关键词={wait_keyword} 已从网页预警名单取消")
+            return
         if my_msg_id and not await check_msg_exists(chat_id, my_msg_id): return
 
         is_safe_2, safe_reason_2 = check_recent_activity_safe(chat_id, trigger_timestamp, user_ids_list, thread_id)
@@ -1627,6 +1950,7 @@ async def task_wait_timeout(key_id, agent_name, original_text, link, my_msg_id, 
         if key_id in wait_tasks and wait_tasks[key_id] == current_task:
             del wait_tasks[key_id]
             if key_id in wait_timers: del wait_timers[key_id]
+            if key_id in wait_task_keywords: del wait_task_keywords[key_id]
             if my_msg_id in wait_msg_map: del wait_msg_map[my_msg_id]
             for uid in user_ids_list: remove_task_record(chat_id, uid, key_id, thread_id)
 
@@ -1849,7 +2173,11 @@ async def handler(event):
 
         update_content_cache(chat_id, event.id, sender_name, text)
 
-        is_wait_cmd = any(k in text for k in WAIT_SIGNATURES)
+        alert_wait_signatures = get_wait_alert_signatures()
+        matched_wait_keyword = match_signature(text, WAIT_SIGNATURES)
+        matched_alert_wait_keyword = match_signature(text, alert_wait_signatures)
+        is_wait_cmd = matched_wait_keyword is not None
+        is_wait_alert_cmd = matched_alert_wait_keyword is not None
         is_keep_cmd = text.strip() in KEEP_SIGNATURES
         
         is_name_cs = False
@@ -1950,10 +2278,10 @@ async def handler(event):
 
                 if related_users:
                     if is_keep_cmd:
-                        should_monitor_keep = await check_wait_in_history(chat_id, current_thread_id)
+                        should_monitor_keep = await check_wait_in_history(chat_id, current_thread_id, signatures=get_wait_alert_signatures())
                         
                         if not should_monitor_keep:
-                             log_tree(1, f"🛡️ 豁免 [跟进] | Msg={event.id} | 原因: 历史流无本号[稍等]关键词")
+                             log_tree(1, f"🛡️ 豁免 [跟进] | Msg={event.id} | 原因: 历史流无已选择的[稍等]预警关键词")
                         else:
                             if reply_to_msg_id in wait_tasks:
                                 wait_tasks[reply_to_msg_id].cancel()
@@ -1974,22 +2302,27 @@ async def handler(event):
                             followup_msg_map[event.id] = reply_to_msg_id
 
                     elif is_wait_cmd:
-                        if reply_to_msg_id in followup_tasks:
-                            followup_tasks[reply_to_msg_id].cancel()
-                            del followup_tasks[reply_to_msg_id]
-                            log_tree(1, f"🔄 [稍等] 覆盖并销毁 [跟进] | Msg={reply_to_msg_id}")
+                        if not is_wait_alert_cmd:
+                            log_tree(1, f"🛡️ 豁免 [稍等预警] | Msg={event.id} | 客服={sender_name} | 关键词={matched_wait_keyword} | 原因: 未选入 ALERT_WAIT_KEYWORDS")
+                        else:
+                            if reply_to_msg_id in followup_tasks:
+                                followup_tasks[reply_to_msg_id].cancel()
+                                del followup_tasks[reply_to_msg_id]
+                                log_tree(1, f"🔄 [稍等] 覆盖并销毁 [跟进] | Msg={reply_to_msg_id}")
 
-                        if reply_to_msg_id in wait_tasks:
-                            wait_tasks[reply_to_msg_id].cancel()
-                            del wait_tasks[reply_to_msg_id]
+                            if reply_to_msg_id in wait_tasks:
+                                wait_tasks[reply_to_msg_id].cancel()
+                                del wait_tasks[reply_to_msg_id]
 
-                        task = asyncio.create_task(task_wait_timeout(
-                            reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users,
-                            trigger_timestamp=msg_timestamp,
-                            thread_id=current_thread_id
-                        ))
-                        wait_tasks[reply_to_msg_id] = task
-                        wait_msg_map[event.id] = reply_to_msg_id
+                            task = asyncio.create_task(task_wait_timeout(
+                                reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users,
+                                trigger_timestamp=msg_timestamp,
+                                thread_id=current_thread_id,
+                                wait_keyword=matched_alert_wait_keyword
+                            ))
+                            wait_tasks[reply_to_msg_id] = task
+                            wait_task_keywords[reply_to_msg_id] = matched_alert_wait_keyword
+                            wait_msg_map[event.id] = reply_to_msg_id
 
         else:
             if isinstance(event, events.MessageEdited):
@@ -2012,10 +2345,10 @@ async def handler(event):
                                  self_reply_dedup.append(grouped_id)
                          
                          if should_monitor:
-                             has_wait = await check_wait_in_history(chat_id, current_thread_id)
+                             has_wait = await check_wait_in_history(chat_id, current_thread_id, signatures=get_wait_alert_signatures())
                              
                              if not has_wait:
-                                 log_tree(1, f"🛡️ 豁免 [自回-无稍等历史] | User={sender_id} | Msg={event.id}")
+                                 log_tree(1, f"🛡️ 豁免 [自回-无已选择稍等历史] | User={sender_id} | Msg={event.id}")
                              else:
                                  cancel_tasks(chat_id, sender_id, current_thread_id, reason="新自回覆盖旧自回", types=['self_reply'])
                                  register_task(chat_id, sender_id, event.id, current_thread_id)
