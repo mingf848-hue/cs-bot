@@ -355,6 +355,23 @@ async def is_official_cs(message):
     except: pass
     return False
 
+async def is_cs_message_with_signature(message, signatures):
+    if not message or not getattr(message, "text", None):
+        return False
+
+    is_cs = False
+    if message.sender_id in ([MY_ID] + OTHER_CS_IDS):
+        is_cs = True
+    else:
+        try:
+            sender = await message.get_sender()
+            if sender and getattr(sender, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)):
+                is_cs = True
+        except Exception:
+            pass
+
+    return is_cs and bool(match_signature(message.text, signatures))
+
 async def check_wait_in_history(chat_id, thread_id=None, limit=30, signatures=None):
     try:
         target_signatures = WAIT_SIGNATURES if signatures is None else signatures
@@ -363,23 +380,14 @@ async def check_wait_in_history(chat_id, thread_id=None, limit=30, signatures=No
 
         kwargs = {'limit': limit}
         if thread_id:
-             kwargs['reply_to'] = thread_id
+            root_msg = await client.get_messages(chat_id, ids=thread_id)
+            if await is_cs_message_with_signature(root_msg, target_signatures):
+                return True
+            kwargs['reply_to'] = thread_id
              
         async for m in client.iter_messages(chat_id, **kwargs):
-            if not m.text: continue
-            
-            is_cs = False
-            if m.sender_id in ([MY_ID] + OTHER_CS_IDS): is_cs = True
-            else:
-                try:
-                    s = await m.get_sender()
-                    if s and getattr(s, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)):
-                        is_cs = True
-                except: pass
-            
-            if is_cs:
-                if match_signature(m.text, target_signatures):
-                    return True
+            if await is_cs_message_with_signature(m, target_signatures):
+                return True
     except Exception as e:
         logger.error(f"History check failed: {e}")
         return False
@@ -573,7 +581,7 @@ DASHBOARD_HTML = """
         setInterval(() => { 
             const now = Date.now() / 1000; 
             let hasLate = false; 
-            document.querySelectorAll('.t').forEach(el => { 
+            document.querySelectorAll('.countdown').forEach(el => {
                 const diff = parseFloat(el.dataset.end) - now; 
                 if(diff <= 0) { 
                     el.innerText = "已超时"; 
@@ -1876,6 +1884,11 @@ def cancel_disabled_wait_tasks(enabled_signatures):
         log_tree(2, f"网页预警名单更新，已取消 {len(cancelled)} 个未选中稍等倒计时任务: {cancelled}")
     return cancelled
 
+def remove_map_entries_by_value(mapping, value):
+    for key, mapped_value in list(mapping.items()):
+        if mapped_value == value:
+            del mapping[key]
+
 def check_recent_activity_safe(chat_id, task_start_time, user_ids=None, thread_id=None):
     buffer_seconds = 10
     if user_ids:
@@ -2265,11 +2278,9 @@ async def handler(event):
             
             if reply_to_msg_id and reply_to_msg_id in reply_tasks:
                 reply_tasks[reply_to_msg_id].cancel()
-                del reply_tasks[reply_to_msg_id]
             
             if reply_to_msg_id and reply_to_msg_id in self_reply_tasks:
                 self_reply_tasks[reply_to_msg_id].cancel()
-                del self_reply_tasks[reply_to_msg_id]
 
             if reply_to_msg_id:
                 related_users = await get_context_users(chat_id, reply_to_msg_id)
@@ -2287,11 +2298,15 @@ async def handler(event):
                                 wait_tasks[reply_to_msg_id].cancel()
                                 del wait_tasks[reply_to_msg_id]
                                 if reply_to_msg_id in wait_timers: del wait_timers[reply_to_msg_id]
+                                if reply_to_msg_id in wait_task_keywords: del wait_task_keywords[reply_to_msg_id]
+                                remove_map_entries_by_value(wait_msg_map, reply_to_msg_id)
                                 log_tree(1, f"🔄 [跟进] 覆盖并销毁 [稍等] | Msg={reply_to_msg_id}")
 
                             if reply_to_msg_id in followup_tasks:
                                 followup_tasks[reply_to_msg_id].cancel()
                                 del followup_tasks[reply_to_msg_id]
+                                if reply_to_msg_id in followup_timers: del followup_timers[reply_to_msg_id]
+                                remove_map_entries_by_value(followup_msg_map, reply_to_msg_id)
 
                             task = asyncio.create_task(task_followup_timeout(
                                 reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users, 
@@ -2308,11 +2323,16 @@ async def handler(event):
                             if reply_to_msg_id in followup_tasks:
                                 followup_tasks[reply_to_msg_id].cancel()
                                 del followup_tasks[reply_to_msg_id]
+                                if reply_to_msg_id in followup_timers: del followup_timers[reply_to_msg_id]
+                                remove_map_entries_by_value(followup_msg_map, reply_to_msg_id)
                                 log_tree(1, f"🔄 [稍等] 覆盖并销毁 [跟进] | Msg={reply_to_msg_id}")
 
                             if reply_to_msg_id in wait_tasks:
                                 wait_tasks[reply_to_msg_id].cancel()
                                 del wait_tasks[reply_to_msg_id]
+                                if reply_to_msg_id in wait_timers: del wait_timers[reply_to_msg_id]
+                                if reply_to_msg_id in wait_task_keywords: del wait_task_keywords[reply_to_msg_id]
+                                remove_map_entries_by_value(wait_msg_map, reply_to_msg_id)
 
                             task = asyncio.create_task(task_wait_timeout(
                                 reply_to_msg_id, sender_name, text[:50], msg_link, event.id, chat_id, related_users,
@@ -2387,6 +2407,11 @@ async def handler(event):
 
                     if (target_id == MY_ID) or (target_id in OTHER_CS_IDS):
                         if normalize(text.strip()) in IGNORE_SIGNATURES: return
+                        has_alert_wait = await check_wait_in_history(chat_id, current_thread_id, signatures=get_wait_alert_signatures())
+                        if not has_alert_wait:
+                            log_tree(1, f"🛡️ 豁免 [漏回-无已选择稍等历史] | User={sender_id} | Msg={event.id} -> Target={target_name}")
+                            return
+
                         if event.id in reply_tasks: reply_tasks[event.id].cancel()
                         task = asyncio.create_task(task_reply_timeout(
                             event.id, sender_name, text[:50], msg_link, chat_id, sender_id, target_name, 
