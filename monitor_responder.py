@@ -9,6 +9,7 @@ import unicodedata
 import warnings
 import urllib.request
 import threading
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from flask import request, jsonify, Response, render_template_string
 from telethon import events, TelegramClient, functions
@@ -57,6 +58,9 @@ system_cs_prefixes = []
 service_started_at = datetime.now(BJ_TZ)
 runtime_stats_lock = threading.Lock()
 runtime_stats = {"records": [], "daily": {}}
+ALBUM_REPLY_DEDUP_LIMIT = 5000
+album_reply_dedup_queue = deque()
+album_reply_dedup_keys = set()
 
 # --- 核心工具函数 ---
 
@@ -102,6 +106,22 @@ def match_text(text, rule):
                     break
             if all_matched and and_kws:
                 return True
+    return False
+
+def should_skip_album_reply(chat_id, grouped_id):
+    """同一组图集只触发一次自动回复，避免多图消息按单张图片重复执行。"""
+    if not grouped_id:
+        return False
+
+    key = (chat_id, grouped_id)
+    if key in album_reply_dedup_keys:
+        return True
+
+    album_reply_dedup_keys.add(key)
+    album_reply_dedup_queue.append(key)
+    while len(album_reply_dedup_queue) > ALBUM_REPLY_DEDUP_LIMIT:
+        old_key = album_reply_dedup_queue.popleft()
+        album_reply_dedup_keys.discard(old_key)
     return False
 
 def get_sender_name(sender):
@@ -2337,6 +2357,11 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                 # v69: Pass event.sender object
                 is_match, reason, extracted_data = await analyze_message(client, rule, event, other_cs_ids, event.sender)
                 if is_match:
+                    grouped_id = getattr(event.message, "grouped_id", None)
+                    if should_skip_album_reply(event.chat_id, grouped_id):
+                        logger.info(f"🛡️ [Monitor] 图集去重 | Chat={event.chat_id} | GroupID={grouped_id} | Msg={event.id} 已跳过重复自动回复")
+                        break
+
                     rule_id = ensure_rule_id(rule)
                     match_started = time.time()
                     logger.info(f"✅ [Monitor] 规则 '{rule.get('name')}' 触发!")
