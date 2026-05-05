@@ -308,7 +308,12 @@ try:
     
     CS_NAME_PREFIXES = ["YY_6/9_值班号", "Y_YY"]
 
-    AI_PROXY_URL = os.environ.get("AI_PROXY_URL")
+    GEMINI_API_KEY = (
+        os.environ.get("GEMINI_API_KEY")
+        or os.environ.get("GOOGLE_API_KEY")
+        or os.environ.get("GOOGLE_GENERATIVE_AI_API_KEY")
+    )
+    GEMINI_API_BASE_URL = os.environ.get("GEMINI_API_BASE_URL", "https://generativelanguage.googleapis.com").rstrip("/")
     AI_MODEL_NAME = "gemini-3.1-flash-lite-preview"
 
 except Exception as e:
@@ -1419,26 +1424,37 @@ def run_web():
 # 模块 4.5: AI 分析模块 (Ver 45.22)
 # ==========================================
 
-def _ai_check_reply_needed(text):
-    # 彻底移除本地暴力兜底，完全依靠 AI 研判
-    proxy_url = AI_PROXY_URL.rstrip('/')
-    url = f"{proxy_url}/v1beta/models/{AI_MODEL_NAME}:generateContent"
-    headers = {'Content-Type': 'application/json'}
-    prompt = f"判断客户消息是否需要回复。消息: '{text}'\n如果是礼貌结束语(如：好、好的、谢谢、收到、ok等)或无意义，返回false。如果是问题或业务请求，返回true。\nJSON: {{'reason': '...', 'need_reply': true/false}}"
-    data = {
+def _gemini_generate_json(prompt, timeout=60):
+    if not GEMINI_API_KEY:
+        raise RuntimeError("未配置 GEMINI_API_KEY 或 GOOGLE_API_KEY")
+
+    url = f"{GEMINI_API_BASE_URL}/v1beta/models/{AI_MODEL_NAME}:generateContent"
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY,
+    }
+    payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "response_mime_type": "application/json",
             "temperature": 0.0
         }
     }
-    
+    resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Gemini HTTP {resp.status_code}: {resp.text[:200]}")
+
+    raw_content = resp.json().get('candidates', [])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+    return json.loads(raw_content)
+
+def _ai_check_reply_needed(text):
+    # 彻底移除本地暴力兜底，完全依靠 AI 研判
+    prompt = f"判断客户消息是否需要回复。消息: '{text}'\n如果是礼貌结束语(如：好、好的、谢谢、收到、ok等)或无意义，返回false。如果是问题或业务请求，返回true。\nJSON: {{'reason': '...', 'need_reply': true/false}}"
     try:
-        resp = requests.post(url, json=data, headers=headers, timeout=60)
-        if resp.status_code == 200:
-            decision = json.loads(resp.json()['candidates'][0]['content']['parts'][0]['text'])
-            return (decision.get("need_reply", True), decision.get("reason", "AI Decision"))
-    except: pass
+        decision = _gemini_generate_json(prompt)
+        return (decision.get("need_reply", True), decision.get("reason", "AI Decision"))
+    except Exception as e:
+        log_tree(9, f"❌ Gemini直连判断失败: {e}")
     return (True, "⚠️ AI出错，请人工核查")
 
 def _ai_check_orphan_context(target_text, context_text_list, target_label="User"):
@@ -1450,10 +1466,6 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
     
     context_str = "\n".join(context_text_list)
     log_prefix = f"🤖 [AI-Orphan] Text='{target_text[:15]}...' | "
-    
-    proxy_url = AI_PROXY_URL.rstrip('/')
-    url = f"{proxy_url}/v1beta/models/{AI_MODEL_NAME}:generateContent"
-    headers = {'Content-Type': 'application/json'}
     
     # 修复了逻辑反转导致的判断BUG，变量名修改为 is_exempt (是否豁免)
     prompt = f"""
@@ -1474,28 +1486,13 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
     
     请输出 JSON 格式: {{"reason": "用中文简短说明原因...", "is_exempt": true/false}}
     """
-    
-    data = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "response_mime_type": "application/json",
-            "temperature": 0.0
-        }
-    }
-    
+
     try:
-        resp = requests.post(url, json=data, headers=headers, timeout=60)
-        if resp.status_code == 200:
-            res_json = resp.json()
-            raw_content = res_json.get('candidates', [])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
-            decision = json.loads(raw_content)
-            is_exempt = decision.get("is_exempt", False)
-            reason = decision.get("reason", "AI Decision")
-            log_tree(2, log_prefix + f"✅ AI判定: 豁免={is_exempt} | {reason}")
-            return (is_exempt, reason)
-        else:
-            log_tree(9, log_prefix + f"❌ AI HTTP Error {resp.status_code}，标记人工核查")
-            return (False, f"⚠️ AI出错(HTTP {resp.status_code})，请人工核查")
+        decision = _gemini_generate_json(prompt)
+        is_exempt = decision.get("is_exempt", False)
+        reason = decision.get("reason", "AI Decision")
+        log_tree(2, log_prefix + f"✅ AI判定: 豁免={is_exempt} | {reason}")
+        return (is_exempt, reason)
     except Exception as e:
         log_tree(9, log_prefix + f"❌ AI Check Failed: {e}，标记人工核查")
         return (False, f"⚠️ AI出错，请人工核查")
@@ -1561,6 +1558,25 @@ async def check_wait_keyword_logic(keyword, result_queue):
                     history.append(m)
                 
                 if is_all_wait_check_keyword(keyword):
+                    sender_cs_cache = {}
+
+                    async def is_history_cs_message(msg):
+                        sender_id = getattr(msg, "sender_id", None)
+                        if sender_id in ([MY_ID] + OTHER_CS_IDS):
+                            return True
+                        if sender_id in sender_cs_cache:
+                            return sender_cs_cache[sender_id]
+                        is_cs_sender = False
+                        try:
+                            sender = getattr(msg, "sender", None) or await msg.get_sender()
+                            name = getattr(sender, "first_name", "") or ""
+                            is_cs_sender = name.startswith(tuple(CS_NAME_PREFIXES))
+                        except Exception:
+                            is_cs_sender = False
+                        if sender_id:
+                            sender_cs_cache[sender_id] = is_cs_sender
+                        return is_cs_sender
+
                     msg_grouped_map = {}
                     user_msg_map = defaultdict(list)
                     for m in history:
@@ -1569,7 +1585,7 @@ async def check_wait_keyword_logic(keyword, result_queue):
 
                     replied_to_ids = set()
                     for m in history:
-                        if m.reply_to and m.reply_to.reply_to_msg_id:
+                        if await is_history_cs_message(m) and m.reply_to and m.reply_to.reply_to_msg_id:
                             replied_to_ids.add(m.reply_to.reply_to_msg_id)
                     
                     replied_grouped_ids = set()
@@ -1579,19 +1595,10 @@ async def check_wait_keyword_logic(keyword, result_queue):
 
                     orphan_tasks = []
                     for i, m in enumerate(history):
-                        is_cs = False
-                        if m.sender_id in ([MY_ID] + OTHER_CS_IDS): is_cs = True
-                        else:
-                            try:
-                                s = m.sender 
-                                if s and getattr(s, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)): is_cs = True
-                            except: pass
-                        if is_cs: continue
+                        if await is_history_cs_message(m): continue
 
                         if m.sticker or m.gif:
                             continue
-
-                        if m.reply_to and m.reply_to.reply_to_msg_id: continue
 
                         is_orphan = True
                         if m.id in replied_to_ids: is_orphan = False
