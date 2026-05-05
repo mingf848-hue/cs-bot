@@ -746,6 +746,13 @@ def format_caption(tpl):
     res = tpl.replace('{time}', now_str)
     return res
 
+def split_reply_sequence(text):
+    raw = str(text or "")
+    if not raw.strip():
+        return []
+    parts = re.split(r'(?:;;|\\n|\r?\n)+', raw)
+    return [p.strip() for p in parts if p.strip()]
+
 def approval_keyword_matches(text, keywords):
     normalized_text = unicodedata.normalize("NFKC", str(text or "")).strip().lower()
     if not normalized_text:
@@ -1402,18 +1409,21 @@ SETTINGS_HTML = """
                                 </label>
                             </div>
                             <div v-if="rule.enable_approval && rule.approval_action" class="mt-2 space-y-2">
+                                <div class="text-[10px] leading-5 text-blue-700 bg-white border border-blue-100 rounded px-2 py-1">
+                                    审批后流程：领导引用同意 → 引用回复领导 → 转发原始报备 → 引用原始报备回复
+                                </div>
                                 <div class="grid grid-cols-1 gap-2">
                                     <div class="visual-field">
-                                        <div class="visual-label"><i class="fa-solid fa-reply"></i>回复领导引用消息</div>
+                                        <div class="visual-label"><i class="fa-solid fa-reply"></i>同意后回复领导引用消息</div>
                                         <textarea v-model="rule.approval_action.reply_admin" rows="2" class="bento-input w-full px-2 py-1.5 text-[11px] resize-none bg-white border-blue-100" placeholder="请稍等ART"></textarea>
                                     </div>
                                     <div class="approval-grid">
                                         <div class="visual-field">
-                                            <div class="visual-label"><i class="fa-solid fa-share"></i>转发原始报备到群</div>
+                                            <div class="visual-label"><i class="fa-solid fa-share"></i>同意后转发原始报备到群</div>
                                             <input v-model="rule.approval_action.forward_to" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] text-blue-600 bg-white" placeholder="-1001234567890">
                                         </div>
                                         <div class="visual-field">
-                                            <div class="visual-label"><i class="fa-solid fa-reply-all"></i>回复原始报备</div>
+                                            <div class="visual-label"><i class="fa-solid fa-reply-all"></i>同意后回复原始报备</div>
                                             <textarea v-model="rule.approval_action.reply_origin" rows="2" class="bento-input w-full px-2 py-1.5 text-[11px] resize-none bg-white border-blue-100" placeholder="请稍等ART"></textarea>
                                         </div>
                                     </div>
@@ -1499,8 +1509,8 @@ SETTINGS_HTML = """
                                                 <textarea :value="amountPart(reply, 1)" @input="setAmountPart(reply, 1, $event.target.value)" rows="2" class="bento-input w-full px-2 py-1.5 text-[11px] resize-none bg-indigo-50 border-indigo-100" placeholder="金额达到阈值时回复的内容"></textarea>
                                             </div>
                                             <div class="visual-field col-span-2">
-                                                <div class="visual-label"><i class="fa-solid fa-arrow-trend-down"></i>小额回复</div>
-                                                <textarea :value="amountLowLines(reply)" @input="setAmountLowLines(reply, $event.target.value)" rows="3" class="bento-input w-full px-2 py-1.5 text-[11px] resize-none bg-indigo-50 border-indigo-100" placeholder="金额低于阈值时回复，每行一条"></textarea>
+                                                <div class="visual-label"><i class="fa-solid fa-arrow-trend-down"></i>小额回复顺序</div>
+                                                <textarea :value="amountLowLines(reply)" @input="setAmountLowLines(reply, $event.target.value)" rows="3" class="bento-input w-full px-2 py-1.5 text-[11px] resize-none bg-indigo-50 border-indigo-100" placeholder="第一行先回复；转发后再发送第二行起"></textarea>
                                             </div>
                                         </div>
                                     </template>
@@ -1598,15 +1608,16 @@ SETTINGS_HTML = """
                 while (parts.length < 3) parts.push('');
                 return parts.slice(0, 3);
             };
+            const splitReplyLines = (value) => String(value || '').split(/(?:;;|\\\\n|\\r?\\n)+/).map(s => s.trim()).filter(Boolean);
             const amountPart = (reply, index) => splitAmountConfig(reply)[index] || '';
             const setAmountPart = (reply, index, value) => {
                 const parts = splitAmountConfig(reply);
                 parts[index] = value;
                 reply.text = parts.join('|');
             };
-            const amountLowLines = (reply) => amountPart(reply, 2).split(';;').join('\\n');
+            const amountLowLines = (reply) => splitReplyLines(amountPart(reply, 2)).join('\\n');
             const setAmountLowLines = (reply, value) => {
-                const lines = String(value || '').split(/[\\r\\n]+/).map(s => s.trim()).filter(Boolean);
+                const lines = splitReplyLines(value);
                 setAmountPart(reply, 2, lines.join(';;'));
             };
             const normalizeStep = (reply) => {
@@ -2457,15 +2468,20 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                             sent = await target_client.send_message(event.chat_id, format_caption(parts[1]), reply_to=event.id)
                                             remember_sent_message(sent_msgs, event.chat_id, sent)
                                         else:
-                                            for sub_msg in parts[2].split(';;'):
-                                                if sub_msg.strip():
-                                                    sent = await target_client.send_message(event.chat_id, format_caption(sub_msg), reply_to=event.id)
-                                                    remember_sent_message(sent_msgs, event.chat_id, sent)
-                                                    await asyncio.sleep(random.uniform(1.5, 3.0))
+                                            low_replies = split_reply_sequence(parts[2])
+                                            if low_replies:
+                                                sent = await target_client.send_message(event.chat_id, format_caption(low_replies[0]), reply_to=event.id)
+                                                remember_sent_message(sent_msgs, event.chat_id, sent)
                                             if tgt:
                                                 tgt_chat_id = parse_peer_target(tgt)
+                                                if low_replies:
+                                                    await asyncio.sleep(random.uniform(1.5, 3.0))
                                                 fwd_msg = await target_client.forward_messages(tgt_chat_id, event.message)
                                                 remember_sent_message(sent_msgs, tgt_chat_id, fwd_msg)
+                                            for sub_msg in low_replies[1:]:
+                                                await asyncio.sleep(random.uniform(1.5, 3.0))
+                                                sent = await target_client.send_message(event.chat_id, format_caption(sub_msg), reply_to=event.id)
+                                                remember_sent_message(sent_msgs, event.chat_id, sent)
                                     else:
                                         logger.warning(f"⚠️ [Monitor] Amount logic matched text but no specific amount found.")
 
