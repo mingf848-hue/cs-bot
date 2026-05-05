@@ -753,6 +753,19 @@ def split_reply_sequence(text):
     parts = re.split(r'(?:;;|\\n|\r?\n)+', raw)
     return [p.strip() for p in parts if p.strip()]
 
+def random_delay_from_step(step, min_key, max_key, default_min=1.5, default_max=3.0):
+    try:
+        min_val = float(step.get(min_key, default_min))
+    except Exception:
+        min_val = default_min
+    try:
+        max_val = float(step.get(max_key, default_max))
+    except Exception:
+        max_val = default_max
+    if max_val < min_val:
+        min_val, max_val = max_val, min_val
+    return random.uniform(min_val, max_val)
+
 def approval_keyword_matches(text, keywords):
     normalized_text = unicodedata.normalize("NFKC", str(text or "")).strip().lower()
     if not normalized_text:
@@ -1030,6 +1043,20 @@ def load_config(system_cs_prefixes):
             if r.get("type") not in VALID_REPLY_TYPES: r["type"] = "text"
             r["text"] = str(r.get("text", "") or "")
             r["forward_to"] = str(r.get("forward_to", "") or "").strip()
+            if r.get("type") == "amount_logic":
+                amount_delay_defaults = (
+                    ("high_reply_min", r.get("min", 1.0)),
+                    ("high_reply_max", r.get("max", 3.0)),
+                    ("low_first_min", r.get("min", 1.0)),
+                    ("low_first_max", r.get("max", 3.0)),
+                    ("low_forward_min", 1.5),
+                    ("low_forward_max", 3.0),
+                    ("low_reply_min", 1.5),
+                    ("low_reply_max", 3.0),
+                )
+                for key, default in amount_delay_defaults:
+                    try: r[key] = float(r.get(key, default))
+                    except Exception: r[key] = default
             clean_replies.append(r)
         rule["replies"] = clean_replies
 
@@ -1121,6 +1148,20 @@ def save_config(new_config):
                 if r.get("type") not in VALID_REPLY_TYPES: r["type"] = "text"
                 r["text"] = str(r.get("text", "") or "")
                 r["forward_to"] = str(r.get("forward_to", "") or "").strip()
+                if r.get("type") == "amount_logic":
+                    amount_delay_defaults = (
+                        ("high_reply_min", r.get("min", 1.0)),
+                        ("high_reply_max", r.get("max", 3.0)),
+                        ("low_first_min", r.get("min", 1.0)),
+                        ("low_first_max", r.get("max", 3.0)),
+                        ("low_forward_min", 1.5),
+                        ("low_forward_max", 3.0),
+                        ("low_reply_min", 1.5),
+                        ("low_reply_max", 3.0),
+                    )
+                    for key, default in amount_delay_defaults:
+                        try: r[key] = float(r.get(key, default))
+                        except Exception: r[key] = default
                 clean_replies.append(r)
             rule["replies"] = clean_replies
             clean_rules.append(rule)
@@ -1447,11 +1488,15 @@ SETTINGS_HTML = """
                         <div v-if="rule.replies.length === 0" class="text-center py-2 text-[10px] text-slate-300 border border-dashed border-slate-200 rounded font-medium">无动作</div>
                         <div class="space-y-2">
                             <div v-for="(reply, rIndex) in rule.replies" :key="rIndex" class="flow-step group/item">
-                                <div class="delay-box">
+                                <div v-if="reply.type !== 'amount_logic'" class="delay-box">
                                     <input v-model.number="reply.min" placeholder="1">
                                     <div class="w-4 h-px bg-slate-200"></div>
                                     <input v-model.number="reply.max" placeholder="3">
                                     <span class="text-[9px] font-bold">秒</span>
+                                </div>
+                                <div v-else class="delay-box">
+                                    <span class="text-[9px] font-bold text-indigo-500">金额</span>
+                                    <span class="text-[9px] text-slate-400 text-center leading-4">分支<br>延迟</span>
                                 </div>
                                 <div class="step-panel">
                                     <div class="flex items-center gap-2 mb-2">
@@ -1501,8 +1546,24 @@ SETTINGS_HTML = """
                                                 <input :value="amountPart(reply, 0)" @input="setAmountPart(reply, 0, $event.target.value)" class="bento-input w-full px-2 py-1.5 h-8 text-[11px]" placeholder="2000">
                                             </div>
                                             <div class="visual-field">
+                                                <div class="visual-label"><i class="fa-regular fa-clock"></i>大额回复延迟</div>
+                                                <div class="approval-delay"><input type="number" v-model.number="reply.high_reply_min" class="bento-input h-7 px-1"><span class="text-center text-slate-400">-</span><input type="number" v-model.number="reply.high_reply_max" class="bento-input h-7 px-1"></div>
+                                            </div>
+                                            <div class="visual-field">
+                                                <div class="visual-label"><i class="fa-regular fa-clock"></i>小额首句延迟</div>
+                                                <div class="approval-delay"><input type="number" v-model.number="reply.low_first_min" class="bento-input h-7 px-1"><span class="text-center text-slate-400">-</span><input type="number" v-model.number="reply.low_first_max" class="bento-input h-7 px-1"></div>
+                                            </div>
+                                            <div class="visual-field">
                                                 <div class="visual-label"><i class="fa-solid fa-share"></i>小额转发群</div>
                                                 <input v-model="reply.forward_to" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] text-blue-600" placeholder="-1001234567890">
+                                            </div>
+                                            <div class="visual-field">
+                                                <div class="visual-label"><i class="fa-regular fa-clock"></i>小额转发延迟</div>
+                                                <div class="approval-delay"><input type="number" v-model.number="reply.low_forward_min" class="bento-input h-7 px-1"><span class="text-center text-slate-400">-</span><input type="number" v-model.number="reply.low_forward_max" class="bento-input h-7 px-1"></div>
+                                            </div>
+                                            <div class="visual-field">
+                                                <div class="visual-label"><i class="fa-regular fa-clock"></i>小额后续回复延迟</div>
+                                                <div class="approval-delay"><input type="number" v-model.number="reply.low_reply_min" class="bento-input h-7 px-1"><span class="text-center text-slate-400">-</span><input type="number" v-model.number="reply.low_reply_max" class="bento-input h-7 px-1"></div>
                                             </div>
                                             <div class="visual-field col-span-2">
                                                 <div class="visual-label"><i class="fa-solid fa-arrow-trend-up"></i>大额回复</div>
@@ -1601,7 +1662,15 @@ SETTINGS_HTML = """
                 text: rep.text || '',
                 forward_to: rep.forward_to || '',
                 min: rep.min ?? 1,
-                max: rep.max ?? 3
+                max: rep.max ?? 3,
+                high_reply_min: rep.high_reply_min ?? rep.min ?? 1,
+                high_reply_max: rep.high_reply_max ?? rep.max ?? 3,
+                low_first_min: rep.low_first_min ?? rep.min ?? 1,
+                low_first_max: rep.low_first_max ?? rep.max ?? 3,
+                low_forward_min: rep.low_forward_min ?? 1.5,
+                low_forward_max: rep.low_forward_max ?? 3,
+                low_reply_min: rep.low_reply_min ?? 1.5,
+                low_reply_max: rep.low_reply_max ?? 3
             });
             const splitAmountConfig = (reply) => {
                 const parts = String(reply.text || '').split('|');
@@ -1627,6 +1696,14 @@ SETTINGS_HTML = """
                 if (reply.max === undefined || reply.max === null || reply.max === '') reply.max = 3;
                 if (reply.type === 'amount_logic') {
                     reply.text = splitAmountConfig(reply).join('|');
+                    reply.high_reply_min = reply.high_reply_min ?? reply.min ?? 1;
+                    reply.high_reply_max = reply.high_reply_max ?? reply.max ?? 3;
+                    reply.low_first_min = reply.low_first_min ?? reply.min ?? 1;
+                    reply.low_first_max = reply.low_first_max ?? reply.max ?? 3;
+                    reply.low_forward_min = reply.low_forward_min ?? 1.5;
+                    reply.low_forward_max = reply.low_forward_max ?? 3;
+                    reply.low_reply_min = reply.low_reply_min ?? 1.5;
+                    reply.low_reply_max = reply.low_reply_max ?? 3;
                 }
             };
             const addStep = (rule) => {
@@ -2436,8 +2513,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     preempted = False
                     try:
                         for step in rule.get("replies", []):
-                            await asyncio.sleep(random.uniform(step.get("min", 1), step.get("max", 3)))
                             stype = step.get("type", "text")
+                            if stype != "amount_logic":
+                                await asyncio.sleep(random.uniform(step.get("min", 1), step.get("max", 3)))
 
                             if stype == "forward":
                                 tgt = step.get("forward_to")
@@ -2465,21 +2543,23 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                     if found:
                                         logger.info(f"💰 [Amount] 识别到金额: {amt}")
                                         if amt >= thresh:
+                                            await asyncio.sleep(random_delay_from_step(step, "high_reply_min", "high_reply_max", step.get("min", 1), step.get("max", 3)))
                                             sent = await target_client.send_message(event.chat_id, format_caption(parts[1]), reply_to=event.id)
                                             remember_sent_message(sent_msgs, event.chat_id, sent)
                                         else:
                                             low_replies = split_reply_sequence(parts[2])
                                             if low_replies:
+                                                await asyncio.sleep(random_delay_from_step(step, "low_first_min", "low_first_max", step.get("min", 1), step.get("max", 3)))
                                                 sent = await target_client.send_message(event.chat_id, format_caption(low_replies[0]), reply_to=event.id)
                                                 remember_sent_message(sent_msgs, event.chat_id, sent)
                                             if tgt:
                                                 tgt_chat_id = parse_peer_target(tgt)
                                                 if low_replies:
-                                                    await asyncio.sleep(random.uniform(1.5, 3.0))
+                                                    await asyncio.sleep(random_delay_from_step(step, "low_forward_min", "low_forward_max"))
                                                 fwd_msg = await target_client.forward_messages(tgt_chat_id, event.message)
                                                 remember_sent_message(sent_msgs, tgt_chat_id, fwd_msg)
                                             for sub_msg in low_replies[1:]:
-                                                await asyncio.sleep(random.uniform(1.5, 3.0))
+                                                await asyncio.sleep(random_delay_from_step(step, "low_reply_min", "low_reply_max"))
                                                 sent = await target_client.send_message(event.chat_id, format_caption(sub_msg), reply_to=event.id)
                                                 remember_sent_message(sent_msgs, event.chat_id, sent)
                                     else:
