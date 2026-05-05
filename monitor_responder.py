@@ -1957,10 +1957,14 @@ def get_monitor_settings_html():
     template_path = os.path.join(os.path.dirname(__file__), "templates", "monitor_settings.html")
     try:
         with open(template_path, "r", encoding="utf-8") as f:
-            return f.read()
+            html = f.read()
+        required_markers = ("</html>", "createApp", 'id="app"', "monitor_settings_json")
+        if all(marker in html for marker in required_markers):
+            return html
+        logger.error(f"❌ [Monitor UI] 新版控制面板模板不完整，使用内置旧版: {template_path}, size={len(html)}")
     except Exception as e:
         logger.error(f"❌ [Monitor UI] 无法加载新版控制面板模板，使用内置旧版: {e}")
-        return SETTINGS_HTML
+    return SETTINGS_HTML
 
 async def analyze_message(client, rule, event, other_cs_ids, sender_obj, check_cooldown=True):
     if not rule.get("enabled", True): 
