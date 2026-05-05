@@ -1497,6 +1497,59 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
         log_tree(9, log_prefix + f"❌ AI Check Failed: {e}，标记人工核查")
         return (False, f"⚠️ AI出错，请人工核查")
 
+def _ai_check_orphan_batch(batch_items):
+    if not batch_items:
+        return {}
+
+    items_payload = []
+    for item in batch_items:
+        items_payload.append({
+            "id": str(item["id"]),
+            "target_sender": item["target_label"],
+            "target_message": item["target_text"],
+            "context": item["context_txts"],
+        })
+
+    prompt = f"""
+    你是一名经验丰富的客服质检员。
+    请批量判断下面这些【目标消息】是否需要客服继续回复（即是否属于“客服漏回”的事故）。
+
+    判断规则：
+    - 豁免无需回复 (is_exempt=true): 如果目标消息是连续发言补充、无意义语气词、礼貌结束语，或者上下文中客服已经明显针对同一事件/话题给出明确最终处理结果。
+    - 属于漏回需回复 (is_exempt=false): 如果目标消息是被忽视的独立业务请求、问题、报错反馈或催促，且上下文没有客服明确最终处理结果。
+    - “稍等 / 核实中 / 处理中”只是安抚，不等于最终处理结果。
+    - 聊天记录中的“[使用了引用回复]”代表该消息引用了别人，但只有客服针对同一事件给出明确最终结果才算闭环。
+
+    待判断项目 JSON：
+    {json.dumps(items_payload, ensure_ascii=False)}
+
+    请只输出 JSON 对象，格式如下：
+    {{
+      "results": [
+        {{"id": "原 id", "is_exempt": true/false, "reason": "中文简短原因"}}
+      ]
+    }}
+    """
+
+    try:
+        decision = _gemini_generate_json(prompt, timeout=90)
+        results = {}
+        for row in decision.get("results", []):
+            item_id = str(row.get("id", "")).strip()
+            if not item_id:
+                continue
+            results[item_id] = (
+                bool(row.get("is_exempt", False)),
+                str(row.get("reason", "AI Decision"))
+            )
+        if len(results) < len(batch_items):
+            missing = len(batch_items) - len(results)
+            log_tree(9, f"❌ [AI-Batch] 批量结果缺失 {missing} 条，将缺失项标记人工核查")
+        return results
+    except Exception as e:
+        log_tree(9, f"❌ [AI-Batch] 批量判定失败: {e}")
+        return {}
+
 async def _check_is_closed_logic(latest_msg):
     is_closed = False
     reason = ""
@@ -1611,11 +1664,8 @@ async def check_wait_keyword_logic(keyword, result_queue):
                     if orphan_tasks:
                         result_queue.put(json.dumps({"type": "progress", "percent": percent, "msg": f"群组 {chat_id} 发现 {len(orphan_tasks)} 条潜在漏回消息，正在排队进行 AI 深度研判..."}))
 
-                    for orphan_idx, (i, m) in enumerate(orphan_tasks):
-                        # 核心修复 4: 每完成 5 条 AI 判定推送一次进度
-                        if orphan_idx > 0 and orphan_idx % 5 == 0:
-                            result_queue.put(json.dumps({"type": "progress", "percent": percent, "msg": f"群组 {chat_id} AI 深度研判中 (进度: {orphan_idx}/{len(orphan_tasks)})..."}))
-
+                    batch_inputs = []
+                    for i, m in orphan_tasks:
                         start = max(0, i - 30) 
                         end = min(len(history), i + 15)
                         context_slice = history[start:end]
@@ -1654,23 +1704,7 @@ async def check_wait_keyword_logic(keyword, result_queue):
                                 
                             beijing_time_str = cm.date.astimezone(timezone(timedelta(hours=8))).strftime('%H:%M:%S')
                             context_txts.append(f"[{beijing_time_str}] {c_label}{reply_tag}: {c_txt}{marker}")
-                        
-                        # 返回的变成了 is_exempt(是否豁免), 不再是倒错逻辑的 is_slip_up
-                        is_exempt, ai_reason = await asyncio.get_event_loop().run_in_executor(
-                            None, lambda: _ai_check_orphan_context(m.text or "[Media]", context_txts, target_label)
-                        )
-                        
-                        found_count += 1
-                        
-                        # 核心修复：强制透传展示 AI 判定结果，不论真假
-                        if is_exempt:
-                            is_result_closed = True
-                            closed_count += 1
-                            display_reason = f"AI判定(豁免): {ai_reason}"
-                        else:
-                            is_result_closed = False
-                            display_reason = f"AI判定(漏回): {ai_reason}"
-                        
+
                         group_name = str(chat_id)
                         try: g = await client.get_entity(chat_id); group_name = g.title
                         except: pass
@@ -1679,17 +1713,56 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         beijing_time = m.date.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
                         real_chat_id = str(chat_id).replace('-100', '')
                         link = f"https://t.me/c/{real_chat_id}/{m.id}"
-                        
+
+                        batch_inputs.append({
+                            "id": m.id,
+                            "target_text": m.text or "[Media]",
+                            "target_label": target_label,
+                            "context_txts": context_txts,
+                            "result_payload": {
+                                "type": "result",
+                                "time": beijing_time,
+                                "group_name": group_name,
+                                "found_text": safe_text,
+                                "latest_text": "无人引用回复",
+                                "link": link
+                            }
+                        })
+
+                    batch_size = 8
+                    for batch_start in range(0, len(batch_inputs), batch_size):
+                        batch = batch_inputs[batch_start:batch_start + batch_size]
                         result_queue.put(json.dumps({
-                            "type": "result",
-                            "is_closed": is_result_closed,
-                            "reason": display_reason,
-                            "time": beijing_time,
-                            "group_name": group_name,
-                            "found_text": safe_text,
-                            "latest_text": "无人引用回复",
-                            "link": link
+                            "type": "progress",
+                            "percent": percent,
+                            "msg": f"群组 {chat_id} AI 批量研判中 (进度: {batch_start}/{len(batch_inputs)})..."
                         }))
+
+                        batch_results = await asyncio.get_event_loop().run_in_executor(
+                            None, lambda b=batch: _ai_check_orphan_batch(b)
+                        )
+
+                        for item in batch:
+                            is_exempt, ai_reason = batch_results.get(
+                                str(item["id"]),
+                                (False, "⚠️ AI批量结果缺失，请人工核查")
+                            )
+
+                            found_count += 1
+                            if is_exempt:
+                                is_result_closed = True
+                                closed_count += 1
+                                display_reason = f"AI判定(豁免): {ai_reason}"
+                            else:
+                                is_result_closed = False
+                                display_reason = f"AI判定(漏回): {ai_reason}"
+
+                            payload = dict(item["result_payload"])
+                            payload.update({
+                                "is_closed": is_result_closed,
+                                "reason": display_reason
+                            })
+                            result_queue.put(json.dumps(payload))
                             
                     continue 
 
