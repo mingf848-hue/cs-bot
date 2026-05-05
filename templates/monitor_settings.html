@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -98,3 +99,1984 @@
         .brand-version { color: var(--primary); font-size: 15px; font-weight: 650; border-left: 1px solid #cfd6e4; padding-left: 8px; }
 
         .nav-list { display: flex; flex-direction: column; gap: 8px; }
+        .nav-item {
+            height: 46px;
+            border-radius: 8px;
+            color: #536078;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 0 14px;
+            font-weight: 650;
+            transition: background .18s ease, color .18s ease, transform .18s ease;
+        }
+
+        .nav-item:hover { background: #f2f5fb; transform: translateX(2px); }
+        .nav-item.active { color: var(--primary); background: linear-gradient(90deg, var(--primary-soft), rgba(255,255,255,.62)); }
+        .nav-item.active svg { color: var(--primary); }
+
+        .plan-card {
+            margin-top: auto;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 16px;
+            background: rgba(255,255,255,.74);
+            box-shadow: var(--shadow-soft);
+        }
+
+        .plan-title { font-size: 16px; font-weight: 780; display: flex; align-items: center; gap: 8px; }
+        .plan-badge { color: var(--primary); background: var(--primary-soft); border-radius: 6px; padding: 3px 7px; font-size: 12px; font-weight: 760; }
+        .plan-meta { color: var(--muted); margin-top: 10px; font-size: 13px; }
+        .plan-link { margin-top: 12px; color: var(--primary); font-weight: 760; }
+        .collapse-link { height: 42px; border-top: 1px solid var(--line); display: flex; align-items: center; gap: 10px; color: var(--muted); padding-left: 12px; }
+
+        .main { min-width: 0; display: flex; flex-direction: column; }
+        .topbar {
+            height: 68px;
+            padding: 0 26px 0 34px;
+            background: rgba(255,255,255,.82);
+            border-bottom: 1px solid var(--line);
+            backdrop-filter: blur(18px);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 20px;
+            position: sticky;
+            top: 0;
+            z-index: 20;
+        }
+
+        .env-pill, .search-box, .icon-btn, .more-btn, .primary-btn, .ghost-btn, .tiny-btn {
+            min-height: 44px;
+            border-radius: 8px;
+            border: 1px solid var(--line);
+            background: rgba(255,255,255,.86);
+            box-shadow: 0 1px 0 rgba(20, 32, 51, .02);
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .env-pill { padding: 0 14px; font-weight: 760; }
+        .status-dot { width: 10px; height: 10px; border-radius: 999px; background: var(--green); box-shadow: 0 0 0 4px rgba(35, 163, 107, .12); }
+
+        .top-actions { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+        .search-box { width: 205px; padding: 0 12px; color: var(--subtle); }
+        .search-box input { width: 100%; border: 0; outline: 0; background: transparent; min-width: 0; }
+        .icon-btn { width: 44px; justify-content: center; color: #536078; }
+        .more-btn { padding: 0 16px; font-weight: 720; }
+        .primary-btn { padding: 0 18px; color: #fff; background: linear-gradient(135deg, #756bff, #4f46e5); border-color: transparent; font-weight: 780; box-shadow: 0 12px 24px rgba(99, 91, 255, .26); }
+        .ghost-btn { padding: 0 14px; color: #536078; font-weight: 700; }
+        .tiny-btn { min-height: 34px; padding: 0 10px; font-size: 13px; font-weight: 700; color: #536078; }
+
+        .avatar {
+            width: 28px;
+            height: 28px;
+            border-radius: 999px;
+            border: 2px solid #d8d3ff;
+            color: var(--primary);
+            display: grid;
+            place-items: center;
+            font-weight: 780;
+        }
+
+        .content {
+            padding: 20px 26px 28px 20px;
+            display: grid;
+            grid-template-columns: minmax(320px, 395px) minmax(520px, 1fr) minmax(330px, 455px);
+            gap: 16px;
+            align-items: start;
+        }
+
+        .stats-row {
+            grid-column: 1 / -1;
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(0, 1.45fr);
+            gap: 14px;
+            align-items: center;
+        }
+
+        .stat-actions {
+            align-self: start;
+            justify-self: end;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding-top: 8px;
+        }
+
+        .stat-card {
+            height: 104px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: rgba(255,255,255,.88);
+            box-shadow: var(--shadow-soft);
+            display: grid;
+            grid-template-columns: 58px minmax(0, 1fr);
+            gap: 14px;
+            align-items: center;
+            padding: 18px 22px;
+        }
+
+        .stat-icon {
+            width: 58px;
+            height: 58px;
+            border-radius: 8px;
+            display: grid;
+            place-items: center;
+            color: var(--primary);
+            background: linear-gradient(135deg, #f1edff, #e5e0ff);
+        }
+
+        .stat-icon.green { color: var(--green); background: linear-gradient(135deg, #eaf9f1, #dcf5e8); }
+        .stat-label { color: #5f6b81; font-weight: 690; font-size: 13px; }
+        .stat-value { font-size: 28px; line-height: 1.1; font-weight: 800; margin-top: 4px; }
+        .stat-sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
+        .stat-up { color: var(--green); font-weight: 760; }
+
+        .panel {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: rgba(255,255,255,.9);
+            box-shadow: var(--shadow-soft);
+            overflow: hidden;
+        }
+
+        .panel-head {
+            min-height: 54px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+            padding: 0 14px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .panel-title { display: flex; align-items: center; gap: 9px; font-weight: 800; font-size: 17px; min-width: 0; }
+        .rule-id { color: var(--muted); font-size: 13px; font-weight: 600; display: flex; gap: 8px; align-items: center; white-space: nowrap; min-width: 0; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+        .rule-id span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+        .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+        .rule-list-panel { min-height: calc(100vh - 188px); }
+        .list-tools { padding: 14px; border-bottom: 1px solid var(--line); display: grid; gap: 12px; }
+        .rule-search {
+            height: 40px;
+            border-radius: 8px;
+            border: 1px solid var(--line);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 0 12px;
+            color: var(--subtle);
+            background: #fff;
+        }
+
+        .rule-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; }
+        .filter-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+        .chip {
+            min-height: 36px;
+            padding: 0 13px;
+            border-radius: 8px;
+            border: 1px solid var(--line);
+            background: #fff;
+            color: #536078;
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            white-space: nowrap;
+            font-weight: 710;
+        }
+
+        .chip.active { color: var(--primary); border-color: #c8c1ff; background: var(--primary-soft); }
+        .count { min-width: 21px; height: 21px; border-radius: 999px; display: grid; place-items: center; background: #eef2f8; color: #63708a; font-size: 12px; font-weight: 790; padding: 0 6px; }
+        .chip.active .count { color: var(--primary); background: #dfdbff; }
+
+        .rule-list { padding: 12px; display: grid; gap: 10px; max-height: calc(100vh - 365px); overflow: auto; }
+        .rule-card {
+            min-height: 112px;
+            border-radius: 8px;
+            border: 1px solid var(--line);
+            background: #fff;
+            padding: 16px;
+            display: grid;
+            grid-template-columns: 12px minmax(0, 1fr) auto;
+            gap: 12px;
+            align-items: center;
+            cursor: pointer;
+            transition: border .18s ease, box-shadow .18s ease, transform .18s ease, background .18s ease;
+        }
+
+        .rule-card:hover { border-color: #cfd6ff; box-shadow: var(--shadow-soft); transform: translateY(-1px); }
+        .rule-card:focus-visible { outline: 3px solid rgba(99, 91, 255, .18); outline-offset: 2px; }
+        .rule-card.selected { border-color: var(--primary); background: linear-gradient(180deg, #fff, #f8f7ff); box-shadow: 0 12px 30px rgba(99, 91, 255, .12); }
+        .drag-dots { color: #9aa5b8; display: grid; gap: 3px; }
+        .drag-dots span { width: 4px; height: 4px; border-radius: 999px; background: currentColor; }
+        .rule-name { font-weight: 800; font-size: 16px; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .rule-meta { color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+        .tag-row { display: flex; gap: 7px; margin-top: 10px; flex-wrap: wrap; }
+        .tag { min-height: 24px; border-radius: 6px; background: #f0f3f8; color: #536078; padding: 3px 8px; font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; gap: 5px; }
+        .status-badge { height: 26px; border-radius: 7px; padding: 0 9px; display: inline-flex; align-items: center; color: var(--green); background: var(--green-soft); font-weight: 760; font-size: 12px; }
+        .status-badge.disabled { color: #748094; background: #eef1f6; }
+        .status-badge.draft { color: #b36b00; background: #fff5df; }
+
+        .switch {
+            width: 34px;
+            height: 20px;
+            border-radius: 999px;
+            background: #d7deea;
+            position: relative;
+            transition: background .18s ease;
+            flex: 0 0 auto;
+            border: 0;
+            padding: 0;
+            cursor: pointer;
+        }
+
+        .switch::after {
+            content: "";
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            left: 2px;
+            top: 2px;
+            border-radius: 999px;
+            background: #fff;
+            box-shadow: 0 2px 8px rgba(18, 27, 44, .18);
+            transition: transform .18s ease;
+        }
+
+        .switch.on { background: var(--primary); }
+        .switch.on::after { transform: translateX(14px); }
+        .switch:disabled { cursor: wait; opacity: .72; }
+
+        .list-footer { padding: 12px; border-top: 1px solid var(--line); }
+        .add-rule-btn {
+            width: 100%;
+            min-height: 42px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 9px;
+            color: #536078;
+            font-weight: 760;
+        }
+
+        .editor-panel { min-height: calc(100vh - 188px); }
+        .editor-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+        .editor-title { display: grid; grid-template-columns: auto minmax(120px, 1fr) auto; align-items: center; gap: 8px; min-width: 0; }
+        .editor-label { white-space: nowrap; color: #536078; font-weight: 760; }
+        .editor-title .status-badge { white-space: nowrap; justify-self: start; }
+        .editor-title input {
+            min-width: 0;
+            width: 100%;
+            border: 0;
+            outline: 0;
+            font-size: 17px;
+            font-weight: 800;
+            background: transparent;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .tabs {
+            height: 45px;
+            padding: 0 16px;
+            display: flex;
+            align-items: flex-end;
+            gap: 26px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .tab {
+            min-height: 44px;
+            color: #536078;
+            font-weight: 760;
+            position: relative;
+        }
+
+        .tab.active { color: var(--primary); }
+        .tab.active::after {
+            content: "";
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: -1px;
+            height: 3px;
+            border-radius: 3px 3px 0 0;
+            background: var(--primary);
+        }
+
+        .editor-body { padding: 18px; display: grid; gap: 18px; }
+        .section { display: grid; gap: 12px; }
+        .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+        .section-title { font-size: 16px; font-weight: 820; }
+        .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+        .form-grid.three { grid-template-columns: 1fr 1fr 1fr; }
+        .field { display: grid; gap: 7px; min-width: 0; }
+        .field.full { grid-column: 1 / -1; }
+        .label-row { min-height: 20px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        label, .field-label { color: #536078; font-size: 13px; font-weight: 720; }
+        .hint { color: var(--subtle); font-size: 12px; }
+        .input, .textarea, .select {
+            width: 100%;
+            min-height: 40px;
+            border: 1px solid var(--line-strong);
+            border-radius: 8px;
+            background: #fff;
+            outline: 0;
+            padding: 0 13px;
+            transition: border .16s ease, box-shadow .16s ease, background .16s ease;
+        }
+
+        .textarea { min-height: 72px; padding: 10px 13px; resize: vertical; line-height: 1.55; }
+        .input:focus, .textarea:focus, .select:focus { border-color: #aaa2ff; box-shadow: 0 0 0 4px rgba(99, 91, 255, .11); }
+        .select { appearance: none; background: #fff; }
+
+        .inline-check {
+            min-height: 40px;
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            color: #536078;
+            font-weight: 720;
+        }
+
+        .checkbox {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--primary);
+        }
+
+        .token-editor {
+            min-height: 40px;
+            border: 1px solid var(--line-strong);
+            border-radius: 8px;
+            padding: 6px 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            background: #fff;
+        }
+
+        .token {
+            min-height: 26px;
+            border-radius: 7px;
+            padding: 0 8px;
+            background: #eef2f8;
+            color: #4e5a70;
+            font-size: 12px;
+            font-weight: 720;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .token-input { flex: 1; min-width: 160px; border: 0; outline: 0; min-height: 28px; }
+
+        .cooldown-row { display: grid; grid-template-columns: 42px 70px 42px minmax(0, 1fr); gap: 0; align-items: center; }
+        .stepper-btn { height: 40px; border: 1px solid var(--line-strong); background: #f8fafc; display: grid; place-items: center; }
+        .stepper-btn:first-child { border-radius: 8px 0 0 8px; }
+        .stepper-btn:nth-child(3) { border-radius: 0 8px 8px 0; }
+        .cooldown-input { height: 40px; border: 1px solid var(--line-strong); border-left: 0; border-right: 0; text-align: center; outline: 0; }
+
+        .flow-list { display: grid; gap: 10px; }
+        .flow-item {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: #fff;
+            padding: 10px;
+            display: grid;
+            grid-template-columns: 58px minmax(0, 1fr) 32px;
+            gap: 12px;
+            align-items: start;
+            transition: border .16s ease, box-shadow .16s ease;
+        }
+
+        .flow-item:hover { border-color: #cfd6ff; box-shadow: 0 10px 26px rgba(28,39,64,.06); }
+        .delay-pill {
+            display: grid;
+            place-items: center;
+            color: var(--primary);
+            font-weight: 790;
+        }
+
+        .delay-circle {
+            width: 28px;
+            height: 28px;
+            border-radius: 999px;
+            border: 1px solid var(--primary);
+            display: grid;
+            place-items: center;
+            margin-bottom: 4px;
+            background: #fff;
+        }
+
+        .delay-text { color: #657187; font-size: 12px; font-weight: 700; }
+        .flow-main { display: grid; gap: 7px; min-width: 0; }
+        .flow-top { display: grid; grid-template-columns: minmax(165px, .36fr) minmax(0, 1fr); gap: 12px; }
+        .step-menu { width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; color: #536078; }
+        .step-menu:hover { background: #f2f5fb; }
+        .delay-grid { display: grid; grid-template-columns: 1fr 12px 1fr; gap: 5px; align-items: center; }
+        .delay-grid .input { text-align: center; padding: 0 6px; }
+        .field-card { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fbfcff; display: grid; gap: 8px; }
+        .flow-item .field { gap: 5px; }
+        .flow-item .input, .flow-item .select { min-height: 36px; }
+        .flow-item .textarea { min-height: 54px; }
+
+        .preview-panel { min-height: calc(100vh - 188px); }
+        .preview-body { padding: 14px; display: grid; gap: 14px; }
+        .preview-card { border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 14px; }
+        .preview-title { font-weight: 820; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        .live-badge { min-height: 24px; border-radius: 999px; padding: 0 9px; background: var(--green-soft); color: var(--green); font-size: 12px; font-weight: 780; display: inline-flex; align-items: center; gap: 6px; }
+        .timeline { display: grid; gap: 0; }
+        .timeline-row { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 10px; padding: 0 0 14px; position: relative; }
+        .timeline-row:not(:last-child)::before { content: ""; position: absolute; left: 13px; top: 28px; bottom: 0; width: 1px; background: #d9defc; }
+        .timeline-dot { width: 28px; height: 28px; border-radius: 999px; border: 1px solid var(--primary); color: var(--primary); background: #fff; display: grid; place-items: center; font-size: 12px; font-weight: 820; z-index: 1; }
+        .timeline-dot.event { color: #fff; background: var(--primary); box-shadow: 0 0 0 4px rgba(99,91,255,.12); }
+        .timeline-name { font-weight: 800; }
+        .timeline-desc { color: var(--muted); font-size: 13px; margin-top: 3px; white-space: pre-line; }
+        .timeline-delay { color: #657187; font-size: 12px; font-weight: 700; white-space: nowrap; }
+
+        .metrics-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+        .metric-tile { border: 1px solid var(--line); border-radius: 8px; min-height: 62px; padding: 9px; }
+        .metric-label { color: var(--muted); font-size: 12px; }
+        .metric-value { font-weight: 820; font-size: 18px; margin-top: 4px; }
+        .chart { width: 100%; height: 100px; margin-top: 8px; }
+        .bar-chart { display: flex; align-items: end; gap: 5px; padding: 14px 6px 0; border-bottom: 1px solid var(--line); }
+        .bar { flex: 1; min-width: 4px; min-height: 2px; border-radius: 5px 5px 0 0; background: linear-gradient(180deg, #756bff, #25a36b); }
+        .records { display: grid; gap: 10px; }
+        .record { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 9px; align-items: center; color: var(--muted); font-size: 13px; }
+        .record.rich { grid-template-columns: 22px minmax(0, 1fr) auto; align-items: start; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fff; }
+        .record.rich strong { display: block; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .record.rich em { display: block; margin-top: 3px; font-style: normal; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .record.good svg { color: var(--green); }
+        .record.bad svg { color: var(--red); }
+        .record.skip svg { color: #b36b00; }
+        .record-status { font-weight: 780; }
+        .record.good .record-status, .record-status.good { color: var(--green); }
+        .record.bad .record-status, .record-status.bad { color: var(--red); }
+        .record.skip .record-status, .record-status.skip { color: #b36b00; }
+        .empty-inline { min-height: 42px; display: grid; place-items: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; font-size: 13px; }
+        .inline-link { color: var(--primary); font-weight: 760; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
+
+        .page-wide { grid-column: 1 / -1; min-width: 0; }
+        .page-panel { min-height: calc(100vh - 188px); }
+        .page-card { min-width: 0; }
+        .page-body { padding: 16px; display: grid; gap: 16px; }
+        .dashboard-grid, .resource-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(320px, .75fr); gap: 16px; align-items: start; }
+        .resource-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .span-2 { grid-row: span 2; }
+        .metrics-grid.wide { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+        .hour-bars { height: 178px; display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 5px; align-items: end; padding: 12px 4px 0; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+        .hour-bars.tall { height: 230px; }
+        .hour-cell { height: 100%; min-width: 0; display: flex; flex-direction: column; justify-content: end; align-items: center; gap: 7px; color: var(--subtle); font-size: 10px; }
+        .hour-bar { width: 100%; min-height: 2px; border-radius: 6px 6px 0 0; background: linear-gradient(180deg, var(--primary), #23a36b); box-shadow: inset 0 -1px 0 rgba(0,0,0,.08); }
+        .rank-list { gap: 12px; }
+        .rank-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(100px, 180px) 42px; gap: 10px; align-items: center; font-size: 13px; color: var(--muted); }
+        .rank-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 740; }
+        .rank-track { height: 8px; border-radius: 999px; background: #eef2f8; overflow: hidden; }
+        .rank-track b { height: 100%; display: block; border-radius: inherit; background: linear-gradient(90deg, var(--primary), #23a36b); }
+        .account-list { display: grid; gap: 10px; }
+        .account-list.cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .account-row { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fff; display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 11px; align-items: center; }
+        .avatar.small { width: 34px; height: 34px; font-size: 13px; }
+        .account-row strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .account-row span { color: var(--muted); font-size: 12px; }
+        .account-row em { font-style: normal; color: var(--red); font-weight: 780; }
+        .account-row em.ok { color: var(--green); }
+        .records-toolbar { display: grid; grid-template-columns: minmax(260px, 420px) minmax(0, 1fr); gap: 12px; align-items: center; }
+        .record-table { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #fff; }
+        .table-head, .table-row { display: grid; grid-template-columns: 130px 100px minmax(160px, 1fr) 130px 90px minmax(180px, 1.2fr); gap: 12px; align-items: center; padding: 12px 14px; }
+        .table-head { color: var(--muted); background: #f8fafc; font-size: 12px; font-weight: 790; }
+        .table-row { min-height: 52px; border-top: 1px solid var(--line); color: #536078; font-size: 13px; }
+        .table-row span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .settings-grid .section { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: #fff; }
+        .input.full { grid-column: 1 / -1; }
+        .file-picker { display: flex; align-items: center; gap: 8px; min-width: 0; }
+        .file-picker.full { grid-column: 1 / -1; }
+        .sr-file { display: none; }
+        .file-button {
+            min-height: 40px;
+            min-width: 0;
+            flex: 1 1 auto;
+            border: 1px solid var(--line-strong);
+            border-radius: 8px;
+            background: #fff;
+            color: #536078;
+            display: inline-flex;
+            align-items: center;
+            gap: 9px;
+            padding: 0 12px;
+            cursor: pointer;
+            font-weight: 720;
+        }
+        .file-button:hover { border-color: #aaa2ff; background: #fbfaff; }
+        .file-button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .file-clear {
+            width: 40px;
+            min-height: 40px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            color: var(--red);
+            background: var(--red-soft);
+            display: grid;
+            place-items: center;
+            flex: 0 0 auto;
+        }
+        .save-hint { color: var(--primary); font-size: 12px; font-weight: 760; white-space: nowrap; }
+
+        .ops-popover {
+            position: fixed;
+            top: 76px;
+            right: 148px;
+            width: min(520px, calc(100vw - 32px));
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: rgba(255,255,255,.98);
+            box-shadow: var(--shadow);
+            z-index: 30;
+            overflow: hidden;
+        }
+
+        .ops-head { min-height: 52px; border-bottom: 1px solid var(--line); padding: 0 14px; display: flex; align-items: center; justify-content: space-between; font-weight: 820; }
+        .ops-body { padding: 14px; display: grid; gap: 14px; }
+        .toast {
+            position: fixed;
+            right: 24px;
+            bottom: 24px;
+            z-index: 60;
+            min-height: 46px;
+            padding: 0 16px;
+            border-radius: 8px;
+            background: #172033;
+            color: #fff;
+            box-shadow: var(--shadow);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            transform: translateY(18px);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity .2s ease, transform .2s ease;
+        }
+
+        .toast.show { opacity: 1; transform: translateY(0); }
+        .toast.error { background: #821f35; }
+
+        .empty-state { border: 1px dashed var(--line-strong); border-radius: 8px; min-height: 140px; display: grid; place-items: center; text-align: center; color: var(--muted); padding: 18px; }
+        .mobile-bar { display: none; }
+        .mobile-nav { display: none; grid-column: 1 / -1; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+        .mobile-nav .chip { flex: 0 0 auto; }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { transition: none !important; animation: none !important; }
+        }
+
+        @media (max-width: 1280px) {
+            .content { grid-template-columns: minmax(300px, 360px) minmax(0, 1fr); }
+            .preview-panel { grid-column: 1 / -1; }
+            .stats-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .stat-actions { grid-column: 1 / -1; }
+            .dashboard-grid, .resource-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .span-2 { grid-row: auto; grid-column: 1 / -1; }
+            .table-head, .table-row { grid-template-columns: 120px 88px minmax(130px, 1fr) 110px 78px minmax(160px, 1fr); }
+        }
+
+        @media (max-width: 900px) {
+            .app-shell { grid-template-columns: 1fr; }
+            .sidebar { display: none; }
+            .mobile-bar { display: flex; height: 58px; align-items: center; justify-content: space-between; padding: 0 14px; background: #fff; border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 24; }
+            .topbar { top: 58px; padding: 10px 14px; height: auto; flex-wrap: wrap; }
+            .top-actions { width: 100%; justify-content: space-between; flex-wrap: wrap; }
+            .search-box { width: 100%; }
+            .content { padding: 14px; grid-template-columns: 1fr; }
+            .mobile-nav { display: flex; }
+            .stats-row { grid-template-columns: 1fr; }
+            .form-grid, .form-grid.three, .flow-top { grid-template-columns: 1fr; }
+            .editor-head { grid-template-columns: 1fr; align-items: start; padding-top: 10px; padding-bottom: 10px; }
+            .editor-title { grid-template-columns: auto minmax(0, 1fr); width: 100%; }
+            .editor-title .status-badge { grid-column: 2; }
+            .rule-id { max-width: 100%; }
+            .rule-list { max-height: none; }
+            .ops-popover { right: 14px; top: 128px; }
+            .dashboard-grid, .resource-grid, .settings-grid, .account-list.cards, .metrics-grid.wide, .records-toolbar { grid-template-columns: 1fr; }
+            .hour-bars { gap: 3px; }
+            .hour-cell small { display: none; }
+            .record-table { overflow-x: auto; }
+            .table-head, .table-row { min-width: 760px; }
+        }
+    </style>
+</head>
+<body>
+<div id="app">
+    <div class="mobile-bar">
+        <div class="brand">
+            <div class="brand-mark"><i data-lucide="zap"></i></div>
+            <div class="brand-title">Monitor</div>
+            <div class="brand-version">Pro v78</div>
+        </div>
+        <button class="icon-btn" @click="ui.showOps = !ui.showOps" aria-label="更多操作"><i data-lucide="sliders-horizontal"></i></button>
+    </div>
+
+    <div class="app-shell">
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="brand-mark"><i data-lucide="zap"></i></div>
+                <div class="brand-title">Monitor</div>
+                <div class="brand-version">Pro v78</div>
+            </div>
+            <nav class="nav-list" aria-label="主导航">
+                <button v-for="item in navItems" :key="item.key" class="nav-item" :class="{active: ui.page === item.key}" @click="setPage(item.key)">
+                    <i :data-lucide="item.icon"></i><span>{{ item.label }}</span>
+                </button>
+            </nav>
+            <div class="plan-card">
+                <div class="plan-title">{{ config.enabled ? '监听运行中' : '监听已暂停' }} <span class="plan-badge">{{ runtime.timezone || '北京时间' }}</span></div>
+                <div class="plan-meta">主账号：{{ mainAccount }}</div>
+                <div class="plan-meta">最后刷新：{{ lastRefreshText }}</div>
+                <button class="plan-link" @click="loadAll">立即同步</button>
+            </div>
+            <button class="collapse-link"><i data-lucide="chevron-left"></i><span>收起菜单</span></button>
+        </aside>
+
+        <main class="main">
+            <header class="topbar">
+                <button class="env-pill" @click="toggleMonitorEnabled">
+                    <span class="status-dot" :style="{background: config.enabled ? 'var(--green)' : 'var(--red)'}"></span>
+                    <span>{{ config.enabled ? '生产环境' : '监听暂停' }}</span>
+                    <i data-lucide="chevron-down"></i>
+                </button>
+                <div class="top-actions">
+                    <label class="search-box">
+                        <i data-lucide="search"></i>
+                        <input v-model="ui.globalSearch" placeholder="全局搜索">
+                    </label>
+                    <button class="icon-btn" aria-label="通知"><i data-lucide="bell"></i></button>
+                    <button class="icon-btn" aria-label="帮助"><i data-lucide="circle-help"></i></button>
+                    <button class="icon-btn" aria-label="主题"><i data-lucide="sun"></i></button>
+                    <div class="avatar">{{ avatarText }}</div>
+                    <button class="ghost-btn">{{ mainAccount }} <i data-lucide="chevron-down"></i></button>
+                </div>
+            </header>
+
+            <section class="content">
+                <div class="mobile-nav">
+                    <button v-for="item in navItems" :key="item.key" class="chip" :class="{active: ui.page === item.key}" @click="setPage(item.key)">
+                        <i :data-lucide="item.icon"></i>{{ item.label }}
+                    </button>
+                </div>
+                <div class="stats-row">
+                    <article class="stat-card">
+                        <div class="stat-icon"><i data-lucide="chart-no-axes-column"></i></div>
+                        <div>
+                            <div class="stat-label">活跃规则</div>
+                            <div class="stat-value">{{ stats.active }}</div>
+                            <div class="stat-sub">共 {{ stats.total }} 条规则</div>
+                        </div>
+                    </article>
+                    <article class="stat-card">
+                        <div class="stat-icon green"><i data-lucide="play"></i></div>
+                        <div>
+                            <div class="stat-label">运行中</div>
+                            <div class="stat-value">{{ stats.running }}</div>
+                            <div class="stat-sub">正常运行</div>
+                        </div>
+                    </article>
+                    <article class="stat-card">
+                        <div class="stat-icon"><i data-lucide="zap"></i></div>
+                        <div>
+                            <div class="stat-label">今日触发</div>
+                            <div class="stat-value">{{ stats.today }}</div>
+                            <div class="stat-sub">{{ deltaText(stats.today, stats.yesterday) }}</div>
+                        </div>
+                    </article>
+                    <article class="stat-card">
+                        <div class="stat-icon green"><i data-lucide="shield-check"></i></div>
+                        <div>
+                            <div class="stat-label">成功率</div>
+                            <div class="stat-value">{{ stats.successRate }}%</div>
+                            <div class="stat-sub">成功 {{ stats.success }} / 失败 {{ stats.failed }}</div>
+                        </div>
+                    </article>
+                    <div class="stat-actions">
+                        <button class="more-btn" @click="ui.showOps = !ui.showOps"><i data-lucide="more-vertical"></i>更多操作</button>
+                        <button class="primary-btn" @click="saveConfig" :disabled="ui.saving">
+                            <i data-lucide="check"></i>{{ ui.saving ? '保存中' : '保存规则' }}
+                        </button>
+                    </div>
+                </div>
+
+                <section class="panel rule-list-panel" v-if="ui.page === 'rules'">
+                    <div class="panel-head">
+                        <div class="panel-title">规则列表</div>
+                        <div class="toolbar">
+                            <span v-if="ui.autoSaving" class="save-hint">自动保存中</span>
+                            <button class="tiny-btn" @click="loadConfig"><i data-lucide="refresh-cw"></i>刷新</button>
+                        </div>
+                    </div>
+                    <div class="list-tools">
+                        <label class="rule-search">
+                            <i data-lucide="search"></i>
+                            <input v-model="ui.ruleQuery" placeholder="搜索规则名称/监听来源">
+                        </label>
+                        <div class="filter-row">
+                            <button class="chip" :class="{active: ui.statusFilter === 'all'}" @click="ui.statusFilter = 'all'">全部 <span class="count">{{ stats.total }}</span></button>
+                            <button class="chip" :class="{active: ui.statusFilter === 'running'}" @click="ui.statusFilter = 'running'">运行中 <span class="count">{{ stats.running }}</span></button>
+                            <button class="chip" :class="{active: ui.statusFilter === 'disabled'}" @click="ui.statusFilter = 'disabled'">已停用 <span class="count">{{ stats.disabled }}</span></button>
+                            <button class="chip" :class="{active: ui.statusFilter === 'draft'}" @click="ui.statusFilter = 'draft'">草稿 <span class="count">{{ stats.draft }}</span></button>
+                        </div>
+                    </div>
+                    <div class="rule-list">
+                        <div v-for="rule in filteredRules" :key="rule.id" class="rule-card" :class="{selected: currentRule && currentRule.id === rule.id}" role="button" tabindex="0" @click="selectRule(rule)" @keydown.enter.prevent="selectRule(rule)" @keydown.space.prevent="selectRule(rule)">
+                            <div class="drag-dots"><span></span><span></span><span></span></div>
+                            <div>
+                                <div class="rule-name">{{ rule.name || '未命名规则' }}</div>
+                                <div class="rule-meta">
+                                    <i data-lucide="activity"></i>
+                                    <span>监听：{{ shortGroups(rule) }}</span>
+                                </div>
+                                <div class="tag-row">
+                                    <span class="tag">{{ rule.check_file ? '文件模式' : '文本模式' }}</span>
+                                    <span class="tag">{{ primaryKeyword(rule) }}</span>
+                                    <span class="tag"><i data-lucide="user-round"></i>{{ stepCount(rule) }} 步</span>
+                                </div>
+                            </div>
+                            <div style="display:grid;gap:14px;justify-items:end;">
+                                <span class="status-badge" :class="ruleStatus(rule).kind">{{ ruleStatus(rule).text }}</span>
+                                <button type="button" class="switch" :class="{on: rule.enabled}" :disabled="ui.saving" :aria-pressed="rule.enabled ? 'true' : 'false'" :title="rule.enabled ? '停用并保存' : '启用并保存'" @click.stop="toggleRuleEnabled(rule)"></button>
+                            </div>
+                        </div>
+                        <div v-if="filteredRules.length === 0" class="empty-state">没有匹配的规则</div>
+                    </div>
+                    <div class="list-footer">
+                        <button class="add-rule-btn" @click="addRule"><i data-lucide="plus"></i>新建规则</button>
+                    </div>
+                </section>
+
+                <section class="panel editor-panel" v-if="ui.page === 'rules' && currentRule">
+                    <div class="panel-head editor-head">
+                        <div class="editor-title">
+                            <span class="editor-label">编辑规则</span>
+                            <input v-model="currentRule.name" placeholder="规则名称">
+                            <span class="status-badge" :class="ruleStatus(currentRule).kind">{{ ruleStatus(currentRule).text }}</span>
+                        </div>
+                        <div class="rule-id"><span>规则ID: {{ currentRule.id }}</span> <i data-lucide="copy"></i></div>
+                    </div>
+                    <div class="tabs">
+                        <button v-for="tab in tabs" :key="tab.key" class="tab" :class="{active: ui.activeTab === tab.key}" @click="ui.activeTab = tab.key">{{ tab.label }}</button>
+                    </div>
+
+                    <div class="editor-body" v-if="ui.activeTab === 'basic'">
+                        <section class="section">
+                            <div class="section-title">基础信息</div>
+                            <div class="form-grid">
+                                <div class="field">
+                                    <div class="label-row"><label>监听来源</label><span class="hint">群 ID 每行一个</span></div>
+                                    <textarea class="textarea" :value="listToString(currentRule.groups)" @input="setIntList($event, currentRule, 'groups')" placeholder="-1001234567890"></textarea>
+                                </div>
+                                <div class="field">
+                                    <div class="label-row">
+                                        <label>文件模式</label>
+                                        <label class="inline-check"><input class="checkbox" type="checkbox" v-model="currentRule.check_file">启用</label>
+                                    </div>
+                                    <div v-if="currentRule.check_file" class="form-grid">
+                                        <input class="input" :value="listToString(currentRule.file_extensions).replace(/\\n/g, ', ')" @input="setList($event, currentRule, 'file_extensions', true)" placeholder="png, jpg">
+                                        <input class="input" :value="listToString(currentRule.filename_keywords).replace(/\\n/g, ', ')" @input="setList($event, currentRule, 'filename_keywords', true)" placeholder="文件名关键词">
+                                    </div>
+                                    <textarea v-else class="textarea" :value="listToString(currentRule.keywords)" @input="setList($event, currentRule, 'keywords', false)" placeholder="普通: 代存&#10;正则: r:(代|带)存|入[金款]"></textarea>
+                                </div>
+                                <div class="field full">
+                                    <div class="label-row"><label>备注（可选）</label><span class="hint">{{ (currentRule.note || '').length }}/200</span></div>
+                                    <input class="input" v-model="currentRule.note" maxlength="200" placeholder="给这条规则添加内部备注">
+                                </div>
+                            </div>
+                        </section>
+
+                        <section class="section">
+                            <div class="section-head">
+                                <div class="section-title">执行动作流</div>
+                                <button class="tiny-btn" @click="addStep(currentRule)"><i data-lucide="plus"></i>添加步骤</button>
+                            </div>
+                            <div class="flow-list">
+                                <article class="flow-item" v-for="(step, index) in currentRule.replies" :key="index">
+                                    <div class="delay-pill">
+                                        <div class="delay-circle">{{ index + 1 }}</div>
+                                        <div class="delay-text">{{ displayDelay(step) }}</div>
+                                    </div>
+                                    <div class="flow-main">
+                                        <div class="flow-top">
+                                            <div class="field">
+                                                <label>动作类型</label>
+                                                <select class="select" v-model="step.type" @change="normalizeStep(step)">
+                                                    <option value="text">发送文本</option>
+                                                    <option value="forward">直接转发</option>
+                                                    <option value="copy_file">转发+新文案</option>
+                                                    <option value="amount_logic">金额分流</option>
+                                                    <option value="preempt_check">抢答检测（自删）</option>
+                                                    <option value="notify_user">Bot私聊通知</option>
+                                                </select>
+                                            </div>
+                                            <div class="field" v-if="step.type !== 'amount_logic'">
+                                                <label>延迟区间（秒）</label>
+                                                <div class="delay-grid">
+                                                    <input class="input" type="number" v-model.number="step.min">
+                                                    <span class="hint" style="text-align:center;">-</span>
+                                                    <input class="input" type="number" v-model.number="step.max">
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="field" v-if="step.type === 'text'">
+                                            <label>发送内容</label>
+                                            <textarea class="textarea" v-model="step.text" placeholder="输入要回复到原群的文字"></textarea>
+                                        </div>
+
+                                        <div class="field" v-if="step.type === 'forward'">
+                                            <label>转发目标群</label>
+                                            <input class="input" v-model="step.forward_to" placeholder="-1001234567890">
+                                        </div>
+
+                                        <div class="form-grid" v-if="step.type === 'copy_file'">
+                                            <div class="field">
+                                                <label>转发目标群</label>
+                                                <input class="input" v-model="step.forward_to" placeholder="-1001234567890">
+                                            </div>
+                                            <div class="field">
+                                                <label>新文案</label>
+                                                <textarea class="textarea" v-model="step.text" placeholder="发送文件/图片时附带的文案，支持 {time}"></textarea>
+                                            </div>
+                                        </div>
+
+                                        <div class="field-card" v-if="step.type === 'amount_logic'">
+                                            <div class="form-grid">
+                                                <div class="field">
+                                                    <label>金额阈值</label>
+                                                    <input class="input" :value="amountPart(step, 0)" @input="setAmountPart(step, 0, $event.target.value)" placeholder="2000">
+                                                </div>
+                                                <div class="field">
+                                                    <label>大额回复延迟</label>
+                                                    <div class="delay-grid"><input class="input" type="number" v-model.number="step.high_reply_min"><span class="hint">-</span><input class="input" type="number" v-model.number="step.high_reply_max"></div>
+                                                </div>
+                                                <div class="field">
+                                                    <label>小额首句延迟</label>
+                                                    <div class="delay-grid"><input class="input" type="number" v-model.number="step.low_first_min"><span class="hint">-</span><input class="input" type="number" v-model.number="step.low_first_max"></div>
+                                                </div>
+                                                <div class="field">
+                                                    <label>小额转发群</label>
+                                                    <input class="input" v-model="step.forward_to" placeholder="-1001234567890">
+                                                </div>
+                                                <div class="field">
+                                                    <label>小额转发延迟</label>
+                                                    <div class="delay-grid"><input class="input" type="number" v-model.number="step.low_forward_min"><span class="hint">-</span><input class="input" type="number" v-model.number="step.low_forward_max"></div>
+                                                </div>
+                                                <div class="field">
+                                                    <label>小额后续回复延迟</label>
+                                                    <div class="delay-grid"><input class="input" type="number" v-model.number="step.low_reply_min"><span class="hint">-</span><input class="input" type="number" v-model.number="step.low_reply_max"></div>
+                                                </div>
+                                                <div class="field full">
+                                                    <label>大额回复</label>
+                                                    <textarea class="textarea" :value="amountPart(step, 1)" @input="setAmountPart(step, 1, $event.target.value)" placeholder="金额达到阈值时回复的内容"></textarea>
+                                                </div>
+                                                <div class="field full">
+                                                    <label>小额回复顺序</label>
+                                                    <textarea class="textarea" :value="amountLowLines(step)" @input="setAmountLowLines(step, $event.target.value)" placeholder="第一行：先引用回复；第二行起：转发后再引用回复"></textarea>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="field-card" v-if="step.type === 'preempt_check'">
+                                            <strong>抢答检测（自删）</strong>
+                                            <span class="hint">只检测同一条原始消息流中、排在本规则第一条回复前的他人引用回复。</span>
+                                        </div>
+
+                                        <div class="form-grid" v-if="step.type === 'notify_user'">
+                                            <div class="field">
+                                                <label>Bot通知对象</label>
+                                                <input class="input" v-model="step.forward_to" placeholder="用户ID 或 @username">
+                                            </div>
+                                            <div class="field">
+                                                <label>通知内容</label>
+                                                <textarea class="textarea" v-model="step.text" placeholder="{rule} 已自动回复 {sender}：{message}"></textarea>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div style="display:grid;gap:6px;">
+                                        <button class="step-menu" @click="duplicateStep(currentRule, index)" aria-label="复制步骤"><i data-lucide="copy"></i></button>
+                                        <button class="step-menu" @click="removeStep(currentRule, index)" aria-label="删除步骤"><i data-lucide="trash-2"></i></button>
+                                    </div>
+                                </article>
+                                <div v-if="!currentRule.replies.length" class="empty-state">当前规则还没有执行动作</div>
+                            </div>
+                        </section>
+                    </div>
+
+                    <div class="editor-body" v-if="ui.activeTab === 'advanced'">
+                        <section class="section">
+                            <div class="section-head">
+                                <div class="section-title">同意审批检测</div>
+                                <button type="button" class="switch" :class="{on: currentRule.enable_approval}" :aria-pressed="currentRule.enable_approval ? 'true' : 'false'" @click="currentRule.enable_approval = !currentRule.enable_approval; ensureApprovalAction(currentRule)"></button>
+                            </div>
+                            <div class="field">
+                                <label>全局审批触发词</label>
+                                <input class="input" :value="(config.approval_keywords || []).join(', ')" @input="config.approval_keywords = splitInline($event.target.value)" placeholder="同意, 批准, ok">
+                            </div>
+                            <div class="field-card" v-if="currentRule.enable_approval">
+                                <div class="form-grid">
+                                    <div class="field full">
+                                        <label>同意后回复领导引用消息</label>
+                                        <textarea class="textarea" v-model="currentRule.approval_action.reply_admin" placeholder="请稍等ART"></textarea>
+                                    </div>
+                                    <div class="field">
+                                        <label>同意后转发原始报备到群</label>
+                                        <input class="input" v-model="currentRule.approval_action.forward_to" placeholder="-1001234567890">
+                                    </div>
+                                    <div class="field">
+                                        <label>同意后回复原始报备</label>
+                                        <textarea class="textarea" v-model="currentRule.approval_action.reply_origin" placeholder="请稍等ART"></textarea>
+                                    </div>
+                                </div>
+                                <div class="form-grid three">
+                                    <div class="field">
+                                        <label>先回领导延迟</label>
+                                        <div class="delay-grid"><input class="input" type="number" v-model.number="currentRule.approval_action.delay_1_min"><span class="hint">-</span><input class="input" type="number" v-model.number="currentRule.approval_action.delay_1_max"></div>
+                                    </div>
+                                    <div class="field">
+                                        <label>转发延迟</label>
+                                        <div class="delay-grid"><input class="input" type="number" v-model.number="currentRule.approval_action.delay_2_min"><span class="hint">-</span><input class="input" type="number" v-model.number="currentRule.approval_action.delay_2_max"></div>
+                                    </div>
+                                    <div class="field">
+                                        <label>回原始报备延迟</label>
+                                        <div class="delay-grid"><input class="input" type="number" v-model.number="currentRule.approval_action.delay_3_min"><span class="hint">-</span><input class="input" type="number" v-model.number="currentRule.approval_action.delay_3_max"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+                        <section class="section">
+                            <div class="section-title">自动排班</div>
+                            <div class="form-grid">
+                                <label class="inline-check"><input class="checkbox" type="checkbox" v-model="config.schedule.active">启用排班</label>
+                                <div class="form-grid">
+                                    <input class="input" type="time" v-model="config.schedule.start">
+                                    <input class="input" type="time" v-model="config.schedule.end">
+                                </div>
+                            </div>
+                        </section>
+                    </div>
+
+                    <div class="editor-body" v-if="ui.activeTab === 'notes'">
+                        <section class="section">
+                            <div class="section-title">备注说明</div>
+                            <textarea class="textarea" style="min-height:180px;" v-model="currentRule.note" maxlength="200" placeholder="记录规则用途、审批负责人或目标群说明"></textarea>
+                            <div class="hint">规则 ID：{{ currentRule.id }}</div>
+                        </section>
+                    </div>
+
+                    <div class="editor-body" v-if="ui.activeTab === 'permissions'">
+                        <section class="section">
+                            <div class="section-title">权限与账号</div>
+                            <div class="form-grid">
+                                <div class="field">
+                                    <label>选择回复账号</label>
+                                    <select class="select" v-model="currentRule.reply_account">
+                                        <option value="">主账号（默认）</option>
+                                        <option v-for="acc in available_accounts" :key="acc" :value="acc">{{ acc }}</option>
+                                    </select>
+                                </div>
+                                <label class="inline-check"><input class="checkbox" type="checkbox" v-model="config.extra_enabled">分身模式启用</label>
+                                <div class="field">
+                                    <label>过滤方式</label>
+                                    <select class="select" v-model="currentRule.sender_mode">
+                                        <option value="exclude">排除前缀</option>
+                                        <option value="include">仅允许</option>
+                                    </select>
+                                </div>
+                                <div class="field">
+                                    <label>允许用户/标签</label>
+                                    <input class="input" :value="listToString(currentRule.sender_prefixes).replace(/\\n/g, ', ')" @input="setList($event, currentRule, 'sender_prefixes', true)" placeholder="@xy_cszb2, @xycs01">
+                                </div>
+                                <div class="field full">
+                                    <label>冷却 CD</label>
+                                    <div class="cooldown-row">
+                                        <button class="stepper-btn" @click="currentRule.cooldown = Math.max(0, Number(currentRule.cooldown || 0) - 1)"><i data-lucide="minus"></i></button>
+                                        <input class="cooldown-input" type="number" v-model.number="currentRule.cooldown">
+                                        <button class="stepper-btn" @click="currentRule.cooldown = Number(currentRule.cooldown || 0) + 1"><i data-lucide="plus"></i></button>
+                                        <span class="hint" style="padding-left:12px;">相同来源在冷却时间内将被忽略</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+                    </div>
+                </section>
+
+                <section class="panel preview-panel" v-if="ui.page === 'rules' && currentRule">
+                    <div class="panel-head">
+                        <div class="panel-title"><i data-lucide="chevron-down"></i>执行预览 <span class="live-badge"><span class="status-dot"></span>实时预览</span></div>
+                    </div>
+                    <div class="preview-body">
+                        <div class="preview-card">
+                            <div class="preview-title">流程时间线（预计）</div>
+                            <div class="timeline">
+                                <div class="timeline-row" v-for="(item, index) in previewSteps" :key="index">
+                                    <div class="timeline-dot" :class="{event: index === 0}">{{ index === 0 ? '' : index }}</div>
+                                    <div>
+                                        <div class="timeline-name">{{ item.title }}</div>
+                                        <div class="timeline-desc">{{ item.desc }}</div>
+                                    </div>
+                                    <div class="timeline-delay">{{ item.delay }}</div>
+                                </div>
+                            </div>
+                            <div class="hint">预计总耗时：{{ estimatedTotal }} 秒</div>
+                        </div>
+
+                        <div class="preview-card">
+                            <div class="preview-title">运行概览（今日）<button class="inline-link" @click="setPage('analytics')">更多数据</button></div>
+                            <div class="metrics-grid">
+                                <div class="metric-tile"><div class="metric-label">触发次数</div><div class="metric-value" style="color:var(--blue);">{{ selectedRuleStats.total }}</div></div>
+                                <div class="metric-tile"><div class="metric-label">成功次数</div><div class="metric-value" style="color:var(--green);">{{ selectedRuleStats.success }}</div></div>
+                                <div class="metric-tile"><div class="metric-label">失败次数</div><div class="metric-value" style="color:var(--red);">{{ selectedRuleStats.failed }}</div></div>
+                                <div class="metric-tile"><div class="metric-label">成功率</div><div class="metric-value" style="color:var(--primary);">{{ selectedRuleStats.success_rate }}%</div></div>
+                            </div>
+                            <div class="chart bar-chart" role="img" aria-label="今日执行趋势">
+                                <span v-for="bucket in compactHourlyBars" :key="bucket.hour" class="bar" :style="{height: bucket.height + '%'}" :title="bucket.hour + ':00 ' + bucket.total + ' 次'"></span>
+                            </div>
+                        </div>
+
+                        <div class="preview-card">
+                            <div class="preview-title">最近执行记录 <button class="inline-link" @click="setPage('records')">查看全部</button></div>
+                            <div class="records">
+                                <div v-for="record in currentRuleRecords.slice(0, 4)" :key="record.id" class="record" :class="recordClass(record)">
+                                    <i :data-lucide="recordIcon(record)"></i><span>{{ formatRecordTime(record) }} · {{ record.kind_label }}</span><span class="record-status">{{ statusLabel(record) }}</span>
+                                </div>
+                                <div v-if="currentRuleRecords.length === 0" class="empty-inline">今天还没有这条规则的执行记录</div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="page-wide dashboard-grid" v-if="ui.page === 'dashboard'">
+                    <article class="panel page-card span-2">
+                        <div class="panel-head">
+                            <div class="panel-title"><i data-lucide="activity"></i>今日监控台</div>
+                            <span class="hint">数据刷新：{{ lastRefreshText }}</span>
+                        </div>
+                        <div class="page-body">
+                            <div class="metrics-grid wide">
+                                <div class="metric-tile"><div class="metric-label">今日触发</div><div class="metric-value" style="color:var(--blue);">{{ runtime.today.total }}</div></div>
+                                <div class="metric-tile"><div class="metric-label">执行动作</div><div class="metric-value" style="color:var(--primary);">{{ runtime.today.action_count }}</div></div>
+                                <div class="metric-tile"><div class="metric-label">成功</div><div class="metric-value" style="color:var(--green);">{{ runtime.today.success }}</div></div>
+                                <div class="metric-tile"><div class="metric-label">失败</div><div class="metric-value" style="color:var(--red);">{{ runtime.today.failed }}</div></div>
+                            </div>
+                            <div class="section">
+                                <div class="section-head">
+                                    <div class="section-title">24 小时触发分布</div>
+                                    <span class="hint">{{ runtime.today.total ? '按北京时间统计' : '今天暂无触发' }}</span>
+                                </div>
+                                <div class="hour-bars">
+                                    <div v-for="bucket in hourlyBars" :key="bucket.hour" class="hour-cell" :title="bucket.hour + ':00 · ' + bucket.total + ' 次'">
+                                        <span class="hour-bar" :style="{height: bucket.height + '%'}"></span>
+                                        <small>{{ bucket.hour }}</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </article>
+
+                    <article class="panel page-card">
+                        <div class="panel-head">
+                            <div class="panel-title"><i data-lucide="clipboard-list"></i>最近执行</div>
+                            <button class="tiny-btn" @click="setPage('records')">全部</button>
+                        </div>
+                        <div class="page-body records">
+                            <div v-for="record in runtime.records.slice(0, 6)" :key="record.id" class="record rich" :class="recordClass(record)">
+                                <i :data-lucide="recordIcon(record)"></i>
+                                <span><strong>{{ record.rule_name }}</strong><em>{{ formatRecordTime(record) }} · {{ record.detail || record.kind_label }}</em></span>
+                                <span class="record-status">{{ statusLabel(record) }}</span>
+                            </div>
+                            <div v-if="runtime.records.length === 0" class="empty-state">暂无执行记录</div>
+                        </div>
+                    </article>
+
+                    <article class="panel page-card">
+                        <div class="panel-head">
+                            <div class="panel-title"><i data-lucide="list-ordered"></i>规则热度</div>
+                            <button class="tiny-btn" @click="setPage('analytics')">分析</button>
+                        </div>
+                        <div class="page-body rank-list">
+                            <div v-for="rule in topRules" :key="rule.id" class="rank-row">
+                                <span>{{ rule.name }}</span>
+                                <div class="rank-track"><b :style="{width: rule.percent + '%'}"></b></div>
+                                <strong>{{ rule.total }}</strong>
+                            </div>
+                            <div v-if="topRules.length === 0" class="empty-state">今天还没有规则触发</div>
+                        </div>
+                    </article>
+
+                    <article class="panel page-card">
+                        <div class="panel-head">
+                            <div class="panel-title"><i data-lucide="users-round"></i>账号状态</div>
+                            <button class="tiny-btn" @click="setPage('members')">成员</button>
+                        </div>
+                        <div class="page-body account-list">
+                            <div v-for="account in accountRows" :key="account.name" class="account-row">
+                                <div class="avatar small">{{ account.name.slice(0, 1) }}</div>
+                                <div><strong>{{ account.name }}</strong><span>{{ account.role }} · {{ account.user_id || '未读取 ID' }}</span></div>
+                                <em :class="{ok: account.connected}">{{ account.connected ? '在线' : '离线' }}</em>
+                            </div>
+                            <div v-if="accountRows.length === 0" class="empty-state">暂无已注册账号</div>
+                        </div>
+                    </article>
+                </section>
+
+                <section class="panel page-wide page-panel" v-if="ui.page === 'records'">
+                    <div class="panel-head">
+                        <div class="panel-title"><i data-lucide="clipboard-list"></i>执行记录</div>
+                        <button class="tiny-btn" @click="loadRuntimeStats"><i data-lucide="refresh-cw"></i>刷新</button>
+                    </div>
+                    <div class="page-body">
+                        <div class="records-toolbar">
+                            <label class="rule-search">
+                                <i data-lucide="search"></i>
+                                <input v-model="ui.recordQuery" placeholder="搜索规则、账号、群 ID、详情">
+                            </label>
+                            <div class="filter-row">
+                                <button v-for="filter in recordFilters" :key="filter.key" class="chip" :class="{active: ui.recordFilter === filter.key}" @click="ui.recordFilter = filter.key">{{ filter.label }} <span class="count">{{ recordFilterCount(filter.key) }}</span></button>
+                            </div>
+                        </div>
+                        <div class="record-table">
+                            <div class="table-head"><span>时间</span><span>类型</span><span>规则</span><span>账号</span><span>状态</span><span>详情</span></div>
+                            <div v-for="record in filteredRecords" :key="record.id" class="table-row">
+                                <span>{{ formatRecordTime(record) }}</span>
+                                <span>{{ record.kind_label }}</span>
+                                <span>{{ record.rule_name }}</span>
+                                <span>{{ record.target_account || '-' }}</span>
+                                <span class="record-status" :class="recordClass(record)">{{ statusLabel(record) }}</span>
+                                <span>{{ record.detail || record.message_text || '-' }}</span>
+                            </div>
+                            <div v-if="filteredRecords.length === 0" class="empty-state">没有匹配的执行记录</div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="panel page-wide page-panel" v-if="ui.page === 'analytics'">
+                    <div class="panel-head">
+                        <div class="panel-title"><i data-lucide="chart-column"></i>数据看板</div>
+                        <span class="hint">今日与昨日来自真实执行记录</span>
+                    </div>
+                    <div class="page-body">
+                        <div class="metrics-grid wide">
+                            <div class="metric-tile"><div class="metric-label">今日触发</div><div class="metric-value">{{ runtime.today.total }}</div><div class="hint">昨日 {{ runtime.yesterday.total }}</div></div>
+                            <div class="metric-tile"><div class="metric-label">今日执行次数</div><div class="metric-value">{{ runtime.today.action_count }}</div><div class="hint">昨日 {{ runtime.yesterday.action_count }}</div></div>
+                            <div class="metric-tile"><div class="metric-label">成功率</div><div class="metric-value">{{ runtime.today.success_rate }}%</div><div class="hint">昨日 {{ runtime.yesterday.success_rate }}%</div></div>
+                            <div class="metric-tile"><div class="metric-label">跳过</div><div class="metric-value">{{ runtime.today.skipped }}</div><div class="hint">未发送/暂停/抢答自删</div></div>
+                        </div>
+                        <div class="section">
+                            <div class="section-title">分时趋势</div>
+                            <div class="hour-bars tall">
+                                <div v-for="bucket in hourlyBars" :key="bucket.hour" class="hour-cell" :title="bucket.hour + ':00 · 成功 ' + bucket.success + ' / 失败 ' + bucket.failed">
+                                    <span class="hour-bar" :style="{height: bucket.height + '%'}"></span>
+                                    <small>{{ bucket.hour }}</small>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="record-table">
+                            <div class="table-head"><span>规则</span><span>触发</span><span>执行动作</span><span>成功</span><span>失败</span><span>成功率</span></div>
+                            <div v-for="rule in runtime.by_rule" :key="rule.id" class="table-row">
+                                <span>{{ rule.name }}</span><span>{{ rule.total }}</span><span>{{ rule.action_count }}</span><span>{{ rule.success }}</span><span>{{ rule.failed }}</span><span>{{ rule.success_rate }}%</span>
+                            </div>
+                            <div v-if="runtime.by_rule.length === 0" class="empty-state">暂无规则统计</div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="page-wide resource-grid" v-if="ui.page === 'resources'">
+                    <article class="panel page-card" v-for="item in resourceCards" :key="item.key">
+                        <div class="panel-head"><div class="panel-title"><i :data-lucide="item.icon"></i>{{ item.label }}</div><strong>{{ item.count }}</strong></div>
+                        <div class="page-body tag-row">
+                            <span v-for="value in item.items" :key="value" class="tag">{{ value }}</span>
+                            <div v-if="item.items.length === 0" class="empty-state">暂无数据</div>
+                        </div>
+                    </article>
+                </section>
+
+                <section class="panel page-wide page-panel" v-if="ui.page === 'members'">
+                    <div class="panel-head">
+                        <div class="panel-title"><i data-lucide="users-round"></i>成员权限</div>
+                        <span class="hint">账号来自当前已注册 Telegram Client</span>
+                    </div>
+                    <div class="page-body">
+                        <div class="account-list cards">
+                            <div v-for="account in accountRows" :key="account.name" class="account-row">
+                                <div class="avatar small">{{ account.name.slice(0, 1) }}</div>
+                                <div><strong>{{ account.name }}</strong><span>{{ account.role }} · {{ account.user_id || '未读取 ID' }}</span></div>
+                                <em :class="{ok: account.connected}">{{ account.connected ? '在线' : '离线' }}</em>
+                            </div>
+                        </div>
+                        <div class="record-table">
+                            <div class="table-head"><span>规则</span><span>回复账号</span><span>过滤方式</span><span>用户/标签</span><span>状态</span><span>操作</span></div>
+                            <div v-for="rule in config.rules" :key="rule.id" class="table-row">
+                                <span>{{ rule.name }}</span>
+                                <span>{{ rule.reply_account || mainAccount }}</span>
+                                <span>{{ rule.sender_mode === 'include' ? '仅允许' : '排除前缀' }}</span>
+                                <span>{{ (rule.sender_prefixes || []).join(', ') || '-' }}</span>
+                                <span>{{ ruleStatus(rule).text }}</span>
+                                <button class="inline-link" @click="selectRule(rule); setPage('rules'); ui.activeTab = 'permissions'">编辑</button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="panel page-wide page-panel" v-if="ui.page === 'settings'">
+                    <div class="panel-head">
+                        <div class="panel-title"><i data-lucide="settings"></i>系统设置</div>
+                        <button class="primary-btn" @click="saveConfig" :disabled="ui.saving"><i data-lucide="check"></i>{{ ui.saving ? '保存中' : '保存设置' }}</button>
+                    </div>
+                    <div class="page-body settings-grid">
+                        <section class="section">
+                            <div class="section-title">监听开关</div>
+                            <label class="inline-check"><input class="checkbox" type="checkbox" v-model="config.enabled">主监听启用</label>
+                            <label class="inline-check"><input class="checkbox" type="checkbox" v-model="config.extra_enabled">副账号分身模式启用</label>
+                        </section>
+                        <section class="section">
+                            <div class="section-title">自动排班</div>
+                            <label class="inline-check"><input class="checkbox" type="checkbox" v-model="config.schedule.active">启用排班</label>
+                            <div class="form-grid">
+                                <input class="input" type="time" v-model="config.schedule.start">
+                                <input class="input" type="time" v-model="config.schedule.end">
+                            </div>
+                        </section>
+                        <section class="section">
+                            <div class="section-title">审批触发词</div>
+                            <input class="input" :value="(config.approval_keywords || []).join(', ')" @input="config.approval_keywords = splitInline($event.target.value)" placeholder="同意, 批准, ok">
+                        </section>
+                        <section class="section">
+                            <div class="section-title">突发事件批量回复</div>
+                            <div class="form-grid">
+                                <input class="input" v-model="recovery.search" placeholder="查找我的反馈话术">
+                                <input class="input" v-model="recovery.reply" placeholder="回复给原提问者">
+                                <input class="input" type="datetime-local" v-model="recovery.start_time" title="从这个时间之后开始查找">
+                                <div class="delay-grid"><input class="input" type="number" v-model.number="recovery.min"><span class="hint">-</span><input class="input" type="number" v-model.number="recovery.max"></div>
+                                <div class="file-picker full">
+                                    <input id="recovery-file-settings" data-recovery-file class="sr-file" type="file" accept="image/*" @change="onRecoveryImage">
+                                    <label class="file-button" for="recovery-file-settings"><i data-lucide="image-plus"></i><span>{{ recovery.imageName || '选择图片' }}</span></label>
+                                    <button v-if="recovery.image" type="button" class="file-clear" @click="clearRecoveryImage" aria-label="清除图片"><i data-lucide="x"></i></button>
+                                </div>
+                            </div>
+                            <button class="primary-btn" style="width:max-content;" :disabled="!recovery.search || !recovery.reply" @click="runRecovery"><i data-lucide="send"></i>执行回复</button>
+                        </section>
+                    </div>
+                </section>
+            </section>
+        </main>
+    </div>
+
+    <section class="ops-popover" v-if="ui.showOps">
+        <div class="ops-head">
+            <span>更多操作</span>
+            <button class="icon-btn" @click="ui.showOps = false" aria-label="关闭"><i data-lucide="x"></i></button>
+        </div>
+        <div class="ops-body">
+            <section class="section">
+                <div class="section-title">突发事件批量回复</div>
+                <div class="form-grid">
+                    <div class="field">
+                        <label>查找我的反馈话术</label>
+                        <input class="input" v-model="recovery.search" placeholder="例如: 场馆技术核实中...">
+                    </div>
+                    <div class="field">
+                        <label>回复给原提问者</label>
+                        <input class="input" v-model="recovery.reply" placeholder="例如: 已恢复，请刷新重试">
+                    </div>
+                    <div class="field">
+                        <label>起始时间</label>
+                        <input class="input" type="datetime-local" v-model="recovery.start_time">
+                    </div>
+                    <div class="field">
+                        <label>间隔（秒）</label>
+                        <div class="delay-grid"><input class="input" type="number" v-model.number="recovery.min"><span class="hint">-</span><input class="input" type="number" v-model.number="recovery.max"></div>
+                    </div>
+                    <div class="field full">
+                        <label>附带图片</label>
+                        <div class="file-picker">
+                            <input id="recovery-file-ops" data-recovery-file class="sr-file" type="file" accept="image/*" @change="onRecoveryImage">
+                            <label class="file-button" for="recovery-file-ops"><i data-lucide="image-plus"></i><span>{{ recovery.imageName || '选择图片' }}</span></label>
+                            <button v-if="recovery.image" type="button" class="file-clear" @click="clearRecoveryImage" aria-label="清除图片"><i data-lucide="x"></i></button>
+                        </div>
+                    </div>
+                </div>
+                <button class="primary-btn" style="width:max-content;" :disabled="!recovery.search || !recovery.reply" @click="runRecovery"><i data-lucide="send"></i>执行回复</button>
+            </section>
+        </div>
+    </section>
+
+    <div class="toast" :class="{show: toast.show, error: toast.type === 'error'}">
+        <i :data-lucide="toast.type === 'error' ? 'triangle-alert' : 'circle-check'"></i>
+        <span>{{ toast.msg }}</span>
+    </div>
+</div>
+
+<script>
+const { createApp, reactive, computed, nextTick, watch, onMounted } = Vue;
+
+createApp({
+    setup() {
+        const config = reactive({
+            enabled: false,
+            extra_enabled: true,
+            approval_keywords: [],
+            schedule: { active: false, start: "09:00", end: "21:00" },
+            rules: []
+        });
+        const identity = reactive({ mainAccount: "主账号" });
+        const emptySummary = () => ({ total: 0, success: 0, failed: 0, skipped: 0, action_count: 0, success_rate: 0 });
+        const runtime = reactive({
+            server_time: "",
+            timezone: "北京时间",
+            service_started_at: "",
+            main_account: "",
+            accounts: [],
+            rules: { total: 0, running: 0, disabled: 0, draft: 0, active: 0 },
+            today: emptySummary(),
+            yesterday: emptySummary(),
+            hourly: [],
+            by_rule: [],
+            records: [],
+            last_record: null
+        });
+        const available_accounts = reactive([]);
+        const ui = reactive({
+            page: "dashboard",
+            selectedId: "",
+            activeTab: "basic",
+            statusFilter: "all",
+            recordFilter: "all",
+            recordQuery: "",
+            ruleQuery: "",
+            globalSearch: "",
+            showOps: false,
+            saving: false,
+            autoSaving: false
+        });
+        const toast = reactive({ show: false, msg: "", type: "success" });
+        const formatDateTimeLocal = (date) => {
+            const pad = value => String(value).padStart(2, "0");
+            return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+        };
+        const defaultRecoveryStartTime = () => {
+            const date = new Date();
+            date.setHours(date.getHours() - 5);
+            date.setSeconds(0, 0);
+            return formatDateTimeLocal(date);
+        };
+        const recovery = reactive({ search: "", reply: "", start_time: defaultRecoveryStartTime(), hours: 5, min: 2, max: 5, image: "", imageName: "" });
+        const tabs = [
+            { key: "basic", label: "基础配置" },
+            { key: "advanced", label: "高级设置" },
+            { key: "notes", label: "备注说明" },
+            { key: "permissions", label: "权限设置" }
+        ];
+        const navItems = [
+            { key: "dashboard", label: "监控台", icon: "chart-no-axes-column" },
+            { key: "rules", label: "规则管理", icon: "shield-check" },
+            { key: "records", label: "执行记录", icon: "clipboard-list" },
+            { key: "analytics", label: "数据看板", icon: "chart-column" },
+            { key: "resources", label: "资源管理", icon: "layers-3" },
+            { key: "members", label: "成员权限", icon: "users-round" },
+            { key: "settings", label: "系统设置", icon: "settings" }
+        ];
+        const recordFilters = [
+            { key: "all", label: "全部" },
+            { key: "success", label: "成功" },
+            { key: "failed", label: "失败" },
+            { key: "skipped", label: "跳过" }
+        ];
+
+        const refreshIcons = () => nextTick(() => {
+            if (window.lucide) window.lucide.createIcons({ attrs: { "stroke-width": 1.8 } });
+        });
+
+        const showToast = (msg, type = "success") => {
+            toast.msg = msg;
+            toast.type = type;
+            toast.show = true;
+            refreshIcons();
+            setTimeout(() => toast.show = false, 3000);
+        };
+
+        const defaultApprovalAction = () => ({
+            reply_admin: "",
+            reply_origin: "",
+            forward_to: "",
+            delay_1_min: 1,
+            delay_1_max: 2,
+            delay_2_min: 1,
+            delay_2_max: 3,
+            delay_3_min: 1,
+            delay_3_max: 2
+        });
+
+        const hydrateApprovalAction = (action = {}) => {
+            const base = defaultApprovalAction();
+            const merged = { ...base, ...(action || {}) };
+            ["reply_admin", "reply_origin", "forward_to"].forEach(key => merged[key] = merged[key] || "");
+            for (let i = 1; i <= 3; i++) {
+                merged[`delay_${i}_min`] = Number(merged[`delay_${i}_min`] ?? base[`delay_${i}_min`]);
+                merged[`delay_${i}_max`] = Number(merged[`delay_${i}_max`] ?? base[`delay_${i}_max`]);
+            }
+            return merged;
+        };
+
+        const hydrateReply = (rep = {}) => ({
+            ...rep,
+            type: rep.type || "text",
+            text: rep.text || "",
+            forward_to: rep.forward_to || "",
+            min: rep.min ?? 1,
+            max: rep.max ?? 3,
+            high_reply_min: rep.high_reply_min ?? rep.min ?? 1,
+            high_reply_max: rep.high_reply_max ?? rep.max ?? 3,
+            low_first_min: rep.low_first_min ?? rep.min ?? 1,
+            low_first_max: rep.low_first_max ?? rep.max ?? 3,
+            low_forward_min: rep.low_forward_min ?? 1.5,
+            low_forward_max: rep.low_forward_max ?? 3,
+            low_reply_min: rep.low_reply_min ?? 1.5,
+            low_reply_max: rep.low_reply_max ?? 3
+        });
+
+        const ensureApprovalAction = (rule) => {
+            rule.approval_action = hydrateApprovalAction(rule.approval_action);
+        };
+
+        const hydrateRule = (rule = {}) => {
+            const now = Date.now();
+            const hydrated = {
+                id: rule.id || `rule_${now}_${Math.floor(Math.random() * 10000)}`,
+                name: rule.name || "未命名规则",
+                enabled: rule.enabled ?? true,
+                groups: Array.isArray(rule.groups) ? rule.groups : [],
+                check_file: rule.check_file ?? false,
+                keywords: Array.isArray(rule.keywords) ? rule.keywords : [],
+                file_extensions: Array.isArray(rule.file_extensions) ? rule.file_extensions : [],
+                filename_keywords: Array.isArray(rule.filename_keywords) ? rule.filename_keywords : [],
+                enable_approval: rule.enable_approval ?? false,
+                approval_action: hydrateApprovalAction(rule.approval_action),
+                sender_mode: rule.sender_mode || "exclude",
+                sender_prefixes: Array.isArray(rule.sender_prefixes) ? rule.sender_prefixes : [],
+                cooldown: rule.cooldown ?? 60,
+                replies: Array.isArray(rule.replies) ? rule.replies.map(hydrateReply) : [],
+                reply_account: rule.reply_account || "",
+                note: rule.note || ""
+            };
+            return { ...rule, ...hydrated };
+        };
+
+        const loadConfig = async () => {
+            try {
+                const res = await fetch("/tool/monitor_settings_json");
+                const data = await res.json();
+                config.enabled = data.enabled ?? true;
+                config.extra_enabled = data.extra_enabled ?? true;
+                config.approval_keywords = Array.isArray(data.approval_keywords) ? data.approval_keywords : ["同意", "批准", "ok"];
+                config.schedule = data.schedule || { active: false, start: "09:00", end: "21:00" };
+                config.rules = (data.rules || []).map(hydrateRule);
+                identity.mainAccount = data.main_account || identity.mainAccount;
+                available_accounts.splice(0, available_accounts.length, ...((data.available_accounts || [])));
+                if (Array.isArray(data.accounts) && data.accounts.length) {
+                    runtime.accounts.splice(0, runtime.accounts.length, ...data.accounts);
+                }
+                if (!ui.selectedId || !config.rules.some(rule => rule.id === ui.selectedId)) {
+                    ui.selectedId = config.rules[0]?.id || "";
+                }
+                refreshIcons();
+            } catch (e) {
+                showToast("配置加载失败", "error");
+            }
+        };
+
+        const kindLabel = (kind) => ({
+            monitor: "规则监听",
+            approval: "同意审批",
+            recovery: "批量恢复"
+        }[kind] || "系统任务");
+
+        const decorateRecord = (record = {}) => ({
+            ...record,
+            kind_label: kindLabel(record.kind)
+        });
+
+        const loadRuntimeStats = async (silent = false) => {
+            try {
+                const res = await fetch("/api/monitor_runtime_stats?limit=300");
+                const data = await res.json();
+                runtime.server_time = data.server_time || "";
+                runtime.timezone = data.timezone || "北京时间";
+                runtime.service_started_at = data.service_started_at || "";
+                runtime.main_account = data.main_account || runtime.main_account || identity.mainAccount;
+                if (runtime.main_account) identity.mainAccount = runtime.main_account;
+                runtime.rules = data.rules || runtime.rules;
+                Object.assign(runtime.today, { ...emptySummary(), ...(data.today || {}) });
+                Object.assign(runtime.yesterday, { ...emptySummary(), ...(data.yesterday || {}) });
+                runtime.hourly.splice(0, runtime.hourly.length, ...((data.hourly || [])));
+                runtime.by_rule.splice(0, runtime.by_rule.length, ...((data.by_rule || [])));
+                runtime.records.splice(0, runtime.records.length, ...((data.records || []).map(decorateRecord)));
+                runtime.last_record = data.last_record ? decorateRecord(data.last_record) : null;
+                runtime.accounts.splice(0, runtime.accounts.length, ...((data.accounts || [])));
+                refreshIcons();
+            } catch (e) {
+                if (!silent) showToast("运行数据加载失败", "error");
+            }
+        };
+
+        const loadAll = async () => {
+            await Promise.all([loadConfig(), loadRuntimeStats()]);
+        };
+
+        const refreshStatus = async () => {
+            try {
+                const res = await fetch("/tool/monitor_settings_json");
+                const data = await res.json();
+                if (data.enabled !== undefined) config.enabled = data.enabled;
+                if (data.extra_enabled !== undefined) config.extra_enabled = data.extra_enabled;
+                if (data.main_account) identity.mainAccount = data.main_account;
+                available_accounts.splice(0, available_accounts.length, ...((data.available_accounts || [])));
+                if (Array.isArray(data.accounts) && data.accounts.length) {
+                    runtime.accounts.splice(0, runtime.accounts.length, ...data.accounts);
+                }
+                refreshIcons();
+            } catch (e) {}
+            await loadRuntimeStats(true);
+        };
+
+        const currentRule = computed(() => config.rules.find(rule => rule.id === ui.selectedId) || config.rules[0] || null);
+
+        const ruleStatus = (rule) => {
+            if (!rule.groups?.length) return { kind: "draft", text: "草稿" };
+            if (!rule.enabled || (rule.reply_account && !config.extra_enabled)) return { kind: "disabled", text: "已停用" };
+            return { kind: "", text: "运行中" };
+        };
+
+        const filteredRules = computed(() => {
+            const query = ui.ruleQuery.trim().toLowerCase();
+            return config.rules.filter(rule => {
+                const status = ruleStatus(rule).kind || "running";
+                const statusOk = ui.statusFilter === "all" || ui.statusFilter === status;
+                const hay = [rule.name, ...(rule.groups || []), ...(rule.keywords || []), ...(rule.file_extensions || [])].join(" ").toLowerCase();
+                return statusOk && (!query || hay.includes(query));
+            });
+        });
+
+        const stats = computed(() => {
+            const total = config.rules.length;
+            const running = config.rules.filter(rule => (ruleStatus(rule).kind || "running") === "running").length;
+            const disabled = config.rules.filter(rule => ruleStatus(rule).kind === "disabled").length;
+            const draft = config.rules.filter(rule => ruleStatus(rule).kind === "draft").length;
+            const today = Number(runtime.today.total || 0);
+            const success = Number(runtime.today.success || 0);
+            const failed = Number(runtime.today.failed || 0);
+            const successRate = Number(runtime.today.success_rate || 0).toFixed(1);
+            return { total, active: running, running, disabled, draft, today, yesterday: Number(runtime.yesterday.total || 0), success, failed, successRate };
+        });
+
+        const splitInline = (text) => String(text || "").split(/[\r\n,，]+/).map(s => s.trim()).filter(Boolean);
+        const listToString = (list) => (list || []).join("\\n");
+        const setList = (event, rule, key, comma = false) => {
+            const val = event.target.value || "";
+            rule[key] = comma ? splitInline(val) : val.split(/[\r\n]+/).map(s => s.trim()).filter(Boolean);
+        };
+        const setIntList = (event, rule, key) => {
+            rule[key] = String(event.target.value || "").split(/[\r\n,，]+/).map(s => s.trim()).filter(Boolean);
+        };
+
+        const selectRule = (rule) => {
+            ui.selectedId = rule.id;
+            refreshIcons();
+        };
+
+        const addRule = () => {
+            const rule = hydrateRule({
+                id: `rule_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+                name: `新规则 #${config.rules.length + 1}`,
+                replies: [hydrateReply({ type: "text", text: "", min: 1, max: 2 })]
+            });
+            config.rules.push(rule);
+            ui.selectedId = rule.id;
+            ui.activeTab = "basic";
+            refreshIcons();
+        };
+
+        const removeRule = (rule) => {
+            if (!confirm("确定删除此规则？")) return;
+            const index = config.rules.findIndex(item => item.id === rule.id);
+            if (index >= 0) config.rules.splice(index, 1);
+            ui.selectedId = config.rules[Math.max(0, index - 1)]?.id || config.rules[0]?.id || "";
+            refreshIcons();
+        };
+
+        const addStep = (rule) => {
+            rule.replies.push(hydrateReply({ type: "text", text: "", forward_to: "", min: 1, max: 3 }));
+            refreshIcons();
+        };
+        const duplicateStep = (rule, index) => {
+            rule.replies.splice(index + 1, 0, hydrateReply(JSON.parse(JSON.stringify(rule.replies[index]))));
+            refreshIcons();
+        };
+        const removeStep = (rule, index) => {
+            rule.replies.splice(index, 1);
+            refreshIcons();
+        };
+        const normalizeStep = (step) => {
+            step.text = step.text || "";
+            step.forward_to = step.forward_to || "";
+            step.min = step.min ?? 1;
+            step.max = step.max ?? 3;
+            if (step.type === "amount_logic") {
+                step.text = splitAmountConfig(step).join("|");
+                step.high_reply_min = step.high_reply_min ?? step.min ?? 1;
+                step.high_reply_max = step.high_reply_max ?? step.max ?? 3;
+                step.low_first_min = step.low_first_min ?? step.min ?? 1;
+                step.low_first_max = step.low_first_max ?? step.max ?? 3;
+                step.low_forward_min = step.low_forward_min ?? 1.5;
+                step.low_forward_max = step.low_forward_max ?? 3;
+                step.low_reply_min = step.low_reply_min ?? 1.5;
+                step.low_reply_max = step.low_reply_max ?? 3;
+            }
+        };
+
+        const splitAmountConfig = (reply) => {
+            const parts = String(reply.text || "").split("|");
+            while (parts.length < 3) parts.push("");
+            return parts.slice(0, 3);
+        };
+        const splitReplyLines = (value) => String(value || "").split(/(?:;;|\\n|\r?\n)+/).map(s => s.trim()).filter(Boolean);
+        const amountPart = (reply, index) => splitAmountConfig(reply)[index] || "";
+        const setAmountPart = (reply, index, value) => {
+            const parts = splitAmountConfig(reply);
+            parts[index] = value;
+            reply.text = parts.join("|");
+        };
+        const amountLowLines = (reply) => splitReplyLines(amountPart(reply, 2)).join("\n");
+        const setAmountLowLines = (reply, value) => {
+            const lines = splitReplyLines(value);
+            setAmountPart(reply, 2, lines.join(";;"));
+        };
+
+        const compactDelay = (value) => Number(value || 0).toFixed(1).replace(".0", "");
+        const displayDelay = (step) => {
+            if (step.type === "amount_logic") return `大${compactDelay(step.high_reply_max ?? step.max)}s / 小${compactDelay(step.low_first_max ?? step.max)}s`;
+            return `${compactDelay(step.max || step.min)}s`;
+        };
+        const stepCount = (rule) => Array.isArray(rule.replies) ? rule.replies.length : 0;
+        const shortGroups = (rule) => (rule.groups || []).slice(0, 1).join("") || "未配置";
+        const primaryKeyword = (rule) => {
+            if (rule.check_file) return (rule.file_extensions || [])[0]?.toUpperCase() || "文件";
+            return (rule.keywords || [])[0] || "关键词";
+        };
+        const stepTitle = (step) => ({
+            text: "发送文本",
+            forward: "直接转发",
+            copy_file: "转发 + 新文案",
+            amount_logic: "金额分流",
+            preempt_check: "抢答检测（自删）",
+            notify_user: "Bot私聊通知"
+        }[step.type] || "发送文本");
+        const stepDesc = (step) => {
+            if (step.type === "forward") return `目标群：${step.forward_to || "未配置"}`;
+            if (step.type === "copy_file") return `目标群：${step.forward_to || "未配置"}\\n文案：${step.text || "未配置"}`;
+            if (step.type === "amount_logic") {
+                const lowReplies = splitReplyLines(amountPart(step, 2));
+                const lowFlow = lowReplies.length
+                    ? `小额：${lowReplies[0]} -> 转发${step.forward_to ? ` ${step.forward_to}` : ""}${lowReplies.slice(1).length ? ` -> ${lowReplies.slice(1).join(" -> ")}` : ""}\\n大额回复延迟：${step.high_reply_min ?? step.min ?? 1}-${step.high_reply_max ?? step.max ?? 3}s\\n小额首句延迟：${step.low_first_min ?? step.min ?? 1}-${step.low_first_max ?? step.max ?? 3}s\\n小额转发延迟：${step.low_forward_min ?? 1.5}-${step.low_forward_max ?? 3}s\\n小额后续回复延迟：${step.low_reply_min ?? 1.5}-${step.low_reply_max ?? 3}s`
+                    : "小额：未配置";
+                return `阈值：${amountPart(step, 0) || "未配置"}\\n大额：${amountPart(step, 1) || "未配置"}\\n${lowFlow}`;
+            }
+            if (step.type === "preempt_check") return "若有人更快，会删除本规则已发出的消息";
+            if (step.type === "notify_user") return `通知：${step.forward_to || "未配置"}`;
+            return step.text || "未配置发送内容";
+        };
+
+        const previewSteps = computed(() => {
+            const rule = currentRule.value;
+            if (!rule) return [];
+            const steps = [{
+                title: "触发事件",
+                desc: rule.check_file ? `收到匹配的 ${(rule.file_extensions || []).join(", ") || "文件"} 文件` : `收到关键词：${(rule.keywords || []).join(", ") || "未配置"}`,
+                delay: ""
+            }];
+            (rule.replies || []).forEach(step => steps.push({
+                title: stepTitle(step),
+                desc: stepDesc(step),
+                delay: step.type === "amount_logic"
+                    ? `大额 ${compactDelay(step.high_reply_max ?? step.max)}s / 小额 ${compactDelay(step.low_first_max ?? step.max)}s`
+                    : `延迟 ${compactDelay(step.max || step.min)}s`
+            }));
+            if (rule.enable_approval) {
+                const action = rule.approval_action || {};
+                steps.push({ title: "等待领导同意", desc: `触发词：${(config.approval_keywords || []).join(", ") || "未配置"}\\n领导需引用大额回复或原始报备`, delay: "审批" });
+                steps.push({ title: "引用领导消息回复", desc: action.reply_admin || "未配置", delay: `延迟 ${Number(action.delay_1_max || action.delay_1_min || 0).toFixed(1).replace(".0", "")}s` });
+                steps.push({ title: "转发原始报备", desc: `目标群：${action.forward_to || "未配置"}`, delay: `延迟 ${Number(action.delay_2_max || action.delay_2_min || 0).toFixed(1).replace(".0", "")}s` });
+                steps.push({ title: "引用原始报备回复", desc: action.reply_origin || "未配置", delay: `延迟 ${Number(action.delay_3_max || action.delay_3_min || 0).toFixed(1).replace(".0", "")}s` });
+            }
+            return steps;
+        });
+
+        const estimatedTotal = computed(() => {
+            const rule = currentRule.value;
+            if (!rule) return "0.0";
+            const stepTotal = (rule.replies || []).reduce((sum, step) => {
+                if (step.type !== "amount_logic") return sum + Number(step.max || step.min || 0);
+                const high = Number(step.high_reply_max ?? step.max ?? 0);
+                const low = Number(step.low_first_max ?? step.max ?? 0) + Number(step.low_forward_max ?? 0) + Number(step.low_reply_max ?? 0);
+                return sum + Math.max(high, low);
+            }, 0);
+            const approval = rule.enable_approval ? Number(rule.approval_action?.delay_1_max || 0) + Number(rule.approval_action?.delay_2_max || 0) + Number(rule.approval_action?.delay_3_max || 0) : 0;
+            return (stepTotal + approval).toFixed(1);
+        });
+
+        const mainAccount = computed(() => runtime.main_account || identity.mainAccount || "主账号");
+        const avatarText = computed(() => String(mainAccount.value || "A").trim().slice(0, 1).toUpperCase() || "A");
+        const lastRefreshText = computed(() => runtime.server_time ? new Date(runtime.server_time).toLocaleTimeString("zh-CN", { hour12: false }) : "未同步");
+
+        const setPage = (page) => {
+            ui.page = page;
+            ui.showOps = false;
+            refreshIcons();
+        };
+
+        const deltaText = (today, yesterday) => {
+            const t = Number(today || 0);
+            const y = Number(yesterday || 0);
+            if (!y && !t) return "昨日 0";
+            if (!y) return `昨日 0，今日 +${t}`;
+            const diff = t - y;
+            const pct = Math.abs(diff / y * 100).toFixed(1);
+            if (diff === 0) return "较昨日持平";
+            return `较昨日 ${diff > 0 ? "+" : "-"}${pct}%`;
+        };
+
+        const statusLabel = (record) => ({
+            success: "执行成功",
+            failed: "执行失败",
+            skipped: "已跳过"
+        }[record?.status] || "未知");
+
+        const recordClass = (record) => {
+            if (record?.status === "success") return "good";
+            if (record?.status === "failed") return "bad";
+            if (record?.status === "skipped") return "skip";
+            return "";
+        };
+
+        const recordIcon = (record) => ({
+            success: "circle-check",
+            failed: "circle-alert",
+            skipped: "circle-minus"
+        }[record?.status] || "circle-dot");
+
+        const formatRecordTime = (record) => {
+            if (!record?.ts) return "-";
+            const dt = new Date(record.ts);
+            if (Number.isNaN(dt.getTime())) return record.time || "-";
+            return dt.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+        };
+
+        const selectedRuleStats = computed(() => {
+            const rule = currentRule.value;
+            const item = runtime.by_rule.find(row => row.id === rule?.id);
+            return { total: 0, success: 0, failed: 0, skipped: 0, action_count: 0, success_rate: 0, ...(item || {}) };
+        });
+
+        const currentRuleRecords = computed(() => {
+            const ruleId = currentRule.value?.id;
+            if (!ruleId) return [];
+            return runtime.records.filter(record => record.rule_id === ruleId);
+        });
+
+        const filteredRecords = computed(() => {
+            const query = ui.recordQuery.trim().toLowerCase();
+            return runtime.records.filter(record => {
+                const statusOk = ui.recordFilter === "all" || record.status === ui.recordFilter;
+                const hay = [record.rule_name, record.kind_label, record.target_account, record.detail, record.message_text, record.chat_id, record.sender_name].join(" ").toLowerCase();
+                return statusOk && (!query || hay.includes(query));
+            });
+        });
+
+        const recordFilterCount = (key) => key === "all" ? runtime.records.length : runtime.records.filter(record => record.status === key).length;
+
+        const hourlyBars = computed(() => {
+            const source = runtime.hourly.length ? runtime.hourly : Array.from({ length: 24 }, (_, hour) => ({ hour: String(hour).padStart(2, "0"), total: 0, success: 0, failed: 0, skipped: 0 }));
+            const max = Math.max(1, ...source.map(item => Number(item.total || 0)));
+            return source.map(item => ({
+                ...item,
+                height: item.total ? Math.max(8, Math.round(Number(item.total || 0) / max * 100)) : 2
+            }));
+        });
+
+        const compactHourlyBars = computed(() => hourlyBars.value);
+
+        const topRules = computed(() => {
+            const rows = runtime.by_rule.filter(rule => Number(rule.total || 0) > 0).slice(0, 6);
+            const max = Math.max(1, ...rows.map(rule => Number(rule.total || 0)));
+            return rows.map(rule => ({ ...rule, percent: Math.max(6, Math.round(Number(rule.total || 0) / max * 100)) }));
+        });
+
+        const accountRows = computed(() => runtime.accounts.length ? runtime.accounts : []);
+
+        const unique = (items) => Array.from(new Set(items.map(item => String(item || "").trim()).filter(Boolean)));
+        const actionLabels = {
+            text: "发送文本",
+            forward: "直接转发",
+            copy_file: "转发+新文案",
+            amount_logic: "金额分流",
+            preempt_check: "抢答检测",
+            notify_user: "Bot通知"
+        };
+        const resourceCards = computed(() => {
+            const groups = unique(config.rules.flatMap(rule => rule.groups || []));
+            const keywords = unique(config.rules.flatMap(rule => rule.keywords || []));
+            const fileTypes = unique(config.rules.flatMap(rule => rule.file_extensions || []));
+            const approvalRules = unique(config.rules.filter(rule => rule.enable_approval).map(rule => rule.name || rule.id));
+            const actionCounts = {};
+            config.rules.forEach(rule => (rule.replies || []).forEach(step => {
+                const label = actionLabels[step.type] || step.type || "发送文本";
+                actionCounts[label] = (actionCounts[label] || 0) + 1;
+            }));
+            const actions = Object.entries(actionCounts).map(([name, count]) => `${name} x${count}`);
+            return [
+                { key: "groups", label: "监听群", icon: "messages-square", count: groups.length, items: groups },
+                { key: "keywords", label: "文本关键词", icon: "search", count: keywords.length, items: keywords },
+                { key: "files", label: "文件类型", icon: "files", count: fileTypes.length, items: fileTypes.map(item => `.${item}`) },
+                { key: "actions", label: "动作类型", icon: "workflow", count: actions.length, items: actions },
+                { key: "approval", label: "审批规则", icon: "stamp", count: approvalRules.length, items: approvalRules },
+                { key: "accounts", label: "回复账号", icon: "users-round", count: accountRows.value.length, items: accountRows.value.map(item => `${item.name} · ${item.connected ? "在线" : "离线"}`) }
+            ];
+        });
+
+        const saveConfig = async (options = {}) => {
+            const silent = !!options.silent;
+            const successMessage = options.successMessage || "配置已保存";
+            ui.saving = true;
+            try {
+                const res = await fetch("/api/monitor_settings", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(config)
+                });
+                const json = await res.json();
+                if (json.success) {
+                    if (!silent) showToast(successMessage);
+                    return true;
+                }
+                showToast(`保存失败：${json.msg || "未知错误"}`, "error");
+                return false;
+            } catch (e) {
+                showToast("网络错误，保存失败", "error");
+                return false;
+            } finally {
+                ui.saving = false;
+                refreshIcons();
+            }
+        };
+
+        const toggleRuleEnabled = async (rule) => {
+            const previous = !!rule.enabled;
+            rule.enabled = !previous;
+            ui.autoSaving = true;
+            const ok = await saveConfig({ silent: true });
+            ui.autoSaving = false;
+            if (ok) showToast(`${rule.name || "规则"}已${rule.enabled ? "启用" : "停用"}并保存`);
+            else rule.enabled = previous;
+            refreshIcons();
+        };
+
+        const toggleMonitorEnabled = async () => {
+            const previous = !!config.enabled;
+            config.enabled = !previous;
+            ui.autoSaving = true;
+            const ok = await saveConfig({ silent: true });
+            ui.autoSaving = false;
+            if (ok) showToast(`监听已${config.enabled ? "开启" : "暂停"}并保存`);
+            else config.enabled = previous;
+            refreshIcons();
+        };
+
+        const onRecoveryImage = (event) => {
+            const file = event.target.files && event.target.files[0];
+            if (!file) return;
+            if (file.size > 10 * 1024 * 1024) {
+                showToast("图片过大（超过 10MB）", "error");
+                event.target.value = "";
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = () => {
+                recovery.image = reader.result;
+                recovery.imageName = file.name;
+            };
+            reader.onerror = () => showToast("图片读取失败", "error");
+            reader.readAsDataURL(file);
+        };
+
+        const clearRecoveryImage = () => {
+            recovery.image = "";
+            recovery.imageName = "";
+            document.querySelectorAll("[data-recovery-file]").forEach(input => input.value = "");
+            refreshIcons();
+        };
+
+        const recoveryStartText = () => {
+            if (!recovery.start_time) return "未选择";
+            const date = new Date(recovery.start_time);
+            if (Number.isNaN(date.getTime())) return recovery.start_time;
+            return date.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+        };
+
+        const runRecovery = async () => {
+            if (!recovery.start_time) {
+                showToast("请选择起始时间", "error");
+                return;
+            }
+            if (!confirm(`确定要执行批量回复吗？\\n起始时间：${recoveryStartText()}\\n目标：${recovery.search}`)) return;
+            try {
+                const res = await fetch("/api/batch_recovery", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(recovery)
+                });
+                const json = await res.json();
+                if (json.success) showToast(json.msg || "任务已启动");
+                else showToast(`执行失败：${json.msg || "未知错误"}`, "error");
+            } catch (e) {
+                showToast("网络请求错误", "error");
+            }
+        };
+
+        watch(() => [ui.activeTab, ui.showOps, config.rules.length, ui.selectedId], refreshIcons);
+        watch(() => [ui.page, ui.recordFilter, ui.recordQuery], refreshIcons);
+        watch(currentRule, refreshIcons);
+        onMounted(() => {
+            loadAll();
+            setInterval(refreshStatus, 3000);
+            refreshIcons();
+        });
+
+        return {
+            config, runtime, available_accounts, ui, toast, recovery, tabs, navItems, recordFilters,
+            currentRule, filteredRules, stats, previewSteps, estimatedTotal,
+            mainAccount, avatarText, lastRefreshText, selectedRuleStats, currentRuleRecords,
+            filteredRecords, hourlyBars, compactHourlyBars, topRules, accountRows, resourceCards,
+            loadConfig, loadRuntimeStats, loadAll, saveConfig, toggleRuleEnabled, toggleMonitorEnabled, selectRule, setPage, addRule, removeRule, ruleStatus,
+            listToString, setList, setIntList, splitInline, shortGroups, primaryKeyword, stepCount,
+            addStep, duplicateStep, removeStep, normalizeStep, displayDelay,
+            amountPart, setAmountPart, amountLowLines, setAmountLowLines,
+            ensureApprovalAction, onRecoveryImage, clearRecoveryImage, runRecovery,
+            deltaText, statusLabel, recordClass, recordIcon, formatRecordTime, recordFilterCount
+        };
+    }
+}).mount("#app");
+</script>
+</body>
+</html>
