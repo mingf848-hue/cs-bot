@@ -639,6 +639,11 @@ def get_first_sent_id_for_chat(sent_records, chat_id):
         return None
     return min(ids)
 
+def get_last_sent_record(sent_records):
+    if not sent_records:
+        return None, None
+    return sent_records[-1]
+
 def get_ordered_message_reply_target_ids(message):
     ids = []
     seen = set()
@@ -1503,6 +1508,7 @@ SETTINGS_HTML = """
                                         <span class="text-[10px] text-slate-400 font-mono">#{{rIndex + 1}}</span>
                                         <select v-model="reply.type" @change="normalizeStep(reply)" class="step-type">
                                             <option value="text">发送文本</option>
+                                            <option value="edit_prev">编辑上一条</option>
                                             <option value="forward">直接转发</option>
                                             <option value="copy_file">转发+新文案</option>
                                             <option value="amount_logic">金额分流</option>
@@ -1516,6 +1522,13 @@ SETTINGS_HTML = """
                                         <div class="visual-field">
                                             <div class="visual-label"><i class="fa-solid fa-message"></i>发送内容</div>
                                             <textarea v-model="reply.text" rows="3" class="bento-input w-full px-2 py-1.5 text-[11px] resize-none bg-white" placeholder="输入要回复到原群的文字"></textarea>
+                                        </div>
+                                    </template>
+
+                                    <template v-if="reply.type === 'edit_prev'">
+                                        <div class="visual-field">
+                                            <div class="visual-label"><i class="fa-solid fa-pen-to-square"></i>编辑为</div>
+                                            <textarea v-model="reply.text" rows="3" class="bento-input w-full px-2 py-1.5 text-[11px] resize-none bg-amber-50 border-amber-100 focus:border-amber-300" placeholder="把上一条自动发送的消息编辑成这段内容"></textarea>
                                         </div>
                                     </template>
 
@@ -2527,6 +2540,19 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                     tgt_chat_id = parse_peer_target(tgt)
                                     sent = await target_client.forward_messages(tgt_chat_id, event.message)
                                     remember_sent_message(sent_msgs, tgt_chat_id, sent)
+
+                            elif stype == "edit_prev":
+                                content = format_caption(step.get("text", ""))
+                                if not content:
+                                    continue
+                                last_chat_id, last_sent = get_last_sent_record(sent_msgs)
+                                last_msg_id = getattr(last_sent, "id", last_sent)
+                                if not last_chat_id or not last_msg_id:
+                                    logger.info(f"📝 [EditPrev] 规则 '{rule.get('name')}' 暂无可编辑的上一条消息，已跳过")
+                                    continue
+                                edited = await target_client.edit_message(last_chat_id, last_msg_id, content)
+                                if edited:
+                                    sent_msgs[-1] = (last_chat_id, edited)
 
                             elif stype == "copy_file":
                                 tgt = step.get("forward_to")
