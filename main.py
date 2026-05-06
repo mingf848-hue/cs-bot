@@ -308,12 +308,7 @@ try:
     
     CS_NAME_PREFIXES = ["YY_6/9_值班号", "Y_YY"]
 
-    GEMINI_API_KEY = (
-        os.environ.get("GEMINI_API_KEY")
-        or os.environ.get("GOOGLE_API_KEY")
-        or os.environ.get("GOOGLE_GENERATIVE_AI_API_KEY")
-    )
-    GEMINI_API_BASE_URL = os.environ.get("GEMINI_API_BASE_URL", "https://generativelanguage.googleapis.com").rstrip("/")
+    AI_PROXY_URL = os.environ.get("AI_PROXY_URL")
     AI_MODEL_NAME = "gemini-3.1-flash-lite-preview"
 
 except Exception as e:
@@ -367,8 +362,80 @@ stop_work_lock = None
 wait_check_all_rate_lock = Lock()
 wait_check_all_last_request_ts = 0.0
 
+BEIJING_TZ = timezone(timedelta(hours=8))
+WAIT_CHECK_SHIFT_WINDOWS = {
+    "早班全体": ("12:30", "21:00"),
+    "中班全体": ("20:45", "05:00"),
+    "晚班全体": ("04:45", "13:00"),
+}
+WAIT_CHECK_REPLY_CONTINUATION_MAX_MESSAGES = 3
+WAIT_CHECK_REPLY_CONTINUATION_SECONDS = 180
+WAIT_CHECK_CONTINUATION_PHRASES = [
+    "还是", "也是", "一样", "同样", "上面", "上一个", "刚才", "刚刚", "这个", "这个也是",
+    "不是这个", "就是这个", "这个不对", "不对", "错了", "有问题", "p图", "P图", "图片",
+    "截图", "看这个", "这个图", "这个图片", "补充", "补充一下", "对", "嗯", "是的"
+]
+WAIT_CHECK_NEW_QUESTION_HINTS = [
+    "另外", "还有", "再问", "顺便", "第二个", "另一个", "新问题", "订单", "充值", "提现",
+    "钱包", "冻结", "未到账", "不到账", "金额", "地址", "哈希", "hash", "卡号", "转账",
+    "支付", "付款", "收款", "提款", "存款", "为什么", "怎么", "怎么办", "处理", "查询"
+]
+
 def is_all_wait_check_keyword(keyword):
-    return keyword in ["全体", "全体检测"]
+    return keyword in ["全体", "全体检测"] or keyword in WAIT_CHECK_SHIFT_WINDOWS
+
+def get_wait_check_shift_window(keyword):
+    if keyword not in WAIT_CHECK_SHIFT_WINDOWS:
+        return None
+
+    start_text, end_text = WAIT_CHECK_SHIFT_WINDOWS[keyword]
+    start_hour, start_minute = map(int, start_text.split(":"))
+    end_hour, end_minute = map(int, end_text.split(":"))
+
+    now = datetime.now(BEIJING_TZ)
+    today_start = now.replace(hour=start_hour, minute=start_minute, second=0, microsecond=0)
+    today_end = now.replace(hour=end_hour, minute=end_minute, second=0, microsecond=0)
+
+    if today_end <= today_start:
+        if now >= today_start:
+            start_time = today_start
+            end_time = today_end + timedelta(days=1)
+        elif now <= today_end:
+            start_time = today_start - timedelta(days=1)
+            end_time = today_end
+        else:
+            start_time = today_start - timedelta(days=1)
+            end_time = today_end
+    else:
+        if now < today_start:
+            start_time = today_start - timedelta(days=1)
+            end_time = today_end - timedelta(days=1)
+        else:
+            start_time = today_start
+            end_time = today_end
+
+    scan_end_time = min(now, end_time)
+    return start_time, scan_end_time, start_text, end_text
+
+def is_obvious_reply_continuation(text):
+    clean_text = (text or "").strip()
+    if not clean_text:
+        return True
+    lower_text = clean_text.lower()
+    if any(hint.lower() in lower_text for hint in WAIT_CHECK_NEW_QUESTION_HINTS):
+        return False
+    if len(clean_text) <= 12 and any(phrase.lower() in lower_text for phrase in WAIT_CHECK_CONTINUATION_PHRASES):
+        return True
+    if clean_text in ["?", "？", "??", "？？", "。。。", "..."]:
+        return True
+    return False
+
+def is_obvious_new_question(text):
+    clean_text = (text or "").strip()
+    if not clean_text:
+        return False
+    lower_text = clean_text.lower()
+    return any(hint.lower() in lower_text for hint in WAIT_CHECK_NEW_QUESTION_HINTS)
 
 def format_wait_seconds(seconds):
     seconds = max(0, int(seconds))
@@ -921,8 +988,14 @@ WAIT_CHECK_HTML = """
                     <svg class="icon" style="color:#2563eb" viewBox="0 0 24 24"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg> 快捷选择
                 </h3>
                 <div class="kw-list">
-                    <div class="kw-btn" onclick="fillKeyword('全体')">
-                        <svg class="icon-sm" style="color:#0f766e" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 全体漏回检测
+                    <div class="kw-btn" onclick="fillKeyword('早班全体')">
+                        <svg class="icon-sm" style="color:#0f766e" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 早班全体
+                    </div>
+                    <div class="kw-btn" onclick="fillKeyword('中班全体')">
+                        <svg class="icon-sm" style="color:#0f766e" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 中班全体
+                    </div>
+                    <div class="kw-btn" onclick="fillKeyword('晚班全体')">
+                        <svg class="icon-sm" style="color:#0f766e" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 晚班全体
                     </div>
                     {% for kw in wait_keywords %}
                     <div class="kw-btn" onclick="fillKeyword('{{ kw }}')">
@@ -940,8 +1013,8 @@ WAIT_CHECK_HTML = """
                     闭环情况检测
                 </h1>
                 <div class="form-group">
-                    <label>扫描配置 (输入 "全体" 可进行全局遗漏排查)</label>
-                    <input type="text" id="keyword" placeholder="点击左侧快捷键或输入关键词..." value="全体">
+                    <label>扫描配置 (选择班次全体可按固定时间段排查)</label>
+                    <input type="text" id="keyword" placeholder="点击左侧快捷键或输入关键词..." value="早班全体">
                 </div>
                 <button onclick="startCheck()" id="btn-search">
                     <svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 开始排查
@@ -1393,12 +1466,6 @@ def wait_check_stream():
     if not keyword: return "Keyword required", 400
     if not bot_loop:
         return jsonify({"ok": False, "error": "Bot loop not ready"}), 503
-    if is_all_wait_check_keyword(keyword):
-        allowed, remaining = try_acquire_wait_check_all_slot()
-        if not allowed:
-            msg = f"全体漏回检测 1 小时内仅允许请求一次，请 {format_wait_seconds(remaining)} 后再试。"
-            return jsonify({"ok": False, "error": msg, "retry_after": int(remaining)}), 429
-
     def generate():
         result_queue = queue.Queue()
         asyncio.run_coroutine_threadsafe(check_wait_keyword_logic(keyword, result_queue), bot_loop)
@@ -1424,37 +1491,26 @@ def run_web():
 # 模块 4.5: AI 分析模块 (Ver 45.22)
 # ==========================================
 
-def _gemini_generate_json(prompt, timeout=60):
-    if not GEMINI_API_KEY:
-        raise RuntimeError("未配置 GEMINI_API_KEY 或 GOOGLE_API_KEY")
-
-    url = f"{GEMINI_API_BASE_URL}/v1beta/models/{AI_MODEL_NAME}:generateContent"
-    headers = {
-        "Content-Type": "application/json",
-        "x-goog-api-key": GEMINI_API_KEY,
-    }
-    payload = {
+def _ai_check_reply_needed(text):
+    # 彻底移除本地暴力兜底，完全依靠 AI 研判
+    proxy_url = AI_PROXY_URL.rstrip('/')
+    url = f"{proxy_url}/v1beta/models/{AI_MODEL_NAME}:generateContent"
+    headers = {'Content-Type': 'application/json'}
+    prompt = f"判断客户消息是否需要回复。消息: '{text}'\n如果是礼貌结束语(如：好、好的、谢谢、收到、ok等)或无意义，返回false。如果是问题或业务请求，返回true。\nJSON: {{'reason': '...', 'need_reply': true/false}}"
+    data = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "response_mime_type": "application/json",
             "temperature": 0.0
         }
     }
-    resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
-    if resp.status_code != 200:
-        raise RuntimeError(f"Gemini HTTP {resp.status_code}: {resp.text[:200]}")
-
-    raw_content = resp.json().get('candidates', [])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
-    return json.loads(raw_content)
-
-def _ai_check_reply_needed(text):
-    # 彻底移除本地暴力兜底，完全依靠 AI 研判
-    prompt = f"判断客户消息是否需要回复。消息: '{text}'\n如果是礼貌结束语(如：好、好的、谢谢、收到、ok等)或无意义，返回false。如果是问题或业务请求，返回true。\nJSON: {{'reason': '...', 'need_reply': true/false}}"
+    
     try:
-        decision = _gemini_generate_json(prompt)
-        return (decision.get("need_reply", True), decision.get("reason", "AI Decision"))
-    except Exception as e:
-        log_tree(9, f"❌ Gemini直连判断失败: {e}")
+        resp = requests.post(url, json=data, headers=headers, timeout=60)
+        if resp.status_code == 200:
+            decision = json.loads(resp.json()['candidates'][0]['content']['parts'][0]['text'])
+            return (decision.get("need_reply", True), decision.get("reason", "AI Decision"))
+    except: pass
     return (True, "⚠️ AI出错，请人工核查")
 
 def _ai_check_orphan_context(target_text, context_text_list, target_label="User"):
@@ -1466,6 +1522,10 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
     
     context_str = "\n".join(context_text_list)
     log_prefix = f"🤖 [AI-Orphan] Text='{target_text[:15]}...' | "
+    
+    proxy_url = AI_PROXY_URL.rstrip('/')
+    url = f"{proxy_url}/v1beta/models/{AI_MODEL_NAME}:generateContent"
+    headers = {'Content-Type': 'application/json'}
     
     # 修复了逻辑反转导致的判断BUG，变量名修改为 is_exempt (是否豁免)
     prompt = f"""
@@ -1486,16 +1546,74 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
     
     请输出 JSON 格式: {{"reason": "用中文简短说明原因...", "is_exempt": true/false}}
     """
-
+    
+    data = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "response_mime_type": "application/json",
+            "temperature": 0.0
+        }
+    }
+    
     try:
-        decision = _gemini_generate_json(prompt)
-        is_exempt = decision.get("is_exempt", False)
-        reason = decision.get("reason", "AI Decision")
-        log_tree(2, log_prefix + f"✅ AI判定: 豁免={is_exempt} | {reason}")
-        return (is_exempt, reason)
+        resp = requests.post(url, json=data, headers=headers, timeout=60)
+        if resp.status_code == 200:
+            res_json = resp.json()
+            raw_content = res_json.get('candidates', [])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+            decision = json.loads(raw_content)
+            is_exempt = decision.get("is_exempt", False)
+            reason = decision.get("reason", "AI Decision")
+            log_tree(2, log_prefix + f"✅ AI判定: 豁免={is_exempt} | {reason}")
+            return (is_exempt, reason)
+        else:
+            log_tree(9, log_prefix + f"❌ AI HTTP Error {resp.status_code}，标记人工核查")
+            return (False, f"⚠️ AI出错(HTTP {resp.status_code})，请人工核查")
     except Exception as e:
         log_tree(9, log_prefix + f"❌ AI Check Failed: {e}，标记人工核查")
         return (False, f"⚠️ AI出错，请人工核查")
+
+def _ai_check_reply_continuation(anchor_text, followup_texts):
+    if not followup_texts:
+        return True, "无补充消息"
+
+    proxy_url = AI_PROXY_URL.rstrip('/')
+    url = f"{proxy_url}/v1beta/models/{AI_MODEL_NAME}:generateContent"
+    headers = {'Content-Type': 'application/json'}
+    followup_str = "\n".join([f"{idx + 1}. {text}" for idx, text in enumerate(followup_texts)])
+    prompt = f"""
+    你是一名客服聊天质检员。
+    客户先发送了一条【带引用】的消息，随后又连续发送若干条【未引用】消息。
+    请判断这些未引用消息是否只是上一条带引用消息的补充说明，还是包含新的独立业务问题。
+
+    带引用消息: "{anchor_text}"
+    后续未引用消息:
+    {followup_str}
+
+    判断标准:
+    - 如果后续消息是在补充、纠正、抱怨、催促或说明同一件事，返回 is_continuation=true。
+    - 如果后续消息提出了新的订单、充值、提现、钱包、金额、地址、冻结等独立业务问题，返回 is_continuation=false。
+
+    请输出 JSON 格式: {{"reason": "用中文简短说明原因...", "is_continuation": true/false}}
+    """
+    data = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "response_mime_type": "application/json",
+            "temperature": 0.0
+        }
+    }
+
+    try:
+        resp = requests.post(url, json=data, headers=headers, timeout=30)
+        if resp.status_code == 200:
+            res_json = resp.json()
+            raw_content = res_json.get('candidates', [])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+            decision = json.loads(raw_content)
+            return decision.get("is_continuation", False), decision.get("reason", "AI Decision")
+        log_tree(9, f"❌ AI补充判定 HTTP Error {resp.status_code}，按新问题处理")
+    except Exception as e:
+        log_tree(9, f"❌ AI补充判定失败: {e}，按新问题处理")
+    return False, "AI补充判定失败，按新问题处理"
 
 async def _check_is_closed_logic(latest_msg):
     is_closed = False
@@ -1533,11 +1651,24 @@ async def check_wait_keyword_logic(keyword, result_queue):
     try:
         cutoff_hours = 10
         limit_count = 3000
+        shift_window = get_wait_check_shift_window(keyword)
         if is_all_wait_check_keyword(keyword):
             cutoff_hours = 20
             limit_count = 6000 
             
         cutoff_time = datetime.now(timezone.utc) - timedelta(hours=cutoff_hours)
+        scan_start_time = cutoff_time
+        scan_end_time = datetime.now(timezone.utc)
+        if shift_window:
+            shift_start, shift_end, shift_start_text, shift_end_text = shift_window
+            scan_start_time = shift_start.astimezone(timezone.utc)
+            scan_end_time = shift_end.astimezone(timezone.utc)
+            result_queue.put(json.dumps({
+                "type": "progress",
+                "percent": 1,
+                "msg": f"{keyword} 扫描窗口: 北京时间 {shift_start.strftime('%Y-%m-%d %H:%M')} - {shift_end.strftime('%Y-%m-%d %H:%M')} ({shift_start_text}-{shift_end_text})"
+            }))
+
         total_groups = len(CS_GROUP_IDS)
         EXCLUDED_GROUPS = [-1002807120955, -1002169616907]
         
@@ -1553,30 +1684,13 @@ async def check_wait_keyword_logic(keyword, result_queue):
             try:
                 history = []
                 async for m in client.iter_messages(chat_id, limit=limit_count):
-                    if m.date and m.date < cutoff_time: break
+                    if m.date and m.date > scan_end_time:
+                        continue
+                    if m.date and m.date < scan_start_time: break
                     if getattr(m, 'action', None): continue # 过滤拉人、置顶等系统服务消息
                     history.append(m)
                 
                 if is_all_wait_check_keyword(keyword):
-                    sender_cs_cache = {}
-
-                    async def is_history_cs_message(msg):
-                        sender_id = getattr(msg, "sender_id", None)
-                        if sender_id in ([MY_ID] + OTHER_CS_IDS):
-                            return True
-                        if sender_id in sender_cs_cache:
-                            return sender_cs_cache[sender_id]
-                        is_cs_sender = False
-                        try:
-                            sender = getattr(msg, "sender", None) or await msg.get_sender()
-                            name = getattr(sender, "first_name", "") or ""
-                            is_cs_sender = name.startswith(tuple(CS_NAME_PREFIXES))
-                        except Exception:
-                            is_cs_sender = False
-                        if sender_id:
-                            sender_cs_cache[sender_id] = is_cs_sender
-                        return is_cs_sender
-
                     msg_grouped_map = {}
                     user_msg_map = defaultdict(list)
                     for m in history:
@@ -1585,7 +1699,7 @@ async def check_wait_keyword_logic(keyword, result_queue):
 
                     replied_to_ids = set()
                     for m in history:
-                        if await is_history_cs_message(m) and m.reply_to and m.reply_to.reply_to_msg_id:
+                        if m.reply_to and m.reply_to.reply_to_msg_id:
                             replied_to_ids.add(m.reply_to.reply_to_msg_id)
                     
                     replied_grouped_ids = set()
@@ -1594,11 +1708,70 @@ async def check_wait_keyword_logic(keyword, result_queue):
                             replied_grouped_ids.add(msg_grouped_map[mid])
 
                     orphan_tasks = []
+                    reply_continuation_ai_cache = {}
                     for i, m in enumerate(history):
-                        if await is_history_cs_message(m): continue
+                        is_cs = False
+                        if m.sender_id in ([MY_ID] + OTHER_CS_IDS): is_cs = True
+                        else:
+                            try:
+                                s = m.sender 
+                                if s and getattr(s, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)): is_cs = True
+                            except: pass
+                        if is_cs: continue
 
                         if m.sticker or m.gif:
                             continue
+
+                        if m.reply_to and m.reply_to.reply_to_msg_id: continue
+
+                        previous_customer_reply = None
+                        followup_texts = []
+                        scan_idx = i + 1
+                        while scan_idx < len(history) and len(followup_texts) < WAIT_CHECK_REPLY_CONTINUATION_MAX_MESSAGES:
+                            previous_msg = history[scan_idx]
+                            previous_is_cs = False
+                            if previous_msg.sender_id in ([MY_ID] + OTHER_CS_IDS):
+                                previous_is_cs = True
+                            else:
+                                try:
+                                    previous_sender = previous_msg.sender
+                                    if previous_sender and getattr(previous_sender, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)):
+                                        previous_is_cs = True
+                                except:
+                                    pass
+                            if previous_is_cs:
+                                break
+                            if previous_msg.sender_id != m.sender_id:
+                                break
+                            if previous_msg.reply_to and previous_msg.reply_to.reply_to_msg_id:
+                                previous_customer_reply = previous_msg
+                                break
+                            if previous_msg.text:
+                                followup_texts.insert(0, previous_msg.text)
+                            scan_idx += 1
+
+                        if (
+                            previous_customer_reply
+                            and previous_customer_reply.date
+                            and m.date
+                            and 0 <= (m.date - previous_customer_reply.date).total_seconds() <= WAIT_CHECK_REPLY_CONTINUATION_SECONDS
+                        ):
+                            grouped_followups = followup_texts + [m.text or "[媒体/图片]"]
+                            if all(is_obvious_reply_continuation(text) for text in grouped_followups):
+                                continue
+                            if not any(is_obvious_new_question(text) for text in grouped_followups):
+                                cache_key = (chat_id, previous_customer_reply.id, tuple(grouped_followups))
+                                if cache_key not in reply_continuation_ai_cache:
+                                    is_continuation, continuation_reason = await asyncio.get_event_loop().run_in_executor(
+                                        None,
+                                        lambda anchor=previous_customer_reply.text or "[媒体/图片]", texts=list(grouped_followups): _ai_check_reply_continuation(anchor, texts)
+                                    )
+                                    reply_continuation_ai_cache[cache_key] = (is_continuation, continuation_reason)
+                                else:
+                                    is_continuation, continuation_reason = reply_continuation_ai_cache[cache_key]
+                                if is_continuation:
+                                    log_tree(2, f"🧩 引用后补充豁免 Msg={m.id}: {continuation_reason}")
+                                    continue
 
                         is_orphan = True
                         if m.id in replied_to_ids: is_orphan = False
