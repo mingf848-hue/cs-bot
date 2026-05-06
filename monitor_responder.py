@@ -931,7 +931,7 @@ DEFAULT_CONFIG = {
 
 current_config = DEFAULT_CONFIG.copy()
 rule_timers = {}
-VALID_REPLY_TYPES = {"text", "forward", "copy_file", "amount_logic", "preempt_check", "notify_user"}
+VALID_REPLY_TYPES = {"text", "edit_prev", "forward", "copy_file", "amount_logic", "preempt_check", "notify_user"}
 
 # [v78] 全局 Redis 初始化函数 (Main.py 可见)
 def init_redis_connection():
@@ -1187,6 +1187,26 @@ def save_config(new_config):
         return True, "保存成功"
     except Exception as e:
         logger.error(f"❌ [Monitor] 保存逻辑错误: {e}")
+        return False, str(e)
+
+def save_monitor_enabled(enabled):
+    global current_config
+    try:
+        current_config["enabled"] = bool(enabled)
+        if redis_client:
+            try:
+                redis_client.set(REDIS_KEY, json.dumps(current_config, ensure_ascii=False))
+            except Exception as e:
+                logger.error(f"❌ [Monitor] Redis 保存监听状态失败: {e}")
+                return False, str(e)
+
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(current_config, f, indent=4, ensure_ascii=False)
+
+        logger.info(f"💾 [Monitor] 监听状态已更新: {'开启' if current_config['enabled'] else '暂停'}")
+        return True, ""
+    except Exception as e:
+        logger.error(f"❌ [Monitor] 监听状态保存失败: {e}")
         return False, str(e)
 
 # --- Web UI (Bento Grid + Global CDN + Multi-Account Selector) ---
@@ -2115,6 +2135,19 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     def update_monitor_settings():
         success, msg = save_config(request.get_json(silent=True) or {})
         return jsonify({"success": success, "msg": msg if not success else ""})
+
+    @app.route('/api/monitor_toggle', methods=['POST'])
+    def update_monitor_toggle():
+        data = request.get_json(silent=True) or {}
+        enabled = data.get("enabled")
+        if enabled is None:
+            enabled = not current_config.get("enabled", True)
+        success, msg = save_monitor_enabled(bool(enabled))
+        return jsonify({
+            "success": success,
+            "enabled": current_config.get("enabled", True),
+            "msg": msg if not success else ""
+        })
 
     @app.route('/api/batch_recovery', methods=['POST'])
     def trigger_batch_recovery():
