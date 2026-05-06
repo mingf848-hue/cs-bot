@@ -747,9 +747,9 @@
 
         <main class="main">
             <header class="topbar">
-                <button class="env-pill" @click="toggleMonitorEnabled">
+                <button class="env-pill" @click="toggleMonitorEnabled" :disabled="ui.togglingMonitor">
                     <span class="status-dot" :style="{background: config.enabled ? 'var(--green)' : 'var(--red)'}"></span>
-                    <span>{{ config.enabled ? '生产环境' : '监听暂停' }}</span>
+                    <span>{{ ui.togglingMonitor ? '切换中' : (config.enabled ? '生产环境' : '监听暂停') }}</span>
                     <i data-lucide="chevron-down"></i>
                 </button>
                 <div class="top-actions">
@@ -1466,7 +1466,8 @@ createApp({
             globalSearch: "",
             showOps: false,
             saving: false,
-            autoSaving: false
+            autoSaving: false,
+            togglingMonitor: false
         });
         const toast = reactive({ show: false, msg: "", type: "success" });
         const formatDateTimeLocal = (date) => {
@@ -2003,12 +2004,27 @@ createApp({
 
         const toggleMonitorEnabled = async () => {
             const previous = !!config.enabled;
-            config.enabled = !previous;
+            const nextEnabled = !previous;
+            config.enabled = nextEnabled;
             ui.autoSaving = true;
-            const ok = await saveConfig({ silent: true });
-            ui.autoSaving = false;
-            if (ok) showToast(`监听已${config.enabled ? "开启" : "暂停"}并保存`);
-            else config.enabled = previous;
+            ui.togglingMonitor = true;
+            try {
+                const res = await fetch("/api/monitor_toggle", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ enabled: nextEnabled })
+                });
+                const json = await res.json();
+                if (!json.success) throw new Error(json.msg || "切换失败");
+                config.enabled = !!json.enabled;
+                showToast(`监听已${config.enabled ? "开启" : "暂停"}`);
+            } catch (e) {
+                config.enabled = previous;
+                showToast(`监听切换失败：${e.message || "网络错误"}`, "error");
+            } finally {
+                ui.autoSaving = false;
+                ui.togglingMonitor = false;
+            }
             refreshIcons();
         };
 
