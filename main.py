@@ -380,6 +380,10 @@ WAIT_CHECK_NEW_QUESTION_HINTS = [
     "钱包", "冻结", "未到账", "不到账", "金额", "地址", "哈希", "hash", "卡号", "转账",
     "支付", "付款", "收款", "提款", "存款", "为什么", "怎么", "怎么办", "处理", "查询"
 ]
+WAIT_CHECK_NOISE_TEXT_RE = re.compile(r"^[a-zA-Z0-9+._·。…!！?？,，、\\-\\s]{1,16}$")
+WAIT_CHECK_ML_MENTION_ALLOWLIST = {
+    "@ML_YYZB1", "@ML_YYZB2", "@ML_YYZB3", "@ML_YYZB4", "@ML_YYZB5", "@ML_YYZB6", "@ML_YYZB7"
+}
 
 def is_all_wait_check_keyword(keyword):
     return keyword in ["全体", "全体检测"] or keyword in WAIT_CHECK_SHIFT_WINDOWS
@@ -436,6 +440,31 @@ def is_obvious_new_question(text):
         return False
     lower_text = clean_text.lower()
     return any(hint.lower() in lower_text for hint in WAIT_CHECK_NEW_QUESTION_HINTS)
+
+def get_obvious_noise_reason(text):
+    clean_text = (text or "").strip()
+    if not clean_text:
+        return "空消息或无文本内容"
+    if is_obvious_new_question(clean_text):
+        return None
+    if clean_text in ["?", "？", "??", "？？", "。。。", "...", "·"]:
+        return "无意义符号或单独标点"
+    if len(clean_text) == 1 and re.fullmatch(r"[a-zA-Z0-9·。.!！?？]", clean_text):
+        return "单字符无意义内容"
+    if WAIT_CHECK_NOISE_TEXT_RE.fullmatch(clean_text):
+        meaningful_chars = re.findall(r"[\u4e00-\u9fff]", clean_text)
+        if not meaningful_chars:
+            return "乱码、测试字符或无业务诉求内容"
+    return None
+
+def get_mention_exempt_reason(text):
+    clean_text = text or ""
+    mentions = set(re.findall(r"@[A-Za-z0-9_]+", clean_text))
+    if not mentions:
+        return None
+    if mentions & WAIT_CHECK_ML_MENTION_ALLOWLIST:
+        return None
+    return "消息仅在催促或通知非指定 ML 值班账号，按班次遗漏规则忽略"
 
 def format_wait_seconds(seconds):
     seconds = max(0, int(seconds))
@@ -1724,6 +1753,8 @@ async def check_wait_keyword_logic(keyword, result_queue):
 
                         if m.reply_to and m.reply_to.reply_to_msg_id: continue
 
+                        code_exempt_reason = get_mention_exempt_reason(m.text or "") or get_obvious_noise_reason(m.text or "")
+
                         previous_customer_reply = None
                         followup_texts = []
                         scan_idx = i + 1
@@ -1778,13 +1809,13 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         elif m.grouped_id and m.grouped_id in replied_grouped_ids: is_orphan = False
                             
                         if is_orphan:
-                            orphan_tasks.append((i, m))
+                            orphan_tasks.append((i, m, code_exempt_reason))
                     
                     # 核心修复 3: 如果发现孤立消息，提前发出一个进度提示，避免 AI 耗时导致界面长时间假死
                     if orphan_tasks:
-                        result_queue.put(json.dumps({"type": "progress", "percent": percent, "msg": f"群组 {chat_id} 发现 {len(orphan_tasks)} 条潜在漏回消息，正在排队进行 AI 深度研判..."}))
+                        result_queue.put(json.dumps({"type": "progress", "percent": percent, "msg": f"群组 {chat_id} 发现 {len(orphan_tasks)} 条潜在漏回消息，正在进行规则豁免和 AI 研判..."}))
 
-                    for orphan_idx, (i, m) in enumerate(orphan_tasks):
+                    for orphan_idx, (i, m, preclosed_reason) in enumerate(orphan_tasks):
                         # 核心修复 4: 每完成 5 条 AI 判定推送一次进度
                         if orphan_idx > 0 and orphan_idx % 5 == 0:
                             result_queue.put(json.dumps({"type": "progress", "percent": percent, "msg": f"群组 {chat_id} AI 深度研判中 (进度: {orphan_idx}/{len(orphan_tasks)})..."}))
@@ -1828,21 +1859,26 @@ async def check_wait_keyword_logic(keyword, result_queue):
                             beijing_time_str = cm.date.astimezone(timezone(timedelta(hours=8))).strftime('%H:%M:%S')
                             context_txts.append(f"[{beijing_time_str}] {c_label}{reply_tag}: {c_txt}{marker}")
                         
-                        # 返回的变成了 is_exempt(是否豁免), 不再是倒错逻辑的 is_slip_up
-                        is_exempt, ai_reason = await asyncio.get_event_loop().run_in_executor(
-                            None, lambda: _ai_check_orphan_context(m.text or "[Media]", context_txts, target_label)
-                        )
-                        
                         found_count += 1
-                        
-                        # 核心修复：强制透传展示 AI 判定结果，不论真假
-                        if is_exempt:
+
+                        if preclosed_reason:
                             is_result_closed = True
                             closed_count += 1
-                            display_reason = f"AI判定(豁免): {ai_reason}"
+                            display_reason = f"代码判定(豁免): {preclosed_reason}，无需客服回复。"
                         else:
-                            is_result_closed = False
-                            display_reason = f"AI判定(漏回): {ai_reason}"
+                            # 返回的变成了 is_exempt(是否豁免), 不再是倒错逻辑的 is_slip_up
+                            is_exempt, ai_reason = await asyncio.get_event_loop().run_in_executor(
+                                None, lambda: _ai_check_orphan_context(m.text or "[Media]", context_txts, target_label)
+                            )
+                            
+                            # 核心修复：强制透传展示 AI 判定结果，不论真假
+                            if is_exempt:
+                                is_result_closed = True
+                                closed_count += 1
+                                display_reason = f"AI判定(豁免): {ai_reason}"
+                            else:
+                                is_result_closed = False
+                                display_reason = f"AI判定(漏回): {ai_reason}"
                         
                         group_name = str(chat_id)
                         try: g = await client.get_entity(chat_id); group_name = g.title
