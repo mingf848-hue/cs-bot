@@ -333,18 +333,6 @@ SELF_REPLY_TIMEOUT = 3 * 60
 MAX_CACHE_SIZE = 50000 
 WAIT_CHECK_ALL_RATE_LIMIT_SECONDS = 60 * 60
 WAIT_CHECK_ALL_RATE_LIMIT_REDIS_KEY = "wait_check_all_rate_limit_v1"
-ORPHAN_INDEX_PREFIX = "orphan_index_v1"
-ORPHAN_INDEX_TTL_SECONDS = 3 * 24 * 60 * 60
-ORPHAN_INDEX_LOOKBACK_HOURS = 20
-ORPHAN_INDEX_VERIFY_LIMIT = 60
-ORPHAN_INDEX_BACKFILL_LIMIT = 6000
-ORPHAN_INDEX_READY_KEY = f"{ORPHAN_INDEX_PREFIX}:ready"
-ORPHAN_INDEX_VERIFY_CONCURRENCY = max(1, int(os.environ.get("ORPHAN_INDEX_VERIFY_CONCURRENCY", "6")))
-ORPHAN_INDEX_CONTEXT_CONCURRENCY = max(1, int(os.environ.get("ORPHAN_INDEX_CONTEXT_CONCURRENCY", "4")))
-ORPHAN_INDEX_FETCH_CHUNK_SIZE = max(20, int(os.environ.get("ORPHAN_INDEX_FETCH_CHUNK_SIZE", "180")))
-ORPHAN_INDEX_QUERY_ENABLED = os.environ.get("ORPHAN_INDEX_QUERY_ENABLED", "0").lower() in ("1", "true", "yes", "on")
-ORPHAN_INDEX_ENABLED = os.environ.get("ORPHAN_INDEX_ENABLED", "0").lower() in ("1", "true", "yes", "on")
-ORPHAN_AI_BATCH_SIZE = max(1, int(os.environ.get("ORPHAN_AI_BATCH_SIZE", "8")))
 
 wait_tasks = {}
 followup_tasks = {} 
@@ -378,13 +366,6 @@ bot_loop = None
 stop_work_lock = None
 wait_check_all_rate_lock = Lock()
 wait_check_all_last_request_ts = 0.0
-
-def queue_progress(result_queue, percent, msg):
-    result_queue.put(json.dumps({
-        "type": "progress",
-        "percent": percent,
-        "msg": msg
-    }))
 
 def is_all_wait_check_keyword(keyword):
     return keyword in ["全体", "全体检测"]
@@ -1516,59 +1497,6 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
         log_tree(9, log_prefix + f"❌ AI Check Failed: {e}，标记人工核查")
         return (False, f"⚠️ AI出错，请人工核查")
 
-def _ai_check_orphan_batch(batch_items):
-    if not batch_items:
-        return {}
-
-    items_payload = []
-    for item in batch_items:
-        items_payload.append({
-            "id": str(item["id"]),
-            "target_sender": item["target_label"],
-            "target_message": item["target_text"],
-            "context": item["context_txts"],
-        })
-
-    prompt = f"""
-    你是一名经验丰富的客服质检员。
-    请批量判断下面这些【目标消息】是否需要客服继续回复（即是否属于“客服漏回”的事故）。
-
-    判断规则：
-    - 豁免无需回复 (is_exempt=true): 如果目标消息是连续发言补充、无意义语气词、礼貌结束语，或者上下文中客服已经明显针对同一事件/话题给出明确最终处理结果。
-    - 属于漏回需回复 (is_exempt=false): 如果目标消息是被忽视的独立业务请求、问题、报错反馈或催促，且上下文没有客服明确最终处理结果。
-    - “稍等 / 核实中 / 处理中”只是安抚，不等于最终处理结果。
-    - 聊天记录中的“[使用了引用回复]”代表该消息引用了别人，但只有客服针对同一事件给出明确最终结果才算闭环。
-
-    待判断项目 JSON：
-    {json.dumps(items_payload, ensure_ascii=False)}
-
-    请只输出 JSON 对象，格式如下：
-    {{
-      "results": [
-        {{"id": "原 id", "is_exempt": true/false, "reason": "中文简短原因"}}
-      ]
-    }}
-    """
-
-    try:
-        decision = _gemini_generate_json(prompt, timeout=90)
-        results = {}
-        for row in decision.get("results", []):
-            item_id = str(row.get("id", "")).strip()
-            if not item_id:
-                continue
-            results[item_id] = (
-                bool(row.get("is_exempt", False)),
-                str(row.get("reason", "AI Decision"))
-            )
-        if len(results) < len(batch_items):
-            missing = len(batch_items) - len(results)
-            log_tree(9, f"❌ [AI-Batch] 批量结果缺失 {missing} 条，将缺失项标记人工核查")
-        return results
-    except Exception as e:
-        log_tree(9, f"❌ [AI-Batch] 批量判定失败: {e}")
-        return {}
-
 async def _check_is_closed_logic(latest_msg):
     is_closed = False
     reason = ""
@@ -1615,8 +1543,6 @@ async def check_wait_keyword_logic(keyword, result_queue):
         
         found_count = 0
         closed_count = 0
-        is_all_query = is_all_wait_check_keyword(keyword)
-        all_orphan_batch_inputs = [] if is_all_query else None
 
         for idx, chat_id in enumerate(CS_GROUP_IDS):
             if chat_id in EXCLUDED_GROUPS: continue
@@ -1625,39 +1551,13 @@ async def check_wait_keyword_logic(keyword, result_queue):
             result_queue.put(json.dumps({"type": "progress", "percent": percent, "msg": f"正在同步通信群组 {chat_id} ({idx+1}/{total_groups})..."}))
 
             try:
-                if is_all_query and ORPHAN_INDEX_QUERY_ENABLED:
-                    cutoff_ts = cutoff_time.timestamp()
-                    indexed_items = load_index_open_items(chat_id, cutoff_ts)
-                    if indexed_items is not None:
-                        group_name = str(chat_id)
-                        try: g = await client.get_entity(chat_id); group_name = g.title
-                        except: pass
-
-                        result_queue.put(json.dumps({
-                            "type": "progress",
-                            "percent": percent,
-                            "msg": f"群组 {chat_id} 从索引读取到 {len(indexed_items)} 条未闭环候选，正在并发轻量复核..."
-                        }))
-
-                        open_items = await filter_index_open_items(chat_id, indexed_items, result_queue, percent)
-                        batch_inputs = await build_index_ai_items(chat_id, open_items, group_name, result_queue, percent)
-
-                        if batch_inputs:
-                            result_queue.put(json.dumps({
-                                "type": "progress",
-                                "percent": percent,
-                                "msg": f"群组 {chat_id} 复核后剩余 {len(batch_inputs)} 条，已加入全体 AI 队列..."
-                            }))
-                            all_orphan_batch_inputs.extend(batch_inputs)
-                        continue
-
                 history = []
                 async for m in client.iter_messages(chat_id, limit=limit_count):
                     if m.date and m.date < cutoff_time: break
                     if getattr(m, 'action', None): continue # 过滤拉人、置顶等系统服务消息
                     history.append(m)
                 
-                if is_all_query:
+                if is_all_wait_check_keyword(keyword):
                     sender_cs_cache = {}
 
                     async def is_history_cs_message(msg):
@@ -1709,14 +1609,13 @@ async def check_wait_keyword_logic(keyword, result_queue):
                     
                     # 核心修复 3: 如果发现孤立消息，提前发出一个进度提示，避免 AI 耗时导致界面长时间假死
                     if orphan_tasks:
-                        result_queue.put(json.dumps({"type": "progress", "percent": percent, "msg": f"群组 {chat_id} 发现 {len(orphan_tasks)} 条潜在漏回消息，已加入全体 AI 队列..."}))
+                        result_queue.put(json.dumps({"type": "progress", "percent": percent, "msg": f"群组 {chat_id} 发现 {len(orphan_tasks)} 条潜在漏回消息，正在排队进行 AI 深度研判..."}))
 
-                    batch_inputs = []
-                    group_name = str(chat_id)
-                    try: g = await client.get_entity(chat_id); group_name = g.title
-                    except: pass
+                    for orphan_idx, (i, m) in enumerate(orphan_tasks):
+                        # 核心修复 4: 每完成 5 条 AI 判定推送一次进度
+                        if orphan_idx > 0 and orphan_idx % 5 == 0:
+                            result_queue.put(json.dumps({"type": "progress", "percent": percent, "msg": f"群组 {chat_id} AI 深度研判中 (进度: {orphan_idx}/{len(orphan_tasks)})..."}))
 
-                    for i, m in orphan_tasks:
                         start = max(0, i - 30) 
                         end = min(len(history), i + 15)
                         context_slice = history[start:end]
@@ -1755,28 +1654,42 @@ async def check_wait_keyword_logic(keyword, result_queue):
                                 
                             beijing_time_str = cm.date.astimezone(timezone(timedelta(hours=8))).strftime('%H:%M:%S')
                             context_txts.append(f"[{beijing_time_str}] {c_label}{reply_tag}: {c_txt}{marker}")
+                        
+                        # 返回的变成了 is_exempt(是否豁免), 不再是倒错逻辑的 is_slip_up
+                        is_exempt, ai_reason = await asyncio.get_event_loop().run_in_executor(
+                            None, lambda: _ai_check_orphan_context(m.text or "[Media]", context_txts, target_label)
+                        )
+                        
+                        found_count += 1
+                        
+                        # 核心修复：强制透传展示 AI 判定结果，不论真假
+                        if is_exempt:
+                            is_result_closed = True
+                            closed_count += 1
+                            display_reason = f"AI判定(豁免): {ai_reason}"
+                        else:
+                            is_result_closed = False
+                            display_reason = f"AI判定(漏回): {ai_reason}"
+                        
+                        group_name = str(chat_id)
+                        try: g = await client.get_entity(chat_id); group_name = g.title
+                        except: pass
 
                         safe_text = (m.text or "[媒体/空]")[:100].replace('\n', ' ')
                         beijing_time = m.date.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
                         real_chat_id = str(chat_id).replace('-100', '')
                         link = f"https://t.me/c/{real_chat_id}/{m.id}"
-
-                        batch_inputs.append({
-                            "id": m.id,
-                            "target_text": m.text or "[Media]",
-                            "target_label": target_label,
-                            "context_txts": context_txts,
-                            "result_payload": {
-                                "type": "result",
-                                "time": beijing_time,
-                                "group_name": group_name,
-                                "found_text": safe_text,
-                                "latest_text": "无人引用回复",
-                                "link": link
-                            }
-                        })
-
-                    all_orphan_batch_inputs.extend(batch_inputs)
+                        
+                        result_queue.put(json.dumps({
+                            "type": "result",
+                            "is_closed": is_result_closed,
+                            "reason": display_reason,
+                            "time": beijing_time,
+                            "group_name": group_name,
+                            "found_text": safe_text,
+                            "latest_text": "无人引用回复",
+                            "link": link
+                        }))
                             
                     continue 
 
@@ -1837,21 +1750,6 @@ async def check_wait_keyword_logic(keyword, result_queue):
 
             except Exception as e:
                 logger.error(f"Group {chat_id} check failed: {e}")
-
-        if is_all_query:
-            total_candidates = len(all_orphan_batch_inputs)
-            result_queue.put(json.dumps({
-                "type": "progress",
-                "percent": 96,
-                "msg": f"20小时历史已拉取完成，共汇总 {total_candidates} 条潜在漏回消息，正在统一交给 AI 批量研判..."
-            }))
-            found_count, closed_count = await emit_ai_batch_results(
-                all_orphan_batch_inputs,
-                result_queue,
-                98,
-                "全体",
-                (found_count, closed_count)
-            )
 
         result_queue.put(json.dumps({
             "type": "done", 
@@ -2233,523 +2131,6 @@ async def check_msg_exists(channel_id, msg_id):
     except Exception as e:
         log_tree(2, f"⚠️ 网络检测失败 ({e}) -> 强制防漏报")
         return True 
-
-def orphan_item_key(chat_id, msg_id):
-    return f"{ORPHAN_INDEX_PREFIX}:item:{chat_id}:{msg_id}"
-
-def orphan_open_key(chat_id):
-    return f"{ORPHAN_INDEX_PREFIX}:open:{chat_id}"
-
-def orphan_group_key(chat_id, grouped_id):
-    return f"{ORPHAN_INDEX_PREFIX}:group:{chat_id}:{grouped_id}"
-
-def orphan_all_group_key(chat_id):
-    return f"{ORPHAN_INDEX_PREFIX}:groups:{chat_id}"
-
-def orphan_closed_by_key(chat_id, msg_id):
-    return f"{ORPHAN_INDEX_PREFIX}:closed_by:{chat_id}:{msg_id}"
-
-def get_orphan_index_client():
-    if not ORPHAN_INDEX_ENABLED:
-        return None
-    return get_wait_alert_redis_client()
-
-def redis_set_json(client_obj, key, payload, ttl=ORPHAN_INDEX_TTL_SECONDS):
-    client_obj.set(key, json.dumps(payload, ensure_ascii=False), ex=ttl)
-
-def redis_get_json(client_obj, key):
-    raw = client_obj.get(key)
-    if not raw:
-        return None
-    try:
-        return json.loads(raw)
-    except Exception:
-        return None
-
-def message_public_link(chat_id, msg_id):
-    return f"https://t.me/c/{str(chat_id).replace('-100', '')}/{msg_id}"
-
-def indexed_message_text(message):
-    if getattr(message, "sticker", None):
-        return "[贴纸]"
-    if getattr(message, "gif", None):
-        return "[GIF动图]"
-    text = getattr(message, "text", None) or ""
-    if text:
-        return text
-    if getattr(message, "media", None) or getattr(message, "photo", None) or getattr(message, "file", None):
-        return "[媒体/图片]"
-    return ""
-
-async def is_message_from_cs(message):
-    if not message:
-        return False
-    sender_id = getattr(message, "sender_id", None)
-    if sender_id in ([MY_ID] + OTHER_CS_IDS):
-        return True
-    try:
-        sender = getattr(message, "sender", None) or await message.get_sender()
-        name = getattr(sender, "first_name", "") or ""
-        return name.startswith(tuple(CS_NAME_PREFIXES))
-    except Exception:
-        return False
-
-def index_customer_message(chat_id, message, sender_name=""):
-    client_obj = get_orphan_index_client()
-    if not client_obj:
-        return False
-    if getattr(message, "action", None) or getattr(message, "sticker", None) or getattr(message, "gif", None):
-        return False
-
-    msg_id = getattr(message, "id", None)
-    if not msg_id:
-        return False
-    text = indexed_message_text(message)
-    if not text:
-        return False
-
-    ts = getattr(message, "date", None)
-    timestamp = ts.timestamp() if ts else time.time()
-    grouped_id = getattr(message, "grouped_id", None)
-    payload = {
-        "chat_id": chat_id,
-        "msg_id": msg_id,
-        "sender_id": getattr(message, "sender_id", None),
-        "sender_name": sender_name,
-        "text": text[:500],
-        "grouped_id": str(grouped_id) if grouped_id else "",
-        "date_ts": timestamp,
-        "date": ts.isoformat() if ts else "",
-        "status": "open",
-        "link": message_public_link(chat_id, msg_id),
-    }
-
-    redis_set_json(client_obj, orphan_item_key(chat_id, msg_id), payload)
-    client_obj.zadd(orphan_open_key(chat_id), {str(msg_id): timestamp})
-    client_obj.expire(orphan_open_key(chat_id), ORPHAN_INDEX_TTL_SECONDS)
-    if grouped_id:
-        g_key = orphan_group_key(chat_id, grouped_id)
-        client_obj.sadd(g_key, str(msg_id))
-        client_obj.expire(g_key, ORPHAN_INDEX_TTL_SECONDS)
-        client_obj.sadd(orphan_all_group_key(chat_id), str(grouped_id))
-        client_obj.expire(orphan_all_group_key(chat_id), ORPHAN_INDEX_TTL_SECONDS)
-    return True
-
-def mark_orphan_closed(chat_id, target_msg_id, closer_msg_id=None, reason="客服引用回复"):
-    client_obj = get_orphan_index_client()
-    if not client_obj or not target_msg_id:
-        return 0
-
-    closed_count = 0
-    candidate_ids = {str(target_msg_id)}
-    item = redis_get_json(client_obj, orphan_item_key(chat_id, target_msg_id))
-    grouped_id = item.get("grouped_id") if item else ""
-    if grouped_id:
-        for mid in client_obj.smembers(orphan_group_key(chat_id, grouped_id)) or []:
-            candidate_ids.add(str(mid))
-
-    for mid in candidate_ids:
-        key = orphan_item_key(chat_id, mid)
-        item = redis_get_json(client_obj, key)
-        if not item:
-            continue
-        item["status"] = "closed"
-        item["closed_by"] = closer_msg_id
-        item["closed_reason"] = reason
-        item["closed_at"] = time.time()
-        redis_set_json(client_obj, key, item)
-        client_obj.zrem(orphan_open_key(chat_id), str(mid))
-        closed_count += 1
-
-    if closer_msg_id and candidate_ids:
-        redis_set_json(client_obj, orphan_closed_by_key(chat_id, closer_msg_id), {
-            "chat_id": chat_id,
-            "target_ids": sorted(candidate_ids),
-            "closed_at": time.time(),
-            "reason": reason,
-        })
-    return closed_count
-
-def mark_orphan_deleted(chat_id, msg_id):
-    client_obj = get_orphan_index_client()
-    if not client_obj:
-        return
-    item = redis_get_json(client_obj, orphan_item_key(chat_id, msg_id))
-    if item:
-        item["status"] = "deleted"
-        item["deleted_at"] = time.time()
-        redis_set_json(client_obj, orphan_item_key(chat_id, msg_id), item)
-    client_obj.zrem(orphan_open_key(chat_id), str(msg_id))
-
-def load_index_open_items(chat_id, cutoff_ts):
-    client_obj = get_orphan_index_client()
-    if not client_obj:
-        return None
-    if not client_obj.get(ORPHAN_INDEX_READY_KEY):
-        return None
-    ids = client_obj.zrangebyscore(orphan_open_key(chat_id), cutoff_ts, "+inf")
-    items = []
-    for mid in ids:
-        item = redis_get_json(client_obj, orphan_item_key(chat_id, mid))
-        if item and item.get("status") == "open":
-            items.append(item)
-        else:
-            client_obj.zrem(orphan_open_key(chat_id), mid)
-    items.sort(key=lambda x: x.get("date_ts", 0), reverse=True)
-    return items
-
-async def verify_index_open_item(chat_id, item):
-    msg_id = int(item["msg_id"])
-    try:
-        original = await client.get_messages(chat_id, ids=msg_id)
-        if not original:
-            mark_orphan_deleted(chat_id, msg_id)
-            return False, "原消息已删除"
-
-        grouped_id = getattr(original, "grouped_id", None) or item.get("grouped_id")
-        ids = list(range(msg_id + 1, msg_id + ORPHAN_INDEX_VERIFY_LIMIT + 1))
-        nearby_msgs = await client.get_messages(chat_id, ids=ids)
-        nearby_msgs = [m for m in nearby_msgs if m]
-        nearby_msgs.sort(key=lambda x: x.id)
-        for m in nearby_msgs:
-            if getattr(m, "action", None):
-                continue
-            if not await is_message_from_cs(m):
-                continue
-            reply_to = getattr(m, "reply_to", None)
-            replied_id = None
-            if reply_to:
-                replied_id = getattr(reply_to, "reply_to_msg_id", None)
-            if not replied_id:
-                replied_id = getattr(m, "reply_to_msg_id", None)
-            if replied_id == msg_id:
-                mark_orphan_closed(chat_id, msg_id, getattr(m, "id", None), "查询前复核：客服引用回复")
-                return False, "查询前复核发现客服已引用回复"
-            if grouped_id and replied_id:
-                replied_item = redis_get_json(get_orphan_index_client(), orphan_item_key(chat_id, replied_id))
-                if replied_item and str(replied_item.get("grouped_id") or "") == str(grouped_id):
-                    mark_orphan_closed(chat_id, msg_id, getattr(m, "id", None), "查询前复核：客服引用同组消息")
-                    return False, "查询前复核发现客服已引用同组消息"
-        return True, ""
-    except Exception as e:
-        log_tree(9, f"索引复核失败 Chat={chat_id} Msg={msg_id}: {e}")
-        return True, "复核失败，保留候选"
-
-async def fetch_messages_by_ids(chat_id, msg_ids, concurrency=None):
-    msg_ids = sorted({int(mid) for mid in msg_ids if mid})
-    if not msg_ids:
-        return {}
-
-    semaphore = asyncio.Semaphore(concurrency or ORPHAN_INDEX_VERIFY_CONCURRENCY)
-
-    async def fetch_chunk(chunk):
-        async with semaphore:
-            messages = await client.get_messages(chat_id, ids=chunk)
-            return [m for m in messages if m]
-
-    chunks = [
-        msg_ids[i:i + ORPHAN_INDEX_FETCH_CHUNK_SIZE]
-        for i in range(0, len(msg_ids), ORPHAN_INDEX_FETCH_CHUNK_SIZE)
-    ]
-    tasks = [asyncio.create_task(fetch_chunk(chunk)) for chunk in chunks]
-    message_map = {}
-    try:
-        for task in asyncio.as_completed(tasks):
-            for message in await task:
-                message_map[getattr(message, "id", None)] = message
-    finally:
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-    return message_map
-
-async def filter_index_open_items(chat_id, indexed_items, result_queue, percent):
-    if not indexed_items:
-        return []
-
-    completed = 0
-    total = len(indexed_items)
-    open_items = []
-    target_ids = []
-    nearby_ids = set()
-    item_by_msg_id = {}
-
-    for item in indexed_items:
-        try:
-            msg_id = int(item["msg_id"])
-        except Exception:
-            continue
-        target_ids.append(msg_id)
-        item_by_msg_id[msg_id] = item
-        nearby_ids.update(range(msg_id + 1, msg_id + ORPHAN_INDEX_VERIFY_LIMIT + 1))
-
-    queue_progress(
-        result_queue,
-        percent,
-        f"群组 {chat_id} 正在批量拉取复核消息 ({len(target_ids)} 条候选)..."
-    )
-    original_map = await fetch_messages_by_ids(chat_id, target_ids)
-    missing_count = 0
-    for msg_id in target_ids:
-        if msg_id not in original_map:
-            mark_orphan_deleted(chat_id, msg_id)
-            missing_count += 1
-    if missing_count:
-        queue_progress(
-            result_queue,
-            percent,
-            f"群组 {chat_id} 已过滤 {missing_count} 条被删除消息，继续复核..."
-        )
-
-    queue_progress(
-        result_queue,
-        percent,
-        f"群组 {chat_id} 正在批量拉取候选后续消息..."
-    )
-    nearby_map = await fetch_messages_by_ids(chat_id, nearby_ids)
-    nearby_msgs = [m for m in nearby_map.values() if m and not getattr(m, "action", None)]
-    nearby_msgs.sort(key=lambda x: x.id)
-    cs_msgs = []
-    sender_cs_cache = {}
-
-    async def is_cached_cs_message(message):
-        sender_id = getattr(message, "sender_id", None)
-        if sender_id in ([MY_ID] + OTHER_CS_IDS):
-            return True
-        if sender_id in sender_cs_cache:
-            return sender_cs_cache[sender_id]
-        is_cs_sender = False
-        try:
-            sender = getattr(message, "sender", None) or await message.get_sender()
-            name = getattr(sender, "first_name", "") or ""
-            is_cs_sender = name.startswith(tuple(CS_NAME_PREFIXES))
-        except Exception:
-            is_cs_sender = False
-        if sender_id:
-            sender_cs_cache[sender_id] = is_cs_sender
-        return is_cs_sender
-
-    for message in nearby_msgs:
-        if await is_cached_cs_message(message):
-            cs_msgs.append(message)
-
-    grouped_item_map = {}
-    grouped_target_ids = defaultdict(set)
-    for msg_id, item in item_by_msg_id.items():
-        original = original_map.get(msg_id)
-        grouped_id = getattr(original, "grouped_id", None) or item.get("grouped_id")
-        if grouped_id:
-            grouped_key = str(grouped_id)
-            grouped_item_map[grouped_key] = item
-            grouped_target_ids[grouped_key].add(msg_id)
-
-    closed_ids = set()
-    for message in cs_msgs:
-        reply_to = getattr(message, "reply_to", None)
-        replied_id = getattr(reply_to, "reply_to_msg_id", None) if reply_to else None
-        if not replied_id:
-            replied_id = getattr(message, "reply_to_msg_id", None)
-        if not replied_id:
-            continue
-
-        replied_item = item_by_msg_id.get(replied_id)
-        if replied_item:
-            mark_orphan_closed(chat_id, replied_id, getattr(message, "id", None), "查询前批量复核：客服引用回复")
-            closed_ids.add(replied_id)
-            grouped_id = str(replied_item.get("grouped_id") or "")
-            closed_ids.update(grouped_target_ids.get(grouped_id, set()))
-            continue
-
-        redis_item = redis_get_json(get_orphan_index_client(), orphan_item_key(chat_id, replied_id))
-        grouped_id = str(redis_item.get("grouped_id") or "") if redis_item else ""
-        grouped_item = grouped_item_map.get(grouped_id)
-        if grouped_item:
-            target_id = int(grouped_item["msg_id"])
-            mark_orphan_closed(chat_id, target_id, getattr(message, "id", None), "查询前批量复核：客服引用同组消息")
-            closed_ids.add(target_id)
-            closed_ids.update(grouped_target_ids.get(grouped_id, set()))
-
-    for item in indexed_items:
-        completed += 1
-        try:
-            msg_id = int(item["msg_id"])
-        except Exception:
-            continue
-        if msg_id in original_map and msg_id not in closed_ids:
-            open_items.append(item)
-        if completed == total or completed % 5 == 0:
-            queue_progress(
-                result_queue,
-                percent,
-                f"群组 {chat_id} 索引批量复核中 (进度: {completed}/{total})..."
-            )
-
-    return open_items
-
-async def build_index_ai_items(chat_id, items, group_name, result_queue, percent):
-    if not items:
-        return []
-
-    semaphore = asyncio.Semaphore(ORPHAN_INDEX_CONTEXT_CONCURRENCY)
-    completed = 0
-    total = len(items)
-    built_items = []
-
-    async def build_one(item):
-        async with semaphore:
-            return await build_index_ai_item(chat_id, item, group_name)
-
-    tasks = [asyncio.create_task(build_one(item)) for item in items]
-    try:
-        for task in asyncio.as_completed(tasks):
-            built_items.append(await task)
-            completed += 1
-            if completed == total or completed % 5 == 0:
-                queue_progress(
-                    result_queue,
-                    percent,
-                    f"群组 {chat_id} 正在并发构建 AI 上下文 (进度: {completed}/{total})..."
-                )
-    finally:
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-
-    built_items.sort(key=lambda x: x["id"], reverse=True)
-    return built_items
-
-async def build_index_ai_item(chat_id, item, group_name):
-    msg_id = int(item["msg_id"])
-    context_txts = []
-    try:
-        start_id = max(1, msg_id - 30)
-        end_id = msg_id + 15
-        ids = list(range(start_id, end_id + 1))
-        context_msgs = await client.get_messages(chat_id, ids=ids)
-        context_msgs = [m for m in context_msgs if m and not getattr(m, "action", None)]
-        context_msgs.sort(key=lambda x: x.date)
-
-        for cm in context_msgs:
-            c_label = "CS" if await is_message_from_cs(cm) else f"User({str(cm.sender_id)[-4:]})"
-            if getattr(cm, "sticker", None):
-                c_txt = "[贴纸/表情包]"
-            elif getattr(cm, "gif", None):
-                c_txt = "[GIF动图]"
-            else:
-                c_txt = indexed_message_text(cm) or "[媒体/图片]"
-                c_txt = c_txt.replace('\n', ' ')
-            marker = " <<< TARGET" if cm.id == msg_id else ""
-            reply_tag = ""
-            if cm.reply_to and cm.reply_to.reply_to_msg_id:
-                reply_tag = " [使用了引用回复]"
-            beijing_time_str = cm.date.astimezone(timezone(timedelta(hours=8))).strftime('%H:%M:%S')
-            context_txts.append(f"[{beijing_time_str}] {c_label}{reply_tag}: {c_txt}{marker}")
-    except Exception as e:
-        log_tree(9, f"索引上下文构建失败 Chat={chat_id} Msg={msg_id}: {e}")
-
-    if not context_txts:
-        context_txts = [f"[未知时间] User({str(item.get('sender_id'))[-4:]}): {item.get('text') or '[媒体/图片]'} <<< TARGET"]
-
-    date_ts = float(item.get("date_ts") or time.time())
-    beijing_time = datetime.fromtimestamp(date_ts, timezone.utc).astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
-    safe_text = (item.get("text") or "[媒体/空]")[:100].replace('\n', ' ')
-    return {
-        "id": msg_id,
-        "target_text": item.get("text") or "[Media]",
-        "target_label": f"User({str(item.get('sender_id'))[-4:]})",
-        "context_txts": context_txts,
-        "result_payload": {
-            "type": "result",
-            "time": beijing_time,
-            "group_name": group_name,
-            "found_text": safe_text,
-            "latest_text": "无人引用回复",
-            "link": item.get("link") or message_public_link(chat_id, msg_id)
-        }
-    }
-
-async def emit_ai_batch_results(batch_inputs, result_queue, percent, chat_id, found_closed_counter):
-    batch_size = ORPHAN_AI_BATCH_SIZE
-    found_count, closed_count = found_closed_counter
-    scope_label = "全体" if str(chat_id) == "全体" else f"群组 {chat_id}"
-    for batch_start in range(0, len(batch_inputs), batch_size):
-        batch = batch_inputs[batch_start:batch_start + batch_size]
-        result_queue.put(json.dumps({
-            "type": "progress",
-            "percent": percent,
-            "msg": f"{scope_label} AI 批量研判中 (进度: {batch_start}/{len(batch_inputs)})..."
-        }))
-
-        batch_results = await asyncio.get_event_loop().run_in_executor(
-            None, lambda b=batch: _ai_check_orphan_batch(b)
-        )
-
-        for item in batch:
-            is_exempt, ai_reason = batch_results.get(
-                str(item["id"]),
-                (False, "⚠️ AI批量结果缺失，请人工核查")
-            )
-
-            found_count += 1
-            if is_exempt:
-                is_result_closed = True
-                closed_count += 1
-                display_reason = f"AI判定(豁免): {ai_reason}"
-            else:
-                is_result_closed = False
-                display_reason = f"AI判定(漏回): {ai_reason}"
-
-            payload = dict(item["result_payload"])
-            payload.update({
-                "is_closed": is_result_closed,
-                "reason": display_reason
-            })
-            result_queue.put(json.dumps(payload))
-    return found_count, closed_count
-
-async def backfill_orphan_index(hours=ORPHAN_INDEX_LOOKBACK_HOURS, limit=ORPHAN_INDEX_BACKFILL_LIMIT):
-    client_obj = get_orphan_index_client()
-    cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
-    log_tree(1, f"启动漏回索引补扫：最近 {hours} 小时")
-    for chat_id in CS_GROUP_IDS:
-        try:
-            history = []
-            async for m in client.iter_messages(chat_id, limit=limit):
-                if m.date and m.date < cutoff_time:
-                    break
-                if getattr(m, "action", None):
-                    continue
-                history.append(m)
-
-            history.sort(key=lambda x: x.id)
-            for m in history:
-                if await is_message_from_cs(m):
-                    reply_to = getattr(m, "reply_to", None)
-                    replied_id = getattr(reply_to, "reply_to_msg_id", None) if reply_to else getattr(m, "reply_to_msg_id", None)
-                    if replied_id:
-                        mark_orphan_closed(chat_id, replied_id, getattr(m, "id", None), "补扫：客服引用回复")
-                    continue
-
-                sender_name = ""
-                try:
-                    sender = getattr(m, "sender", None) or await m.get_sender()
-                    sender_name = getattr(sender, "first_name", "") or ""
-                except Exception:
-                    pass
-                index_customer_message(chat_id, m, sender_name)
-            log_tree(1, f"漏回索引补扫完成 Chat={chat_id} Count={len(history)}")
-            await asyncio.sleep(0.5)
-        except Exception as e:
-            log_tree(9, f"漏回索引补扫失败 Chat={chat_id}: {e}")
-    if client_obj:
-        client_obj.set(ORPHAN_INDEX_READY_KEY, str(int(time.time())), ex=ORPHAN_INDEX_TTL_SECONDS)
-
-async def orphan_index_maintenance_task():
-    await asyncio.sleep(5)
-    await backfill_orphan_index(hours=ORPHAN_INDEX_LOOKBACK_HOURS)
-    while True:
-        await asyncio.sleep(5 * 60)
-        await backfill_orphan_index(hours=1, limit=1200)
 
 # ==========================================
 # 模块 6: 任务管理与核心逻辑
@@ -3283,9 +2664,6 @@ async def handler_deleted(event):
             self_reply_tasks[msg_id].cancel()
             log_tree(2, f"🗑️ 物理删除侦测 Msg={msg_id} | {sender_info_str} -> 🛑 撤销 [自回] 监控")
 
-        if ORPHAN_INDEX_ENABLED and event.chat_id:
-            mark_orphan_deleted(event.chat_id, msg_id)
-
 async def get_traceable_sender(chat_id, reply_to_msg_id, current_recursion=0):
     if (chat_id, reply_to_msg_id) in msg_to_user_cache:
         return msg_to_user_cache[(chat_id, reply_to_msg_id)]
@@ -3397,11 +2775,6 @@ async def handler(event):
                 real_customer_id = await get_traceable_sender(chat_id, reply_to_msg_id)
 
         if is_sender_cs:
-            if ORPHAN_INDEX_ENABLED and reply_to_msg_id:
-                closed_count = mark_orphan_closed(chat_id, reply_to_msg_id, event.id, "实时：客服引用回复")
-                if closed_count:
-                    log_tree(1, f"📌 漏回索引闭环 | Chat={chat_id} Target={reply_to_msg_id} Closed={closed_count}")
-
             record_cs_activity(chat_id, user_id=real_customer_id, thread_id=current_thread_id, timestamp=msg_timestamp)
             
             if isinstance(event, events.MessageEdited):
@@ -3533,8 +2906,6 @@ async def handler(event):
             if isinstance(event, events.MessageEdited):
                 return
 
-            if ORPHAN_INDEX_ENABLED:
-                index_customer_message(chat_id, event.message, sender_name)
             update_msg_cache(chat_id, event.id, sender_id, grouped_id)
             cancel_tasks(chat_id, sender_id, current_thread_id, reason=f"客户发言: [{text[:100]}...]", types=['reply'])
             
@@ -3623,8 +2994,6 @@ if __name__ == '__main__':
             
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
-        if ORPHAN_INDEX_ENABLED:
-            bot_loop.create_task(orphan_index_maintenance_task())
         bot_loop.create_task(bot_command_polling_task())
         
         if init_stats_blueprint:
