@@ -1,4 +1,5 @@
 
+
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -914,6 +915,7 @@
                                                 <label>动作类型</label>
                                                 <select class="select" v-model="step.type" @change="normalizeStep(step)">
                                                     <option value="text">发送文本</option>
+                                                    <option value="edit_prev">编辑上一条</option>
                                                     <option value="forward">直接转发</option>
                                                     <option value="copy_file">转发+新文案</option>
                                                     <option value="amount_logic">金额分流</option>
@@ -934,6 +936,11 @@
                                         <div class="field" v-if="step.type === 'text'">
                                             <label>发送内容</label>
                                             <textarea class="textarea" v-model="step.text" placeholder="输入要回复到原群的文字"></textarea>
+                                        </div>
+
+                                        <div class="field" v-if="step.type === 'edit_prev'">
+                                            <label>编辑为</label>
+                                            <textarea class="textarea" v-model="step.text" placeholder="把上一条自动发送的消息编辑成这段内容"></textarea>
                                         </div>
 
                                         <div class="field" v-if="step.type === 'forward'">
@@ -1777,6 +1784,7 @@ createApp({
         };
         const stepTitle = (step) => ({
             text: "发送文本",
+            edit_prev: "编辑上一条",
             forward: "直接转发",
             copy_file: "转发 + 新文案",
             amount_logic: "金额分流",
@@ -1928,6 +1936,7 @@ createApp({
         const unique = (items) => Array.from(new Set(items.map(item => String(item || "").trim()).filter(Boolean)));
         const actionLabels = {
             text: "发送文本",
+            edit_prev: "编辑上一条",
             forward: "直接转发",
             copy_file: "转发+新文案",
             amount_logic: "金额分流",
