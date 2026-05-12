@@ -596,10 +596,14 @@
         .table-row span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .settings-grid .section { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: #fff; }
-        .schedule-list { display: grid; gap: 12px; }
-        .schedule-card { border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 12px; display: grid; gap: 12px; }
+        .schedule-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 620px)); gap: 14px; align-items: start; }
+        .schedule-card { border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 12px; display: grid; gap: 12px; max-width: 620px; }
         .schedule-card.off { opacity: .62; }
         .schedule-head { display: grid; grid-template-columns: minmax(180px, 1fr) auto auto; gap: 10px; align-items: center; }
+        .schedule-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+        .schedule-fields { display: grid; gap: 12px; }
+        .schedule-fields .textarea { min-height: 92px; }
+        .schedule-fields .message-box { min-height: 136px; }
         .schedule-meta { display: flex; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
         .input.full { grid-column: 1 / -1; }
         .file-picker { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -1359,7 +1363,7 @@
                                     <button type="button" class="switch" :class="{on: item.enabled}" :aria-pressed="item.enabled ? 'true' : 'false'" @click="item.enabled = !item.enabled"></button>
                                     <button class="icon-btn" @click="removeScheduledMessage(index)" aria-label="删除定时任务"><i data-lucide="trash-2"></i></button>
                                 </div>
-                                <div class="form-grid">
+                                <div class="schedule-options">
                                     <div class="field">
                                         <label>发送时间</label>
                                         <input class="input" type="time" v-model="item.time">
@@ -1382,13 +1386,15 @@
                                         <label>上次发送</label>
                                         <input class="input" :value="item.last_sent_at ? formatScheduleLastSent(item.last_sent_at) : '未发送'" readonly>
                                     </div>
+                                </div>
+                                <div class="schedule-fields">
                                     <div class="field full">
                                         <label>发送群组</label>
                                         <textarea class="textarea" :value="listToString(item.groups)" @change="setIntList($event, item, 'groups')" placeholder="-1001234567890&#10;-1009876543210"></textarea>
                                     </div>
                                     <div class="field full">
                                         <label>发送消息</label>
-                                        <textarea class="textarea" style="min-height:120px;" v-model="item.text" placeholder="输入每天要发送的消息"></textarea>
+                                        <textarea class="textarea message-box" v-model="item.text" placeholder="输入每天要发送的消息"></textarea>
                                     </div>
                                 </div>
                                 <div class="schedule-meta">
