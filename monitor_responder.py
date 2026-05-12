@@ -908,6 +908,7 @@ DEFAULT_CONFIG = {
         "start": "09:00",
         "end": "21:00"
     },
+    "scheduled_messages": [],
     "rules": [
         {
             "id": "default_rule",
@@ -931,7 +932,62 @@ DEFAULT_CONFIG = {
 
 current_config = DEFAULT_CONFIG.copy()
 rule_timers = {}
+scheduled_message_runs = {}
 VALID_REPLY_TYPES = {"text", "edit_prev", "forward", "copy_file", "amount_logic", "preempt_check", "notify_user"}
+
+def ensure_scheduled_message_id(item):
+    if not item.get("id"):
+        item["id"] = f"schedule_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+    return item["id"]
+
+def merge_scheduled_message_runtime_fields(items):
+    existing = {
+        str(item.get("id")): item
+        for item in current_config.get("scheduled_messages", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    for item in items:
+        old = existing.get(str(item.get("id")))
+        if not old:
+            continue
+        if old.get("last_sent_date") and not item.get("last_sent_date"):
+            item["last_sent_date"] = old.get("last_sent_date", "")
+        if old.get("last_sent_at") and not item.get("last_sent_at"):
+            item["last_sent_at"] = old.get("last_sent_at", "")
+    return items
+
+def normalize_scheduled_messages(raw_items):
+    if not isinstance(raw_items, list):
+        return []
+    clean_items = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        ensure_scheduled_message_id(item)
+        text = str(item.get("text", "") or "").strip()
+        targets = clean_group_ids(item.get("groups", []))
+        if not text and not targets and not item.get("enabled", False):
+            continue
+        frequency = str(item.get("frequency", "daily") or "daily").strip().lower()
+        if frequency not in ("daily", "once"):
+            frequency = "daily"
+        send_time = str(item.get("time", "09:00") or "09:00").strip()
+        if not re.fullmatch(r"\d{2}:\d{2}", send_time):
+            send_time = "09:00"
+        account = str(item.get("account", "") or "").strip()
+        clean_items.append({
+            "id": str(item["id"]),
+            "name": str(item.get("name", "") or "").strip(),
+            "enabled": bool(item.get("enabled", False)),
+            "groups": targets,
+            "text": text,
+            "time": send_time,
+            "frequency": frequency,
+            "account": account,
+            "last_sent_date": str(item.get("last_sent_date", "") or "").strip(),
+            "last_sent_at": str(item.get("last_sent_at", "") or "").strip(),
+        })
+    return clean_items
 
 # [v78] 全局 Redis 初始化函数 (Main.py 可见)
 def init_redis_connection():
@@ -994,6 +1050,7 @@ def load_config(system_cs_prefixes):
         current_config["approval_keywords"] = split_config_items(current_config.get("approval_keywords", []), split_commas=True)
     if not isinstance(current_config.get("schedule"), dict):
         current_config["schedule"] = DEFAULT_CONFIG["schedule"]
+    current_config["scheduled_messages"] = normalize_scheduled_messages(current_config.get("scheduled_messages", []))
     if not isinstance(current_config.get("rules"), list):
         current_config["rules"] = []
 
@@ -1084,6 +1141,10 @@ def save_config(new_config):
             new_config["schedule"]["active"] = bool(new_config["schedule"].get("active", False))
             new_config["schedule"]["start"] = str(new_config["schedule"].get("start", "09:00"))
             new_config["schedule"]["end"] = str(new_config["schedule"].get("end", "21:00"))
+
+        new_config["scheduled_messages"] = merge_scheduled_message_runtime_fields(
+            normalize_scheduled_messages(new_config.get("scheduled_messages", []))
+        )
 
         if "extra_enabled" in new_config:
             current_config["extra_enabled"] = bool(new_config["extra_enabled"])
@@ -1208,6 +1269,17 @@ def save_monitor_enabled(enabled):
     except Exception as e:
         logger.error(f"❌ [Monitor] 监听状态保存失败: {e}")
         return False, str(e)
+
+def persist_current_config():
+    try:
+        if redis_client:
+            redis_client.set(REDIS_KEY, json.dumps(current_config, ensure_ascii=False))
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(current_config, f, indent=4, ensure_ascii=False)
+        return True
+    except Exception as e:
+        logger.error(f"❌ [Monitor] 配置持久化失败: {e}")
+        return False
 
 # --- Web UI (Bento Grid + Global CDN + Multi-Account Selector) ---
 SETTINGS_HTML = """
@@ -1438,7 +1510,7 @@ SETTINGS_HTML = """
                 <div class="p-3 flex flex-col gap-3" :class="{'pointer-events-none': !rule.enabled || (rule.reply_account && rule.reply_account !== '' && !config.extra_enabled)}">
                     <div class="space-y-1.5">
                         <div class="flex items-center justify-between"><span class="section-label"><i class="fa-solid fa-eye mr-1"></i>监听来源</span><label class="flex items-center gap-1 cursor-pointer select-none"><input type="checkbox" v-model="rule.check_file" class="w-3 h-3 text-primary border-slate-300 rounded focus:ring-0"><span class="text-[10px] text-slate-500 font-medium" :class="{'text-primary': rule.check_file}">文件模式</span></label></div>
-                        <div class="relative"><textarea :value="listToString(rule.groups)" @change="stringToIntList($event, rule, 'groups')" rows="1" class="bento-input w-full px-2 py-1.5 resize-none h-8 leading-tight font-mono text-[11px]" placeholder="群ID (换行分隔)"></textarea></div>
+                        <div class="relative"><textarea :value="listToString(rule.groups)" @change="stringToIntList($event, rule, 'groups')" rows="3" class="bento-input w-full px-2 py-1.5 resize-y min-h-16 leading-tight font-mono text-[11px]" placeholder="群ID (换行分隔)"></textarea></div>
                         <div v-if="!rule.check_file" class="relative">
                             <textarea :value="listToString(rule.keywords)" @change="stringToList($event, rule, 'keywords')" rows="2" class="bento-input w-full px-2 py-1.5 resize-none h-16 leading-tight font-mono text-[11px] placeholder-slate-400" placeholder="普通: 代存&#10;正则: r:(代|带)存|入[金款]"></textarea>
                             <div class="absolute right-2 bottom-1 text-[9px] text-primary/60 bg-white/80 px-1 rounded pointer-events-none">支持正则 r:...</div>
@@ -1656,7 +1728,7 @@ SETTINGS_HTML = """
     const { createApp, reactive } = Vue;
     createApp({
         setup() {
-            const config = reactive({ enabled: false, extra_enabled: true, approval_keywords: [], schedule: {active: false, start: '09:00', end: '21:00'}, rules: [] });
+            const config = reactive({ enabled: false, extra_enabled: true, approval_keywords: [], schedule: {active: false, start: '09:00', end: '21:00'}, scheduled_messages: [], rules: [] });
             const toast = reactive({ show: false, msg: '', type: 'success' });
             const recovery = reactive({ search: '', reply: '', hours: 5, min: 2, max: 5, image: '', imageName: '' });
             const available_accounts = reactive([]);
@@ -1770,6 +1842,7 @@ SETTINGS_HTML = """
                     
                     if(data.schedule) config.schedule = data.schedule;
                     else config.schedule = {active: false, start: '09:00', end: '21:00'};
+                    config.scheduled_messages = Array.isArray(data.scheduled_messages) ? data.scheduled_messages : [];
 
                     config.rules = (data.rules || []).map(r => {
                         if(r.replies) r.replies = r.replies.map(rep => hydrateReply(rep));
@@ -2069,6 +2142,98 @@ async def run_schedule_job():
         except Exception as e:
             logger.error(f"❌ [Schedule] Error: {e}")
 
+async def send_scheduled_message_job(item):
+    job_id = ensure_scheduled_message_id(item)
+    job_name = item.get("name") or job_id
+    target_name = item.get("account") or MAIN_NAME
+    started = time.time()
+
+    if target_name != MAIN_NAME and not current_config.get("extra_enabled", True):
+        raise RuntimeError(f"副账号分身模式已关闭：{target_name}")
+    if target_name not in global_clients:
+        raise RuntimeError(f"发送账号不存在或未注册：{target_name}")
+
+    target_client = global_clients[target_name]
+    if target_name != MAIN_NAME and hasattr(target_client, "is_connected") and not target_client.is_connected():
+        raise RuntimeError(f"发送账号未连接：{target_name}")
+
+    targets = [parse_peer_target(group_id) for group_id in item.get("groups", [])]
+    targets = [target for target in targets if target is not None]
+    if not targets:
+        raise RuntimeError("未配置发送群组")
+    text = format_caption(item.get("text", ""))
+    if not text:
+        raise RuntimeError("发送消息不能为空")
+
+    sent_count = 0
+    errors = []
+    for target in targets:
+        try:
+            await target_client.send_message(target, text)
+            sent_count += 1
+            await asyncio.sleep(0.4)
+        except Exception as e:
+            errors.append(f"{target}: {e}")
+
+    status = "success" if sent_count and not errors else "failed"
+    detail = f"定时发送 {sent_count}/{len(targets)} 个群"
+    if errors:
+        detail += f"，失败: {'; '.join(errors[:3])}"
+    record_runtime_event(
+        "scheduled_message",
+        status,
+        detail,
+        rule={"id": job_id, "name": job_name},
+        target_account=target_name,
+        action_count=sent_count,
+        duration_ms=(time.time() - started) * 1000
+    )
+    if errors:
+        raise RuntimeError(detail)
+    return sent_count
+
+async def run_scheduled_messages_job():
+    while True:
+        try:
+            await asyncio.sleep(20)
+            now = datetime.now(BJ_TZ)
+            today = now.strftime("%Y-%m-%d")
+            current_time = now.strftime("%H:%M")
+            changed = False
+            for item in list(current_config.get("scheduled_messages", [])):
+                try:
+                    job_id = ensure_scheduled_message_id(item)
+                    if not item.get("enabled", False):
+                        continue
+                    if item.get("time") != current_time:
+                        continue
+                    if scheduled_message_runs.get(job_id) == today or item.get("last_sent_date") == today:
+                        continue
+
+                    logger.info(f"⏰ [ScheduledMessage] 开始执行: {item.get('name') or job_id} -> {item.get('groups')}")
+                    await send_scheduled_message_job(item)
+                    scheduled_message_runs[job_id] = today
+                    item["last_sent_date"] = today
+                    item["last_sent_at"] = now.isoformat()
+                    if item.get("frequency") == "once":
+                        item["enabled"] = False
+                    changed = True
+                    logger.info(f"✅ [ScheduledMessage] 执行完成: {item.get('name') or job_id}")
+                except Exception as e:
+                    scheduled_message_runs[item.get("id", "")] = today
+                    record_runtime_event(
+                        "scheduled_message",
+                        "failed",
+                        f"定时发送失败：{e}",
+                        rule={"id": item.get("id") or "__scheduled__", "name": item.get("name") or "定时发送"},
+                        target_account=item.get("account") or MAIN_NAME,
+                    )
+                    logger.error(f"❌ [ScheduledMessage] 执行失败: {e}")
+            if changed:
+                persist_current_config()
+        except Exception as e:
+            logger.error(f"❌ [ScheduledMessage] Error: {e}")
+
 def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None):
     global global_main_handler
     global system_cs_prefixes
@@ -2085,6 +2250,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     if bot_loop:
         bot_loop.create_task(run_schedule_job())
+        bot_loop.create_task(run_scheduled_messages_job())
 
     @app.route('/zd')
     def monitor_settings_page(): 

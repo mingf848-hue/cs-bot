@@ -1,5 +1,4 @@
 
-
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -597,6 +596,11 @@
         .table-row span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .settings-grid .section { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: #fff; }
+        .schedule-list { display: grid; gap: 12px; }
+        .schedule-card { border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 12px; display: grid; gap: 12px; }
+        .schedule-card.off { opacity: .62; }
+        .schedule-head { display: grid; grid-template-columns: minmax(180px, 1fr) auto auto; gap: 10px; align-items: center; }
+        .schedule-meta { display: flex; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
         .input.full { grid-column: 1 / -1; }
         .file-picker { display: flex; align-items: center; gap: 8px; min-width: 0; }
         .file-picker.full { grid-column: 1 / -1; }
@@ -878,7 +882,7 @@
                             <div class="form-grid">
                                 <div class="field">
                                     <div class="label-row"><label>监听来源</label><span class="hint">群 ID 每行一个</span></div>
-                                    <textarea class="textarea" :value="listToString(currentRule.groups)" @input="setIntList($event, currentRule, 'groups')" placeholder="-1001234567890"></textarea>
+                                    <textarea class="textarea" :value="listToString(currentRule.groups)" @change="setIntList($event, currentRule, 'groups')" placeholder="-1001234567890"></textarea>
                                 </div>
                                 <div class="field">
                                     <div class="label-row">
@@ -889,7 +893,7 @@
                                         <input class="input" :value="listToString(currentRule.file_extensions).replace(/\\n/g, ', ')" @input="setList($event, currentRule, 'file_extensions', true)" placeholder="png, jpg">
                                         <input class="input" :value="listToString(currentRule.filename_keywords).replace(/\\n/g, ', ')" @input="setList($event, currentRule, 'filename_keywords', true)" placeholder="文件名关键词">
                                     </div>
-                                    <textarea v-else class="textarea" :value="listToString(currentRule.keywords)" @input="setList($event, currentRule, 'keywords', false)" placeholder="普通: 代存&#10;正则: r:(代|带)存|入[金款]"></textarea>
+                                    <textarea v-else class="textarea" :value="listToString(currentRule.keywords)" @change="setList($event, currentRule, 'keywords', false)" placeholder="普通: 代存&#10;正则: r:(代|带)存|入[金款]"></textarea>
                                 </div>
                                 <div class="field full">
                                     <div class="label-row"><label>备注（可选）</label><span class="hint">{{ (currentRule.note || '').length }}/200</span></div>
@@ -1337,6 +1341,65 @@
                     </div>
                 </section>
 
+                <section class="panel page-wide page-panel" v-if="ui.page === 'scheduled'">
+                    <div class="panel-head">
+                        <div class="panel-title"><i data-lucide="send"></i>定时发送</div>
+                        <div class="toolbar">
+                            <button class="tiny-btn" @click="addScheduledMessage"><i data-lucide="plus"></i>新增任务</button>
+                            <button class="primary-btn" @click="saveConfig" :disabled="ui.saving"><i data-lucide="check"></i>{{ ui.saving ? '保存中' : '保存定时任务' }}</button>
+                        </div>
+                    </div>
+                    <div class="page-body">
+                        <div class="schedule-list">
+                            <article class="schedule-card" v-for="(item, index) in config.scheduled_messages" :key="item.id" :class="{off: !item.enabled}">
+                                <div class="schedule-head">
+                                    <input class="input" v-model="item.name" placeholder="任务名称">
+                                    <button type="button" class="switch" :class="{on: item.enabled}" :aria-pressed="item.enabled ? 'true' : 'false'" @click="item.enabled = !item.enabled"></button>
+                                    <button class="icon-btn" @click="removeScheduledMessage(index)" aria-label="删除定时任务"><i data-lucide="trash-2"></i></button>
+                                </div>
+                                <div class="form-grid">
+                                    <div class="field">
+                                        <label>发送时间</label>
+                                        <input class="input" type="time" v-model="item.time">
+                                    </div>
+                                    <div class="field">
+                                        <label>频率</label>
+                                        <select class="select" v-model="item.frequency">
+                                            <option value="daily">每天一次</option>
+                                            <option value="once">仅一次</option>
+                                        </select>
+                                    </div>
+                                    <div class="field">
+                                        <label>发送账号</label>
+                                        <select class="select" v-model="item.account">
+                                            <option value="">主账号（默认）</option>
+                                            <option v-for="acc in available_accounts" :key="acc" :value="acc">{{ acc }}</option>
+                                        </select>
+                                    </div>
+                                    <div class="field">
+                                        <label>上次发送</label>
+                                        <input class="input" :value="item.last_sent_at ? formatScheduleLastSent(item.last_sent_at) : '未发送'" readonly>
+                                    </div>
+                                    <div class="field full">
+                                        <label>发送群组</label>
+                                        <textarea class="textarea" :value="listToString(item.groups)" @change="setIntList($event, item, 'groups')" placeholder="-1001234567890&#10;-1009876543210"></textarea>
+                                    </div>
+                                    <div class="field full">
+                                        <label>发送消息</label>
+                                        <textarea class="textarea" style="min-height:120px;" v-model="item.text" placeholder="输入每天要发送的消息"></textarea>
+                                    </div>
+                                </div>
+                                <div class="schedule-meta">
+                                    <span>{{ item.enabled ? '已启用' : '已停用' }}</span>
+                                    <span>{{ item.frequency === 'once' ? '仅一次' : '每天一次' }}</span>
+                                    <span>{{ (item.groups || []).length }} 个群</span>
+                                </div>
+                            </article>
+                            <div v-if="!config.scheduled_messages.length" class="empty-state">暂无定时发送任务</div>
+                        </div>
+                    </div>
+                </section>
+
                 <section class="panel page-wide page-panel" v-if="ui.page === 'settings'">
                     <div class="panel-head">
                         <div class="panel-title"><i data-lucide="settings"></i>系统设置</div>
@@ -1436,6 +1499,7 @@ createApp({
             extra_enabled: true,
             approval_keywords: [],
             schedule: { active: false, start: "09:00", end: "21:00" },
+            scheduled_messages: [],
             rules: []
         });
         const identity = reactive({ mainAccount: "主账号" });
@@ -1491,6 +1555,7 @@ createApp({
             { key: "dashboard", label: "监控台", icon: "chart-no-axes-column" },
             { key: "rules", label: "规则管理", icon: "shield-check" },
             { key: "records", label: "执行记录", icon: "clipboard-list" },
+            { key: "scheduled", label: "定时发送", icon: "send" },
             { key: "analytics", label: "数据看板", icon: "chart-column" },
             { key: "resources", label: "资源管理", icon: "layers-3" },
             { key: "members", label: "成员权限", icon: "users-round" },
@@ -1582,6 +1647,19 @@ createApp({
             return { ...rule, ...hydrated };
         };
 
+        const hydrateScheduledMessage = (item = {}) => ({
+            id: item.id || `schedule_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+            name: item.name || "定时发送",
+            enabled: item.enabled ?? false,
+            groups: Array.isArray(item.groups) ? item.groups : [],
+            text: item.text || "",
+            time: item.time || "09:00",
+            frequency: item.frequency === "once" ? "once" : "daily",
+            account: item.account || "",
+            last_sent_date: item.last_sent_date || "",
+            last_sent_at: item.last_sent_at || ""
+        });
+
         const loadConfig = async () => {
             try {
                 const res = await fetch("/tool/monitor_settings_json");
@@ -1590,6 +1668,7 @@ createApp({
                 config.extra_enabled = data.extra_enabled ?? true;
                 config.approval_keywords = Array.isArray(data.approval_keywords) ? data.approval_keywords : ["同意", "批准", "ok"];
                 config.schedule = data.schedule || { active: false, start: "09:00", end: "21:00" };
+                config.scheduled_messages = (data.scheduled_messages || []).map(hydrateScheduledMessage);
                 config.rules = (data.rules || []).map(hydrateRule);
                 identity.mainAccount = data.main_account || identity.mainAccount;
                 available_accounts.splice(0, available_accounts.length, ...((data.available_accounts || [])));
@@ -1608,7 +1687,8 @@ createApp({
         const kindLabel = (kind) => ({
             monitor: "规则监听",
             approval: "同意审批",
-            recovery: "批量恢复"
+            recovery: "批量恢复",
+            scheduled_message: "定时发送"
         }[kind] || "系统任务");
 
         const decorateRecord = (record = {}) => ({
@@ -1722,6 +1802,26 @@ createApp({
             if (index >= 0) config.rules.splice(index, 1);
             ui.selectedId = config.rules[Math.max(0, index - 1)]?.id || config.rules[0]?.id || "";
             refreshIcons();
+        };
+
+        const addScheduledMessage = () => {
+            config.scheduled_messages.push(hydrateScheduledMessage({
+                name: `定时发送 #${config.scheduled_messages.length + 1}`,
+                enabled: true
+            }));
+            refreshIcons();
+        };
+
+        const removeScheduledMessage = (index) => {
+            if (!confirm("确定删除此定时发送任务？")) return;
+            config.scheduled_messages.splice(index, 1);
+            refreshIcons();
+        };
+
+        const formatScheduleLastSent = (value) => {
+            const dt = new Date(value);
+            if (Number.isNaN(dt.getTime())) return value || "未发送";
+            return dt.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
         };
 
         const addStep = (rule) => {
@@ -2094,6 +2194,7 @@ createApp({
             mainAccount, avatarText, lastRefreshText, selectedRuleStats, currentRuleRecords,
             filteredRecords, hourlyBars, compactHourlyBars, topRules, accountRows, resourceCards,
             loadConfig, loadRuntimeStats, loadAll, saveConfig, toggleRuleEnabled, toggleMonitorEnabled, selectRule, setPage, addRule, removeRule, ruleStatus,
+            addScheduledMessage, removeScheduledMessage, formatScheduleLastSent,
             listToString, setList, setIntList, splitInline, shortGroups, primaryKeyword, stepCount,
             addStep, duplicateStep, removeStep, normalizeStep, displayDelay,
             amountPart, setAmountPart, amountLowLines, setAmountLowLines,

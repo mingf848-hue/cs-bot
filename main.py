@@ -101,6 +101,34 @@ def extract_id_list(env_str):
             except: pass
     return result
 
+def build_group_id_lookup(group_ids):
+    lookup = set()
+    for raw_id in group_ids or []:
+        try:
+            group_id = int(raw_id)
+        except Exception:
+            continue
+        lookup.add(group_id)
+        if group_id > 0:
+            try:
+                lookup.add(int(f"-100{group_id}"))
+            except Exception:
+                pass
+        else:
+            group_text = str(group_id)
+            if group_text.startswith("-100") and len(group_text) > 4:
+                try:
+                    lookup.add(int(group_text[4:]))
+                except Exception:
+                    pass
+    return lookup
+
+def is_configured_cs_group(chat_id):
+    try:
+        return int(chat_id) in CONFIGURED_CS_GROUP_IDS
+    except Exception:
+        return False
+
 WAIT_ALERT_REDIS_KEY = "wait_alert_config_v1"
 wait_alert_config_lock = Lock()
 wait_alert_redis_client = None
@@ -272,6 +300,7 @@ try:
     BOT_TOKEN = os.environ["BOT_TOKEN"]
     cs_groups_env = os.environ["CS_GROUP_IDS"]
     CS_GROUP_IDS = extract_id_list(cs_groups_env)
+    CONFIGURED_CS_GROUP_IDS = build_group_id_lookup(CS_GROUP_IDS)
     alert_env = os.environ["ALERT_GROUP_ID"]
     ALERT_GROUP_IDS = extract_id_list(alert_env)
     other_cs_env = os.environ.get("OTHER_CS_IDS", "")
@@ -295,7 +324,7 @@ try:
         
     KEEP_SIGNATURES = {x.strip() for x in keep_list if x.strip()}
     
-    log_tree(0, f"🔍 关键词配置: WAIT={len(WAIT_SIGNATURES)} | WAIT_ALERT={len(WAIT_ALERT_SIGNATURES)} ({WAIT_ALERT_SOURCE}) | KEEP={len(KEEP_SIGNATURES)}")
+    log_tree(0, f"🔍 关键词配置: CS_GROUPS={len(CONFIGURED_CS_GROUP_IDS)} | WAIT={len(WAIT_SIGNATURES)} | WAIT_ALERT={len(WAIT_ALERT_SIGNATURES)} ({WAIT_ALERT_SOURCE}) | KEEP={len(KEEP_SIGNATURES)}")
 
     default_ignore = (
         "好,1,不用了,到了,好的,谢谢,收到,明白,好的谢谢,ok,好滴,"
@@ -351,7 +380,9 @@ chat_thread_active_msgs = {}
 
 msg_to_user_cache = {} 
 msg_content_cache = {}
+msg_group_cache = {}
 group_to_user_cache = {}
+group_to_msg_ids_cache = {}
 
 cs_activity_log = {}
 
@@ -514,11 +545,53 @@ def update_msg_cache(chat_id, msg_id, user_id, grouped_id=None):
     msg_to_user_cache[key] = user_id
     if grouped_id:
         g_key = (chat_id, grouped_id)
+        msg_group_cache[key] = grouped_id
         if len(group_to_user_cache) >= 5000:
              if g_key not in group_to_user_cache:
                  try: group_to_user_cache.pop(next(iter(group_to_user_cache)))
                  except StopIteration: pass
         group_to_user_cache[g_key] = user_id
+        if len(group_to_msg_ids_cache) >= 5000 and g_key not in group_to_msg_ids_cache:
+            try:
+                old_group_key = next(iter(group_to_msg_ids_cache))
+                del group_to_msg_ids_cache[old_group_key]
+            except StopIteration:
+                pass
+        group_to_msg_ids_cache.setdefault(g_key, set()).add(msg_id)
+
+def get_cached_album_msg_ids(chat_id, msg_id):
+    grouped_id = msg_group_cache.get((chat_id, msg_id))
+    if not grouped_id:
+        return set()
+    return set(group_to_msg_ids_cache.get((chat_id, grouped_id), set()))
+
+def get_ordered_reply_target_ids(message):
+    ids = []
+
+    def add_id(value):
+        try:
+            value = int(value)
+        except Exception:
+            return
+        if value and value not in ids:
+            ids.append(value)
+
+    add_id(getattr(message, "reply_to_msg_id", None))
+    reply_to = getattr(message, "reply_to", None)
+    if reply_to:
+        add_id(getattr(reply_to, "reply_to_msg_id", None))
+        add_id(getattr(reply_to, "reply_to_top_id", None))
+    return ids
+
+def get_primary_reply_target_id(message):
+    reply_ids = get_ordered_reply_target_ids(message)
+    return reply_ids[0] if reply_ids else None
+
+def get_related_album_msg_ids(chat_id, msg_id):
+    related_ids = {msg_id} if msg_id else set()
+    for album_msg_id in list(related_ids):
+        related_ids.update(get_cached_album_msg_ids(chat_id, album_msg_id))
+    return related_ids
 
 def update_content_cache(chat_id, msg_id, name, text):
     key = (chat_id, msg_id)
@@ -2617,8 +2690,7 @@ def remove_map_entries_by_value(mapping, value):
         if mapped_value == value:
             del mapping[key]
 
-def check_recent_activity_safe(chat_id, task_start_time, user_ids=None, thread_id=None):
-    buffer_seconds = 10
+def check_recent_activity_safe(chat_id, task_start_time, user_ids=None, thread_id=None, buffer_seconds=10):
     if user_ids:
         for uid in user_ids:
             last_act = cs_activity_log.get((chat_id, uid), 0)
@@ -2628,6 +2700,32 @@ def check_recent_activity_safe(chat_id, task_start_time, user_ids=None, thread_i
         last_act = cs_activity_log.get((chat_id, thread_id), 0)
         if last_act > task_start_time + buffer_seconds:
             return True, f"消息流 {thread_id} 下有新回复"
+    return False, None
+
+async def has_cs_reply_after(chat_id, target_msg_id, trigger_timestamp, thread_id=None, limit=80):
+    target_ids = get_related_album_msg_ids(chat_id, target_msg_id)
+    if not target_ids:
+        return False, None
+
+    try:
+        async for m in client.iter_messages(chat_id, limit=limit):
+            if getattr(m, 'action', None):
+                continue
+            if m.date and m.date.timestamp() <= trigger_timestamp:
+                break
+            if not await is_official_cs(m):
+                continue
+
+            reply_ids = get_ordered_reply_target_ids(m)
+            if target_ids.intersection(reply_ids):
+                return True, f"客服 Msg={m.id} 已引用回复 Msg={target_msg_id}"
+
+            if thread_id and thread_id in reply_ids:
+                text = m.text or ""
+                if not match_signature(text, WAIT_SIGNATURES) and text.strip() not in KEEP_SIGNATURES:
+                    return True, f"客服 Msg={m.id} 已在同一消息流回复"
+    except Exception as e:
+        log_tree(9, f"漏回二次校验失败 Msg={target_msg_id}: {e}")
     return False, None
 
 # ==========================================
@@ -2756,6 +2854,14 @@ async def task_reply_timeout(trigger_msg_id, sender_name, content, link, chat_id
         
         await asyncio.sleep(REPLY_TIMEOUT)
         if not IS_WORKING: return
+        if not is_configured_cs_group(chat_id):
+            log_tree(1, f"🛡️ 拦截 [漏回] 非CS_GROUP_IDS群组 Msg={trigger_msg_id} | Chat={chat_id}")
+            return
+
+        replied, replied_reason = await has_cs_reply_after(chat_id, trigger_msg_id, trigger_timestamp, thread_id)
+        if replied:
+            log_tree(2, f"🛡️ 拦截误报 [漏回] Msg={trigger_msg_id} | 原因: {replied_reason}")
+            return
         
         log_tree(2, f"触发 [漏回] 报警 Msg={trigger_msg_id}")
         await send_alert(format_alert_message(
@@ -2918,13 +3024,35 @@ async def get_context_users(chat_id, msg_id):
     cs_ids = [MY_ID] + OTHER_CS_IDS
     return [u for u in users if u not in cs_ids]
 
-@client.on(events.NewMessage(chats=CS_GROUP_IDS))
-@client.on(events.MessageEdited(chats=CS_GROUP_IDS))
+async def get_replied_message_info(chat_id, reply_to_msg_id):
+    if not reply_to_msg_id:
+        return None, None, None
+    try:
+        msgs = await client.get_messages(chat_id, ids=[reply_to_msg_id])
+        if not msgs or not msgs[0]:
+            return None, None, None
+        replied_msg = msgs[0]
+        target_id = replied_msg.sender_id
+        target_name = "未知客服"
+        sender_obj = await replied_msg.get_sender()
+        if sender_obj:
+            target_name = getattr(sender_obj, 'first_name', 'Unknown')
+        return replied_msg, target_id, target_name
+    except Exception as e:
+        log_tree(9, f"获取引用消息失败 Msg={reply_to_msg_id}: {e}")
+        return None, None, None
+
+@client.on(events.NewMessage(chats=list(CONFIGURED_CS_GROUP_IDS)))
+@client.on(events.MessageEdited(chats=list(CONFIGURED_CS_GROUP_IDS)))
 async def handler(event):
     try:
         global MY_ID
         if not MY_ID: MY_ID = (await client.get_me()).id
         if not IS_WORKING: return
+        chat_id = event.chat_id
+        if not is_configured_cs_group(chat_id):
+            log_tree(1, f"🛡️ 忽略非CS_GROUP_IDS群组消息 | Chat={chat_id} | Msg={event.id}")
+            return
         
         # 过滤服务消息
         if event.message.action:
@@ -2943,11 +3071,10 @@ async def handler(event):
             if not text: text = "[贴纸]"
 
         sender_id = event.sender_id
-        reply_to_msg_id = event.reply_to_msg_id
+        reply_to_msg_id = get_primary_reply_target_id(event.message)
         grouped_id = event.message.grouped_id
         sender = await event.get_sender()
         sender_name = getattr(sender, 'first_name', 'Unknown')
-        chat_id = event.chat_id
         msg_link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{event.id}"
 
         update_content_cache(chat_id, event.id, sender_name, text)
@@ -3042,11 +3169,11 @@ async def handler(event):
                              reason=f"客服回复: [{text[:100]}...]", 
                              types=cancel_types)
             
-            if reply_to_msg_id and reply_to_msg_id in reply_tasks:
-                reply_tasks[reply_to_msg_id].cancel()
-            
-            if reply_to_msg_id and reply_to_msg_id in self_reply_tasks:
-                self_reply_tasks[reply_to_msg_id].cancel()
+            for related_msg_id in get_related_album_msg_ids(chat_id, reply_to_msg_id):
+                if related_msg_id in reply_tasks:
+                    reply_tasks[related_msg_id].cancel()
+                if related_msg_id in self_reply_tasks:
+                    self_reply_tasks[related_msg_id].cancel()
 
             if reply_to_msg_id:
                 related_users = await get_context_users(chat_id, reply_to_msg_id)
@@ -3158,20 +3285,7 @@ async def handler(event):
 
             if reply_to_msg_id:
                 try:
-                    target_id = None
-                    target_name = "未知客服" 
-                    
-                    replied_msg = await event.get_reply_message()
-                    if replied_msg: 
-                        target_id = replied_msg.sender_id
-                        sender_obj = await replied_msg.get_sender()
-                        if sender_obj: target_name = getattr(sender_obj, 'first_name', 'Unknown')
-                    else: 
-                        msgs = await client.get_messages(chat_id, ids=[reply_to_msg_id])
-                        if msgs: 
-                            target_id = msgs[0].sender_id
-                            sender_obj = await msgs[0].get_sender()
-                            if sender_obj: target_name = getattr(sender_obj, 'first_name', 'Unknown')
+                    replied_msg, target_id, target_name = await get_replied_message_info(chat_id, reply_to_msg_id)
 
                     if (target_id == MY_ID) or (target_id in OTHER_CS_IDS):
                         if normalize(text.strip()) in IGNORE_SIGNATURES: return
@@ -3180,14 +3294,24 @@ async def handler(event):
                             log_tree(1, f"🛡️ 豁免 [漏回-无已选择稍等历史] | User={sender_id} | Msg={event.id} -> Target={target_name}")
                             return
 
-                        if event.id in reply_tasks: reply_tasks[event.id].cancel()
+                        reply_task_id = event.id
+                        if grouped_id:
+                            album_ids = get_cached_album_msg_ids(chat_id, event.id)
+                            active_album_ids = [mid for mid in album_ids if mid in reply_tasks]
+                            if active_album_ids:
+                                reply_task_id = min(active_album_ids)
+
+                        if reply_task_id in reply_tasks:
+                            log_tree(1, f"🛡️ 豁免 [漏回-图集去重] | GroupID={grouped_id} | Msg={event.id} -> Active={reply_task_id}")
+                            return
+
                         task = asyncio.create_task(task_reply_timeout(
-                            event.id, sender_name, text[:50], msg_link, chat_id, sender_id, target_name, 
+                            reply_task_id, sender_name, text[:50], msg_link, chat_id, sender_id, target_name,
                             trigger_timestamp=msg_timestamp,
                             thread_id=current_thread_id,
                             wait_keyword=history_wait_keyword
                         ))
-                        reply_tasks[event.id] = task
+                        reply_tasks[reply_task_id] = task
                 except Exception as e:
                     log_tree(9, f"❌ Reply Check Error: {e}")
 
