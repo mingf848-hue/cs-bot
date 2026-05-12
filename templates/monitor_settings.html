@@ -682,6 +682,8 @@
             *, *::before, *::after { transition: none !important; animation: none !important; }
         }
 
+        [v-cloak] { display: none !important; }
+
         @media (max-width: 1280px) {
             .content { grid-template-columns: minmax(300px, 360px) minmax(0, 1fr); }
             .preview-panel { grid-column: 1 / -1; }
@@ -718,7 +720,7 @@
     </style>
 </head>
 <body>
-<div id="app">
+<div id="app" v-cloak>
     <div class="mobile-bar">
         <div class="brand">
             <div class="brand-mark"><i data-lucide="zap"></i></div>

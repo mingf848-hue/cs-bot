@@ -1422,10 +1422,11 @@ SETTINGS_HTML = """
             .delay-box { width: 48px; flex-basis: 48px; }
             .recovery-panel { align-items: stretch; }
         }
+        [v-cloak] { display: none !important; }
     </style>
 </head>
 <body class="text-slate-800 antialiased min-h-screen pb-20 font-sans">
-<div id="app">
+<div id="app" v-cloak>
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 h-12 flex items-center px-4 justify-between bg-opacity-90 backdrop-blur-sm">
         <div class="flex items-center gap-2">
             <div class="w-6 h-6 bg-primary text-white rounded flex items-center justify-center text-xs"><i class="fa-solid fa-bolt"></i></div>
