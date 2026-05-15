@@ -888,7 +888,7 @@
                             <div class="form-grid">
                                 <div class="field">
                                     <div class="label-row"><label>监听来源</label><span class="hint">群 ID 每行一个</span></div>
-                                    <textarea class="textarea" :value="listToString(currentRule.groups)" @change="setIntList($event, currentRule, 'groups')" placeholder="-1001234567890"></textarea>
+                                    <textarea class="textarea" :value="listToString(currentRule.groups)" @input="setIntList($event, currentRule, 'groups')" placeholder="-1001234567890"></textarea>
                                 </div>
                                 <div class="field">
                                     <div class="label-row">
@@ -899,7 +899,7 @@
                                         <input class="input" :value="listToString(currentRule.file_extensions).replace(/\\n/g, ', ')" @input="setList($event, currentRule, 'file_extensions', true)" placeholder="png, jpg">
                                         <input class="input" :value="listToString(currentRule.filename_keywords).replace(/\\n/g, ', ')" @input="setList($event, currentRule, 'filename_keywords', true)" placeholder="文件名关键词">
                                     </div>
-                                    <textarea v-else class="textarea" :value="listToString(currentRule.keywords)" @change="setList($event, currentRule, 'keywords', false)" placeholder="普通: 代存&#10;正则: r:(代|带)存|入[金款]"></textarea>
+                                    <textarea v-else class="textarea" :value="listToString(currentRule.keywords)" @input="setList($event, currentRule, 'keywords', false)" placeholder="普通: 代存&#10;正则: r:(代|带)存|入[金款]"></textarea>
                                 </div>
                                 <div class="field full">
                                     <div class="label-row"><label>备注（可选）</label><span class="hint">{{ (currentRule.note || '').length }}/200</span></div>
@@ -1390,7 +1390,7 @@
                                 <div class="schedule-fields">
                                     <div class="field full">
                                         <label>发送群组</label>
-                                        <textarea class="textarea" :value="listToString(item.groups)" @change="setIntList($event, item, 'groups')" placeholder="-1001234567890&#10;-1009876543210"></textarea>
+                                        <textarea class="textarea" :value="listToString(item.groups)" @input="setIntList($event, item, 'groups')" placeholder="-1001234567890&#10;-1009876543210"></textarea>
                                     </div>
                                     <div class="field full">
                                         <label>发送消息</label>
