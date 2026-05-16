@@ -2818,7 +2818,9 @@ async def task_followup_timeout(key_id, agent_name, original_text, link, my_msg_
         if not IS_WORKING: return
         if my_msg_id and not await check_msg_exists(chat_id, my_msg_id): return
 
-        is_safe, safe_reason = check_recent_activity_safe(chat_id, trigger_timestamp, user_ids_list, thread_id)
+        # 跟进只检查 thread 级别活动，不检查 user 级别：
+        # 同一用户可能同时有多个不相关投诉，对其他 thread 的回复不能消除当前 thread 的跟进警告
+        is_safe, safe_reason = check_recent_activity_safe(chat_id, trigger_timestamp, thread_id=thread_id)
         if is_safe:
             log_tree(2, f"🛡️ 拦截误报 [跟进] {ids_str} | 原因: {safe_reason}")
             return
