@@ -1803,11 +1803,27 @@ async def check_wait_keyword_logic(keyword, result_queue):
                     for m in history:
                         if m.reply_to and m.reply_to.reply_to_msg_id:
                             replied_to_ids.add(m.reply_to.reply_to_msg_id)
-                    
+
                     replied_grouped_ids = set()
                     for mid in replied_to_ids:
                         if mid in msg_grouped_map:
                             replied_grouped_ids.add(msg_grouped_map[mid])
+
+                    # 客服引用回复的消息 ID → 客服回复时间
+                    # 用于豁免"同用户在已回复消息之后发的跟催短句"误判为漏回
+                    cs_replied_to_ids: dict = {}
+                    for _m in history:
+                        _is_cs = _m.sender_id in ([MY_ID] + OTHER_CS_IDS)
+                        if not _is_cs:
+                            try:
+                                _s = _m.sender
+                                if _s and getattr(_s, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)):
+                                    _is_cs = True
+                            except: pass
+                        if _is_cs and _m.reply_to and _m.reply_to.reply_to_msg_id:
+                            rid = _m.reply_to.reply_to_msg_id
+                            if rid not in cs_replied_to_ids or _m.date > cs_replied_to_ids[rid]:
+                                cs_replied_to_ids[rid] = _m.date
 
                     orphan_tasks = []
                     reply_continuation_ai_cache = {}
@@ -1880,7 +1896,20 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         is_orphan = True
                         if m.id in replied_to_ids: is_orphan = False
                         elif m.grouped_id and m.grouped_id in replied_grouped_ids: is_orphan = False
-                            
+                        else:
+                            # 豁免：同一用户在此消息发出前 5 分钟内有另一条消息被客服引用回复，
+                            # 且该客服回复发生在本消息之后（说明客服看到了整个对话）
+                            for sibling in user_msg_map.get(m.sender_id, []):
+                                if sibling.id == m.id: continue
+                                cs_reply_ts = cs_replied_to_ids.get(sibling.id)
+                                if not cs_reply_ts: continue
+                                if not (sibling.date and m.date): continue
+                                secs_before = (m.date - sibling.date).total_seconds()
+                                if 0 <= secs_before <= 300 and cs_reply_ts >= m.date:
+                                    is_orphan = False
+                                    code_exempt_reason = code_exempt_reason or "同用户相近消息已获客服引用回复"
+                                    break
+
                         if is_orphan:
                             orphan_tasks.append((i, m, code_exempt_reason))
                     
