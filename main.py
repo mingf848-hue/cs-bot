@@ -3182,15 +3182,15 @@ async def handler(event):
     try:
         global MY_ID
         if not MY_ID: MY_ID = (await client.get_me()).id
-        if not IS_WORKING: return
         chat_id = event.chat_id
         if not is_configured_cs_group(chat_id):
-            log_tree(1, f"🛡️ 忽略非CS_GROUP_IDS群组消息 | Chat={chat_id} | Msg={event.id}")
+            if IS_WORKING:
+                log_tree(1, f"🛡️ 忽略非CS_GROUP_IDS群组消息 | Chat={chat_id} | Msg={event.id}")
             return
-        
+
         # 过滤服务消息
         if event.message.action:
-            return 
+            return
 
         msg_timestamp = event.date.timestamp()
         msg_time_str = event.date.astimezone(timezone(timedelta(hours=8))).strftime('%H:%M:%S')
@@ -3203,6 +3203,18 @@ async def handler(event):
         if event.message.sticker:
             msg_type = "贴纸"
             if not text: text = "[贴纸]"
+
+        # 监听暂停时仍记录消息到数据库，然后直接返回
+        if not IS_WORKING:
+            if isinstance(event, events.NewMessage):
+                log_tree(0, f"Msg={event.id} [T={msg_time_str}] | User={event.sender_id} | [{chat_id}] {text[:200].replace(chr(10),' ')} [{msg_type}][暂停]")
+                if chat_id not in _group_name_cache:
+                    try:
+                        _g = await client.get_entity(chat_id)
+                        _group_name_cache[chat_id] = _g.title
+                    except Exception:
+                        _group_name_cache[chat_id] = str(chat_id)
+            return
 
         sender_id = event.sender_id
         reply_to_msg_id = get_primary_reply_target_id(event.message)
