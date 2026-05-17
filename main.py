@@ -7,6 +7,7 @@ import re
 import time
 import json
 import queue
+import sqlite3
 from collections import deque, defaultdict
 from datetime import datetime, timedelta, timezone
 from threading import Thread, Lock
@@ -45,6 +46,71 @@ console_handler.setFormatter(file_fmt)
 
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
+
+CHAT_LOG_DB = 'chat_logs.db'
+_db_lock = Lock()
+
+def _init_db():
+    with sqlite3.connect(CHAT_LOG_DB) as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS chat_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts REAL NOT NULL,
+            chat_id INTEGER,
+            msg_type TEXT NOT NULL DEFAULT 'sys',
+            raw TEXT NOT NULL
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_ts ON chat_logs(chat_id, ts)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ts ON chat_logs(ts)")
+        conn.commit()
+
+_init_db()
+
+def _cleanup_old_logs():
+    cutoff = time.time() - 7 * 86400
+    with _db_lock:
+        with sqlite3.connect(CHAT_LOG_DB) as conn:
+            conn.execute("DELETE FROM chat_logs WHERE ts < ?", (cutoff,))
+            conn.commit()
+    # reschedule
+    t = Thread(target=lambda: (time.sleep(86400), _cleanup_old_logs()), daemon=True)
+    t.start()
+
+_cleanup_old_logs()
+
+_CHAT_ID_RE = re.compile(r'\[(-100\d+)\]')
+_MSG_TYPE_MAP = [
+    ('[MSG]', 'user'), ('[ALERT]', 'alert'), ('[AUDIT]', 'audit'),
+    ('客服操作', 'cs'), ('[+]', 'cs'),
+]
+
+class SQLiteLogHandler(logging.Handler):
+    def emit(self, record):
+        try:
+            raw = self.format(record)
+            ts = record.created
+            m = _CHAT_ID_RE.search(raw)
+            chat_id = int(m.group(1)) if m else None
+            msg_type = 'sys'
+            for marker, t in _MSG_TYPE_MAP:
+                if marker in raw:
+                    msg_type = t
+                    break
+            with _db_lock:
+                with sqlite3.connect(CHAT_LOG_DB) as conn:
+                    conn.execute(
+                        "INSERT INTO chat_logs(ts, chat_id, msg_type, raw) VALUES(?,?,?,?)",
+                        (ts, chat_id, msg_type, raw)
+                    )
+                    conn.commit()
+        except Exception:
+            pass
+
+_sqlite_handler = SQLiteLogHandler()
+_sqlite_handler.setLevel(logging.DEBUG)
+_sqlite_handler.setFormatter(file_fmt)
+logger.addHandler(_sqlite_handler)
+
+_group_name_cache = {}
 
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
 logging.getLogger('telethon').setLevel(logging.WARNING)
@@ -880,147 +946,170 @@ DASHBOARD_HTML = """
 </html>
 """
 
-LOG_VIEWER_HTML = """
-<!DOCTYPE html>
+LOG_VIEWER_HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <title>系统日志流</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        :root {
-            --bg-body: #0f172a; --bg-panel: #1e293b; --bg-input: #334155;
-            --text-main: #f1f5f9; --text-muted: #94a3b8; --primary: #3b82f6;
-            --user-bubble: #334155; --cs-bubble: #0f766e;
-            --alert-bg: rgba(239, 68, 68, 0.15); --alert-border: #ef4444;
-            --audit-bg: rgba(245, 158, 11, 0.15); --audit-border: #f59e0b;
-        }
-        * { box-sizing: border-box; }
-        body { background-color: var(--bg-body); color: var(--text-main); font-family: -apple-system, sans-serif; margin: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-        .icon { width: 14px; height: 14px; vertical-align: text-bottom; stroke: currentColor; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; display: inline-block; margin-right: 4px; }
-        ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-track { background: var(--bg-body); } ::-webkit-scrollbar-thumb { background: var(--bg-input); border-radius: 4px; }
-        .toolbar { background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(12px); padding: 16px 24px; border-bottom: 1px solid var(--bg-input); display: flex; gap: 12px; align-items: center; z-index: 10; }
-        input { flex-grow: 1; background: var(--bg-panel); border: 1px solid var(--bg-input); color: var(--text-main); padding: 10px 16px; border-radius: 8px; font-size: 14px; outline: none; }
-        input:focus { border-color: var(--primary); }
-        button { background: var(--bg-panel); color: var(--text-main); border: 1px solid var(--bg-input); padding: 10px 16px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; display: flex; align-items: center; transition: all 0.2s; }
-        button:hover { background: var(--bg-input); }
-        #log-container { flex-grow: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; scroll-behavior: smooth; }
-        .msg-row { display: flex; flex-direction: column; max-width: 100%; animation: fadeIn 0.2s ease; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
-        .msg-meta { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; font-family: ui-monospace, monospace; display: flex; align-items: center; gap: 8px; padding: 0 4px; }
-        .bubble { padding: 12px 18px; border-radius: 12px; font-size: 13px; line-height: 1.6; word-wrap: break-word; white-space: pre-wrap; max-width: 85%; }
-        .msg-user { align-items: flex-start; } .msg-user .bubble { background-color: var(--user-bubble); border-top-left-radius: 2px; }
-        .msg-cs { align-items: flex-end; } .msg-cs .bubble { background-color: var(--cs-bubble); border-top-right-radius: 2px; } .msg-cs .msg-meta { flex-direction: row-reverse; }
-        .msg-sys, .msg-alert, .msg-audit { align-items: center; width: 100%; }
-        .msg-sys .bubble, .msg-alert .bubble, .msg-audit .bubble { max-width: 95%; background: transparent; padding: 8px 12px; border-radius: 6px; font-family: ui-monospace, monospace; font-size: 12px; border-left: 3px solid; }
-        .msg-sys .bubble { border-color: var(--text-muted); background: rgba(148, 163, 184, 0.05); color: var(--text-muted); }
-        .msg-alert .bubble { border-color: var(--alert-border); background: var(--alert-bg); color: #fca5a5; }
-        .msg-audit .bubble { border-color: var(--audit-border); background: var(--audit-bg); color: #fdba74; }
-        .pill { display: inline-block; background: rgba(255, 255, 255, 0.1); padding: 2px 6px; border-radius: 4px; cursor: pointer; transition: background 0.2s; user-select: all; }
-        .pill:hover { background: rgba(255, 255, 255, 0.2); color: #fff; }
-        .highlight-row .bubble { box-shadow: 0 0 0 2px #fbbf24, 0 0 20px rgba(251, 191, 36, 0.2); }
-        .btn-report { font-size: 10px; padding: 2px 6px; border-radius: 4px; font-weight: bold; cursor: pointer; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.05); }
-        .btn-report:hover { background: rgba(255,255,255,0.15); }
-        .btn-missed { color: #fcd34d; border-color: rgba(252, 211, 77, 0.3); }
-        .btn-false { color: #fca5a5; border-color: rgba(252, 165, 165, 0.3); }
-        .error-msg { text-align: center; padding: 40px; color: var(--text-muted); font-style: italic; }
-    </style>
+<meta charset="UTF-8">
+<title>系统日志流</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root {
+    --bg-body:#0f172a;--bg-panel:#1e293b;--bg-input:#334155;
+    --text-main:#f1f5f9;--text-muted:#94a3b8;--primary:#3b82f6;
+    --user-bubble:#334155;--cs-bubble:#0f766e;
+    --alert-bg:rgba(239,68,68,.15);--alert-border:#ef4444;
+    --audit-bg:rgba(245,158,11,.15);--audit-border:#f59e0b;
+}
+*{box-sizing:border-box;}
+body{background:var(--bg-body);color:var(--text-main);font-family:-apple-system,sans-serif;margin:0;height:100vh;display:flex;flex-direction:column;overflow:hidden;}
+::-webkit-scrollbar{width:8px;}::-webkit-scrollbar-track{background:var(--bg-body);}::-webkit-scrollbar-thumb{background:var(--bg-input);border-radius:4px;}
+.toolbar{background:rgba(15,23,42,.9);backdrop-filter:blur(12px);padding:12px 20px;border-bottom:1px solid var(--bg-input);display:flex;gap:10px;align-items:center;z-index:10;flex-wrap:wrap;}
+.tabs{display:flex;gap:6px;overflow-x:auto;padding-bottom:2px;flex-shrink:0;}
+.tab{background:var(--bg-panel);border:1px solid var(--bg-input);color:var(--text-muted);padding:6px 14px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:500;white-space:nowrap;transition:all .2s;}
+.tab:hover{border-color:var(--primary);color:var(--text-main);}
+.tab.active{background:var(--primary);border-color:var(--primary);color:#fff;}
+input{flex-grow:1;min-width:160px;background:var(--bg-panel);border:1px solid var(--bg-input);color:var(--text-main);padding:8px 14px;border-radius:8px;font-size:13px;outline:none;}
+input:focus{border-color:var(--primary);}
+button{background:var(--bg-panel);color:var(--text-main);border:1px solid var(--bg-input);padding:8px 14px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:500;display:flex;align-items:center;gap:4px;transition:all .2s;white-space:nowrap;}
+button:hover{background:var(--bg-input);}
+#log-container{flex-grow:1;overflow-y:auto;padding:20px 24px;display:flex;flex-direction:column;gap:14px;scroll-behavior:smooth;}
+.msg-row{display:flex;flex-direction:column;max-width:100%;animation:fadeIn .2s ease;}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:translateY(0);}}
+.msg-meta{font-size:11px;color:var(--text-muted);margin-bottom:4px;font-family:ui-monospace,monospace;display:flex;align-items:center;gap:8px;padding:0 4px;}
+.bubble{padding:10px 16px;border-radius:12px;font-size:13px;line-height:1.6;word-wrap:break-word;white-space:pre-wrap;max-width:85%;}
+.msg-user{align-items:flex-start;}.msg-user .bubble{background:var(--user-bubble);border-top-left-radius:2px;}
+.msg-cs{align-items:flex-end;}.msg-cs .bubble{background:var(--cs-bubble);border-top-right-radius:2px;}.msg-cs .msg-meta{flex-direction:row-reverse;}
+.msg-sys,.msg-alert,.msg-audit{align-items:center;width:100%;}
+.msg-sys .bubble,.msg-alert .bubble,.msg-audit .bubble{max-width:95%;background:transparent;padding:6px 12px;border-radius:6px;font-family:ui-monospace,monospace;font-size:12px;border-left:3px solid;}
+.msg-sys .bubble{border-color:var(--text-muted);background:rgba(148,163,184,.05);color:var(--text-muted);}
+.msg-alert .bubble{border-color:var(--alert-border);background:var(--alert-bg);color:#fca5a5;}
+.msg-audit .bubble{border-color:var(--audit-border);background:var(--audit-bg);color:#fdba74;}
+.pill{display:inline-block;background:rgba(255,255,255,.1);padding:2px 6px;border-radius:4px;cursor:pointer;transition:background .2s;user-select:all;}
+.pill:hover{background:rgba(255,255,255,.2);color:#fff;}
+.highlight-row .bubble{box-shadow:0 0 0 2px #fbbf24,0 0 20px rgba(251,191,36,.2);}
+.btn-report{font-size:10px;padding:2px 6px;border-radius:4px;font-weight:bold;cursor:pointer;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.05);}
+.btn-report:hover{background:rgba(255,255,255,.15);}
+.btn-missed{color:#fcd34d;border-color:rgba(252,211,77,.3);}
+.btn-false{color:#fca5a5;border-color:rgba(252,165,165,.3);}
+.error-msg{text-align:center;padding:40px;color:var(--text-muted);font-style:italic;}
+</style>
 </head>
 <body>
-    <div class="toolbar">
-        <input type="text" id="search" placeholder="输入 ID / 关键词 (回车跳转)..." onkeyup="if(event.key==='Enter') doSearch()">
-        <button onclick="doSearch()"><svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>查找</button>
-        <button onclick="window.location.reload()"><svg class="icon" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>刷新</button>
-        <button onclick="scrollToBottom()"><svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>底部</button>
-    </div>
-    <div id="log-container">加载中...</div>
-    <script>
-        const container = document.getElementById('log-container');
-        let parsedLogs = [];
-        fetch('/log_raw?t=' + Date.now())
-            .then(r => { if (!r.ok) throw new Error('网络异常'); return r.text(); })
-            .then(text => {
-                if (!text.trim()) { container.innerHTML = '<div class="error-msg">暂无日志数据</div>'; return; }
-                try { parseLogs(text); renderLogs(); scrollToBottom(); } 
-                catch (e) { container.innerHTML = `<div class="error-msg">解析错误: ${e.message}</div>`; }
-            })
-            .catch(err => { container.innerHTML = `<div class="error-msg">加载失败: ${err.message}</div>`; });
+<div class="toolbar">
+    <div class="tabs" id="tabs"><span class="tab active" data-id="">全部</span></div>
+    <input type="text" id="search" placeholder="搜索 ID / 关键词 (回车跳转)..." onkeyup="if(event.key==='Enter')doSearch()">
+    <button onclick="loadLogs()">&#x21bb; 刷新</button>
+    <button onclick="scrollToBottom()">&#x2193; 底部</button>
+</div>
+<div id="log-container">加载中...</div>
+<script>
+const container = document.getElementById('log-container');
+let parsedLogs = [];
+let activeChatId = null;
 
-        function parseLogs(text) {
-            const rawLines = text.split(/\\r?\\n/);
-            parsedLogs = []; let currentEntry = null;
-            const timeRegex = /^(\\d{4}-\\d{2}-\\d{2}\\s+)?(\\d{2}:\\d{2}:\\d{2})(.*)/;
-            rawLines.forEach(line => {
-                if(!line.trim()) return;
-                const match = line.match(timeRegex);
-                if (match) {
-                    if (currentEntry) parsedLogs.push(currentEntry);
-                    currentEntry = { time: match[2], raw: match[3], content: match[3].trim() };
-                } else { if (currentEntry) currentEntry.content += '\\n' + line; }
-            });
-            if (currentEntry) parsedLogs.push(currentEntry);
-        }
+// Load group tabs
+fetch('/log_groups').then(r=>r.json()).then(groups => {
+    const tabs = document.getElementById('tabs');
+    groups.forEach(g => {
+        const tab = document.createElement('span');
+        tab.className = 'tab';
+        tab.dataset.id = g.chat_id;
+        tab.textContent = (g.name || String(g.chat_id)) + ' (' + g.count + ')';
+        tab.onclick = () => switchTab(tab, g.chat_id);
+        tabs.appendChild(tab);
+    });
+}).catch(()=>{});
 
-        function renderLogs() {
-            let html = '';
-            parsedLogs.forEach((entry, idx) => {
-                let type = 'sys'; let raw = entry.raw;
-                let content = entry.content.replace(/\[MSG\]|\[ERROR\]|\[\+\]|\[-\]/g, '').trim();
-                let ids = []; const idRegex = /(Msg|User|Thread|流|归属|用户)[:=]?\\s?(\\d+)/g;
-                let match; while ((match = idRegex.exec(content)) !== null) { ids.push(match[2]); }
-                let idsStr = ids.join(',');
+document.querySelector('.tab[data-id=""]').onclick = function(){ switchTab(this, null); };
 
-                if (raw.includes('[MSG]')) type = 'user';
-                else if (raw.includes('[+]') && raw.includes('客服操作')) type = 'cs';
-                else if (raw.includes('[ALERT]')) type = 'alert';
-                else if (raw.includes('[AUDIT]')) type = 'audit';
-                content = content.replace(/(Msg[:=]?\\s?)(\\d+)/g, '$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
-                content = content.replace(/(User|用户|归属)[:=]?\\s?(\\d+)/g, '$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
-                
-                let actionBtn = '';
-                if (type === 'user' && ids.length > 0) actionBtn = `<span class="btn-report btn-missed" onclick="reportBug('漏报', '${idsStr}')">反馈漏报</span>`;
-                else if ((type === 'alert' || type === 'audit') && ids.length > 0) actionBtn = `<span class="btn-report btn-false" onclick="reportBug('误报', '${idsStr}')">反馈误报</span>`;
-                
-                let metaHtml = `<div class="msg-meta">${entry.time} #${idx} ${actionBtn}</div>`;
-                let rowClass = `msg-row msg-${type}`;
-                
-                if (type === 'user' || type === 'cs') {
-                    html += `<div class="${rowClass}" id="log-${idx}">${type === 'cs' ? metaHtml : ''}<div class="bubble">${content}</div>${type === 'user' ? metaHtml : ''}</div>`;
-                } else {
-                    html += `<div class="${rowClass}" id="log-${idx}"><div class="bubble"><span style="color:var(--text-muted);margin-right:8px">${entry.time}</span> ${content} ${actionBtn}</div></div>`;
-                }
+function switchTab(el, chatId) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    el.classList.add('active');
+    activeChatId = chatId;
+    loadLogs();
+}
+
+function loadLogs() {
+    const url = '/log_db?limit=600' + (activeChatId ? '&chat_id=' + activeChatId : '');
+    container.innerHTML = '<div class="error-msg">加载中...</div>';
+    fetch(url)
+        .then(r => { if(!r.ok) throw new Error('网络异常'); return r.json(); })
+        .then(data => {
+            if(!data.length){ container.innerHTML='<div class="error-msg">暂无日志数据</div>'; return; }
+            parsedLogs = data.map(row => {
+                const m = row.raw.match(/^(\\d{4}-\\d{2}-\\d{2}\\s+)?(\\d{2}:\\d{2}:\\d{2})(.*)/);
+                return { ts: row.ts, time: m ? m[2] : '', raw: m ? m[3] : row.raw, content: m ? m[3].trim() : row.raw.trim(), msg_type: row.msg_type };
             });
-            container.innerHTML = html;
+            renderLogs();
+            scrollToBottom();
+        })
+        .catch(err => { container.innerHTML=`<div class="error-msg">加载失败: ${err.message}</div>`; });
+}
+
+loadLogs();
+
+function renderLogs() {
+    let html = '';
+    parsedLogs.forEach((entry, idx) => {
+        let type = entry.msg_type || 'sys';
+        let content = entry.content.replace(/\\[MSG\\]|\\[ERROR\\]|\\[\\+\\]|\\[-\\]/g,'').trim();
+        let ids=[]; const idRegex=/(Msg|User|Thread|流|归属|用户)[:=]?\\s?(\\d+)/g;
+        let match; while((match=idRegex.exec(content))!==null){ ids.push(match[2]); }
+        let idsStr = ids.join(',');
+        content = content.replace(/(Msg[:=]?\\s?)(\\d+)/g,'$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
+        content = content.replace(/(User|用户|归属)[:=]?\\s?(\\d+)/g,'$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
+        let actionBtn = '';
+        if(type==='user'&&ids.length>0) actionBtn=`<span class="btn-report btn-missed" onclick="reportBug('漏报','${idsStr}',${idx})">反馈漏报</span>`;
+        else if((type==='alert'||type==='audit')&&ids.length>0) actionBtn=`<span class="btn-report btn-false" onclick="reportBug('误报','${idsStr}',${idx})">反馈误报</span>`;
+        let metaHtml=`<div class="msg-meta">${entry.time} #${idx} ${actionBtn}</div>`;
+        let rowClass=`msg-row msg-${type}`;
+        if(type==='user'||type==='cs'){
+            html+=`<div class="${rowClass}" id="log-${idx}">${type==='cs'?metaHtml:''}<div class="bubble">${content}</div>${type==='user'?metaHtml:''}</div>`;
+        } else {
+            html+=`<div class="${rowClass}" id="log-${idx}"><div class="bubble"><span style="color:var(--text-muted);margin-right:8px">${entry.time}</span>${content} ${actionBtn}</div></div>`;
         }
-        function searchId(id) { document.getElementById('search').value = id; doSearch(); }
-        function doSearch() {
-            const term = document.getElementById('search').value.toLowerCase();
-            if (!term) return;
-            document.querySelectorAll('.highlight-row').forEach(el => el.classList.remove('highlight-row'));
-            let found = false;
-            const rows = Array.from(document.querySelectorAll('.msg-row')).reverse();
-            for (let row of rows) {
-                if (row.innerText.toLowerCase().includes(term)) {
-                    row.classList.add('highlight-row');
-                    if (!found) { row.scrollIntoView({behavior: "smooth", block: "center"}); found = true; }
-                }
-            }
+    });
+    container.innerHTML = html || '<div class="error-msg">暂无日志数据</div>';
+}
+
+function searchId(id){ document.getElementById('search').value=id; doSearch(); }
+function doSearch(){
+    const term=document.getElementById('search').value.toLowerCase();
+    if(!term)return;
+    document.querySelectorAll('.highlight-row').forEach(el=>el.classList.remove('highlight-row'));
+    let found=false;
+    const rows=Array.from(document.querySelectorAll('.msg-row')).reverse();
+    for(let row of rows){
+        if(row.innerText.toLowerCase().includes(term)){
+            row.classList.add('highlight-row');
+            if(!found){row.scrollIntoView({behavior:'smooth',block:'center'});found=true;}
         }
-        function reportBug(type, idsStr) {
-            if (!idsStr) return;
-            let report = `=== ${type}反馈报告 ===\\n类型: ${type}\\n涉及 ID: ${idsStr}\\n\\n-- 关键日志流 --\\n`;
-            parsedLogs.forEach(entry => {
-                let hit = false;
-                for (let id of idsStr.split(',')) { if (entry.raw.includes(id)) { hit = true; break; } }
-                if (hit) report += `[${entry.time}] ${entry.content}\\n`;
-            });
-            navigator.clipboard.writeText(report).then(() => alert(`已复制 [${type}] 详情，可直接发送。`));
-        }
-        function scrollToBottom() { container.scrollTop = container.scrollHeight; }
-    </script>
+    }
+}
+
+function reportBug(type, idsStr, centerIdx) {
+    if(!idsStr) return;
+    const idList = idsStr.split(',').filter(Boolean);
+    // Build patterns: only match IDs that appear as structured fields (Msg=X, User=X, etc.)
+    const patterns = idList.map(id =>
+        new RegExp('(?:Msg|User|Thread|流|归属|用户)[:=]?\\\\s*' + id + '(?!\\\\d)')
+    );
+    // Also include entries within a 5-minute window around the clicked message
+    const centerTs = parsedLogs[centerIdx] ? parsedLogs[centerIdx].ts : 0;
+    const windowSec = 300;
+    let report = `=== ${type}反馈报告 ===\\n涉及 ID: ${idsStr}\\n\\n-- 关键日志 --\\n`;
+    parsedLogs.forEach(entry => {
+        const inWindow = centerTs && Math.abs(entry.ts - centerTs) <= windowSec;
+        const idHit = patterns.some(p => p.test(entry.raw));
+        if(idHit || inWindow) report += `[${entry.time}] ${entry.content}\\n`;
+    });
+    navigator.clipboard.writeText(report).then(()=>alert(`已复制 [${type}] 详情。`));
+}
+
+function scrollToBottom(){ container.scrollTop=container.scrollHeight; }
+</script>
 </body>
-</html>
-"""
+</html>"""
 
 WAIT_CHECK_HTML = """
 <!DOCTYPE html>
