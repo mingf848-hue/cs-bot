@@ -1585,6 +1585,44 @@ def log_raw():
         return Response(content, mimetype='text/plain')
     except Exception as e: return f"Log read error: {e}"
 
+@app.route('/log_db')
+def log_db():
+    chat_id = request.args.get('chat_id', type=int)
+    limit = min(request.args.get('limit', 600, type=int), 2000)
+    try:
+        with sqlite3.connect(CHAT_LOG_DB) as conn:
+            conn.row_factory = sqlite3.Row
+            if chat_id:
+                rows = conn.execute(
+                    "SELECT ts, chat_id, msg_type, raw FROM chat_logs WHERE chat_id=? ORDER BY ts DESC LIMIT ?",
+                    (chat_id, limit)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT ts, chat_id, msg_type, raw FROM chat_logs ORDER BY ts DESC LIMIT ?",
+                    (limit,)
+                ).fetchall()
+        data = [{"ts": r["ts"], "chat_id": r["chat_id"], "msg_type": r["msg_type"], "raw": r["raw"]} for r in reversed(rows)]
+        return jsonify(data)
+    except Exception as e:
+        return jsonify([])
+
+@app.route('/log_groups')
+def log_groups():
+    try:
+        with sqlite3.connect(CHAT_LOG_DB) as conn:
+            rows = conn.execute(
+                "SELECT chat_id, COUNT(*) as cnt FROM chat_logs WHERE chat_id IS NOT NULL GROUP BY chat_id ORDER BY cnt DESC"
+            ).fetchall()
+        # Try to get group names from Telegram client
+        result = []
+        for chat_id, cnt in rows:
+            name = _group_name_cache.get(chat_id, str(chat_id))
+            result.append({"chat_id": chat_id, "name": name, "count": cnt})
+        return jsonify(result)
+    except Exception as e:
+        return jsonify([])
+
 @app.after_request
 def add_header(response):
     response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
@@ -3342,7 +3380,13 @@ async def handler(event):
             cancel_tasks(chat_id, sender_id, current_thread_id, reason=f"客户发言: [{text[:100]}...]", types=['reply'])
             
             log_tree(0, f"Msg={event.id} [T={msg_time_str}] | User={sender_id} | [{chat_id}] {sender_name}: {text} [{msg_type}]")
-            
+            if chat_id not in _group_name_cache:
+                try:
+                    _g = await client.get_entity(chat_id)
+                    _group_name_cache[chat_id] = _g.title
+                except Exception:
+                    _group_name_cache[chat_id] = str(chat_id)
+
             if reply_to_msg_id and real_customer_id:
                 if sender_id == real_customer_id:
                      if normalize(text.strip()) not in IGNORE_SIGNATURES:
