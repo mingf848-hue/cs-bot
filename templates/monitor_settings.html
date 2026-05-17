@@ -859,7 +859,10 @@
                             </div>
                             <div style="display:grid;gap:14px;justify-items:end;">
                                 <span class="status-badge" :class="ruleStatus(rule).kind">{{ ruleStatus(rule).text }}</span>
-                                <button type="button" class="switch" :class="{on: rule.enabled}" :disabled="ui.saving" :aria-pressed="rule.enabled ? 'true' : 'false'" :title="rule.enabled ? '停用并保存' : '启用并保存'" @click.stop="toggleRuleEnabled(rule)"></button>
+                                <div style="display:flex;gap:6px;align-items:center;">
+                                    <button type="button" class="step-menu" @click.stop="removeRule(rule)" aria-label="删除规则" title="删除规则"><i data-lucide="trash-2"></i></button>
+                                    <button type="button" class="switch" :class="{on: rule.enabled}" :disabled="ui.saving" :aria-pressed="rule.enabled ? 'true' : 'false'" :title="rule.enabled ? '停用并保存' : '启用并保存'" @click.stop="toggleRuleEnabled(rule)"></button>
+                                </div>
                             </div>
                         </div>
                         <div v-if="filteredRules.length === 0" class="empty-state">没有匹配的规则</div>
