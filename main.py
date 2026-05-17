@@ -11,7 +11,7 @@ import sqlite3
 from collections import deque, defaultdict
 from datetime import datetime, timedelta, timezone
 from threading import Thread, Lock
-from flask import Flask, render_template_string, Response, request, stream_with_context, jsonify
+from flask import Flask, render_template, render_template_string, Response, request, stream_with_context, jsonify
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import AuthKeyDuplicatedError
@@ -57,21 +57,40 @@ def _init_db():
             ts REAL NOT NULL,
             chat_id INTEGER,
             msg_type TEXT NOT NULL DEFAULT 'sys',
-            raw TEXT NOT NULL
+            raw TEXT NOT NULL,
+            msg_id INTEGER,
+            event_type TEXT,
+            sender_id INTEGER,
+            sender_name TEXT,
+            text TEXT
         )""")
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(chat_logs)").fetchall()}
+        for col_name, col_def in {
+            "msg_id": "INTEGER",
+            "event_type": "TEXT",
+            "sender_id": "INTEGER",
+            "sender_name": "TEXT",
+            "text": "TEXT",
+        }.items():
+            if col_name not in existing_cols:
+                conn.execute(f"ALTER TABLE chat_logs ADD COLUMN {col_name} {col_def}")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_ts ON chat_logs(chat_id, ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ts ON chat_logs(ts)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_msg_event ON chat_logs(chat_id, msg_id, event_type, ts)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_log_id ON chat_logs(id)")
         conn.commit()
 
 _init_db()
 
 def _cleanup_old_logs():
-    cutoff = time.time() - 7 * 86400
-    with _db_lock:
-        with sqlite3.connect(CHAT_LOG_DB) as conn:
-            conn.execute("DELETE FROM chat_logs WHERE ts < ?", (cutoff,))
-            conn.commit()
-    # reschedule
+    retention_days = int(os.environ.get("LOG_RETENTION_DAYS", "0") or 0)
+    if retention_days > 0:
+        cutoff = time.time() - retention_days * 86400
+        with _db_lock:
+            with sqlite3.connect(CHAT_LOG_DB) as conn:
+                conn.execute("DELETE FROM chat_logs WHERE ts < ?", (cutoff,))
+                conn.commit()
+    # reschedule; LOG_RETENTION_DAYS=0 keeps chat history across restarts by default.
     t = Thread(target=lambda: (time.sleep(86400), _cleanup_old_logs()), daemon=True)
     t.start()
 
@@ -80,8 +99,38 @@ _cleanup_old_logs()
 _CHAT_ID_RE = re.compile(r'\[(-100\d+)\]')
 _MSG_TYPE_MAP = [
     ('[MSG]', 'user'), ('[ALERT]', 'alert'), ('[AUDIT]', 'audit'),
-    ('[DELETED]', 'deleted'), ('客服操作', 'cs'),
+    ('[EDITED]', 'edited'), ('[DELETED]', 'deleted'), ('[CSMSG]', 'cs'), ('客服操作', 'cs'),
 ]
+
+
+def insert_chat_log(ts, chat_id, msg_type, raw, msg_id=None, event_type=None, sender_id=None, sender_name=None, text=None):
+    """Persist a row for the read-only /log page without depending on work-state logging."""
+    with _db_lock:
+        with sqlite3.connect(CHAT_LOG_DB) as conn:
+            cur = conn.execute(
+                """INSERT INTO chat_logs(
+                    ts, chat_id, msg_type, raw, msg_id, event_type, sender_id, sender_name, text
+                ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (ts, chat_id, msg_type, raw, msg_id, event_type, sender_id, sender_name, text)
+            )
+            conn.commit()
+            return cur.lastrowid
+
+def chat_log_exists(chat_id, msg_id, event_type):
+    if msg_id is None or event_type is None:
+        return False
+    with _db_lock:
+        with sqlite3.connect(CHAT_LOG_DB) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM chat_logs WHERE chat_id=? AND msg_id=? AND event_type=? LIMIT 1",
+                (chat_id, msg_id, event_type)
+            ).fetchone()
+            return row is not None
+
+def format_chat_log_raw(kind, msg_id, msg_time_str, sender_id, chat_id, sender_name, text, msg_type, extra=""):
+    clean_text = (text or "").replace("\n", " ")[:1000]
+    suffix = f" {extra}" if extra else ""
+    return f"[{kind}] Msg={msg_id} [T={msg_time_str}] | User={sender_id} | [{chat_id}] {sender_name}: {clean_text} [{msg_type}]{suffix}"
 
 class SQLiteLogHandler(logging.Handler):
     def emit(self, record):
@@ -100,8 +149,10 @@ class SQLiteLogHandler(logging.Handler):
             with _db_lock:
                 with sqlite3.connect(CHAT_LOG_DB) as conn:
                     conn.execute(
-                        "INSERT INTO chat_logs(ts, chat_id, msg_type, raw) VALUES(?,?,?,?)",
-                        (ts, chat_id, msg_type, raw)
+                        """INSERT INTO chat_logs(
+                            ts, chat_id, msg_type, raw, msg_id, event_type
+                        ) VALUES(?,?,?,?,?,?)""",
+                        (ts, chat_id, msg_type, raw, None, msg_type)
                     )
                     conn.commit()
         except Exception:
@@ -948,337 +999,7 @@ DASHBOARD_HTML = """
 </html>
 """
 
-LOG_VIEWER_HTML = """<!DOCTYPE html>
-<html lang="zh-CN"><head>
-<meta charset="UTF-8"><title>消息记录</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&display=swap" rel="stylesheet">
-<style>
-:root{
-  --bg:#212121;--bg-sec:#0f0f0f;--own-bg:#766ac8;--primary:#8774e1;
-  --text:#fff;--text-sec:#aaa;--divider:#3b3b3d;--hover:#2c2c2c;
-  --br-msg:0.9375rem;--br-small:0.375rem;--hh:3.5rem;
-}
-*{box-sizing:border-box;margin:0;padding:0;}
-html,body{height:100%;overflow:hidden;}
-body{background:var(--bg-sec);color:var(--text);font-family:"Roboto",-apple-system,sans-serif;font-size:16px;display:flex;}
-::-webkit-scrollbar{width:5px;}::-webkit-scrollbar-track{background:transparent;}::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:3px;}
-
-/* LEFT PANEL */
-.lp{width:20rem;flex-shrink:0;display:flex;flex-direction:column;background:var(--bg-sec);border-right:1px solid var(--divider);}
-.lp-head{display:flex;align-items:center;height:var(--hh);padding:0 0.75rem;background:var(--bg);gap:0.5rem;flex-shrink:0;border-bottom:1px solid rgba(255,255,255,0.04);}
-.lp-head h3{font-size:1.125rem;font-weight:500;flex:1;}
-.chat-list{flex:1;overflow-y:auto;}
-.ci{display:flex;align-items:center;padding:0.5rem 0.625rem;gap:0.625rem;cursor:pointer;min-height:4.25rem;transition:background .15s;border-bottom:1px solid rgba(255,255,255,0.03);}
-.ci:hover{background:var(--hover);}
-.ci.active{background:var(--own-bg);}
-.ci.active .ci-sub,.ci.active .ci-time{color:rgba(255,255,255,0.7);}
-.ci.active .ci-badge{background:#fff;color:var(--own-bg);}
-.av{width:3.25rem;height:3.25rem;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:1.25rem;font-weight:500;flex-shrink:0;color:#fff;}
-.ci-info{flex:1;min-width:0;}
-.ci-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:0.125rem;}
-.ci-name{font-size:0.9375rem;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:calc(100% - 2.5rem);}
-.ci-time{font-size:0.75rem;color:var(--text-sec);}
-.ci-sub{font-size:0.875rem;color:var(--text-sec);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.ci-badge{background:var(--primary);color:#fff;font-size:0.6875rem;font-weight:500;min-width:1.25rem;height:1.25rem;border-radius:0.625rem;display:flex;align-items:center;justify-content:center;padding:0 0.3rem;}
-
-/* MIDDLE */
-.mp{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg-sec);}
-.mp-head{display:flex;align-items:center;height:var(--hh);padding:0 0.75rem;background:var(--bg);gap:0.625rem;flex-shrink:0;border-bottom:1px solid rgba(255,255,255,0.04);}
-.mp-head .av{width:2.5rem;height:2.5rem;font-size:1rem;}
-.mp-info{flex:1;min-width:0;}
-.mp-title{font-size:1rem;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.mp-sub{font-size:0.8125rem;color:var(--text-sec);}
-.ibtn{width:2.375rem;height:2.375rem;border:none;background:transparent;color:var(--text-sec);border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:1.125rem;transition:background .15s,color .15s;}
-.ibtn:hover{background:rgba(255,255,255,0.08);color:var(--text);}
-.sb{padding:0.375rem 0.75rem;background:var(--bg);border-bottom:1px solid rgba(255,255,255,0.04);flex-shrink:0;}
-.si{width:100%;background:rgba(255,255,255,0.05);border:none;color:var(--text);padding:0.4375rem 1rem;border-radius:1.25rem;font-size:0.9375rem;font-family:inherit;outline:none;}
-.si::placeholder{color:var(--text-sec);}
-.si:focus{background:rgba(255,255,255,0.08);}
-
-/* MESSAGE AREA */
-.mc{flex:1;overflow-y:scroll;display:flex;flex-direction:column;}
-.mi{width:100%;max-width:45.5rem;margin:0 auto;padding:0.5rem 1rem 1rem 1.125rem;display:flex;flex-direction:column;}
-
-/* Date pill */
-.dt{display:flex;justify-content:center;margin:0.5rem 0;}
-.dt span{background:rgba(33,33,33,0.88);color:#fff;font-size:0.8125rem;font-weight:500;padding:0.25rem 0.625rem;border-radius:1rem;backdrop-filter:blur(4px);}
-
-/* Service messages */
-.sm{display:flex;justify-content:center;margin:0.25rem 0;}
-.sm span{background:rgba(33,33,33,0.88);color:rgba(255,255,255,0.85);font-size:0.875rem;padding:0.3125rem 0.75rem;border-radius:1rem;max-width:86%;text-align:center;backdrop-filter:blur(4px);line-height:1.4;}
-.sm.alert span{background:rgba(160,30,30,0.82);color:#ffaaaa;}
-.sm.audit span{background:rgba(130,85,10,0.82);color:#f5d490;}
-.sm.deleted span{background:rgba(100,20,20,0.7);color:#ffb0b0;}
-
-/* Messages */
-.Msg{display:flex;align-items:flex-end;margin-bottom:0.25rem;}
-.Msg.lg{margin-bottom:0.5rem;}
-.Msg.own{flex-direction:row-reverse;}
-.Msg .aw{width:2.625rem;flex-shrink:0;margin-right:0.25rem;display:flex;justify-content:center;align-items:flex-end;}
-.Msg.own .aw{display:none;}
-.Msg:not(.lg) .msg-av{visibility:hidden;}
-.msg-av{width:2.375rem;height:2.375rem;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:0.9375rem;font-weight:500;color:#fff;}
-.mcw{display:flex;flex-direction:column;max-width:28rem;}
-.Msg.own .mcw{align-items:flex-end;max-width:29rem;}
-.mb{position:relative;padding:0.4375rem 0.5625rem 1.375rem 0.5625rem;border-radius:var(--br-msg);background:var(--bg);cursor:context-menu;word-break:break-word;overflow-wrap:break-word;line-height:1.5;}
-.Msg.own .mb{background:var(--own-bg);border-top-right-radius:var(--br-small);}
-.Msg:not(.own).lg .mb{border-bottom-left-radius:var(--br-small);}
-.Msg:not(.own):not(.fg):not(.lg) .mb{border-top-left-radius:var(--br-small);border-bottom-left-radius:var(--br-small);}
-.Msg:not(.own).fg:not(.lg) .mb{border-bottom-left-radius:var(--br-small);}
-.Msg.own:not(.fg):not(.lg) .mb{border-top-right-radius:var(--br-small);border-bottom-right-radius:var(--br-small);}
-.Msg.own.fg:not(.lg) .mb{border-bottom-right-radius:var(--br-small);}
-.Msg.own:not(.lg) .mb{border-bottom-right-radius:var(--br-small);}
-.ms-name{font-size:0.875rem;font-weight:500;margin-bottom:0.1875rem;line-height:1.3;}
-.ms-text{font-size:0.9375rem;white-space:pre-wrap;}
-.ms-meta{position:absolute;bottom:0.25rem;right:0.5rem;display:flex;align-items:center;gap:0.25rem;}
-.ms-time{font-size:0.6875rem;color:rgba(255,255,255,0.45);line-height:1;}
-.Msg.own .ms-time{color:rgba(255,255,255,0.6);}
-.Msg.hl .mb{box-shadow:0 0 0 2px #fbbf24,0 0 18px rgba(251,191,36,0.2);}
-.Msg.sm-hl .mb{box-shadow:0 0 0 2px var(--primary);}
-
-/* CTX MENU */
-.ctx{position:fixed;z-index:1000;background:rgba(28,28,28,0.95);backdrop-filter:blur(10px);border-radius:0.875rem;padding:0.375rem 0;min-width:11.5rem;box-shadow:0 0.5rem 1.5rem rgba(0,0,0,0.7);display:none;overflow:hidden;}
-.ctx.show{display:block;}
-.cxi{display:flex;align-items:center;gap:0.75rem;padding:0.625rem 1rem;font-size:0.9375rem;cursor:pointer;color:var(--text);transition:background .1s;}
-.cxi:hover{background:rgba(255,255,255,0.08);}
-.cxi .ci-ico{font-size:1rem;width:1.25rem;text-align:center;}
-.ctx-sep{height:1px;background:rgba(255,255,255,0.07);margin:0.25rem 0;}
-
-/* RIGHT PANEL */
-.rp{width:0;overflow:hidden;display:flex;flex-direction:column;background:var(--bg-sec);border-left:1px solid var(--divider);transition:width .25s ease;flex-shrink:0;}
-.rp.open{width:22rem;}
-.rp-head{display:flex;align-items:center;height:var(--hh);padding:0 0.75rem;background:var(--bg);border-bottom:1px solid rgba(255,255,255,0.04);gap:0.625rem;flex-shrink:0;white-space:nowrap;}
-.rp-head h3{font-size:0.9375rem;font-weight:500;overflow:hidden;text-overflow:ellipsis;}
-.rp-body{flex:1;overflow-y:auto;padding:0.625rem;}
-.fe{background:var(--bg);border-radius:0.5rem;padding:0.5rem 0.625rem;margin-bottom:0.375rem;font-size:0.6875rem;font-family:"Cascadia Mono","Roboto Mono",monospace;color:var(--text-sec);white-space:pre-wrap;word-break:break-all;border-left:3px solid rgba(255,255,255,0.12);}
-.fe.user{border-color:#5588bb;color:#93c4e8;}
-.fe.cs{border-color:#7060c0;color:#c2a8f0;}
-.fe.alert{border-color:#c03030;color:#ff9090;}
-.fe.audit{border-color:#c07010;color:#f0c060;}
-.fe.deleted{border-color:#a03030;color:#ffaaaa;}
-.es{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:3rem 1rem;color:var(--text-sec);font-size:0.9375rem;text-align:center;gap:0.5rem;}
-</style></head>
-<body>
-
-<div class="lp">
-  <div class="lp-head">
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#8774e1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-    <h3>消息记录</h3>
-    <button class="ibtn" onclick="loadGroups()" title="刷新">&#x21bb;</button>
-  </div>
-  <div class="chat-list" id="cl"><div class="es">加载中...</div></div>
-</div>
-
-<div class="mp">
-  <div class="mp-head">
-    <div class="av" id="hav" style="background:#766ac8;font-size:1.375rem">&#128172;</div>
-    <div class="mp-info">
-      <div class="mp-title" id="htitle">全部群组</div>
-      <div class="mp-sub" id="hsub">选择群组查看消息</div>
-    </div>
-    <div style="display:flex;gap:0.25rem">
-      <button class="ibtn" onclick="loadMessages()" title="刷新">&#x21bb;</button>
-      <button class="ibtn" onclick="scrollBottom()" title="最新消息">&#x2193;</button>
-    </div>
-  </div>
-  <div class="sb"><input class="si" id="si" type="text" placeholder="&#128269;  搜索 ID / 关键词..." onkeydown="if(event.key==='Enter')doSearch()"></div>
-  <div class="mc" id="mc"><div class="es" style="height:100%">请从左侧选择群组</div></div>
-</div>
-
-<div class="rp" id="rp">
-  <div class="rp-head">
-    <button class="ibtn" onclick="closeFlow()">&#x2039;</button>
-    <h3 id="rp-title">消息流</h3>
-  </div>
-  <div class="rp-body" id="rp-body"><div class="es">右键消息查看完整流程</div></div>
-</div>
-
-<div class="ctx" id="ctx">
-  <div class="cxi" onclick="openFlow()"><span class="ci-ico">&#128204;</span>查看消息流</div>
-  <div class="ctx-sep"></div>
-  <div class="cxi" onclick="copyTxt()"><span class="ci-ico">&#128203;</span>复制文本</div>
-  <div class="cxi" id="cx-missed" onclick="reportBug('漏报')" style="display:none;color:#fbbf24"><span class="ci-ico">&#9888;</span>反馈漏报</div>
-  <div class="cxi" id="cx-false" onclick="reportBug('误报')" style="display:none;color:#f87171"><span class="ci-ico">&#10060;</span>反馈误报</div>
-</div>
-
-<script>
-const AVCOLS=['#e17076','#faa774','#a695e7','#7bc862','#6ec9cb','#65aadd','#ee7aae','#766ac8'];
-function hcol(s){let h=0;for(const c of String(s))h=(h*31+c.charCodeAt(0))&0xffff;return AVCOLS[h%AVCOLS.length];}
-
-let allLogs=[],activeChatId=null,ctxTarget=null;
-
-async function loadGroups(){
-  const cl=document.getElementById('cl');
-  cl.innerHTML='<div class="es">加载中...</div>';
-  try{
-    const gs=await fetch('/log_groups').then(r=>r.json());
-    let h='<div class="ci active" data-id="" data-name="全部群组" onclick="selChat(this)">'
-      +'<div class="av" style="background:#766ac8;font-size:1.375rem">&#128172;</div>'
-      +'<div class="ci-info"><div class="ci-row"><span class="ci-name">全部群组</span></div><div class="ci-sub">所有群组消息</div></div></div>';
-    for(const g of gs){
-      const n=g.name||String(g.chat_id),bg=hcol(n),ini=escH(n.charAt(0).toUpperCase());
-      h+='<div class="ci" data-id="'+g.chat_id+'" data-name="'+escH(n)+'" onclick="selChat(this)">'
-        +'<div class="av" style="background:'+bg+'">'+ini+'</div>'
-        +'<div class="ci-info"><div class="ci-row"><span class="ci-name">'+escH(n)+'</span>'
-        +'<span class="ci-badge">'+g.count+'</span></div>'
-        +'<div class="ci-sub">'+g.count+' 条消息</div></div></div>';
-    }
-    cl.innerHTML=h;
-  }catch(e){cl.innerHTML='<div class="es">加载失败</div>';}
-}
-
-function selChat(el){
-  document.querySelectorAll('.ci').forEach(x=>x.classList.remove('active'));
-  el.classList.add('active');
-  const rid=el.dataset.id;
-  activeChatId=rid?parseInt(rid):null;
-  const name=el.dataset.name||'全部群组';
-  document.getElementById('htitle').textContent=name;
-  const av=document.getElementById('hav');
-  if(name==='全部群组'){av.innerHTML='&#128172;';av.style.fontSize='1.375rem';}
-  else{av.textContent=name.charAt(0).toUpperCase();av.style.fontSize='1rem';}
-  av.style.background=hcol(name);
-  loadMessages();
-}
-
-async function loadMessages(){
-  const mc=document.getElementById('mc');
-  mc.innerHTML='<div class="es" style="height:100%">加载中...</div>';
-  const url='/log_db?limit=800'+(activeChatId?'&chat_id='+activeChatId:'');
-  try{
-    const data=await fetch(url).then(r=>r.json());
-    allLogs=data;
-    document.getElementById('hsub').textContent=data.length+' 条消息';
-    render();scrollBottom();
-  }catch(e){mc.innerHTML='<div class="es" style="height:100%">加载失败</div>';}
-}
-
-function parsL(row){
-  const raw=row.raw||'';
-  const time=(raw.match(/(\\d{2}:\\d{2}:\\d{2})/)||[])[1]||'';
-  const msgId=(raw.match(/Msg[=\\(](\\d+)/)||[])[1]||null;
-  let sn='',tx='';
-  const m=raw.match(/\\[(-?\\d+)\\]\\s+(.+?):\\s+(.*)/);
-  if(m){sn=m[2];tx=m[3];}
-  else tx=raw.replace(/^\\d{4}-\\d{2}-\\d{2}\\s+\\d{2}:\\d{2}:\\d{2}\\s+/,'').trim();
-  if(row.msg_type==='cs'&&!sn) tx=raw.replace(/^.*?\\[\\+\\]\\s*/,'').trim();
-  if(row.msg_type==='deleted'&&!sn) tx=raw.replace(/^.*?\\[DELETED\\]\\s*/,'').trim();
-  return{...row,time,msgId,sn,tx};
-}
-
-function render(){
-  const mc=document.getElementById('mc');
-  if(!allLogs.length){mc.innerHTML='<div class="es" style="height:100%">暂无消息</div>';return;}
-  const es=allLogs.map(parsL);
-  let h='<div class="mi">',ld='',ls='',lt='';
-  for(let i=0;i<es.length;i++){
-    const e=es[i],nx=es[i+1];
-    const d=new Date(e.ts*1000).toLocaleDateString('zh-CN',{year:'numeric',month:'long',day:'numeric'});
-    if(d!==ld){h+='<div class="dt"><span>'+d+'</span></div>';ld=d;ls='';lt='';}
-    const t=e.msg_type||'sys';
-    const fg=(ls!==e.sn||lt!==t);
-    const lg=(!nx||(nx.msg_type||'sys')!==t||parsL(nx).sn!==e.sn);
-    ls=e.sn;lt=t;
-    h+=rendE(e,i,fg,lg);
-  }
-  h+='</div>';
-  mc.innerHTML=h;
-}
-
-function rendE(e,i,fg,lg){
-  const t=e.msg_type||'sys',id='msg-'+i;
-  if(t==='alert') return '<div class="sm alert" id="'+id+'"><span>'+escH(e.tx)+'</span></div>';
-  if(t==='audit') return '<div class="sm audit" id="'+id+'"><span>'+escH(e.tx)+'</span></div>';
-  if(t==='deleted') return '<div class="sm deleted" id="'+id+'"><span>&#128465; '+escH(e.tx)+'</span></div>';
-  const own=(t==='cs');
-  let cls='Msg'+(own?' own':'')+(!own&&fg?' fg':'')+(!own&&lg?' lg':'')+(own&&fg?' fg':'')+(own&&lg?' lg':'');
-  const col=hcol(e.sn||'用户'),ini=escH((e.sn||'用户').charAt(0).toUpperCase());
-  const aw=own?'':'<div class="aw"><div class="msg-av" style="background:'+col+'">'+ini+'</div></div>';
-  const snr=(!own&&fg&&e.sn)?'<div class="ms-name" style="color:'+col+'">'+escH(e.sn)+'</div>':'';
-  return '<div class="'+cls+'" id="'+id+'" data-i="'+i+'">'
-    +aw+'<div class="mcw"><div class="mb" oncontextmenu="showCtx(event,'+i+')">'
-    +snr+'<div class="ms-text">'+escH(e.tx||'')+'</div>'
-    +'<div class="ms-meta"><span class="ms-time">'+e.time+'</span></div>'
-    +'</div></div></div>';
-}
-
-function showCtx(ev,i){
-  ev.preventDefault();
-  ctxTarget={i,e:parsL(allLogs[i])};
-  const t=ctxTarget.e.msg_type;
-  document.getElementById('cx-missed').style.display=t==='user'?'flex':'none';
-  document.getElementById('cx-false').style.display=(t==='alert'||t==='audit')?'flex':'none';
-  const m=document.getElementById('ctx');
-  m.style.left=Math.min(ev.clientX,window.innerWidth-200)+'px';
-  m.style.top=Math.min(ev.clientY,window.innerHeight-170)+'px';
-  m.classList.add('show');
-  document.querySelectorAll('.Msg.hl').forEach(r=>r.classList.remove('hl'));
-  const row=document.getElementById('msg-'+i);
-  if(row)row.classList.add('hl');
-}
-document.addEventListener('click',()=>document.getElementById('ctx').classList.remove('show'));
-
-function copyTxt(){if(ctxTarget)navigator.clipboard.writeText(ctxTarget.e.tx||ctxTarget.e.raw||'');}
-
-function openFlow(){
-  if(!ctxTarget)return;
-  const e=ctxTarget.e,mid=e.msgId;
-  document.getElementById('rp-title').textContent=mid?'Msg='+mid+' 消息流':'消息流';
-  const body=document.getElementById('rp-body');
-  if(!mid){body.innerHTML='<div class="es">此条目无消息 ID</div>';}
-  else{
-    const rel=allLogs.filter(r=>r.raw&&r.raw.includes('Msg='+mid));
-    body.innerHTML=rel.length?rel.map(r=>{
-      const p=parsL(r);
-      return '<div class="fe '+(p.msg_type||'sys')+'">['+p.time+'] '+escH(p.raw.replace(/^\\d{4}-\\d{2}-\\d{2}\\s+/,'').trim())+'</div>';
-    }).join(''):'<div class="es">未找到相关记录</div>';
-  }
-  document.getElementById('rp').classList.add('open');
-}
-function closeFlow(){document.getElementById('rp').classList.remove('open');}
-
-function reportBug(type){
-  if(!ctxTarget)return;
-  const e=ctxTarget.e,mid=e.msgId,cTs=e.ts||0;
-  let lines=['=== '+type+'反馈报告 ===','涉及 Msg: '+(mid||'未知'),''];
-  if(mid){
-    lines.push('-- 关联记录 --');
-    allLogs.filter(r=>r.raw&&r.raw.includes('Msg='+mid)).forEach(r=>{
-      const p=parsL(r);lines.push('['+p.time+'] '+p.raw.replace(/^\\d{4}-\\d{2}-\\d{2}\\s+/,'').trim());
-    });
-    lines.push('');
-  }
-  lines.push('-- 时间窗口 (±5分钟) --');
-  allLogs.filter(r=>Math.abs((r.ts||0)-cTs)<=300).forEach(r=>{
-    const p=parsL(r);lines.push('['+p.time+'] '+p.raw.replace(/^\\d{4}-\\d{2}-\\d{2}\\s+/,'').trim());
-  });
-  navigator.clipboard.writeText(lines.join('\\n')).then(()=>alert('已复制 ['+type+'] 详情'));
-}
-
-function doSearch(){
-  const term=document.getElementById('si').value.toLowerCase().trim();
-  if(!term)return;
-  document.querySelectorAll('.Msg.sm-hl').forEach(r=>r.classList.remove('sm-hl'));
-  let found=false;
-  Array.from(document.querySelectorAll('.Msg')).reverse().forEach(row=>{
-    if(row.textContent.toLowerCase().includes(term)){
-      row.classList.add('sm-hl');
-      if(!found){row.scrollIntoView({behavior:'smooth',block:'center'});found=true;}
-    }
-  });
-}
-function scrollBottom(){const mc=document.getElementById('mc');mc.scrollTop=mc.scrollHeight;}
-function escH(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-
-loadGroups();
-loadMessages();
-</script>
-</body>
-</html>"""
-
-
+# Log viewer lives in templates/log_viewer.html to keep the standalone UI page separate from backend code.
 WAIT_CHECK_HTML = """
 <!DOCTYPE html>
 <html>
@@ -1730,7 +1451,8 @@ def status_page():
     return render_template_string(DASHBOARD_HTML, working=IS_WORKING, w=wait_timers, f=followup_timers, r=reply_timers, s=self_reply_timers, current_time=now)
 
 @app.route('/log')
-def log_ui(): return Response(LOG_VIEWER_HTML, mimetype='text/html')
+def log_ui():
+    return render_template('log_viewer.html')
 
 @app.route('/tool/wait_check')
 def wait_check_ui(): 
@@ -1762,15 +1484,17 @@ def log_db():
             conn.row_factory = sqlite3.Row
             if chat_id:
                 rows = conn.execute(
-                    "SELECT ts, chat_id, msg_type, raw FROM chat_logs WHERE chat_id=? ORDER BY ts DESC LIMIT ?",
+                    """SELECT id, ts, chat_id, msg_type, raw, msg_id, event_type, sender_id, sender_name, text
+                       FROM chat_logs WHERE chat_id=? ORDER BY ts DESC, id DESC LIMIT ?""",
                     (chat_id, limit)
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT ts, chat_id, msg_type, raw FROM chat_logs ORDER BY ts DESC LIMIT ?",
+                    """SELECT id, ts, chat_id, msg_type, raw, msg_id, event_type, sender_id, sender_name, text
+                       FROM chat_logs ORDER BY ts DESC, id DESC LIMIT ?""",
                     (limit,)
                 ).fetchall()
-        data = [{"ts": r["ts"], "chat_id": r["chat_id"], "msg_type": r["msg_type"], "raw": r["raw"]} for r in reversed(rows)]
+        data = [dict(r) for r in reversed(rows)]
         return jsonify(data)
     except Exception as e:
         return jsonify([])
@@ -1782,18 +1506,66 @@ def log_groups():
             rows = conn.execute(
                 "SELECT chat_id, COUNT(*) as cnt FROM chat_logs WHERE chat_id IS NOT NULL GROUP BY chat_id ORDER BY cnt DESC"
             ).fetchall()
-        # Try to get group names from Telegram client
+        counts = {int(chat_id): int(cnt) for chat_id, cnt in rows if chat_id is not None}
+        all_group_ids = set(CONFIGURED_CS_GROUP_IDS or []) | set(counts.keys())
         result = []
-        for chat_id, cnt in rows:
+        for chat_id in sorted(all_group_ids, key=lambda cid: (-counts.get(cid, 0), str(cid))):
             name = _group_name_cache.get(chat_id, str(chat_id))
-            result.append({"chat_id": chat_id, "name": name, "count": cnt})
+            result.append({"chat_id": chat_id, "name": name, "count": counts.get(chat_id, 0)})
         return jsonify(result)
     except Exception as e:
         return jsonify([])
 
+
+@app.route('/log_events')
+def log_events():
+    chat_id = request.args.get('chat_id', type=int)
+    last_id = max(request.args.get('last_id', 0, type=int), 0)
+
+    def fetch_rows(after_id):
+        with sqlite3.connect(CHAT_LOG_DB) as conn:
+            conn.row_factory = sqlite3.Row
+            if chat_id:
+                rows = conn.execute(
+                    """SELECT id, ts, chat_id, msg_type, raw, msg_id, event_type, sender_id, sender_name, text
+                       FROM chat_logs WHERE chat_id=? AND id>? ORDER BY id ASC LIMIT 200""",
+                    (chat_id, after_id)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT id, ts, chat_id, msg_type, raw, msg_id, event_type, sender_id, sender_name, text
+                       FROM chat_logs WHERE id>? ORDER BY id ASC LIMIT 200""",
+                    (after_id,)
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    def generate():
+        nonlocal last_id
+        yield ": connected\n\n"
+        while True:
+            try:
+                rows = fetch_rows(last_id)
+                if rows:
+                    last_id = max(r["id"] for r in rows)
+                    yield f"data: {json.dumps(rows, ensure_ascii=False)}\n\n"
+                else:
+                    yield ": heartbeat\n\n"
+                time.sleep(1)
+            except GeneratorExit:
+                break
+            except Exception as e:
+                yield f"event: error\ndata: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+                time.sleep(2)
+
+    response = Response(stream_with_context(generate()), mimetype='text/event-stream')
+    response.headers['Cache-Control'] = 'no-cache'
+    response.headers['X-Accel-Buffering'] = 'no'
+    return response
+
 @app.after_request
 def add_header(response):
-    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    if response.mimetype != 'text/event-stream':
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
     return response
 
 @app.route('/api/ctrl')
@@ -3228,6 +3000,80 @@ client = TelegramClient(
     system_lang_code="zh-hans"
 )
 
+
+def _message_display_text(message):
+    text = message.text or ""
+    msg_type = "文本"
+    if getattr(message, "file", None):
+        msg_type = "文件/图片"
+        if not text:
+            text = "[媒体文件]"
+    if getattr(message, "sticker", None):
+        msg_type = "贴纸"
+        if not text:
+            text = "[贴纸]"
+    return text, msg_type
+
+async def _sender_display_name(message):
+    try:
+        sender = await message.get_sender()
+        return getattr(sender, 'first_name', None) or getattr(sender, 'title', None) or getattr(sender, 'username', None) or 'Unknown'
+    except Exception:
+        return 'Unknown'
+
+async def backfill_recent_chat_history():
+    """Best-effort Telegram history sync so /log survives process restarts with recent context."""
+    if os.environ.get("LOG_HISTORY_BACKFILL", "1").lower() in ("0", "false", "no"):
+        return
+    limit = max(0, int(os.environ.get("LOG_HISTORY_BACKFILL_LIMIT", "300") or 0))
+    if limit <= 0:
+        return
+    await asyncio.sleep(3)
+    global MY_ID
+    if not MY_ID:
+        try:
+            MY_ID = (await client.get_me()).id
+        except Exception as e:
+            logger.warning(f"⚠️ [LogBackfill] 获取当前账号失败: {e}")
+            return
+    for chat_id in CONFIGURED_CS_GROUP_IDS:
+        try:
+            entity = await client.get_entity(chat_id)
+            _group_name_cache[chat_id] = getattr(entity, 'title', None) or str(chat_id)
+            restored = 0
+            async for msg in client.iter_messages(entity, limit=limit, reverse=True):
+                if not msg or getattr(msg, 'action', None):
+                    continue
+                text, msg_type = _message_display_text(msg)
+                sender_id = getattr(msg, 'sender_id', None)
+                sender_name = await _sender_display_name(msg)
+                grouped_id = getattr(msg, 'grouped_id', None)
+                is_name_cs = any(sender_name.startswith(prefix) for prefix in CS_NAME_PREFIXES) if sender_name else False
+                is_sender_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS) or is_name_cs
+                kind = 'CSMSG' if is_sender_cs else 'MSG'
+                db_type = 'cs' if is_sender_cs else 'user'
+                msg_time_str = msg.date.astimezone(BEIJING_TZ).strftime('%H:%M:%S')
+                if not chat_log_exists(chat_id, msg.id, 'message'):
+                    insert_chat_log(
+                        msg.date.timestamp(), chat_id, db_type,
+                        format_chat_log_raw(kind, msg.id, msg_time_str, sender_id, chat_id, sender_name, text, msg_type, '| 历史同步'),
+                        msg_id=msg.id, event_type='message', sender_id=sender_id, sender_name=sender_name, text=text
+                    )
+                    restored += 1
+                edit_date = getattr(msg, 'edit_date', None)
+                if edit_date and not chat_log_exists(chat_id, msg.id, 'history_edit'):
+                    edit_time_str = edit_date.astimezone(BEIJING_TZ).strftime('%H:%M:%S')
+                    insert_chat_log(
+                        edit_date.timestamp(), chat_id, 'edited',
+                        format_chat_log_raw('EDITED', msg.id, msg_time_str, sender_id, chat_id, sender_name, text, msg_type, f'| 编辑于 {edit_time_str} | 历史同步'),
+                        msg_id=msg.id, event_type='history_edit', sender_id=sender_id, sender_name=sender_name, text=text
+                    )
+                update_content_cache(chat_id, msg.id, sender_name, text)
+                update_msg_cache(chat_id, msg.id, sender_id, grouped_id)
+            logger.info(f"✅ [LogBackfill] {chat_id} 历史同步完成，新增 {restored} 条")
+        except Exception as e:
+            logger.warning(f"⚠️ [LogBackfill] {chat_id} 历史同步失败: {e}")
+
 @client.on(events.NewMessage(chats='me', pattern=r'^\s*(上班|下班|状态)\s*$'))
 async def command_handler(event):
     cmd = event.text.strip()
@@ -3241,12 +3087,27 @@ async def command_handler(event):
 
 @client.on(events.MessageDeleted)
 async def handler_deleted(event):
+    chat_id = event.chat_id
+    if chat_id and not is_configured_cs_group(chat_id):
+        return
+    if chat_id and chat_id not in _group_name_cache:
+        try:
+            _g = await client.get_entity(chat_id)
+            _group_name_cache[chat_id] = getattr(_g, 'title', None) or str(chat_id)
+        except Exception:
+            _group_name_cache[chat_id] = str(chat_id)
     for msg_id in event.deleted_ids:
         deleted_info = {'name': '未知', 'text': '未知'}
-        if event.chat_id:
-            deleted_info = msg_content_cache.get((event.chat_id, msg_id), deleted_info)
+        if chat_id:
+            deleted_info = msg_content_cache.get((chat_id, msg_id), deleted_info)
 
-        logger.info(f"[DELETED] Msg={msg_id} | [{event.chat_id}] {deleted_info['name']}: {deleted_info['text']}")
+        delete_raw = f"[DELETED] Msg={msg_id} | [{chat_id}] {deleted_info['name']}: {deleted_info['text']}"
+        insert_chat_log(
+            time.time(), chat_id, 'deleted', delete_raw,
+            msg_id=msg_id, event_type='delete',
+            sender_name=deleted_info.get('name'), text=deleted_info.get('text')
+        )
+        logger.info(f"[DELETE_EVENT] Msg={msg_id} | [{chat_id}] {deleted_info['name']}: {deleted_info['text']}")
 
         if not IS_WORKING:
             continue
@@ -3375,26 +3236,12 @@ async def handler(event):
             msg_type = "贴纸"
             if not text: text = "[贴纸]"
 
-        # 监听暂停时仍记录消息到数据库，然后直接返回
-        if not IS_WORKING:
-            if isinstance(event, events.NewMessage):
-                log_tree(0, f"Msg={event.id} [T={msg_time_str}] | User={event.sender_id} | [{chat_id}] {text[:200].replace(chr(10),' ')} [{msg_type}][暂停]")
-                if chat_id not in _group_name_cache:
-                    try:
-                        _g = await client.get_entity(chat_id)
-                        _group_name_cache[chat_id] = _g.title
-                    except Exception:
-                        _group_name_cache[chat_id] = str(chat_id)
-            return
-
         sender_id = event.sender_id
         reply_to_msg_id = get_primary_reply_target_id(event.message)
         grouped_id = event.message.grouped_id
         sender = await event.get_sender()
-        sender_name = getattr(sender, 'first_name', 'Unknown')
+        sender_name = getattr(sender, 'first_name', None) or getattr(sender, 'title', None) or 'Unknown'
         msg_link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{event.id}"
-
-        update_content_cache(chat_id, event.id, sender_name, text)
 
         alert_wait_signatures = get_wait_alert_signatures()
         matched_wait_keyword = match_signature(text, WAIT_SIGNATURES)
@@ -3409,8 +3256,48 @@ async def handler(event):
                  if sender_name.startswith(prefix): is_name_cs = True; break
         
         is_sender_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS) or is_name_cs
+        previous_content = msg_content_cache.get((chat_id, event.id))
+        log_kind = 'EDITED' if isinstance(event, events.MessageEdited) else ('CSMSG' if is_sender_cs else 'MSG')
+        log_msg_type = 'edited' if log_kind == 'EDITED' else ('cs' if is_sender_cs else 'user')
+        edit_extra = ''
+        log_ts = msg_timestamp
+        if log_kind == 'EDITED':
+            edit_time = getattr(event.message, 'edit_date', None)
+            if edit_time:
+                log_ts = edit_time.timestamp()
+            else:
+                log_ts = time.time()
+            edit_time_str = edit_time.astimezone(BEIJING_TZ).strftime('%H:%M:%S') if edit_time else msg_time_str
+            old_text = (previous_content or {}).get('text')
+            if old_text and old_text != text:
+                edit_extra = f"| 编辑于 {edit_time_str} | 原文: {old_text[:300].replace(chr(10), ' ')}"
+            else:
+                edit_extra = f"| 编辑于 {edit_time_str}"
+        insert_chat_log(
+            log_ts,
+            chat_id,
+            log_msg_type,
+            format_chat_log_raw(log_kind, event.id, msg_time_str, sender_id, chat_id, sender_name, text, msg_type, edit_extra),
+            msg_id=event.id,
+            event_type='edit' if log_kind == 'EDITED' else 'message',
+            sender_id=sender_id,
+            sender_name=sender_name,
+            text=text
+        )
+        update_content_cache(chat_id, event.id, sender_name, text)
+        update_msg_cache(chat_id, event.id, sender_id, grouped_id)
+        if chat_id not in _group_name_cache:
+            try:
+                _g = await client.get_entity(chat_id)
+                _group_name_cache[chat_id] = getattr(_g, 'title', None) or str(chat_id)
+            except Exception:
+                _group_name_cache[chat_id] = str(chat_id)
 
         current_thread_id, thread_type = get_thread_context(event)
+
+        # 下班/暂停状态只停止监控任务，日志页仍完整记录新消息和编辑事件。
+        if not IS_WORKING:
+            return
 
         real_customer_id = None
         if reply_to_msg_id:
@@ -3559,10 +3446,8 @@ async def handler(event):
             if isinstance(event, events.MessageEdited):
                 return
 
-            update_msg_cache(chat_id, event.id, sender_id, grouped_id)
             cancel_tasks(chat_id, sender_id, current_thread_id, reason=f"客户发言: [{text[:100]}...]", types=['reply'])
             
-            log_tree(0, f"Msg={event.id} [T={msg_time_str}] | User={sender_id} | [{chat_id}] {sender_name}: {text} [{msg_type}]")
             if chat_id not in _group_name_cache:
                 try:
                     _g = await client.get_entity(chat_id)
@@ -3651,6 +3536,7 @@ if __name__ == '__main__':
         bot_loop = asyncio.get_event_loop()
         bot_loop.create_task(maintenance_task())
         bot_loop.create_task(bot_command_polling_task())
+        bot_loop.create_task(backfill_recent_chat_history())
         
         if init_stats_blueprint:
             init_stats_blueprint(app, client, bot_loop, CS_GROUP_IDS)
