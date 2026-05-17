@@ -888,7 +888,7 @@
                             <div class="form-grid">
                                 <div class="field">
                                     <div class="label-row"><label>监听来源</label><span class="hint">群 ID 每行一个</span></div>
-                                    <textarea class="textarea" :value="listToString(currentRule.groups)" @input="setIntList($event, currentRule, 'groups')" placeholder="-1001234567890"></textarea>
+                                    <textarea class="textarea" v-model="_groupsRaw" placeholder="-1001234567890"></textarea>
                                 </div>
                                 <div class="field">
                                     <div class="label-row">
@@ -899,7 +899,7 @@
                                         <input class="input" :value="listToString(currentRule.file_extensions).replace(/\\n/g, ', ')" @input="setList($event, currentRule, 'file_extensions', true)" placeholder="png, jpg">
                                         <input class="input" :value="listToString(currentRule.filename_keywords).replace(/\\n/g, ', ')" @input="setList($event, currentRule, 'filename_keywords', true)" placeholder="文件名关键词">
                                     </div>
-                                    <textarea v-else class="textarea" :value="listToString(currentRule.keywords)" @input="setList($event, currentRule, 'keywords', false)" placeholder="普通: 代存&#10;正则: r:(代|带)存|入[金款]"></textarea>
+                                    <textarea v-else class="textarea" v-model="_keywordsRaw" placeholder="普通: 代存&#10;正则: r:(代|带)存|入[金款]"></textarea>
                                 </div>
                                 <div class="field full">
                                     <div class="label-row"><label>备注（可选）</label><span class="hint">{{ (currentRule.note || '').length }}/200</span></div>
@@ -1507,7 +1507,7 @@
 </div>
 
 <script>
-const { createApp, reactive, computed, nextTick, watch, onMounted } = Vue;
+const { createApp, reactive, ref, computed, nextTick, watch, onMounted } = Vue;
 
 createApp({
     setup() {
@@ -1796,6 +1796,25 @@ createApp({
         const setIntList = (event, rule, key) => {
             rule[key] = String(event.target.value || "").split(/[\r\n,，]+/).map(s => s.trim()).filter(Boolean);
         };
+
+        // Raw string refs for multi-line textareas — v-model here avoids Vue forcing DOM resets
+        // when the parsed array produces the same string (e.g. after pressing Enter adds a trailing newline)
+        const _groupsRaw = ref('');
+        const _keywordsRaw = ref('');
+        watch(currentRule, (rule) => {
+            _groupsRaw.value = rule ? listToString(rule.groups) : '';
+            _keywordsRaw.value = rule ? listToString(rule.keywords) : '';
+        }, { immediate: true });
+        watch(_groupsRaw, (val) => {
+            if (currentRule.value) {
+                currentRule.value.groups = String(val).split(/[\r\n,，]+/).map(s => s.trim()).filter(Boolean);
+            }
+        });
+        watch(_keywordsRaw, (val) => {
+            if (currentRule.value) {
+                currentRule.value.keywords = String(val).split(/[\r\n]+/).map(s => s.trim()).filter(Boolean);
+            }
+        });
 
         const selectRule = (rule) => {
             ui.selectedId = rule.id;
@@ -2213,6 +2232,7 @@ createApp({
             filteredRecords, hourlyBars, compactHourlyBars, topRules, accountRows, resourceCards,
             loadConfig, loadRuntimeStats, loadAll, saveConfig, toggleRuleEnabled, toggleMonitorEnabled, selectRule, setPage, addRule, removeRule, ruleStatus,
             addScheduledMessage, removeScheduledMessage, formatScheduleLastSent,
+            _groupsRaw, _keywordsRaw,
             listToString, setList, setIntList, splitInline, shortGroups, primaryKeyword, stepCount,
             addStep, duplicateStep, removeStep, normalizeStep, displayDelay,
             amountPart, setAmountPart, amountLowLines, setAmountLowLines,
