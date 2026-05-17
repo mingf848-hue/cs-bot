@@ -336,7 +336,7 @@ button { border: 0; background: transparent; color: inherit; cursor: pointer; }
   </div>
 </div>
 <script>
-let groups=[];let allLogs=[];let activeChatId=null;let activeChatName='全部消息';let ctxTarget=null;
+let groups=[];let allLogs=[];let activeChatId=null;let activeChatName='全部消息';let ctxTarget=null;let logStream=null;
 const colors=['#6bb8ff','#ff8a65','#ba68c8','#4db6ac','#ffd54f','#7986cb','#f06292','#81c784'];
 function hcol(s){let h=0;for(const c of String(s||''))h=(h*31+c.charCodeAt(0))|0;return colors[Math.abs(h)%colors.length];}
 function escH(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -365,12 +365,19 @@ function selectGroup(id,name){activeChatId=id;activeChatName=decodeURIComponent(
 function updateHead(){document.getElementById('headTitle').textContent=activeChatName;document.getElementById('headAvatar').textContent=(activeChatName||'L').charAt(0).toUpperCase();document.getElementById('headAvatar').style.background=hcol(activeChatName);}
 async function loadMessages(){
   const el=document.getElementById('messages');el.innerHTML='<div class="empty-placeholder">加载中…</div>';
-  const url='/log_db?limit=800'+(activeChatId?'&chat_id='+activeChatId:'');
-  try{allLogs=await fetch(url).then(r=>r.json());document.getElementById('headSub').textContent=allLogs.length+' 条消息';render();renderGroups();scrollBottom();}
+  const url='/log_db?limit=1000'+(activeChatId?'&chat_id='+activeChatId:'');
+  try{allLogs=await fetch(url).then(r=>r.json());document.getElementById('headSub').textContent=allLogs.length+' 条记录 · 实时同步中';render();renderGroups();scrollBottom();startStream();}
   catch(e){el.innerHTML='<div class="empty-placeholder">加载失败</div>';}
 }
 function parseLog(row){
-  const raw=row.raw||'';const time=(raw.match(/(\d{2}:\d{2}:\d{2})/)||[])[1]||'';const msgId=(raw.match(/Msg[=\(](\d+)/)||[])[1]||null;
+  const raw=row.raw||'';const time=row.ts?new Date(row.ts*1000).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}):((raw.match(/(\d{2}:\d{2}:\d{2})/)||[])[1]||'');
+  const msgId=row.message_id||((raw.match(/Msg[=\(](\d+)/)||[])[1]||null);
+  if(row.event_type){
+    const sn=row.sender_name||'Unknown';let type=row.sender_role==='cs'?'cs':'user';let tx=row.text||'';
+    if(row.event_type==='edit'){type='audit';tx=`✎ ${sn} 编辑了 Msg=${msgId || ''}\n${row.old_text||'[空]'}\n→ ${row.text||'[空]'}`;}
+    if(row.event_type==='delete'){type='deleted';tx=`${sn}: ${row.text||row.old_text||'未知内容'}`;}
+    return {...row,time,msgId,sn,tx,msg_type:type};
+  }
   let sn='',tx='';const m=raw.match(/\[(-?\d+)\]\s+(.+?):\s+(.*)/);
   if(m){sn=m[2];tx=m[3];}else tx=stripDate(raw);
   if(row.msg_type==='cs'&&!sn)tx=raw.replace(/^.*?\[\+\]\s*/,'').trim();
@@ -417,6 +424,26 @@ function reportBug(type){
 function doSearch(){const term=(document.getElementById('sideSearch').value||'').toLowerCase().trim();if(!term)return;let found=false;Array.from(document.querySelectorAll('.Message')).reverse().forEach(row=>{if(row.textContent.toLowerCase().includes(term)){row.scrollIntoView({behavior:'smooth',block:'center'});found=true;return;}});}
 document.getElementById('sideSearch').addEventListener('keydown',e=>{if(e.key==='Enter')doSearch();});
 function scrollBottom(){const m=document.getElementById('messages');m.scrollTop=m.scrollHeight;}
+function rowKey(row){return row.id?`id:${row.id}`:`${row.event_type||row.msg_type}:${row.chat_id}:${row.message_id}:${row.ts}:${row.raw}`;}
+function startStream(){
+  if(logStream)logStream.close();
+  const url='/log_stream'+(activeChatId?'?chat_id='+activeChatId:'');
+  logStream=new EventSource(url);
+  logStream.onmessage=ev=>{
+    const row=JSON.parse(ev.data);
+    if(activeChatId&&String(row.chat_id)!==String(activeChatId))return;
+    const atBottom=document.getElementById('messages').scrollHeight-document.getElementById('messages').scrollTop-document.getElementById('messages').clientHeight<120;
+    const key=rowKey(row);
+    if(allLogs.some(r=>rowKey(r)===key))return;
+    allLogs.push(row);
+    if(allLogs.length>1000)allLogs.shift();
+    document.getElementById('headSub').textContent=allLogs.length+' 条记录 · 实时同步中';
+    render();
+    if(atBottom)scrollBottom();
+    loadGroups();
+  };
+  logStream.onerror=()=>{document.getElementById('headSub').textContent=allLogs.length+' 条记录 · 正在重连';};
+}
 updateHead();loadGroups();loadMessages();
 </script>
 </body>
