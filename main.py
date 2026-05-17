@@ -1517,6 +1517,28 @@ def log_groups():
         return jsonify([])
 
 
+@app.route('/log_history')
+def log_history():
+    chat_id = request.args.get('chat_id', type=int)
+    before_msg_id = request.args.get('before_msg_id', type=int)
+    limit = min(max(request.args.get('limit', 100, type=int), 1), 300)
+    if not chat_id:
+        return jsonify({"ok": False, "error": "chat_id required"}), 400
+    if not is_configured_cs_group(chat_id):
+        return jsonify({"ok": False, "error": "chat_id is not configured"}), 403
+    if not bot_loop:
+        return jsonify({"ok": False, "error": "Bot loop not ready"}), 503
+    try:
+        future = asyncio.run_coroutine_threadsafe(
+            sync_chat_history_page(chat_id, before_msg_id=before_msg_id, limit=limit),
+            bot_loop
+        )
+        rows = future.result(timeout=45)
+        return jsonify({"ok": True, "rows": rows, "count": len(rows)})
+    except Exception as e:
+        logger.warning(f"⚠️ [LogHistory] {chat_id} 历史读取失败: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.route('/log_events')
 def log_events():
     chat_id = request.args.get('chat_id', type=int)
@@ -3021,6 +3043,69 @@ async def _sender_display_name(message):
     except Exception:
         return 'Unknown'
 
+
+async def persist_telegram_history_message(chat_id, msg, history_note='历史读取'):
+    if not msg or getattr(msg, 'action', None):
+        return []
+    text, msg_type = _message_display_text(msg)
+    sender_id = getattr(msg, 'sender_id', None)
+    sender_name = await _sender_display_name(msg)
+    grouped_id = getattr(msg, 'grouped_id', None)
+    is_name_cs = any(sender_name.startswith(prefix) for prefix in CS_NAME_PREFIXES) if sender_name else False
+    is_sender_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS) or is_name_cs
+    kind = 'CSMSG' if is_sender_cs else 'MSG'
+    db_type = 'cs' if is_sender_cs else 'user'
+    msg_time_str = msg.date.astimezone(BEIJING_TZ).strftime('%H:%M:%S')
+    changed = []
+    if not chat_log_exists(chat_id, msg.id, 'message'):
+        insert_chat_log(
+            msg.date.timestamp(), chat_id, db_type,
+            format_chat_log_raw(kind, msg.id, msg_time_str, sender_id, chat_id, sender_name, text, msg_type, f'| {history_note}'),
+            msg_id=msg.id, event_type='message', sender_id=sender_id, sender_name=sender_name, text=text
+        )
+        changed.append(msg.id)
+    edit_date = getattr(msg, 'edit_date', None)
+    if edit_date and not chat_log_exists(chat_id, msg.id, 'history_edit'):
+        edit_time_str = edit_date.astimezone(BEIJING_TZ).strftime('%H:%M:%S')
+        insert_chat_log(
+            edit_date.timestamp(), chat_id, 'edited',
+            format_chat_log_raw('EDITED', msg.id, msg_time_str, sender_id, chat_id, sender_name, text, msg_type, f'| 编辑于 {edit_time_str} | {history_note}'),
+            msg_id=msg.id, event_type='history_edit', sender_id=sender_id, sender_name=sender_name, text=text
+        )
+        changed.append(msg.id)
+    update_content_cache(chat_id, msg.id, sender_name, text)
+    update_msg_cache(chat_id, msg.id, sender_id, grouped_id)
+    return changed
+
+async def sync_chat_history_page(chat_id, before_msg_id=None, limit=100):
+    global MY_ID
+    if not MY_ID:
+        MY_ID = (await client.get_me()).id
+    entity = await client.get_entity(chat_id)
+    _group_name_cache[chat_id] = getattr(entity, 'title', None) or str(chat_id)
+    fetched_ids = []
+    kwargs = {'limit': limit}
+    if before_msg_id:
+        kwargs['offset_id'] = before_msg_id
+    async for msg in client.iter_messages(entity, **kwargs):
+        if not msg or getattr(msg, 'action', None):
+            continue
+        fetched_ids.append(msg.id)
+        await persist_telegram_history_message(chat_id, msg, history_note='按需历史读取')
+    if not fetched_ids:
+        return []
+    placeholders = ','.join(['?'] * len(fetched_ids))
+    with _db_lock:
+        with sqlite3.connect(CHAT_LOG_DB) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                f"""SELECT id, ts, chat_id, msg_type, raw, msg_id, event_type, sender_id, sender_name, text
+                    FROM chat_logs WHERE chat_id=? AND msg_id IN ({placeholders})
+                    ORDER BY ts ASC, id ASC""",
+                (chat_id, *fetched_ids)
+            ).fetchall()
+    return [dict(r) for r in rows]
+
 async def backfill_recent_chat_history():
     """Best-effort Telegram history sync so /log survives process restarts with recent context."""
     if os.environ.get("LOG_HISTORY_BACKFILL", "1").lower() in ("0", "false", "no"):
@@ -3044,32 +3129,9 @@ async def backfill_recent_chat_history():
             async for msg in client.iter_messages(entity, limit=limit, reverse=True):
                 if not msg or getattr(msg, 'action', None):
                     continue
-                text, msg_type = _message_display_text(msg)
-                sender_id = getattr(msg, 'sender_id', None)
-                sender_name = await _sender_display_name(msg)
-                grouped_id = getattr(msg, 'grouped_id', None)
-                is_name_cs = any(sender_name.startswith(prefix) for prefix in CS_NAME_PREFIXES) if sender_name else False
-                is_sender_cs = (sender_id == MY_ID) or (sender_id in OTHER_CS_IDS) or is_name_cs
-                kind = 'CSMSG' if is_sender_cs else 'MSG'
-                db_type = 'cs' if is_sender_cs else 'user'
-                msg_time_str = msg.date.astimezone(BEIJING_TZ).strftime('%H:%M:%S')
-                if not chat_log_exists(chat_id, msg.id, 'message'):
-                    insert_chat_log(
-                        msg.date.timestamp(), chat_id, db_type,
-                        format_chat_log_raw(kind, msg.id, msg_time_str, sender_id, chat_id, sender_name, text, msg_type, '| 历史同步'),
-                        msg_id=msg.id, event_type='message', sender_id=sender_id, sender_name=sender_name, text=text
-                    )
+                changed = await persist_telegram_history_message(chat_id, msg, history_note='历史同步')
+                if changed:
                     restored += 1
-                edit_date = getattr(msg, 'edit_date', None)
-                if edit_date and not chat_log_exists(chat_id, msg.id, 'history_edit'):
-                    edit_time_str = edit_date.astimezone(BEIJING_TZ).strftime('%H:%M:%S')
-                    insert_chat_log(
-                        edit_date.timestamp(), chat_id, 'edited',
-                        format_chat_log_raw('EDITED', msg.id, msg_time_str, sender_id, chat_id, sender_name, text, msg_type, f'| 编辑于 {edit_time_str} | 历史同步'),
-                        msg_id=msg.id, event_type='history_edit', sender_id=sender_id, sender_name=sender_name, text=text
-                    )
-                update_content_cache(chat_id, msg.id, sender_name, text)
-                update_msg_cache(chat_id, msg.id, sender_id, grouped_id)
             logger.info(f"✅ [LogBackfill] {chat_id} 历史同步完成，新增 {restored} 条")
         except Exception as e:
             logger.warning(f"⚠️ [LogBackfill] {chat_id} 历史同步失败: {e}")

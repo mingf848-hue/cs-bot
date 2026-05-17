@@ -337,7 +337,7 @@ button { border: 0; background: transparent; color: inherit; cursor: pointer; }
   </div>
 </div>
 <script>
-let groups=[];let allLogs=[];let activeChatId=null;let activeChatName='全部消息';let ctxTarget=null;let logStream=null;let lastLogId=0;
+let groups=[];let allLogs=[];let activeChatId=null;let activeChatName='全部消息';let ctxTarget=null;let logStream=null;let lastLogId=0;let loadingOlder=false;let noMoreHistory=false;
 const colors=['#6bb8ff','#ff8a65','#ba68c8','#4db6ac','#ffd54f','#7986cb','#f06292','#81c784'];
 function hcol(s){let h=0;for(const c of String(s||''))h=(h*31+c.charCodeAt(0))|0;return colors[Math.abs(h)%colors.length];}
 function escH(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -367,7 +367,7 @@ function updateHead(){document.getElementById('headTitle').textContent=activeCha
 async function loadMessages(){
   const el=document.getElementById('messages');el.innerHTML='<div class="empty-placeholder">加载中…</div>';
   const url='/log_db?limit=1200'+(activeChatId?'&chat_id='+activeChatId:'');
-  try{allLogs=await fetch(url).then(r=>r.json());lastLogId=allLogs.reduce((m,r)=>Math.max(m,Number(r.id||0)),0);document.getElementById('headSub').textContent=allLogs.length+' 条消息 · 实时同步';render();renderGroups();scrollBottom();connectLogStream();}
+  try{allLogs=await fetch(url).then(r=>r.json());noMoreHistory=false;lastLogId=allLogs.reduce((m,r)=>Math.max(m,Number(r.id||0)),0);document.getElementById('headSub').textContent=allLogs.length+' 条消息 · 实时同步';render();renderGroups();scrollBottom();connectLogStream();}
   catch(e){el.innerHTML='<div class="empty-placeholder">加载失败</div>';}
 }
 function connectLogStream(){
@@ -379,11 +379,40 @@ function connectLogStream(){
 }
 function appendRealtimeRows(rows){
   const msgEl=document.getElementById('messages');const stick=(msgEl.scrollHeight-msgEl.scrollTop-msgEl.clientHeight)<96;
-  for(const row of rows){if(Number(row.id||0)>lastLogId)lastLogId=Number(row.id||0);allLogs.push(row);}
-  if(allLogs.length>2000)allLogs=allLogs.slice(allLogs.length-2000);
+  mergeRows(rows);
+  if(allLogs.length>3000)allLogs=allLogs.slice(allLogs.length-3000);
   document.getElementById('headSub').textContent=allLogs.length+' 条消息 · 实时同步';
   render();renderGroups();loadGroups();
   if(stick)scrollBottom();
+}
+
+function oldestLoadedMsgId(){
+  const ids=allLogs.map(r=>Number(r.msg_id||0)).filter(Boolean);
+  return ids.length?Math.min(...ids):0;
+}
+function mergeRows(rows){
+  const seen=new Set(allLogs.map(r=>String(r.id)));
+  let added=0;
+  for(const row of rows){if(!seen.has(String(row.id))){allLogs.push(row);seen.add(String(row.id));added++;}}
+  allLogs.sort((a,b)=>(Number(a.ts||0)-Number(b.ts||0))||(Number(a.id||0)-Number(b.id||0)));
+  lastLogId=allLogs.reduce((m,r)=>Math.max(m,Number(r.id||0)),lastLogId);
+  return added;
+}
+async function loadOlderHistory(){
+  if(!activeChatId||loadingOlder||noMoreHistory)return;
+  const before=oldestLoadedMsgId();
+  if(!before){noMoreHistory=true;return;}
+  const msgEl=document.getElementById('messages');const oldHeight=msgEl.scrollHeight;
+  loadingOlder=true;document.getElementById('headSub').textContent=allLogs.length+' 条消息 · 正在读取历史';
+  try{
+    const res=await fetch('/log_history?chat_id='+activeChatId+'&before_msg_id='+before+'&limit=120').then(r=>r.json());
+    if(!res.ok||!res.rows||!res.rows.length){noMoreHistory=true;return;}
+    const added=mergeRows(res.rows);
+    if(!added){noMoreHistory=true;return;}
+    render();renderGroups();
+    msgEl.scrollTop=msgEl.scrollHeight-oldHeight;
+  }catch(e){console.warn('history load failed',e);}
+  finally{loadingOlder=false;document.getElementById('headSub').textContent=allLogs.length+' 条消息 · 实时同步';}
 }
 function parseLog(row){
   const raw=row.raw||'';const time=(raw.match(/(\d{2}:\d{2}:\d{2})/)||[])[1]||'';const msgId=row.msg_id||((raw.match(/Msg[=\(](\d+)/)||[])[1]||null);
@@ -433,6 +462,7 @@ function reportBug(type){
 }
 function doSearch(){const term=(document.getElementById('sideSearch').value||'').toLowerCase().trim();if(!term)return;let found=false;Array.from(document.querySelectorAll('.Message')).reverse().forEach(row=>{if(row.textContent.toLowerCase().includes(term)){row.scrollIntoView({behavior:'smooth',block:'center'});found=true;return;}});}
 document.getElementById('sideSearch').addEventListener('keydown',e=>{if(e.key==='Enter')doSearch();});
+document.getElementById('messages').addEventListener('scroll',e=>{if(e.target.scrollTop<80)loadOlderHistory();});
 function scrollBottom(){const m=document.getElementById('messages');m.scrollTop=m.scrollHeight;}
 updateHead();loadGroups();loadMessages();
 </script>
