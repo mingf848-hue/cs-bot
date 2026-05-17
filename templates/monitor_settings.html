@@ -931,6 +931,7 @@
                                                     <option value="amount_logic">金额分流</option>
                                                     <option value="preempt_check">抢答检测（自删）</option>
                                                     <option value="notify_user">Bot私聊通知</option>
+                                                    <option value="backend_unlock">触发后台解锁</option>
                                                 </select>
                                             </div>
                                             <div class="field" v-if="step.type !== 'amount_logic'">
@@ -1020,6 +1021,14 @@
                                                 <label>通知内容</label>
                                                 <textarea class="textarea" v-model="step.text" placeholder="{rule} 已自动回复 {sender}：{message}"></textarea>
                                             </div>
+                                        </div>
+
+                                        <div class="field-card" v-if="step.type === 'backend_unlock'">
+                                            <div class="field">
+                                                <label>提取账号名的正则</label>
+                                                <input class="input font-mono" v-model="step.member_pattern" placeholder="例如：(\S+)\s+解锁">
+                                            </div>
+                                            <span class="hint">从消息文本中提取会员账号名，第一个捕获组为账号。留空则取消息第一个单词。</span>
                                         </div>
                                     </div>
                                     <div style="display:grid;gap:6px;">
@@ -1616,6 +1625,7 @@ createApp({
             type: rep.type || "text",
             text: rep.text || "",
             forward_to: rep.forward_to || "",
+            member_pattern: rep.member_pattern || "",
             min: rep.min ?? 1,
             max: rep.max ?? 3,
             high_reply_min: rep.high_reply_min ?? rep.min ?? 1,
