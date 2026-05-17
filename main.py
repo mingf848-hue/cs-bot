@@ -80,7 +80,7 @@ _cleanup_old_logs()
 _CHAT_ID_RE = re.compile(r'\[(-100\d+)\]')
 _MSG_TYPE_MAP = [
     ('[MSG]', 'user'), ('[ALERT]', 'alert'), ('[AUDIT]', 'audit'),
-    ('客服操作', 'cs'), ('[+]', 'cs'),
+    ('[DELETED]', 'deleted'), ('客服操作', 'cs'),
 ]
 
 class SQLiteLogHandler(logging.Handler):
@@ -947,166 +947,263 @@ DASHBOARD_HTML = """
 """
 
 LOG_VIEWER_HTML = """<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<title>系统日志流</title>
+<html lang="zh-CN"><head>
+<meta charset="UTF-8"><title>消息记录</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 :root {
-    --bg-body:#0f172a;--bg-panel:#1e293b;--bg-input:#334155;
-    --text-main:#f1f5f9;--text-muted:#94a3b8;--primary:#3b82f6;
-    --user-bubble:#334155;--cs-bubble:#0f766e;
-    --alert-bg:rgba(239,68,68,.15);--alert-border:#ef4444;
-    --audit-bg:rgba(245,158,11,.15);--audit-border:#f59e0b;
+  --tg-bg:#17212b;--tg-sidebar:#232e3c;--tg-sidebar-hover:#2a3747;
+  --tg-sidebar-active:#2b5278;--tg-header:#1c2733;
+  --tg-user-bubble:#2b5278;--tg-cs-bubble:#182533;
+  --tg-text:#e8e8e8;--tg-text-muted:#708499;--tg-divider:rgba(255,255,255,0.05);
 }
-*{box-sizing:border-box;}
-body{background:var(--bg-body);color:var(--text-main);font-family:-apple-system,sans-serif;margin:0;height:100vh;display:flex;flex-direction:column;overflow:hidden;}
-::-webkit-scrollbar{width:8px;}::-webkit-scrollbar-track{background:var(--bg-body);}::-webkit-scrollbar-thumb{background:var(--bg-input);border-radius:4px;}
-.toolbar{background:rgba(15,23,42,.9);backdrop-filter:blur(12px);padding:12px 20px;border-bottom:1px solid var(--bg-input);display:flex;gap:10px;align-items:center;z-index:10;flex-wrap:wrap;}
-.tabs{display:flex;gap:6px;overflow-x:auto;padding-bottom:2px;flex-shrink:0;}
-.tab{background:var(--bg-panel);border:1px solid var(--bg-input);color:var(--text-muted);padding:6px 14px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:500;white-space:nowrap;transition:all .2s;}
-.tab:hover{border-color:var(--primary);color:var(--text-main);}
-.tab.active{background:var(--primary);border-color:var(--primary);color:#fff;}
-input{flex-grow:1;min-width:160px;background:var(--bg-panel);border:1px solid var(--bg-input);color:var(--text-main);padding:8px 14px;border-radius:8px;font-size:13px;outline:none;}
-input:focus{border-color:var(--primary);}
-button{background:var(--bg-panel);color:var(--text-main);border:1px solid var(--bg-input);padding:8px 14px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:500;display:flex;align-items:center;gap:4px;transition:all .2s;white-space:nowrap;}
-button:hover{background:var(--bg-input);}
-#log-container{flex-grow:1;overflow-y:auto;padding:20px 24px;display:flex;flex-direction:column;gap:14px;scroll-behavior:smooth;}
-.msg-row{display:flex;flex-direction:column;max-width:100%;animation:fadeIn .2s ease;}
-@keyframes fadeIn{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:translateY(0);}}
-.msg-meta{font-size:11px;color:var(--text-muted);margin-bottom:4px;font-family:ui-monospace,monospace;display:flex;align-items:center;gap:8px;padding:0 4px;}
-.bubble{padding:10px 16px;border-radius:12px;font-size:13px;line-height:1.6;word-wrap:break-word;white-space:pre-wrap;max-width:85%;}
-.msg-user{align-items:flex-start;}.msg-user .bubble{background:var(--user-bubble);border-top-left-radius:2px;}
-.msg-cs{align-items:flex-end;}.msg-cs .bubble{background:var(--cs-bubble);border-top-right-radius:2px;}.msg-cs .msg-meta{flex-direction:row-reverse;}
-.msg-sys,.msg-alert,.msg-audit{align-items:center;width:100%;}
-.msg-sys .bubble,.msg-alert .bubble,.msg-audit .bubble{max-width:95%;background:transparent;padding:6px 12px;border-radius:6px;font-family:ui-monospace,monospace;font-size:12px;border-left:3px solid;}
-.msg-sys .bubble{border-color:var(--text-muted);background:rgba(148,163,184,.05);color:var(--text-muted);}
-.msg-alert .bubble{border-color:var(--alert-border);background:var(--alert-bg);color:#fca5a5;}
-.msg-audit .bubble{border-color:var(--audit-border);background:var(--audit-bg);color:#fdba74;}
-.pill{display:inline-block;background:rgba(255,255,255,.1);padding:2px 6px;border-radius:4px;cursor:pointer;transition:background .2s;user-select:all;}
-.pill:hover{background:rgba(255,255,255,.2);color:#fff;}
-.highlight-row .bubble{box-shadow:0 0 0 2px #fbbf24,0 0 20px rgba(251,191,36,.2);}
-.btn-report{font-size:10px;padding:2px 6px;border-radius:4px;font-weight:bold;cursor:pointer;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.05);}
-.btn-report:hover{background:rgba(255,255,255,.15);}
-.btn-missed{color:#fcd34d;border-color:rgba(252,211,77,.3);}
-.btn-false{color:#fca5a5;border-color:rgba(252,165,165,.3);}
-.error-msg{text-align:center;padding:40px;color:var(--text-muted);font-style:italic;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--tg-bg);color:var(--tg-text);font-family:-apple-system,"Helvetica Neue",sans-serif;height:100vh;display:flex;overflow:hidden;}
+::-webkit-scrollbar{width:5px;}::-webkit-scrollbar-track{background:transparent;}::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.1);border-radius:3px;}
+.sidebar{width:280px;flex-shrink:0;background:var(--tg-sidebar);display:flex;flex-direction:column;border-right:1px solid var(--tg-divider);}
+.sidebar-header{padding:13px 16px;background:var(--tg-header);font-size:15px;font-weight:600;display:flex;align-items:center;justify-content:space-between;}
+.sidebar-header button{background:rgba(255,255,255,0.08);border:none;color:var(--tg-text);padding:5px 12px;border-radius:16px;cursor:pointer;font-size:11px;}
+.sidebar-header button:hover{background:rgba(255,255,255,0.15);}
+.group-list{flex:1;overflow-y:auto;}
+.group-item{padding:10px 14px;cursor:pointer;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--tg-divider);transition:background .15s;}
+.group-item:hover{background:var(--tg-sidebar-hover);}
+.group-item.active{background:var(--tg-sidebar-active);}
+.group-avatar{width:42px;height:42px;border-radius:50%;background:#3a4a5c;display:flex;align-items:center;justify-content:center;font-size:17px;flex-shrink:0;font-weight:600;color:#a8cce8;}
+.group-info{flex:1;min-width:0;}
+.group-name{font-size:13.5px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.group-count{font-size:11px;color:var(--tg-text-muted);margin-top:1px;}
+.chat-main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative;}
+.chat-header{background:var(--tg-header);padding:10px 18px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--tg-divider);}
+.chat-header-left{display:flex;flex-direction:column;gap:1px;}
+.chat-title{font-size:15px;font-weight:600;}
+.chat-subtitle{font-size:11px;color:var(--tg-text-muted);}
+.chat-header-right{display:flex;gap:8px;align-items:center;}
+.hbtn{background:rgba(255,255,255,0.08);border:none;color:var(--tg-text);padding:5px 12px;border-radius:16px;cursor:pointer;font-size:12px;font-weight:500;transition:background .15s;}
+.hbtn:hover{background:rgba(255,255,255,0.15);}
+.search-wrap{padding:7px 16px;background:var(--tg-header);border-bottom:1px solid var(--tg-divider);}
+.search-wrap input{width:100%;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.1);color:var(--tg-text);padding:6px 14px;border-radius:18px;font-size:13px;outline:none;}
+.search-wrap input::placeholder{color:var(--tg-text-muted);}
+.messages{flex:1;overflow-y:auto;padding:12px 18px;display:flex;flex-direction:column;gap:2px;}
+.date-pill{display:flex;justify-content:center;margin:10px 0 6px;}
+.date-pill span{background:rgba(255,255,255,0.09);color:var(--tg-text-muted);font-size:11px;padding:3px 10px;border-radius:10px;}
+.msg-row{display:flex;flex-direction:column;margin:1px 0;}
+.msg-user{align-items:flex-start;}
+.msg-cs{align-items:flex-end;}
+.msg-sys,.msg-alert,.msg-audit,.msg-deleted{align-items:center;}
+.bubble-wrap{max-width:72%;}
+.sender-name{font-size:11px;color:#7fb3d3;margin-bottom:2px;padding:0 10px;font-weight:500;}
+.bubble{padding:7px 11px;border-radius:12px;font-size:13.5px;line-height:1.55;word-wrap:break-word;white-space:pre-wrap;position:relative;cursor:context-menu;}
+.msg-user .bubble{background:var(--tg-user-bubble);border-top-left-radius:4px;}
+.msg-cs .bubble{background:var(--tg-cs-bubble);border-top-right-radius:4px;border:1px solid rgba(255,255,255,0.06);}
+.btime{font-size:10px;color:rgba(255,255,255,0.35);float:right;margin:4px 0 0 10px;line-height:1;}
+.pill-row{display:flex;justify-content:center;margin:3px 0;}
+.pill{background:rgba(255,255,255,0.06);color:var(--tg-text-muted);font-size:11px;padding:3px 12px;border-radius:10px;max-width:90%;text-align:center;}
+.pill.sys{font-family:ui-monospace,monospace;font-size:10.5px;}
+.pill.alert{background:rgba(231,76,60,0.15);color:#ff8a8a;border:1px solid rgba(231,76,60,0.25);}
+.pill.audit{background:rgba(243,156,18,0.15);color:#f5c060;border:1px solid rgba(243,156,18,0.25);}
+.pill.deleted{background:rgba(231,76,60,0.1);color:#ff9999;border:1px solid rgba(231,76,60,0.2);font-family:ui-monospace,monospace;font-size:10.5px;}
+.ctx-menu{position:fixed;background:#2c3e50;border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:4px 0;z-index:1000;box-shadow:0 4px 24px rgba(0,0,0,0.6);min-width:170px;display:none;}
+.ctx-menu.show{display:block;}
+.ctx-item{padding:9px 16px;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px;color:var(--tg-text);transition:background .1s;}
+.ctx-item:hover{background:rgba(255,255,255,0.08);}
+.ctx-sep{border:none;border-top:1px solid rgba(255,255,255,0.1);margin:3px 0;}
+.flow-panel{width:340px;background:var(--tg-sidebar);border-left:1px solid var(--tg-divider);display:flex;flex-direction:column;position:absolute;right:0;top:0;bottom:0;z-index:100;transform:translateX(100%);transition:transform .25s ease;}
+.flow-panel.open{transform:translateX(0);}
+.flow-header{background:var(--tg-header);padding:13px 16px;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--tg-divider);}
+.flow-close{cursor:pointer;color:var(--tg-text-muted);font-size:18px;padding:2px 8px;transition:color .15s;border-radius:4px;}
+.flow-close:hover{color:var(--tg-text);background:rgba(255,255,255,0.08);}
+.flow-content{flex:1;overflow-y:auto;padding:10px;}
+.flow-entry{background:rgba(255,255,255,0.04);border-radius:6px;padding:8px 10px;margin-bottom:6px;font-size:11px;font-family:ui-monospace,monospace;color:var(--tg-text-muted);white-space:pre-wrap;word-break:break-all;border-left:3px solid rgba(255,255,255,0.1);}
+.flow-entry.user{border-color:#3a6e9e;color:#93c4e8;}
+.flow-entry.cs{border-color:#2a6e4e;color:#7fd4a4;}
+.flow-entry.alert{border-color:#c0392b;color:#ff9090;}
+.flow-entry.audit{border-color:#d47c12;color:#f0c060;}
+.flow-entry.deleted{border-color:#c0392b;color:#ffaaaa;}
+.highlight-bubble .bubble{box-shadow:0 0 0 2px #fbbf24,0 0 16px rgba(251,191,36,0.2)!important;}
+.highlight-row .bubble{box-shadow:0 0 0 2px #3b82f6!important;}
+.empty-state{display:flex;align-items:center;justify-content:center;padding:40px 20px;color:var(--tg-text-muted);font-size:13px;text-align:center;}
 </style>
 </head>
 <body>
-<div class="toolbar">
-    <div class="tabs" id="tabs"><span class="tab active" data-id="">全部</span></div>
-    <input type="text" id="search" placeholder="搜索 ID / 关键词 (回车跳转)..." onkeyup="if(event.key==='Enter')doSearch()">
-    <button onclick="loadLogs()">&#x21bb; 刷新</button>
-    <button onclick="scrollToBottom()">&#x2193; 底部</button>
+<div class="sidebar">
+  <div class="sidebar-header">
+    <span>消息记录</span>
+    <button onclick="loadGroups()">&#x21bb; 刷新</button>
+  </div>
+  <div class="group-list" id="group-list"><div class="empty-state">加载中...</div></div>
 </div>
-<div id="log-container">加载中...</div>
+<div class="chat-main">
+  <div class="chat-header">
+    <div class="chat-header-left">
+      <div class="chat-title" id="chat-title">全部群组</div>
+      <div class="chat-subtitle" id="chat-subtitle">选择左侧群组查看消息</div>
+    </div>
+    <div class="chat-header-right">
+      <button class="hbtn" onclick="loadMessages()">&#x21bb; 刷新</button>
+      <button class="hbtn" onclick="scrollBottom()">&#x2193; 最新</button>
+    </div>
+  </div>
+  <div class="search-wrap">
+    <input type="text" id="search-input" placeholder="搜索 ID / 关键词..." onkeydown="if(event.key==='Enter') doSearch()">
+  </div>
+  <div class="messages" id="messages"><div class="empty-state">请从左侧选择一个群组</div></div>
+</div>
+<div class="ctx-menu" id="ctx-menu">
+  <div class="ctx-item" onclick="openFlow()">&#128204; 查看消息流</div>
+  <hr class="ctx-sep">
+  <div class="ctx-item" onclick="copyBubbleText()">&#128203; 复制文本</div>
+  <div class="ctx-item" id="ctx-report-missed" onclick="reportBug('漏报')" style="color:#fcd34d">&#9888; 反馈漏报</div>
+  <div class="ctx-item" id="ctx-report-false" onclick="reportBug('误报')" style="color:#fca5a5">&#10060; 反馈误报</div>
+</div>
+<div class="flow-panel" id="flow-panel">
+  <div class="flow-header">
+    <span id="flow-title">消息流</span>
+    <span class="flow-close" onclick="closeFlow()">&#x2715;</span>
+  </div>
+  <div class="flow-content" id="flow-content"><div class="empty-state">选择一条消息查看完整流程</div></div>
+</div>
 <script>
-const container = document.getElementById('log-container');
-let parsedLogs = [];
-let activeChatId = null;
+let allLogs = [], activeChatId = null, ctxTarget = null;
 
-// Load group tabs
-fetch('/log_groups').then(r=>r.json()).then(groups => {
-    const tabs = document.getElementById('tabs');
-    groups.forEach(g => {
-        const tab = document.createElement('span');
-        tab.className = 'tab';
-        tab.dataset.id = g.chat_id;
-        tab.textContent = (g.name || String(g.chat_id)) + ' (' + g.count + ')';
-        tab.onclick = () => switchTab(tab, g.chat_id);
-        tabs.appendChild(tab);
-    });
-}).catch(()=>{});
-
-document.querySelector('.tab[data-id=""]').onclick = function(){ switchTab(this, null); };
-
-function switchTab(el, chatId) {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    el.classList.add('active');
-    activeChatId = chatId;
-    loadLogs();
-}
-
-function loadLogs() {
-    const url = '/log_db?limit=600' + (activeChatId ? '&chat_id=' + activeChatId : '');
-    container.innerHTML = '<div class="error-msg">加载中...</div>';
-    fetch(url)
-        .then(r => { if(!r.ok) throw new Error('网络异常'); return r.json(); })
-        .then(data => {
-            if(!data.length){ container.innerHTML='<div class="error-msg">暂无日志数据</div>'; return; }
-            parsedLogs = data.map(row => {
-                const m = row.raw.match(/^(\\d{4}-\\d{2}-\\d{2}\\s+)?(\\d{2}:\\d{2}:\\d{2})(.*)/);
-                return { ts: row.ts, time: m ? m[2] : '', raw: m ? m[3] : row.raw, content: m ? m[3].trim() : row.raw.trim(), msg_type: row.msg_type };
-            });
-            renderLogs();
-            scrollToBottom();
-        })
-        .catch(err => { container.innerHTML=`<div class="error-msg">加载失败: ${err.message}</div>`; });
-}
-
-loadLogs();
-
-function renderLogs() {
-    let html = '';
-    parsedLogs.forEach((entry, idx) => {
-        let type = entry.msg_type || 'sys';
-        let content = entry.content.replace(/\\[MSG\\]|\\[ERROR\\]|\\[\\+\\]|\\[-\\]/g,'').trim();
-        let ids=[]; const idRegex=/(Msg|User|Thread|流|归属|用户)[:=]?\\s?(\\d+)/g;
-        let match; while((match=idRegex.exec(content))!==null){ ids.push(match[2]); }
-        let idsStr = ids.join(',');
-        content = content.replace(/(Msg[:=]?\\s?)(\\d+)/g,'$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
-        content = content.replace(/(User|用户|归属)[:=]?\\s?(\\d+)/g,'$1<span class="pill" onclick="searchId(\\'$2\\')">$2</span>');
-        let actionBtn = '';
-        if(type==='user'&&ids.length>0) actionBtn=`<span class="btn-report btn-missed" onclick="reportBug('漏报','${idsStr}',${idx})">反馈漏报</span>`;
-        else if((type==='alert'||type==='audit')&&ids.length>0) actionBtn=`<span class="btn-report btn-false" onclick="reportBug('误报','${idsStr}',${idx})">反馈误报</span>`;
-        let metaHtml=`<div class="msg-meta">${entry.time} #${idx} ${actionBtn}</div>`;
-        let rowClass=`msg-row msg-${type}`;
-        if(type==='user'||type==='cs'){
-            html+=`<div class="${rowClass}" id="log-${idx}">${type==='cs'?metaHtml:''}<div class="bubble">${content}</div>${type==='user'?metaHtml:''}</div>`;
-        } else {
-            html+=`<div class="${rowClass}" id="log-${idx}"><div class="bubble"><span style="color:var(--text-muted);margin-right:8px">${entry.time}</span>${content} ${actionBtn}</div></div>`;
-        }
-    });
-    container.innerHTML = html || '<div class="error-msg">暂无日志数据</div>';
-}
-
-function searchId(id){ document.getElementById('search').value=id; doSearch(); }
-function doSearch(){
-    const term=document.getElementById('search').value.toLowerCase();
-    if(!term)return;
-    document.querySelectorAll('.highlight-row').forEach(el=>el.classList.remove('highlight-row'));
-    let found=false;
-    const rows=Array.from(document.querySelectorAll('.msg-row')).reverse();
-    for(let row of rows){
-        if(row.innerText.toLowerCase().includes(term)){
-            row.classList.add('highlight-row');
-            if(!found){row.scrollIntoView({behavior:'smooth',block:'center'});found=true;}
-        }
+async function loadGroups() {
+  const list = document.getElementById('group-list');
+  list.innerHTML = '<div class="empty-state">加载中...</div>';
+  try {
+    const groups = await fetch('/log_groups').then(r => r.json());
+    let html = '<div class="group-item active" data-id="" data-name="全部群组" onclick="selectGroupEl(this)"><div class="group-avatar">&#128172;</div><div class="group-info"><div class="group-name">全部群组</div><div class="group-count">所有消息</div></div></div>';
+    for (const g of groups) {
+      const name = escHtml(g.name || String(g.chat_id));
+      const ini = escHtml((g.name || String(g.chat_id)).charAt(0));
+      html += '<div class="group-item" data-id="' + g.chat_id + '" data-name="' + name + '" onclick="selectGroupEl(this)"><div class="group-avatar">' + ini + '</div><div class="group-info"><div class="group-name">' + name + '</div><div class="group-count">' + g.count + ' 条</div></div></div>';
     }
+    list.innerHTML = html;
+  } catch(e) { list.innerHTML = '<div class="empty-state">加载失败</div>'; }
 }
 
-function reportBug(type, idsStr, centerIdx) {
-    if(!idsStr) return;
-    const idList = idsStr.split(',').filter(Boolean);
-    // Build patterns: only match IDs that appear as structured fields (Msg=X, User=X, etc.)
-    const patterns = idList.map(id =>
-        new RegExp('(?:Msg|User|Thread|流|归属|用户)[:=]?\\\\s*' + id + '(?!\\\\d)')
-    );
-    // Also include entries within a 5-minute window around the clicked message
-    const centerTs = parsedLogs[centerIdx] ? parsedLogs[centerIdx].ts : 0;
-    const windowSec = 300;
-    let report = `=== ${type}反馈报告 ===\\n涉及 ID: ${idsStr}\\n\\n-- 关键日志 --\\n`;
-    parsedLogs.forEach(entry => {
-        const inWindow = centerTs && Math.abs(entry.ts - centerTs) <= windowSec;
-        const idHit = patterns.some(p => p.test(entry.raw));
-        if(idHit || inWindow) report += `[${entry.time}] ${entry.content}\\n`;
-    });
-    navigator.clipboard.writeText(report).then(()=>alert(`已复制 [${type}] 详情。`));
+function selectGroupEl(el) {
+  document.querySelectorAll('.group-item').forEach(x => x.classList.remove('active'));
+  el.classList.add('active');
+  const rawId = el.dataset.id;
+  activeChatId = rawId ? parseInt(rawId) : null;
+  document.getElementById('chat-title').textContent = el.dataset.name || '全部群组';
+  loadMessages();
 }
 
-function scrollToBottom(){ container.scrollTop=container.scrollHeight; }
+async function loadMessages() {
+  const msgs = document.getElementById('messages');
+  msgs.innerHTML = '<div class="empty-state">加载中...</div>';
+  const url = '/log_db?limit=800' + (activeChatId ? '&chat_id=' + activeChatId : '');
+  try {
+    const data = await fetch(url).then(r => r.json());
+    allLogs = data;
+    document.getElementById('chat-subtitle').textContent = data.length + ' 条记录';
+    renderMessages();
+    scrollBottom();
+  } catch(e) { msgs.innerHTML = '<div class="empty-state">加载失败</div>'; }
+}
+
+function parseLog(row) {
+  const raw = row.raw || '';
+  const time = (raw.match(/(\\d{2}:\\d{2}:\\d{2})/) || [])[1] || '';
+  const msgId = (raw.match(/Msg[=\\(](\\d+)/) || [])[1] || null;
+  let senderName = '', text = '';
+  const lm = raw.match(/\\[(-?\\d+)\\]\\s+(.+?):\\s+(.*)/);
+  if (lm) { senderName = lm[2]; text = lm[3]; }
+  else { text = raw.replace(/^\\d{4}-\\d{2}-\\d{2}\\s+\\d{2}:\\d{2}:\\d{2}\\s+/, '').trim(); }
+  if (row.msg_type === 'cs' && !senderName) text = raw.replace(/^.*?\\[\\+\\]\\s*/, '').trim();
+  if (row.msg_type === 'deleted' && !senderName) text = raw.replace(/^.*?\\[DELETED\\]\\s*/, '').trim();
+  return { ...row, time, msgId, senderName, text };
+}
+
+function renderMessages() {
+  const msgs = document.getElementById('messages');
+  if (!allLogs.length) { msgs.innerHTML = '<div class="empty-state">暂无消息记录</div>'; return; }
+  let html = '', lastDate = '';
+  for (let i = 0; i < allLogs.length; i++) {
+    const e = parseLog(allLogs[i]);
+    const ds = new Date(e.ts * 1000).toLocaleDateString('zh-CN', {month:'long', day:'numeric'});
+    if (ds !== lastDate) { html += '<div class="date-pill"><span>' + ds + '</span></div>'; lastDate = ds; }
+    html += renderEntry(e, i);
+  }
+  msgs.innerHTML = html;
+}
+
+function renderEntry(e, idx) {
+  const t = e.msg_type || 'sys', id = 'msg-' + idx;
+  if (t === 'user') return '<div class="msg-row msg-user" id="' + id + '" data-idx="' + idx + '"><div class="bubble-wrap"><div class="sender-name">' + escHtml(e.senderName || '用户') + '</div><div class="bubble" oncontextmenu="showCtx(event,' + idx + ')">' + escHtml(e.text || '') + '<span class="btime">' + e.time + '</span></div></div></div>';
+  if (t === 'cs') { const nh = e.senderName ? '<div class="sender-name" style="text-align:right;color:#7fd4a4">' + escHtml(e.senderName) + '</div>' : ''; return '<div class="msg-row msg-cs" id="' + id + '" data-idx="' + idx + '"><div class="bubble-wrap">' + nh + '<div class="bubble" oncontextmenu="showCtx(event,' + idx + ')">' + escHtml(e.text || '') + '<span class="btime">' + e.time + '</span></div></div></div>'; }
+  if (t === 'alert') return '<div class="msg-row msg-alert" id="' + id + '"><div class="pill-row"><div class="pill alert">' + escHtml(e.text) + '</div></div></div>';
+  if (t === 'audit') return '<div class="msg-row msg-audit" id="' + id + '"><div class="pill-row"><div class="pill audit">' + escHtml(e.text) + '</div></div></div>';
+  if (t === 'deleted') return '<div class="msg-row msg-deleted" id="' + id + '"><div class="pill-row"><div class="pill deleted">&#128465; ' + escHtml(e.text) + '</div></div></div>';
+  return '<div class="msg-row msg-sys" id="' + id + '"><div class="pill-row"><div class="pill sys">' + escHtml(e.text) + '</div></div></div>';
+}
+
+function showCtx(ev, idx) {
+  ev.preventDefault();
+  ctxTarget = { idx, entry: parseLog(allLogs[idx]) };
+  const menu = document.getElementById('ctx-menu'), t = ctxTarget.entry.msg_type;
+  document.getElementById('ctx-report-missed').style.display = t === 'user' ? 'flex' : 'none';
+  document.getElementById('ctx-report-false').style.display = (t === 'alert' || t === 'audit') ? 'flex' : 'none';
+  menu.style.left = Math.min(ev.clientX, window.innerWidth - 190) + 'px';
+  menu.style.top = Math.min(ev.clientY, window.innerHeight - 160) + 'px';
+  menu.classList.add('show');
+  document.querySelectorAll('.highlight-bubble').forEach(r => r.classList.remove('highlight-bubble'));
+  const row = document.getElementById('msg-' + idx);
+  if (row) row.classList.add('highlight-bubble');
+}
+
+document.addEventListener('click', () => document.getElementById('ctx-menu').classList.remove('show'));
+
+function copyBubbleText() { if (ctxTarget) navigator.clipboard.writeText(ctxTarget.entry.text || ctxTarget.entry.raw || ''); }
+
+function openFlow() {
+  if (!ctxTarget) return;
+  const entry = ctxTarget.entry, msgId = entry.msgId;
+  document.getElementById('flow-title').textContent = msgId ? 'Msg=' + msgId + ' 消息流' : '消息流';
+  const content = document.getElementById('flow-content');
+  if (!msgId) { content.innerHTML = '<div class="empty-state">此条目无消息 ID</div>'; }
+  else {
+    const related = allLogs.filter(r => r.raw && r.raw.includes('Msg=' + msgId));
+    content.innerHTML = related.length ? related.map(r => { const e = parseLog(r); return '<div class="flow-entry ' + (e.msg_type || 'sys') + '">[' + e.time + '] ' + escHtml(e.raw.replace(/^\\d{4}-\\d{2}-\\d{2}\\s+/, '').trim()) + '</div>'; }).join('') : '<div class="empty-state">未找到相关记录</div>';
+  }
+  document.getElementById('flow-panel').classList.add('open');
+}
+
+function closeFlow() { document.getElementById('flow-panel').classList.remove('open'); }
+
+function reportBug(type) {
+  if (!ctxTarget) return;
+  const entry = ctxTarget.entry, msgId = entry.msgId, centerTs = entry.ts || 0;
+  let lines = ['=== ' + type + '反馈报告 ===', '涉及 Msg: ' + (msgId || '未知'), ''];
+  if (msgId) {
+    lines.push('-- 关联记录 --');
+    allLogs.filter(r => r.raw && r.raw.includes('Msg=' + msgId)).forEach(r => { const e = parseLog(r); lines.push('[' + e.time + '] ' + e.raw.replace(/^\\d{4}-\\d{2}-\\d{2}\\s+/, '').trim()); });
+    lines.push('');
+  }
+  lines.push('-- 时间窗口 (±5分钟) --');
+  allLogs.filter(r => Math.abs((r.ts || 0) - centerTs) <= 300).forEach(r => { const e = parseLog(r); lines.push('[' + e.time + '] ' + e.raw.replace(/^\\d{4}-\\d{2}-\\d{2}\\s+/, '').trim()); });
+  navigator.clipboard.writeText(lines.join('\\n')).then(() => alert('已复制 [' + type + '] 详情'));
+}
+
+function doSearch() {
+  const term = document.getElementById('search-input').value.toLowerCase().trim();
+  if (!term) return;
+  document.querySelectorAll('.highlight-row').forEach(r => r.classList.remove('highlight-row'));
+  let found = false;
+  Array.from(document.querySelectorAll('.msg-row')).reverse().forEach(row => {
+    if (row.textContent.toLowerCase().includes(term)) {
+      row.classList.add('highlight-row');
+      if (!found) { row.scrollIntoView({ behavior: 'smooth', block: 'center' }); found = true; }
+    }
+  });
+}
+
+function scrollBottom() { const m = document.getElementById('messages'); m.scrollTop = m.scrollHeight; }
+
+function escHtml(s) { return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+loadGroups();
+loadMessages();
 </script>
 </body>
 </html>"""
@@ -3073,14 +3170,17 @@ async def command_handler(event):
 
 @client.on(events.MessageDeleted)
 async def handler_deleted(event):
-    if not IS_WORKING: return
     for msg_id in event.deleted_ids:
-        deleted_cache.append(msg_id)
-        
         deleted_info = {'name': '未知', 'text': '未知'}
         if event.chat_id:
-             deleted_info = msg_content_cache.get((event.chat_id, msg_id), deleted_info)
+            deleted_info = msg_content_cache.get((event.chat_id, msg_id), deleted_info)
 
+        logger.info(f"[DELETED] Msg={msg_id} | [{event.chat_id}] {deleted_info['name']}: {deleted_info['text']}")
+
+        if not IS_WORKING:
+            continue
+
+        deleted_cache.append(msg_id)
         sender_info_str = f"发送者: {deleted_info['name']} | 内容: [{deleted_info['text']}]"
 
         if msg_id in wait_tasks: 
@@ -3129,7 +3229,7 @@ async def get_traceable_sender(chat_id, reply_to_msg_id, current_recursion=0):
             cs_ids = [MY_ID] + OTHER_CS_IDS
             if sender_id not in cs_ids:
                 update_msg_cache(chat_id, reply_to_msg_id, sender_id, target_msg.grouped_id)
-                log_tree(1, f" ┣━━ 🧠 学习新知识: Msg({reply_to_msg_id}) 属于 User({sender_id})")
+
             return sender_id
         return None
     except Exception: return None
