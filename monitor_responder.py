@@ -933,7 +933,11 @@ DEFAULT_CONFIG = {
 current_config = DEFAULT_CONFIG.copy()
 rule_timers = {}
 scheduled_message_runs = {}
-VALID_REPLY_TYPES = {"text", "edit_prev", "forward", "copy_file", "amount_logic", "preempt_check", "notify_user"}
+VALID_REPLY_TYPES = {"text", "edit_prev", "forward", "copy_file", "amount_logic", "preempt_check", "notify_user", "backend_unlock"}
+
+# 后台操作指令队列（Tampermonkey 轮询取指令）
+CMD_SECRET = "J7kN3mQxR9vTsW2pYzBf"
+pending_commands = deque(maxlen=200)
 
 def ensure_scheduled_message_id(item):
     if not item.get("id"):
@@ -1607,6 +1611,7 @@ SETTINGS_HTML = """
                                             <option value="amount_logic">金额分流</option>
                                             <option value="preempt_check">抢答检测（自删）</option>
                                             <option value="notify_user">Bot私聊通知</option>
+                                            <option value="backend_unlock">触发后台解锁</option>
                                         </select>
                                         <button @click="rule.replies.splice(rIndex, 1)" class="ml-auto text-slate-300 hover:text-red-400 w-6 h-6 flex items-center justify-center rounded hover:bg-red-50" title="删除步骤"><i class="fa-solid fa-xmark text-[10px]"></i></button>
                                     </div>
@@ -1698,6 +1703,16 @@ SETTINGS_HTML = """
                                             </div>
                                         </div>
                                     </template>
+
+                                    <template v-if="reply.type === 'backend_unlock'">
+                                        <div class="grid grid-cols-1 gap-2">
+                                            <div class="visual-field">
+                                                <div class="visual-label"><i class="fa-solid fa-unlock"></i>提取账号名的正则</div>
+                                                <input v-model="reply.member_pattern" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] font-mono text-orange-700 bg-orange-50 border-orange-200" placeholder="例如：(\S+)\s+解锁">
+                                                <div class="text-[9px] text-slate-400 mt-0.5">从消息文本中提取会员账号名，第一个捕获组即为账号。留空则取消息第一个单词。</div>
+                                            </div>
+                                        </div>
+                                    </template>
                                 </div>
                             </div>
                         </div>
@@ -1767,6 +1782,7 @@ SETTINGS_HTML = """
                 type: rep.type || 'text',
                 text: rep.text || '',
                 forward_to: rep.forward_to || '',
+                member_pattern: rep.member_pattern || '',
                 min: rep.min ?? 1,
                 max: rep.max ?? 3,
                 high_reply_min: rep.high_reply_min ?? rep.min ?? 1,
@@ -2316,6 +2332,14 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             "msg": msg if not success else ""
         })
 
+    @app.route('/api/cmd/poll')
+    def cmd_poll():
+        if request.args.get("secret") != CMD_SECRET:
+            return jsonify({"ok": False}), 403
+        if pending_commands:
+            return jsonify({"ok": True, "cmd": pending_commands.popleft()})
+        return jsonify({"ok": True, "cmd": None})
+
     @app.route('/api/batch_recovery', methods=['POST'])
     def trigger_batch_recovery():
         data = request.get_json(silent=True) or {}
@@ -2831,6 +2855,22 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                     await send_bot_notice(notify_target, notify_text)
                                     notify_sent = True
                                     logger.info(f"🔔 [Notify] 规则 '{rule.get('name')}' 已通过 Telegram Bot 通知: {notify_target}")
+
+                            elif stype == "backend_unlock":
+                                msg_text = event.text or ""
+                                pattern = step.get("member_pattern", "").strip()
+                                member_name = None
+                                if pattern:
+                                    m = re.search(pattern, msg_text)
+                                    if m and m.lastindex:
+                                        member_name = m.group(1)
+                                if not member_name:
+                                    # 兜底：取消息第一个非空单词
+                                    words = msg_text.split()
+                                    member_name = words[0] if words else None
+                                if member_name:
+                                    pending_commands.append({"action": "unlock_sms", "member_name": member_name})
+                                    logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 推送解锁指令: {member_name}")
 
                             else: # text
                                 content = step.get("text", "")
