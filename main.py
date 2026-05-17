@@ -95,6 +95,8 @@ class SQLiteLogHandler(logging.Handler):
                 if marker in raw:
                     msg_type = t
                     break
+            if msg_type == 'sys':
+                return
             with _db_lock:
                 with sqlite3.connect(CHAT_LOG_DB) as conn:
                     conn.execute(
@@ -1135,7 +1137,7 @@ function renderEntry(e, idx) {
   if (t === 'alert') return '<div class="msg-row msg-alert" id="' + id + '"><div class="pill-row"><div class="pill alert">' + escHtml(e.text) + '</div></div></div>';
   if (t === 'audit') return '<div class="msg-row msg-audit" id="' + id + '"><div class="pill-row"><div class="pill audit">' + escHtml(e.text) + '</div></div></div>';
   if (t === 'deleted') return '<div class="msg-row msg-deleted" id="' + id + '"><div class="pill-row"><div class="pill deleted">&#128465; ' + escHtml(e.text) + '</div></div></div>';
-  return '<div class="msg-row msg-sys" id="' + id + '"><div class="pill-row"><div class="pill sys">' + escHtml(e.text) + '</div></div></div>';
+  return '';
 }
 
 function showCtx(ev, idx) {
