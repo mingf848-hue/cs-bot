@@ -1788,7 +1788,7 @@ createApp({
         });
 
         const splitInline = (text) => String(text || "").split(/[\r\n,，]+/).map(s => s.trim()).filter(Boolean);
-        const listToString = (list) => (list || []).join("\\n");
+        const listToString = (list) => (list || []).join("\n");
         const setList = (event, rule, key, comma = false) => {
             const val = event.target.value || "";
             rule[key] = comma ? splitInline(val) : val.split(/[\r\n]+/).map(s => s.trim()).filter(Boolean);
