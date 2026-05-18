@@ -185,6 +185,15 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-prima
 .local-action-message.audit > span { background: rgba(220, 150, 42, .86); }
 .local-action-message.deleted > span { background: rgba(126, 132, 136, .82); }
 .local-action-message.audit > span, .local-action-message.deleted > span { white-space: pre-wrap; text-align: left; }
+.edit-audit-card {
+  min-width: min(28rem, 92vw);
+  display: grid;
+  gap: .5rem;
+}
+.edit-audit-title { font-weight: 700; text-align: center; }
+.edit-audit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+.edit-side { padding: .5rem .625rem; border-radius: .625rem; background: rgba(255,255,255,.18); }
+.edit-label { display: block; margin-bottom: .25rem; font-size: .6875rem; font-weight: 700; opacity: .9; }
 .Message {
   --background-color: var(--color-background);
   --hover-color: var(--color-reply-hover);
@@ -237,6 +246,35 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-prima
 }
 .message-content:hover { background: var(--hover-color); }
 .Message.has-menu-open .message-content, .Message.is-selected .message-content { background: var(--active-color); }
+.reply-preview {
+  margin: 0 0 .25rem;
+  padding: .1875rem .5rem .25rem .625rem;
+  border-left: .1875rem solid var(--accent-color);
+  border-radius: .375rem;
+  background: rgba(51,144,236,.10);
+  cursor: pointer;
+}
+.reply-preview:hover { background: rgba(51,144,236,.16); }
+.reply-title { color: var(--accent-color); font-weight: 700; font-size: .75rem; line-height: 1rem; }
+.reply-text { color: var(--color-text-secondary); font-size: .75rem; line-height: 1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 20rem; }
+.flow-badge {
+  position: absolute;
+  right: -.5rem;
+  bottom: -.5rem;
+  min-width: 1.375rem;
+  height: 1.375rem;
+  padding: 0 .375rem;
+  border-radius: .6875rem;
+  background: var(--color-primary);
+  color: #fff;
+  border: 2px solid var(--color-chat-background);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: .6875rem;
+  font-weight: 800;
+  box-shadow: 0 1px 3px rgba(0,0,0,.18);
+}
 .message-title { margin-bottom: .125rem; color: var(--accent-color); font-weight: 600; font-size: .875rem; }
 .text-content { white-space: pre-wrap; line-height: 1.3125rem; }
 .message-time { position: absolute; right: .5rem; bottom: .1875rem; color: var(--secondary-color); font-size: .6875rem; line-height: 1; white-space: nowrap; }
@@ -313,6 +351,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-prima
   .Message.own { padding-right: .25rem; }
   .message-content-wrapper { max-width: min(var(--max-width), calc(100vw - 4.5rem)); }
   .local-action-message > span, .date > span { max-width: 92%; }
+  .edit-audit-grid { grid-template-columns: 1fr; }
+  .reply-text { max-width: 14rem; }
 }
 </style>
 </head>
@@ -338,7 +378,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-prima
         <button class="filter-tab" data-mode="audit" onclick="setMode('audit')">审计</button>
         <button class="filter-tab" data-mode="delete" onclick="setMode('delete')">删除</button>
         <button class="filter-tab" data-mode="edit" onclick="setMode('edit')">编辑</button>
-        <button class="filter-tab" data-mode="context" onclick="setMode('context')">上下文</button>
+        <button class="filter-tab" data-mode="context" onclick="setMode('context')">消息快照</button>
       </nav>
       <section class="MessageList custom-scroll" id="messages"></section>
     </div>
@@ -363,6 +403,9 @@ const colors=['#6bb8ff','#ff8a65','#ba68c8','#4db6ac','#ffd54f','#7986cb','#f062
 function hcol(s){let h=0;for(const c of String(s||''))h=(h*31+c.charCodeAt(0))|0;return colors[Math.abs(h)%colors.length];}
 function escH(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function stripDate(raw){return String(raw||'').replace(/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+/,'').trim();}
+function fmtTime(ts){return ts?new Date(ts*1000).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}):'';}
+function fmtDate(ts){return ts?new Date(ts*1000).toLocaleDateString('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'long',day:'numeric'}):'';}
+function briefText(s){const text=String(s||'').replace(/\s+/g,' ').trim();return text.length>72?text.slice(0,72)+'…':text;}
 function closeLeftColumn(){document.getElementById('Main').classList.remove('left-column-open');}
 function openLeftColumn(){document.getElementById('Main').classList.add('left-column-open');}
 async function loadGroups(){
@@ -394,11 +437,11 @@ async function loadMessages(){
   catch(e){el.innerHTML='<div class="empty-placeholder">加载失败</div>';}
 }
 function parseLog(row){
-  const raw=row.raw||'';const time=row.ts?new Date(row.ts*1000).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}):((raw.match(/(\d{2}:\d{2}:\d{2})/)||[])[1]||'');
+  const raw=row.raw||'';const time=fmtTime(row.ts)||((raw.match(/(\d{2}:\d{2}:\d{2})/)||[])[1]||'');
   const msgId=row.message_id||((raw.match(/Msg[=\(](\d+)/)||[])[1]||null);
   if(row.event_type){
     const sn=row.sender_name||'Unknown';let type=row.sender_role==='cs'?'cs':'user';let tx=row.text||'';
-    if(row.event_type==='edit'){type='audit';tx=`✎ ${sn} 编辑了 Msg=${msgId || ''}\n${row.old_text||'[空]'}\n→ ${row.text||'[空]'}`;}
+    if(row.event_type==='edit'){type='audit';tx=`${sn} 编辑了 Msg=${msgId || ''}`;}
     if(row.event_type==='delete'){type='deleted';tx=`${sn}: ${row.text||row.old_text||'未知内容'}`;}
     return {...row,time,msgId,sn,tx,msg_type:type};
   }
@@ -412,16 +455,54 @@ function render(){
   const el=document.getElementById('messages');
   if(!allLogs.length){el.innerHTML='<div class="empty-placeholder">暂无消息</div>';return;}
   const logs=allLogs.map(parseLog);let html='<div class="messages-container">',lastDate='',lastSender='',lastType='';
-  logs.forEach((e,i)=>{const next=logs[i+1];const d=new Date((e.ts||0)*1000).toLocaleDateString('zh-CN',{year:'numeric',month:'long',day:'numeric'});if(d!==lastDate){html+=`<div class="date"><span>${d}</span></div>`;lastDate=d;lastSender='';lastType='';}
+  logs.forEach((e,i)=>{const next=logs[i+1];const d=fmtDate(e.ts);if(d!==lastDate){html+=`<div class="date"><span>${d}</span></div>`;lastDate=d;lastSender='';lastType='';}
     const type=e.msg_type||'sys';const first=lastSender!==e.sn||lastType!==type;const last=!next||(next.msg_type||'sys')!==type||next.sn!==e.sn;lastSender=e.sn;lastType=type;html+=renderEntry(e,i,first,last);});
   el.innerHTML=html+'</div>';
 }
 function renderEntry(e,i,first,last){
   const type=e.msg_type||'sys';const id='msg-'+i;
-  if(type==='alert'||type==='audit'||type==='deleted')return `<div class="local-action-message ${type}" id="${id}" oncontextmenu="showCtx(event,${i})"><span>${type==='deleted'?'🗑️ ':''}${escH(e.tx)}</span></div>`;
+  if(type==='audit')return `<div class="local-action-message audit" id="${id}" oncontextmenu="showCtx(event,${i})"><span>${renderEditAudit(e)}</span></div>`;
+  if(type==='alert'||type==='deleted')return `<div class="local-action-message ${type}" id="${id}" oncontextmenu="showCtx(event,${i})"><span>${type==='deleted'?'🗑️ ':''}${escH(e.tx)}</span></div>`;
   const own=type==='cs';const name=e.sn||'用户';const color=hcol(name);const title=(!own&&first&&e.sn)?`<div class="message-title" style="color:${color}">${escH(e.sn)}</div>`:'';const avatar=own?'':`<div class="Avatar" style="background:${color}">${escH(name.charAt(0).toUpperCase())}</div>`;
-  return `<div class="Message ${own?'own':''} ${e.is_deleted?'deleted-context':''} ${first?'first-in-group':''} ${last?'last-in-group':''}" id="${id}" data-i="${i}">${avatar}<div class="message-content-wrapper"><div class="message-content text" oncontextmenu="showCtx(event,${i})"><div class="content-inner">${title}<div class="text-content">${escH(e.tx||'')}</div><span class="message-time">${escH(e.time)}${own?'<span class="message-status">✓✓</span>':''}</span></div></div></div></div>`;
+  const reply=renderReplyPreview(e);const flow=flowCount(e);const badge=flow>1?`<button class="flow-badge" title="消息流 ${flow} 条" onclick="openFlowForIndex(${i});event.stopPropagation()">${flow}</button>`:'';
+  return `<div class="Message ${own?'own':''} ${e.is_deleted?'deleted-context':''} ${first?'first-in-group':''} ${last?'last-in-group':''}" id="${id}" data-i="${i}">${avatar}<div class="message-content-wrapper"><div class="message-content text" oncontextmenu="showCtx(event,${i})"><div class="content-inner">${title}${reply}<div class="text-content">${escH(e.tx||'')}</div><span class="message-time">${escH(e.time)}${own?'<span class="message-status">✓✓</span>':''}</span>${badge}</div></div></div></div>`;
 }
+function renderEditAudit(e){
+  return `<div class="edit-audit-card">
+    <div class="edit-audit-title">✎ ${escH(e.sn||'Unknown')} 编辑了 Msg=${escH(e.msgId||'')}</div>
+    <div class="edit-audit-grid">
+      <div class="edit-side"><span class="edit-label">编辑前</span>${escH(e.old_text||'[空]')}</div>
+      <div class="edit-side"><span class="edit-label">编辑后</span>${escH(e.text||'[空]')}</div>
+    </div>
+  </div>`;
+}
+function rowDetail(p){
+  if(p.event_type==='edit')return `${p.sn||p.sender_name||'Unknown'} 编辑 Msg=${p.msgId||''}\n编辑前: ${p.old_text||'[空]'}\n编辑后: ${p.text||'[空]'}`;
+  if(p.event_type==='delete')return `${p.sn||p.sender_name||'Unknown'} 删除 Msg=${p.msgId||''}: ${p.text||p.old_text||'未知内容'}`;
+  return p.tx||stripDate(p.raw);
+}
+function findMessage(chatId,msgId){
+  const key=`${chatId||''}:${msgId||''}`;
+  return allLogs.map(parseLog).find(r=>`${r.chat_id||''}:${r.message_id||''}`===key);
+}
+function renderReplyPreview(e){
+  if(!e.reply_to_msg_id)return '';
+  const ref=findMessage(e.chat_id,e.reply_to_msg_id);
+  const title=ref?(ref.sn||ref.sender_name||'消息'):'引用消息';
+  const text=ref?briefText(ref.tx||ref.text||ref.raw):`Msg=${e.reply_to_msg_id}`;
+  return `<div class="reply-preview" onclick="jumpToMessage('${escH(String(e.chat_id||''))}','${escH(String(e.reply_to_msg_id||''))}');event.stopPropagation()">
+    <div class="reply-title">${escH(title)}</div>
+    <div class="reply-text">${escH(text)}</div>
+  </div>`;
+}
+function flowCount(e){return relatedRows(e).length;}
+function jumpToMessage(chatId,msgId){
+  const idx=allLogs.map(parseLog).findIndex(r=>String(r.chat_id||'')===String(chatId)&&String(r.message_id||'')===String(msgId));
+  if(idx<0){return;}
+  const row=document.getElementById('msg-'+idx);
+  if(row){row.scrollIntoView({behavior:'smooth',block:'center'});row.classList.add('is-selected');setTimeout(()=>row.classList.remove('is-selected'),1200);}
+}
+function openFlowForIndex(i){ctxTarget={i,e:parseLog(allLogs[i])};openFlow();}
 function showCtx(ev,i){
   ev.preventDefault();ctxTarget={i,e:parseLog(allLogs[i])};
   document.querySelectorAll('.Message.has-menu-open,.local-action-message.has-menu-open').forEach(n=>n.classList.remove('has-menu-open'));
@@ -432,17 +513,30 @@ function showCtx(ev,i){
 document.addEventListener('click',e=>{if(!e.target.closest('#ctxMenu')){document.getElementById('ctxMenu').classList.remove('open');document.querySelectorAll('.has-menu-open').forEach(n=>n.classList.remove('has-menu-open'));}});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){document.getElementById('ctxMenu').classList.remove('open');closeFlow();}});
 function copyText(){if(ctxTarget)navigator.clipboard.writeText(ctxTarget.e.tx||ctxTarget.e.raw||'');document.getElementById('ctxMenu').classList.remove('open');}
-function relatedRows(e){const mid=String(e.msgId||'');if(!mid)return[];return allLogs.filter(r=>String(r.message_id||'')===mid||String(r.reply_to_msg_id||'')===mid||(r.raw&&(r.raw.includes('Msg='+mid)||r.raw.includes('Msg('+mid))));}
-function openFlow(){
-  if(!ctxTarget)return;const e=ctxTarget.e;const rel=relatedRows(e);document.getElementById('flowTitle').textContent=e.msgId?'Msg='+e.msgId+' 消息流':'消息流';document.getElementById('flowSub').textContent=rel.length?rel.length+' 条关联日志':'未找到关联日志';
-  const body=document.getElementById('flowBody');body.innerHTML=rel.length?rel.map(r=>{const p=parseLog(r);return `<div class="flow-row ${p.msg_type||'sys'}"><div class="flow-time">${escH(p.time)} · ${escH(p.msg_type||p.event_type||'sys')}</div><div class="flow-text">${escH(p.tx||stripDate(p.raw))}</div></div>`;}).join(''):'<div class="empty-placeholder" style="height:10rem">此条目没有可关联的 Msg ID</div>';
+function relatedRows(e){
+  const mid=String(e.msgId||'');if(!mid)return[];
+  const parent=String(e.reply_to_msg_id||'');
+  return allLogs.filter(r=>String(r.message_id||'')===mid||String(r.reply_to_msg_id||'')===mid||(parent&&String(r.message_id||'')===parent)||(r.raw&&(r.raw.includes('Msg='+mid)||r.raw.includes('Msg('+mid))));
+}
+async function fetchFlowRows(e){
+  if(!e||!e.msgId||!e.chat_id)return relatedRows(e);
+  try{
+    const rows=await fetch(`/log_flow?chat_id=${encodeURIComponent(e.chat_id)}&message_id=${encodeURIComponent(e.msgId)}&window=300&limit=500`).then(r=>r.json());
+    return rows&&rows.length?rows:relatedRows(e);
+  }catch(_){return relatedRows(e);}
+}
+async function openFlow(){
+  if(!ctxTarget)return;const e=ctxTarget.e;document.getElementById('flowTitle').textContent=e.msgId?'Msg='+e.msgId+' 消息流':'消息流';document.getElementById('flowSub').textContent='加载中…';
+  const body=document.getElementById('flowBody');body.innerHTML='<div class="empty-placeholder" style="height:10rem">加载中…</div>';
   document.getElementById('RightColumn-wrapper').classList.add('open');document.getElementById('ctxMenu').classList.remove('open');
+  const rel=await fetchFlowRows(e);document.getElementById('flowSub').textContent=rel.length?rel.length+' 条关联日志':'未找到关联日志';
+  body.innerHTML=rel.length?rel.map(r=>{const p=parseLog(r);return `<div class="flow-row ${p.msg_type||'sys'}"><div class="flow-time">${escH(p.time)} · ${escH(p.msg_type||p.event_type||'sys')} · Msg=${escH(p.msgId||'')}</div><div class="flow-text">${escH(rowDetail(p))}</div></div>`;}).join(''):'<div class="empty-placeholder" style="height:10rem">此条目没有可关联的 Msg ID</div>';
 }
 function closeFlow(){document.getElementById('RightColumn-wrapper').classList.remove('open');}
-function reportBug(type){
+async function reportBug(type){
   if(!ctxTarget)return;const e=ctxTarget.e,mid=e.msgId,cTs=e.ts||0;let lines=['=== '+type+'反馈报告 ===','涉及 Msg: '+(mid||'未知'),''];
-  const rel=relatedRows(e);if(rel.length){lines.push('-- 关联记录 --');rel.forEach(r=>{const p=parseLog(r);lines.push('['+p.time+'] '+(p.tx||stripDate(p.raw)));});lines.push('');}
-  lines.push('-- 时间窗口 (±5分钟) --');allLogs.filter(r=>Math.abs((r.ts||0)-cTs)<=300).forEach(r=>{const p=parseLog(r);lines.push('['+p.time+'] '+(p.tx||stripDate(p.raw)));});
+  const rel=await fetchFlowRows(e);if(rel.length){lines.push('-- 关联记录 --');rel.forEach(r=>{const p=parseLog(r);lines.push('['+p.time+'] '+rowDetail(p));});lines.push('');}
+  lines.push('-- 时间窗口 (±5分钟) --');allLogs.filter(r=>Math.abs((r.ts||0)-cTs)<=300).forEach(r=>{const p=parseLog(r);lines.push('['+p.time+'] '+rowDetail(p));});
   navigator.clipboard.writeText(lines.join('\n')).then(()=>alert('已复制 ['+type+'] 详情'));document.getElementById('ctxMenu').classList.remove('open');
 }
 function doSearch(){const term=(document.getElementById('sideSearch').value||'').toLowerCase().trim();if(!term)return;let found=false;Array.from(document.querySelectorAll('.Message')).reverse().forEach(row=>{if(row.textContent.toLowerCase().includes(term)){row.scrollIntoView({behavior:'smooth',block:'center'});found=true;return;}});}

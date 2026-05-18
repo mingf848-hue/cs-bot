@@ -381,6 +381,84 @@ def _legacy_chat_log_rows(chat_id=None, limit=600):
             ).fetchall()
     return [{"source": "legacy", "ts": r["ts"], "chat_id": r["chat_id"], "msg_type": r["msg_type"], "raw": r["raw"]} for r in reversed(rows)]
 
+def _flow_rows(chat_id, message_id, window_seconds=300, limit=300):
+    if not chat_id or not message_id:
+        return []
+    message_id = int(message_id)
+    target_ts = None
+    parent_id = None
+    rows = []
+    with sqlite3.connect(CHAT_LOG_DB) as conn:
+        conn.row_factory = sqlite3.Row
+        target = conn.execute(
+            """SELECT first_ts AS ts, reply_to_msg_id FROM chat_message_snapshots WHERE chat_id=? AND message_id=?
+               UNION ALL
+               SELECT ts, reply_to_msg_id FROM chat_events WHERE chat_id=? AND message_id=?
+               ORDER BY ts LIMIT 1""",
+            (chat_id, message_id, chat_id, message_id)
+        ).fetchone()
+        if target:
+            target_ts = float(target["ts"])
+            parent_id = target["reply_to_msg_id"]
+
+        snapshot_sql = """SELECT chat_id, message_id, first_ts, last_ts, sender_id, sender_name,
+                                 sender_role, text, msg_type, reply_to_msg_id, grouped_id, is_deleted
+                          FROM chat_message_snapshots
+                          WHERE chat_id=? AND (message_id=? OR reply_to_msg_id=?"""
+        snapshot_params = [chat_id, message_id, message_id]
+        if parent_id:
+            snapshot_sql += " OR message_id=?"
+            snapshot_params.append(parent_id)
+        if target_ts is not None and window_seconds > 0:
+            snapshot_sql += " OR first_ts BETWEEN ? AND ?"
+            snapshot_params.extend([target_ts - window_seconds, target_ts + window_seconds])
+        snapshot_sql += ") ORDER BY first_ts DESC LIMIT ?"
+        snapshot_params.append(limit)
+        snapshots = conn.execute(snapshot_sql, tuple(snapshot_params)).fetchall()
+
+        audit_sql = """SELECT id, ts, chat_id, message_id, event_type, sender_id, sender_name,
+                              text, old_text, sender_role, msg_type, raw, reply_to_msg_id, grouped_id
+                       FROM chat_events
+                       WHERE chat_id=? AND event_type IN ('edit', 'delete')
+                         AND (message_id=? OR reply_to_msg_id=?"""
+        audit_params = [chat_id, message_id, message_id]
+        if parent_id:
+            audit_sql += " OR message_id=?"
+            audit_params.append(parent_id)
+        if target_ts is not None and window_seconds > 0:
+            audit_sql += " OR ts BETWEEN ? AND ?"
+            audit_params.extend([target_ts - window_seconds, target_ts + window_seconds])
+        audit_sql += ") ORDER BY ts DESC, id DESC LIMIT ?"
+        audit_params.append(limit)
+        audits = conn.execute(audit_sql, tuple(audit_params)).fetchall()
+
+    for r in snapshots:
+        row = dict(r)
+        rows.append({
+            "id": f"ctx:{row['chat_id']}:{row['message_id']}",
+            "source": "context",
+            "ts": row["first_ts"],
+            "chat_id": row["chat_id"],
+            "message_id": row["message_id"],
+            "event_type": "new",
+            "sender_id": row["sender_id"],
+            "sender_name": row["sender_name"] or "Unknown",
+            "text": row["text"] or "",
+            "old_text": "",
+            "sender_role": row["sender_role"] or "user",
+            "msg_type": row["msg_type"] or "文本",
+            "raw": f"[MSG] Msg={row['message_id']} | [{row['chat_id']}] {row['sender_name'] or 'Unknown'}: {row['text'] or ''} [{row['msg_type'] or '文本'}]",
+            "reply_to_msg_id": row["reply_to_msg_id"],
+            "grouped_id": row["grouped_id"],
+            "is_deleted": row["is_deleted"] or 0,
+        })
+    for r in audits:
+        item = dict(r)
+        item["source"] = "audit"
+        rows.append(item)
+    rows.sort(key=lambda row: (row.get("ts") or 0, str(row.get("id") or "")))
+    return rows[-limit:]
+
 def get_last_stored_message_text(chat_id, message_id):
     try:
         with sqlite3.connect(CHAT_LOG_DB) as conn:
@@ -1796,6 +1874,18 @@ def log_stream():
                     pass
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+@app.route('/log_flow')
+def log_flow():
+    chat_id = request.args.get('chat_id', type=int)
+    message_id = request.args.get('message_id', type=int)
+    window = min(max(request.args.get('window', 300, type=int), 0), 3600)
+    limit = min(max(request.args.get('limit', 300, type=int), 1), 800)
+    try:
+        return jsonify(_flow_rows(chat_id, message_id, window_seconds=window, limit=limit))
+    except Exception as e:
+        logger.error(f"❌ log_flow 查询失败: {e}")
+        return jsonify([])
 
 @app.route('/log_groups')
 def log_groups():
