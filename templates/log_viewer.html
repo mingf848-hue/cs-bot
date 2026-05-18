@@ -405,7 +405,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-prima
   </div>
 </div>
 <script>
-let groups=[];let allLogs=[];let parsedLogs=[];let messageIndex=new Map();let relationIndex=new Map();let visibleCount=80;let activeChatId=null;let activeChatName='全部消息';let activeMode='all';let ctxTarget=null;let logStream=null;let discussionSource=null;
+let groups=[];let allLogs=[];let parsedLogs=[];let messageIndex=new Map();let relationIndex=new Map();let visibleCount=80;let activeChatId=null;let activeChatName='全部消息';let activeMode='all';let ctxTarget=null;let logStream=null;let discussionSource=null;let loadSeq=0;
 const colors=['#6bb8ff','#ff8a65','#ba68c8','#4db6ac','#ffd54f','#7986cb','#f06292','#81c784'];
 function hcol(s){let h=0;for(const c of String(s||''))h=(h*31+c.charCodeAt(0))|0;return colors[Math.abs(h)%colors.length];}
 function escH(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -439,10 +439,16 @@ function updateHead(){document.getElementById('headTitle').textContent=activeCha
 function updateSub(text,reconnecting=false){document.getElementById('headSubText').textContent=text;document.getElementById('streamDot').classList.toggle('reconnecting',!!reconnecting);}
 function setMode(mode){closeDiscussion(false);activeMode=mode;document.querySelectorAll('.filter-tab').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));loadMessages();}
 async function loadMessages(){
+  const seq=++loadSeq;
+  if(logStream){logStream.close();logStream=null;}
   const el=document.getElementById('messages');el.innerHTML='<div class="empty-placeholder">加载中…</div>';
   const url='/log_db?limit=300&mode='+encodeURIComponent(activeMode)+(activeChatId?'&chat_id='+activeChatId:'');
-  try{allLogs=await fetch(url).then(r=>r.json());visibleCount=80;updateSub('实时同步中');render();renderGroups();scrollBottom();startStream();}
-  catch(e){el.innerHTML='<div class="empty-placeholder">加载失败</div>';}
+  try{
+    const rows=await fetch(url).then(r=>r.json());
+    if(seq!==loadSeq)return;
+    allLogs=rows;visibleCount=80;updateSub('实时同步中');render();renderGroups();scrollBottom();startStream();
+  }
+  catch(e){if(seq===loadSeq)el.innerHTML='<div class="empty-placeholder">加载失败</div>';}
 }
 function parseLog(row){
   const raw=row.raw||'';const time=fmtTime(row.ts)||((raw.match(/(\d{2}:\d{2}:\d{2})/)||[])[1]||'');
@@ -600,7 +606,12 @@ async function openDiscussion(){
   el.innerHTML=rows.length?renderRows(rows):'<div class="empty-placeholder">没有直接回复</div>';
   scrollBottom();
 }
-function closeDiscussion(restore=true){if(!discussionSource&&!restore)return;discussionSource=null;setDiscussionMode(false);if(restore){render();scrollBottom();}}
+function closeDiscussion(restore=true){
+  const wasOpen=!!discussionSource;
+  discussionSource=null;
+  setDiscussionMode(false);
+  if(restore&&wasOpen){render();scrollBottom();}
+}
 async function openFlow(){
   if(!ctxTarget)return;const e=ctxTarget.e;document.getElementById('flowTitle').textContent='Replies';document.getElementById('flowSub').textContent='加载中…';
   const body=document.getElementById('flowBody');body.innerHTML='<div class="empty-placeholder" style="height:10rem">加载中…</div>';
@@ -631,10 +642,14 @@ function startStream(){
     const key=rowKey(row);
     if(allLogs.some(r=>rowKey(r)===key))return;
     allLogs.push(row);
-    if(allLogs.length>300)allLogs.shift();
+    let pruned=false;
+    if(allLogs.length>500){allLogs.shift();pruned=true;}
     updateSub('实时同步中');
-    if(!discussionSource){appendVisibleRow(allLogs.length-1);if(atBottom)scrollBottom();}
-    loadGroups();
+    if(!discussionSource){
+      if(pruned)render();
+      else appendVisibleRow(allLogs.length-1);
+      if(atBottom)scrollBottom();
+    }
   };
   logStream.onopen=()=>updateSub('实时同步中');
   logStream.onerror=()=>{updateSub('正在重连',true);};
