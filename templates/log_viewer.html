@@ -190,7 +190,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-prima
   display: grid;
   gap: .5rem;
 }
-.edit-audit-title { font-weight: 700; text-align: center; }
+.edit-audit-head { display: flex; align-items: center; justify-content: center; gap: .5rem; font-weight: 700; }
+.edit-audit-head .Avatar { width: 1.75rem; height: 1.75rem; font-size: .75rem; }
 .edit-audit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
 .edit-side { padding: .5rem .625rem; border-radius: .625rem; background: rgba(255,255,255,.18); }
 .edit-label { display: block; margin-bottom: .25rem; font-size: .6875rem; font-weight: 700; opacity: .9; }
@@ -432,10 +433,10 @@ function renderGroups(){
     </div>`;
   }).join('')||'<div class="empty-placeholder">没有匹配的会话</div>';
 }
-function selectGroup(id,name){activeChatId=id;activeChatName=decodeURIComponent(name||'全部消息');closeLeftColumn();updateHead();loadMessages();renderGroups();}
+function selectGroup(id,name){closeDiscussion(false);closeFlow();activeChatId=id;activeChatName=decodeURIComponent(name||'全部消息');closeLeftColumn();updateHead();loadMessages();renderGroups();}
 function updateHead(){document.getElementById('headTitle').textContent=activeChatName;document.getElementById('headAvatar').textContent=(activeChatName||'L').charAt(0).toUpperCase();document.getElementById('headAvatar').style.background=hcol(activeChatName);}
 function updateSub(text,reconnecting=false){document.getElementById('headSubText').textContent=text;document.getElementById('streamDot').classList.toggle('reconnecting',!!reconnecting);}
-function setMode(mode){activeMode=mode;document.querySelectorAll('.filter-tab').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));loadMessages();}
+function setMode(mode){closeDiscussion(false);activeMode=mode;document.querySelectorAll('.filter-tab').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));loadMessages();}
 async function loadMessages(){
   const el=document.getElementById('messages');el.innerHTML='<div class="empty-placeholder">加载中…</div>';
   const url='/log_db?limit=300&mode='+encodeURIComponent(activeMode)+(activeChatId?'&chat_id='+activeChatId:'');
@@ -447,7 +448,7 @@ function parseLog(row){
   const msgId=row.message_id||((raw.match(/Msg[=\(](\d+)/)||[])[1]||null);
   if(row.event_type){
     const sn=row.sender_name||'Unknown';let type=row.sender_role==='cs'?'cs':'user';let tx=row.text||'';
-    if(row.event_type==='edit'){type='audit';tx=`${sn} 编辑了 Msg=${msgId || ''}`;}
+    if(row.event_type==='edit'){type='audit';tx=sn;}
     if(row.event_type==='delete'){type='deleted';tx=`${sn}: ${row.text||row.old_text||'未知内容'}`;}
     return {...row,time,msgId,sn,tx,msg_type:type};
   }
@@ -511,8 +512,9 @@ function renderEntry(e,i,first,last){
   return `<div class="Message ${own?'own':''} ${e.is_deleted?'deleted-context':''} ${first?'first-in-group':''} ${last?'last-in-group':''}" id="${id}" data-i="${i}">${avatar}<div class="message-content-wrapper"><div class="message-content text" oncontextmenu="showCtx(event,${i})"><div class="content-inner">${title}${reply}<div class="text-content">${escH(e.tx||'')}</div><span class="message-time">${escH(e.time)}${own?'<span class="message-status">✓✓</span>':''}</span>${badge}</div></div></div></div>`;
 }
 function renderEditAudit(e){
+  const name=e.sn||e.sender_name||'Unknown';const color=hcol(name);const ini=escH(String(name||'E').charAt(0).toUpperCase());
   return `<div class="edit-audit-card">
-    <div class="edit-audit-title">✎ ${escH(e.sn||'Unknown')} 编辑了 Msg=${escH(e.msgId||'')}</div>
+    <div class="edit-audit-head"><span class="Avatar" style="background:${color}">${ini}</span><span>${escH(name)}</span></div>
     <div class="edit-audit-grid">
       <div class="edit-side"><span class="edit-label">编辑前</span>${escH(e.old_text||'[空]')}</div>
       <div class="edit-side"><span class="edit-label">编辑后</span>${escH(e.text||'[空]')}</div>
@@ -520,8 +522,8 @@ function renderEditAudit(e){
   </div>`;
 }
 function rowDetail(p){
-  if(p.event_type==='edit')return `${p.sn||p.sender_name||'Unknown'} 编辑 Msg=${p.msgId||''}\n编辑前: ${p.old_text||'[空]'}\n编辑后: ${p.text||'[空]'}`;
-  if(p.event_type==='delete')return `${p.sn||p.sender_name||'Unknown'} 删除 Msg=${p.msgId||''}: ${p.text||p.old_text||'未知内容'}`;
+  if(p.event_type==='edit')return `${p.sn||p.sender_name||'Unknown'}\n编辑前: ${p.old_text||'[空]'}\n编辑后: ${p.text||'[空]'}`;
+  if(p.event_type==='delete')return `${p.sn||p.sender_name||'Unknown'} 删除: ${p.text||p.old_text||'未知内容'}`;
   return p.tx||stripDate(p.raw);
 }
 function findMessage(chatId,msgId){
@@ -532,7 +534,7 @@ function renderReplyPreview(e){
   if(!e.reply_to_msg_id)return '';
   const ref=findMessage(e.chat_id,e.reply_to_msg_id);
   const title=ref?(ref.sn||ref.sender_name||'消息'):'引用消息';
-  const text=ref?briefText(ref.tx||ref.text||ref.raw):`Msg=${e.reply_to_msg_id}`;
+  const text=ref?briefText(ref.tx||ref.text||ref.raw):'引用消息';
   return `<div class="reply-preview" onclick="jumpToMessage('${escH(String(e.chat_id||''))}','${escH(String(e.reply_to_msg_id||''))}');event.stopPropagation()">
     <div class="reply-title">${escH(title)}</div>
     <div class="reply-text">${escH(text)}</div>
@@ -575,22 +577,23 @@ function setDiscussionMode(on){
   document.querySelector('.filter-tabs').style.display=on?'none':'flex';
 }
 async function openDiscussion(){
+  document.getElementById('ctxMenu').classList.remove('open');document.querySelectorAll('.has-menu-open').forEach(n=>n.classList.remove('has-menu-open'));
   if(!ctxTarget)return;const e=ctxTarget.e;discussionSource=e;setDiscussionMode(true);
-  document.getElementById('discussionTitle').textContent=e.msgId?'Msg='+e.msgId+' Replies':'Replies';
+  document.getElementById('discussionTitle').textContent='Replies';
   document.getElementById('discussionSub').textContent='加载中…';
-  document.getElementById('discussionAvatar').textContent='R';
+  const avatarName=e.sn||'R';document.getElementById('discussionAvatar').textContent=avatarName.charAt(0).toUpperCase();document.getElementById('discussionAvatar').style.background=hcol(avatarName);
   const el=document.getElementById('messages');el.innerHTML='<div class="empty-placeholder">加载中…</div>';
   const rows=await fetchFlowRows(e);document.getElementById('discussionSub').textContent=rows.length?rows.length+' 条直接关联记录':'没有直接回复';
   el.innerHTML=rows.length?renderRows(rows):'<div class="empty-placeholder">没有直接回复</div>';
   scrollBottom();
 }
-function closeDiscussion(){discussionSource=null;setDiscussionMode(false);render();scrollBottom();}
+function closeDiscussion(restore=true){if(!discussionSource&&!restore)return;discussionSource=null;setDiscussionMode(false);if(restore){render();scrollBottom();}}
 async function openFlow(){
-  if(!ctxTarget)return;const e=ctxTarget.e;document.getElementById('flowTitle').textContent=e.msgId?'Msg='+e.msgId+' Replies':'Replies';document.getElementById('flowSub').textContent='加载中…';
+  if(!ctxTarget)return;const e=ctxTarget.e;document.getElementById('flowTitle').textContent='Replies';document.getElementById('flowSub').textContent='加载中…';
   const body=document.getElementById('flowBody');body.innerHTML='<div class="empty-placeholder" style="height:10rem">加载中…</div>';
   document.getElementById('RightColumn-wrapper').classList.add('open');document.getElementById('ctxMenu').classList.remove('open');
   const rel=await fetchFlowRows(e);document.getElementById('flowSub').textContent=rel.length?rel.length+' 条直接关联记录':'没有直接回复';
-  body.innerHTML=rel.length?rel.map(r=>{const p=parseLog(r);return `<div class="flow-row ${p.msg_type||'sys'}"><div class="flow-time">${escH(p.time)} · ${escH(p.msg_type||p.event_type||'sys')} · Msg=${escH(p.msgId||'')}</div><div class="flow-text">${escH(rowDetail(p))}</div></div>`;}).join(''):'<div class="empty-placeholder" style="height:10rem">此条目没有可关联的 Msg ID</div>';
+  body.innerHTML=rel.length?rel.map(r=>{const p=parseLog(r);return `<div class="flow-row ${p.msg_type||'sys'}"><div class="flow-time">${escH(p.time)} · ${escH(p.msg_type||p.event_type||'sys')}</div><div class="flow-text">${escH(rowDetail(p))}</div></div>`;}).join(''):'<div class="empty-placeholder" style="height:10rem">此条目没有可关联的 Msg ID</div>';
 }
 function closeFlow(){document.getElementById('RightColumn-wrapper').classList.remove('open');}
 async function reportBug(type){
