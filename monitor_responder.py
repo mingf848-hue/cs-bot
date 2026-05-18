@@ -976,6 +976,21 @@ VALID_REPLY_TYPES = {"text", "edit_prev", "forward", "copy_file", "amount_logic"
 # 后台操作指令队列（Tampermonkey 轮询取指令）
 CMD_SECRET = "J7kN3mQxR9vTsW2pYzBf"
 pending_commands = deque(maxlen=200)
+pending_command_leases = {}
+
+def queue_backend_unlock_command(member_name, rule, event):
+    cmd_id = f"unlock_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+    pending_commands.append({
+        "id": cmd_id,
+        "action": "unlock_sms",
+        "member_name": member_name,
+        "source": "monitor",
+        "rule": rule.get("name") or rule.get("id") or "",
+        "chat_id": event.chat_id,
+        "message_id": event.id,
+        "queued_at": now_bj().isoformat(),
+    })
+    return cmd_id
 
 def ensure_scheduled_message_id(item):
     if not item.get("id"):
@@ -2383,9 +2398,31 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     def cmd_poll():
         if request.args.get("secret") != CMD_SECRET:
             return jsonify({"ok": False}), 403
+        now = time.time()
+        for cmd_id, leased in list(pending_command_leases.items()):
+            if now - float(leased.get("leased_at", 0)) > 30:
+                pending_command_leases.pop(cmd_id, None)
+                pending_commands.appendleft(leased["cmd"])
         if pending_commands:
-            return jsonify({"ok": True, "cmd": pending_commands.popleft()})
+            cmd = pending_commands.popleft()
+            cmd_id = cmd.get("id") or f"cmd_{int(now * 1000)}"
+            cmd["id"] = cmd_id
+            pending_command_leases[cmd_id] = {"cmd": cmd, "leased_at": now}
+            return jsonify({"ok": True, "cmd": cmd})
         return jsonify({"ok": True, "cmd": None})
+
+    @app.route('/api/cmd/ack', methods=['POST'])
+    def cmd_ack():
+        if request.args.get("secret") != CMD_SECRET:
+            return jsonify({"ok": False}), 403
+        data = request.get_json(silent=True) or {}
+        cmd_id = str(data.get("id") or "")
+        status = str(data.get("status") or "")
+        member_name = str(data.get("member_name") or "")
+        if cmd_id:
+            pending_command_leases.pop(cmd_id, None)
+        logger.info(f"🔓 [BackendUnlock] 油猴回执: id={cmd_id or '-'} member={member_name or '-'} status={status or '-'}")
+        return jsonify({"ok": True})
 
     @app.route('/tool/backend_unlock_userscript')
     def backend_unlock_userscript():
@@ -2424,6 +2461,18 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     return localStorage.getItem('csbot_zd_' + key) || DEFAULT_ZD_CONFIG[key] || fallback;
   }}
 
+  function status(message, tone = '#2563eb') {{
+    let el = document.getElementById('csbot-zd-unlock-status');
+    if (!el) {{
+      el = document.createElement('div');
+      el.id = 'csbot-zd-unlock-status';
+      el.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:999999;padding:8px 10px;border-radius:8px;background:#111827;color:white;font:12px/1.35 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.22);max-width:300px;';
+      document.documentElement.appendChild(el);
+    }}
+    el.style.borderLeft = '4px solid ' + tone;
+    el.textContent = '[CS Bot] ' + message;
+  }}
+
   function headers() {{
     return {{
       'accept': '*/*',
@@ -2442,27 +2491,56 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     }};
   }}
 
-  function unlock(memberName) {{
+  async function ack(cmd, ackStatus, detail = '') {{
+    if (!cmd || !cmd.id) return;
+    try {{
+      await new Promise((resolve, reject) => {{
+        GM_xmlhttpRequest({{
+          method: 'POST',
+          url: `${{BOT_BASE}}/api/cmd/ack?secret=${{encodeURIComponent(CMD_SECRET)}}`,
+          headers: {{ 'content-type': 'application/json', 'accept': 'application/json' }},
+          data: JSON.stringify({{ id: cmd.id, status: ackStatus, member_name: cmd.member_name, detail }}),
+          timeout: 10000,
+          onload: resolve,
+          onerror: reject,
+          ontimeout: () => reject(new Error('ack timeout'))
+        }});
+      }});
+    }} catch (err) {{
+      console.warn('[CS Bot] ack failed', err);
+    }}
+  }}
+
+  async function unlock(cmd) {{
+    let memberName = cmd && cmd.member_name;
     memberName = String(memberName || '').trim().toLowerCase();
     if (!memberName) return;
     const value = cfg('value');
     if (!value) {{
       console.warn('[CS Bot] Missing localStorage csbot_zd_value');
+      status('缺少 csbot_zd_value', '#dc2626');
+      await ack(cmd, 'missing_value', 'missing value');
       return;
     }}
-    fetch(UNLOCK_URL, {{
-      method: 'POST',
-      mode: 'cors',
-      credentials: 'include',
-      referrer: REFERRER,
-      headers: headers(),
-      body: JSON.stringify({{ value, name: memberName }})
-    }}).then(async (res) => {{
+    status('执行解锁 ' + memberName, '#f59e0b');
+    try {{
+      const res = await fetch(UNLOCK_URL, {{
+        method: 'POST',
+        mode: 'cors',
+        credentials: 'include',
+        referrer: REFERRER,
+        headers: headers(),
+        body: JSON.stringify({{ value, name: memberName }})
+      }});
       const text = await res.text();
       console.log('[CS Bot] unlock', memberName, res.status, text.slice(0, 300));
-    }}).catch((err) => {{
+      status('解锁 ' + memberName + ' HTTP ' + res.status, res.ok ? '#16a34a' : '#dc2626');
+      await ack(cmd, res.ok ? 'success' : 'http_' + res.status, text.slice(0, 300));
+    }} catch (err) {{
       console.error('[CS Bot] unlock failed', memberName, err);
-    }});
+      status('解锁失败 ' + memberName + ': ' + err.message, '#dc2626');
+      await ack(cmd, 'fetch_failed', String(err && err.message || err));
+    }}
   }}
 
   function pollCommand() {{
@@ -2489,16 +2567,22 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     try {{
       const data = await pollCommand();
       if (data && data.ok && data.cmd && data.cmd.action === 'unlock_sms' && data.cmd.member_name) {{
-        unlock(data.cmd.member_name);
+        console.log('[CS Bot] command received', data.cmd);
+        status('收到命令 ' + data.cmd.member_name, '#2563eb');
+        await unlock(data.cmd);
+      }} else {{
+        status('轮询中，暂无命令', '#64748b');
       }}
     }} catch (err) {{
       console.warn('[CS Bot] poll failed', err);
+      status('轮询失败: ' + err.message, '#dc2626');
     }} finally {{
       setTimeout(poll, 2500);
     }}
   }}
 
   console.log('[CS Bot] ZD unlock userscript started. member_name will be lower-cased before unlock.');
+  status('油猴已启动，正在轮询 ' + BOT_BASE, '#16a34a');
   poll();
 }})();
 """
@@ -3024,17 +3108,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                             elif stype == "backend_unlock":
                                 member_name = extract_backend_unlock_member(event.text or "", step.get("member_pattern", ""))
                                 if member_name:
-                                    pending_commands.append({
-                                        "action": "unlock_sms",
-                                        "member_name": member_name,
-                                        "source": "monitor",
-                                        "rule": rule.get("name") or rule.get("id") or "",
-                                        "chat_id": event.chat_id,
-                                        "message_id": event.id,
-                                        "queued_at": now_bj().isoformat(),
-                                    })
+                                    cmd_id = queue_backend_unlock_command(member_name, rule, event)
                                     backend_actions += 1
-                                    logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 已下发油猴解锁指令: {member_name}")
+                                    logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 已下发油猴解锁指令: {member_name} | id={cmd_id}")
                                 else:
                                     logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 未提取到账号名，已跳过")
 
