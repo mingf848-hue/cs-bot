@@ -1892,19 +1892,19 @@ def log_groups():
     try:
         with sqlite3.connect(CHAT_LOG_DB) as conn:
             rows = conn.execute(
-                """SELECT chat_id, SUM(cnt) AS cnt FROM (
-                    SELECT chat_id, COUNT(*) AS cnt FROM chat_message_snapshots WHERE chat_id IS NOT NULL GROUP BY chat_id
+                """SELECT chat_id, MAX(last_ts) AS last_ts FROM (
+                    SELECT chat_id, MAX(first_ts) AS last_ts FROM chat_message_snapshots WHERE chat_id IS NOT NULL GROUP BY chat_id
                     UNION ALL
-                    SELECT chat_id, COUNT(*) AS cnt FROM chat_events WHERE chat_id IS NOT NULL AND event_type IN ('edit', 'delete') GROUP BY chat_id
-                ) GROUP BY chat_id ORDER BY cnt DESC"""
+                    SELECT chat_id, MAX(ts) AS last_ts FROM chat_events WHERE chat_id IS NOT NULL AND event_type IN ('edit', 'delete') GROUP BY chat_id
+                ) GROUP BY chat_id ORDER BY last_ts DESC"""
             ).fetchall()
             if not rows:
                 rows = conn.execute(
-                    "SELECT chat_id, COUNT(*) as cnt FROM chat_logs WHERE chat_id IS NOT NULL GROUP BY chat_id ORDER BY cnt DESC"
+                    "SELECT chat_id, MAX(ts) as last_ts FROM chat_logs WHERE chat_id IS NOT NULL GROUP BY chat_id ORDER BY last_ts DESC"
                 ).fetchall()
         # Try to get group names from Telegram client
         result = []
-        for chat_id, cnt in rows:
+        for chat_id, _ in rows:
             name = _group_name_cache.get(chat_id, str(chat_id))
             result.append({"chat_id": chat_id, "name": name})
         return jsonify(result)

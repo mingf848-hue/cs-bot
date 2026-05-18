@@ -398,7 +398,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-prima
   </div>
 </div>
 <script>
-let groups=[];let allLogs=[];let activeChatId=null;let activeChatName='全部消息';let activeMode='all';let ctxTarget=null;let logStream=null;
+let groups=[];let allLogs=[];let parsedLogs=[];let messageIndex=new Map();let relationIndex=new Map();let activeChatId=null;let activeChatName='全部消息';let activeMode='all';let ctxTarget=null;let logStream=null;
 const colors=['#6bb8ff','#ff8a65','#ba68c8','#4db6ac','#ffd54f','#7986cb','#f06292','#81c784'];
 function hcol(s){let h=0;for(const c of String(s||''))h=(h*31+c.charCodeAt(0))|0;return colors[Math.abs(h)%colors.length];}
 function escH(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -406,6 +406,7 @@ function stripDate(raw){return String(raw||'').replace(/^\d{4}-\d{2}-\d{2}\s+\d{
 function fmtTime(ts){return ts?new Date(ts*1000).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}):'';}
 function fmtDate(ts){return ts?new Date(ts*1000).toLocaleDateString('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'long',day:'numeric'}):'';}
 function briefText(s){const text=String(s||'').replace(/\s+/g,' ').trim();return text.length>72?text.slice(0,72)+'…':text;}
+function mk(chatId,msgId){return `${chatId||''}:${msgId||''}`;}
 function closeLeftColumn(){document.getElementById('Main').classList.remove('left-column-open');}
 function openLeftColumn(){document.getElementById('Main').classList.add('left-column-open');}
 async function loadGroups(){
@@ -432,8 +433,8 @@ function updateSub(text,reconnecting=false){document.getElementById('headSubText
 function setMode(mode){activeMode=mode;document.querySelectorAll('.filter-tab').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));loadMessages();}
 async function loadMessages(){
   const el=document.getElementById('messages');el.innerHTML='<div class="empty-placeholder">加载中…</div>';
-  const url='/log_db?limit=1000&mode='+encodeURIComponent(activeMode)+(activeChatId?'&chat_id='+activeChatId:'');
-  try{allLogs=await fetch(url).then(r=>r.json());updateSub(allLogs.length+' 条记录 · 实时同步中');render();renderGroups();scrollBottom();startStream();}
+  const url='/log_db?limit=300&mode='+encodeURIComponent(activeMode)+(activeChatId?'&chat_id='+activeChatId:'');
+  try{allLogs=await fetch(url).then(r=>r.json());updateSub('实时同步中');render();renderGroups();scrollBottom();startStream();}
   catch(e){el.innerHTML='<div class="empty-placeholder">加载失败</div>';}
 }
 function parseLog(row){
@@ -451,10 +452,34 @@ function parseLog(row){
   if(row.msg_type==='deleted'&&!sn)tx=raw.replace(/^.*?\[DELETED\]\s*/,'').trim();
   return {...row,time,msgId,sn,tx};
 }
+function prepareLogState(){
+  parsedLogs=allLogs.map(parseLog);
+  messageIndex=new Map();
+  relationIndex=new Map();
+  parsedLogs.forEach((e,i)=>{
+    if(!e.msgId)return;
+    const key=mk(e.chat_id,e.msgId);
+    if(!messageIndex.has(key))messageIndex.set(key,[]);
+    messageIndex.get(key).push(i);
+    if(!relationIndex.has(key))relationIndex.set(key,new Set());
+    relationIndex.get(key).add(i);
+  });
+  parsedLogs.forEach((e,i)=>{
+    if(!e.msgId||!e.reply_to_msg_id)return;
+    const childKey=mk(e.chat_id,e.msgId);
+    const parentKey=mk(e.chat_id,e.reply_to_msg_id);
+    if(!relationIndex.has(parentKey))relationIndex.set(parentKey,new Set());
+    relationIndex.get(parentKey).add(i);
+    if(!relationIndex.has(childKey))relationIndex.set(childKey,new Set());
+    const parentRows=messageIndex.get(parentKey)||[];
+    parentRows.forEach(idx=>relationIndex.get(childKey).add(idx));
+  });
+}
 function render(){
   const el=document.getElementById('messages');
   if(!allLogs.length){el.innerHTML='<div class="empty-placeholder">暂无消息</div>';return;}
-  const logs=allLogs.map(parseLog);let html='<div class="messages-container">',lastDate='',lastSender='',lastType='';
+  prepareLogState();
+  const logs=parsedLogs;let html='<div class="messages-container">',lastDate='',lastSender='',lastType='';
   logs.forEach((e,i)=>{const next=logs[i+1];const d=fmtDate(e.ts);if(d!==lastDate){html+=`<div class="date"><span>${d}</span></div>`;lastDate=d;lastSender='';lastType='';}
     const type=e.msg_type||'sys';const first=lastSender!==e.sn||lastType!==type;const last=!next||(next.msg_type||'sys')!==type||next.sn!==e.sn;lastSender=e.sn;lastType=type;html+=renderEntry(e,i,first,last);});
   el.innerHTML=html+'</div>';
@@ -482,8 +507,8 @@ function rowDetail(p){
   return p.tx||stripDate(p.raw);
 }
 function findMessage(chatId,msgId){
-  const key=`${chatId||''}:${msgId||''}`;
-  return allLogs.map(parseLog).find(r=>`${r.chat_id||''}:${r.message_id||''}`===key);
+  const rows=messageIndex.get(mk(chatId,msgId))||[];
+  return rows.length?parsedLogs[rows[0]]:null;
 }
 function renderReplyPreview(e){
   if(!e.reply_to_msg_id)return '';
@@ -497,7 +522,8 @@ function renderReplyPreview(e){
 }
 function flowCount(e){return relatedRows(e).length;}
 function jumpToMessage(chatId,msgId){
-  const idx=allLogs.map(parseLog).findIndex(r=>String(r.chat_id||'')===String(chatId)&&String(r.message_id||'')===String(msgId));
+  const rows=messageIndex.get(mk(chatId,msgId))||[];
+  const idx=rows.length?rows[0]:-1;
   if(idx<0){return;}
   const row=document.getElementById('msg-'+idx);
   if(row){row.scrollIntoView({behavior:'smooth',block:'center'});row.classList.add('is-selected');setTimeout(()=>row.classList.remove('is-selected'),1200);}
@@ -515,8 +541,8 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'){document.getElement
 function copyText(){if(ctxTarget)navigator.clipboard.writeText(ctxTarget.e.tx||ctxTarget.e.raw||'');document.getElementById('ctxMenu').classList.remove('open');}
 function relatedRows(e){
   const mid=String(e.msgId||'');if(!mid)return[];
-  const parent=String(e.reply_to_msg_id||'');
-  return allLogs.filter(r=>String(r.message_id||'')===mid||String(r.reply_to_msg_id||'')===mid||(parent&&String(r.message_id||'')===parent)||(r.raw&&(r.raw.includes('Msg='+mid)||r.raw.includes('Msg('+mid))));
+  const rows=Array.from(relationIndex.get(mk(e.chat_id,e.msgId))||[]);
+  return rows.map(i=>allLogs[i]).filter(Boolean);
 }
 async function fetchFlowRows(e){
   if(!e||!e.msgId||!e.chat_id)return relatedRows(e);
@@ -555,14 +581,14 @@ function startStream(){
     const key=rowKey(row);
     if(allLogs.some(r=>rowKey(r)===key))return;
     allLogs.push(row);
-    if(allLogs.length>1000)allLogs.shift();
-    updateSub(allLogs.length+' 条记录 · 实时同步中');
+    if(allLogs.length>300)allLogs.shift();
+    updateSub('实时同步中');
     render();
     if(atBottom)scrollBottom();
     loadGroups();
   };
-  logStream.onopen=()=>updateSub(allLogs.length+' 条记录 · 实时同步中');
-  logStream.onerror=()=>{updateSub(allLogs.length+' 条记录 · 正在重连',true);};
+  logStream.onopen=()=>updateSub('实时同步中');
+  logStream.onerror=()=>{updateSub('正在重连',true);};
 }
 document.getElementById('Main').addEventListener('click',e=>{if(e.target.id==='Main'&&document.getElementById('Main').classList.contains('left-column-open'))closeLeftColumn();});
 updateHead();loadGroups();loadMessages();
