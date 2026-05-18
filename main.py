@@ -142,6 +142,16 @@ def _event_uid(event_type, chat_id, message_id, ts=None):
         return f"new:{chat_id}:{message_id}"
     return f"{event_type}:{chat_id}:{message_id}:{time.time_ns()}"
 
+def _normalized_message_text(text):
+    return re.sub(r"\s+", " ", (text or "").strip())
+
+def _is_meaningful_edit_text(old_text, new_text):
+    old_norm = _normalized_message_text(old_text)
+    new_norm = _normalized_message_text(new_text)
+    if not old_norm or old_norm == "[非文本/空]":
+        return False
+    return old_norm != new_norm
+
 def _broadcast_chat_event(row):
     payload = json.dumps(row, ensure_ascii=False)
     dead_clients = []
@@ -177,6 +187,7 @@ def record_chat_event(event_type, chat_id, message_id, sender_id=None, sender_na
         "chat_id": chat_id,
         "message_id": message_id,
         "event_type": event_type,
+        "source": "audit" if event_type in ("edit", "delete") else "context",
         "sender_id": sender_id,
         "sender_name": sender_name or "Unknown",
         "text": safe_text,
@@ -327,7 +338,17 @@ def _snapshot_rows(chat_id=None, limit=600):
 def _audit_rows(chat_id=None, limit=600, event_type=None):
     with sqlite3.connect(CHAT_LOG_DB) as conn:
         conn.row_factory = sqlite3.Row
-        where = ["event_type IN ('edit', 'delete')"]
+        where = [
+            "event_type IN ('edit', 'delete')",
+            """(
+                event_type!='edit'
+                OR (
+                    COALESCE(TRIM(old_text),'')!=''
+                    AND COALESCE(TRIM(old_text),'')!='[非文本/空]'
+                    AND COALESCE(TRIM(old_text),'')!=COALESCE(TRIM(text),'')
+                )
+            )"""
+        ]
         params = []
         if chat_id:
             where.append("chat_id=?")
@@ -346,6 +367,8 @@ def _audit_rows(chat_id=None, limit=600, event_type=None):
     result = []
     for r in rows:
         item = dict(r)
+        if item.get("event_type") == "edit" and not _is_meaningful_edit_text(item.get("old_text"), item.get("text")):
+            continue
         item["source"] = "audit"
         result.append(item)
     return list(reversed(result))
@@ -3541,6 +3564,23 @@ async def record_telegram_message_event(event, sender_name=None, msg_type=None, 
             grouped_id=event.message.grouped_id,
             sender_role=sender_role,
         )
+        return
+
+    if not _is_meaningful_edit_text(old_text, text):
+        upsert_message_snapshot(
+            chat_id,
+            event.id,
+            sender_id=event.sender_id,
+            sender_name=sender_name,
+            text=text,
+            msg_type=msg_type,
+            ts=event_ts,
+            reply_to_msg_id=reply_to_msg_id,
+            grouped_id=event.message.grouped_id,
+            sender_role=sender_role,
+            broadcast=False,
+        )
+        update_content_cache(chat_id, event.id, sender_name, text)
         return
 
     record_chat_event(
