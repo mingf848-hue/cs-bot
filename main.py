@@ -48,7 +48,8 @@ logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
 CHAT_LOG_DB = 'chat_logs.db'
-CHAT_LOG_RETENTION_DAYS = int(os.environ.get("CHAT_LOG_RETENTION_DAYS", "0") or "0")
+CHAT_CONTEXT_RETENTION_DAYS = int(os.environ.get("CHAT_CONTEXT_RETENTION_DAYS", os.environ.get("CHAT_LOG_RETENTION_DAYS", "90")) or "90")
+CHAT_AUDIT_RETENTION_DAYS = int(os.environ.get("CHAT_AUDIT_RETENTION_DAYS", "0") or "0")
 CHAT_HISTORY_BACKFILL_LIMIT = int(os.environ.get("CHAT_HISTORY_BACKFILL_LIMIT", "200") or "0")
 _db_lock = Lock()
 _sse_clients = []
@@ -86,21 +87,49 @@ def _init_db():
             conn.execute("ALTER TABLE chat_events ADD COLUMN sender_role TEXT NOT NULL DEFAULT 'user'")
         except sqlite3.OperationalError:
             pass
+        conn.execute("""CREATE TABLE IF NOT EXISTS chat_message_snapshots (
+            chat_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
+            first_ts REAL NOT NULL,
+            last_ts REAL NOT NULL,
+            sender_id INTEGER,
+            sender_name TEXT,
+            sender_role TEXT NOT NULL DEFAULT 'user',
+            text TEXT,
+            msg_type TEXT NOT NULL DEFAULT '文本',
+            reply_to_msg_id INTEGER,
+            grouped_id INTEGER,
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(chat_id, message_id)
+        )""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_events_chat_ts ON chat_events(chat_id, ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_events_ts ON chat_events(ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_events_message ON chat_events(chat_id, message_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_chat_ts ON chat_message_snapshots(chat_id, first_ts)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON chat_message_snapshots(first_ts)")
+        conn.execute("""INSERT OR IGNORE INTO chat_message_snapshots(
+            chat_id, message_id, first_ts, last_ts, sender_id, sender_name, sender_role,
+            text, msg_type, reply_to_msg_id, grouped_id, is_deleted
+        )
+        SELECT chat_id, message_id, ts, ts, sender_id, sender_name, sender_role,
+               text, msg_type, reply_to_msg_id, grouped_id, 0
+        FROM chat_events
+        WHERE event_type IN ('new', 'history') AND chat_id IS NOT NULL AND message_id IS NOT NULL""")
         conn.commit()
 
 _init_db()
 
 def _cleanup_old_logs():
-    if CHAT_LOG_RETENTION_DAYS <= 0:
-        return
-    cutoff = time.time() - CHAT_LOG_RETENTION_DAYS * 86400
     with _db_lock:
         with sqlite3.connect(CHAT_LOG_DB) as conn:
-            conn.execute("DELETE FROM chat_logs WHERE ts < ?", (cutoff,))
-            conn.execute("DELETE FROM chat_events WHERE ts < ?", (cutoff,))
+            if CHAT_CONTEXT_RETENTION_DAYS > 0:
+                context_cutoff = time.time() - CHAT_CONTEXT_RETENTION_DAYS * 86400
+                conn.execute("DELETE FROM chat_logs WHERE ts < ?", (context_cutoff,))
+                conn.execute("DELETE FROM chat_events WHERE event_type IN ('new', 'history') AND ts < ?", (context_cutoff,))
+                conn.execute("DELETE FROM chat_message_snapshots WHERE first_ts < ?", (context_cutoff,))
+            if CHAT_AUDIT_RETENTION_DAYS > 0:
+                audit_cutoff = time.time() - CHAT_AUDIT_RETENTION_DAYS * 86400
+                conn.execute("DELETE FROM chat_events WHERE event_type IN ('edit', 'delete') AND ts < ?", (audit_cutoff,))
             conn.commit()
     # reschedule
     t = Thread(target=lambda: (time.sleep(86400), _cleanup_old_logs()), daemon=True)
@@ -183,28 +212,184 @@ def record_chat_event(event_type, chat_id, message_id, sender_id=None, sender_na
         logger.error(f"❌ chat_events 写入失败: {e}")
         return None
 
-def _chat_event_rows(chat_id=None, limit=600):
+def upsert_message_snapshot(chat_id, message_id, sender_id=None, sender_name=None, text="",
+                            msg_type="文本", ts=None, reply_to_msg_id=None, grouped_id=None,
+                            sender_role="user", is_deleted=False, broadcast=True):
+    if not chat_id or not message_id:
+        return None
+    ts = float(ts or time.time())
+    row = {
+        "id": f"ctx:{chat_id}:{message_id}",
+        "source": "context",
+        "ts": ts,
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "event_type": "new",
+        "sender_id": sender_id,
+        "sender_name": sender_name or "Unknown",
+        "text": text or "",
+        "old_text": "",
+        "sender_role": sender_role or "user",
+        "msg_type": msg_type or "文本",
+        "raw": f"[MSG] Msg={message_id} | [{chat_id}] {sender_name or 'Unknown'}: {text or ''} [{msg_type or '文本'}]",
+        "reply_to_msg_id": reply_to_msg_id,
+        "grouped_id": grouped_id,
+        "is_deleted": 1 if is_deleted else 0,
+    }
+    try:
+        with _db_lock:
+            with sqlite3.connect(CHAT_LOG_DB) as conn:
+                existing = conn.execute(
+                    "SELECT first_ts FROM chat_message_snapshots WHERE chat_id=? AND message_id=?",
+                    (chat_id, message_id)
+                ).fetchone()
+                first_ts = existing[0] if existing else ts
+                conn.execute(
+                    """INSERT INTO chat_message_snapshots(
+                        chat_id, message_id, first_ts, last_ts, sender_id, sender_name, sender_role,
+                        text, msg_type, reply_to_msg_id, grouped_id, is_deleted
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(chat_id, message_id) DO UPDATE SET
+                        last_ts=excluded.last_ts,
+                        sender_id=excluded.sender_id,
+                        sender_name=excluded.sender_name,
+                        sender_role=excluded.sender_role,
+                        text=excluded.text,
+                        msg_type=excluded.msg_type,
+                        reply_to_msg_id=excluded.reply_to_msg_id,
+                        grouped_id=excluded.grouped_id,
+                        is_deleted=excluded.is_deleted""",
+                    (
+                        chat_id, message_id, first_ts, ts, sender_id, row["sender_name"], row["sender_role"],
+                        row["text"], row["msg_type"], reply_to_msg_id, grouped_id, row["is_deleted"]
+                    )
+                )
+                conn.commit()
+        if broadcast:
+            _broadcast_chat_event(row)
+        return row
+    except Exception as e:
+        logger.error(f"❌ chat_message_snapshots 写入失败: {e}")
+        return None
+
+def mark_message_snapshot_deleted(chat_id, message_id):
+    try:
+        with _db_lock:
+            with sqlite3.connect(CHAT_LOG_DB) as conn:
+                conn.execute(
+                    "UPDATE chat_message_snapshots SET is_deleted=1, last_ts=? WHERE chat_id=? AND message_id=?",
+                    (time.time(), chat_id, message_id)
+                )
+                conn.commit()
+    except Exception:
+        pass
+
+def _snapshot_rows(chat_id=None, limit=600):
     with sqlite3.connect(CHAT_LOG_DB) as conn:
         conn.row_factory = sqlite3.Row
         if chat_id:
             rows = conn.execute(
-                """SELECT id, ts, chat_id, message_id, event_type, sender_id, sender_name,
-                          text, old_text, sender_role, msg_type, raw, reply_to_msg_id, grouped_id
-                   FROM chat_events WHERE chat_id=? ORDER BY ts DESC, id DESC LIMIT ?""",
+                """SELECT chat_id, message_id, first_ts, last_ts, sender_id, sender_name,
+                          sender_role, text, msg_type, reply_to_msg_id, grouped_id, is_deleted
+                   FROM chat_message_snapshots WHERE chat_id=? ORDER BY first_ts DESC LIMIT ?""",
                 (chat_id, limit)
             ).fetchall()
         else:
             rows = conn.execute(
-                """SELECT id, ts, chat_id, message_id, event_type, sender_id, sender_name,
-                          text, old_text, sender_role, msg_type, raw, reply_to_msg_id, grouped_id
-                   FROM chat_events ORDER BY ts DESC, id DESC LIMIT ?""",
+                """SELECT chat_id, message_id, first_ts, last_ts, sender_id, sender_name,
+                          sender_role, text, msg_type, reply_to_msg_id, grouped_id, is_deleted
+                   FROM chat_message_snapshots ORDER BY first_ts DESC LIMIT ?""",
                 (limit,)
             ).fetchall()
-    return [dict(r) for r in reversed(rows)]
+    result = []
+    for r in rows:
+        row = dict(r)
+        result.append({
+            "id": f"ctx:{row['chat_id']}:{row['message_id']}",
+            "source": "context",
+            "ts": row["first_ts"],
+            "chat_id": row["chat_id"],
+            "message_id": row["message_id"],
+            "event_type": "new",
+            "sender_id": row["sender_id"],
+            "sender_name": row["sender_name"] or "Unknown",
+            "text": row["text"] or "",
+            "old_text": "",
+            "sender_role": row["sender_role"] or "user",
+            "msg_type": row["msg_type"] or "文本",
+            "raw": f"[MSG] Msg={row['message_id']} | [{row['chat_id']}] {row['sender_name'] or 'Unknown'}: {row['text'] or ''} [{row['msg_type'] or '文本'}]",
+            "reply_to_msg_id": row["reply_to_msg_id"],
+            "grouped_id": row["grouped_id"],
+            "is_deleted": row["is_deleted"] or 0,
+        })
+    return list(reversed(result))
+
+def _audit_rows(chat_id=None, limit=600, event_type=None):
+    with sqlite3.connect(CHAT_LOG_DB) as conn:
+        conn.row_factory = sqlite3.Row
+        where = ["event_type IN ('edit', 'delete')"]
+        params = []
+        if chat_id:
+            where.append("chat_id=?")
+            params.append(chat_id)
+        if event_type:
+            where.append("event_type=?")
+            params.append(event_type)
+        where_sql = " AND ".join(where)
+        params.append(limit)
+        rows = conn.execute(
+            f"""SELECT id, ts, chat_id, message_id, event_type, sender_id, sender_name,
+                      text, old_text, sender_role, msg_type, raw, reply_to_msg_id, grouped_id
+               FROM chat_events WHERE {where_sql} ORDER BY ts DESC, id DESC LIMIT ?""",
+            tuple(params)
+        ).fetchall()
+    result = []
+    for r in rows:
+        item = dict(r)
+        item["source"] = "audit"
+        result.append(item)
+    return list(reversed(result))
+
+def _chat_event_rows(chat_id=None, limit=600, mode="all"):
+    if mode == "context":
+        return _snapshot_rows(chat_id=chat_id, limit=limit)
+    if mode == "audit":
+        return _audit_rows(chat_id=chat_id, limit=limit)
+    if mode == "edit":
+        return _audit_rows(chat_id=chat_id, limit=limit, event_type="edit")
+    if mode == "delete":
+        return _audit_rows(chat_id=chat_id, limit=limit, event_type="delete")
+
+    audit_limit = max(1, limit // 2)
+    context_limit = max(1, limit - audit_limit)
+    data = _snapshot_rows(chat_id=chat_id, limit=context_limit) + _audit_rows(chat_id=chat_id, limit=audit_limit)
+    data.sort(key=lambda row: (row.get("ts") or 0, str(row.get("id") or "")))
+    return data[-limit:]
+
+def _legacy_chat_log_rows(chat_id=None, limit=600):
+    with sqlite3.connect(CHAT_LOG_DB) as conn:
+        conn.row_factory = sqlite3.Row
+        if chat_id:
+            rows = conn.execute(
+                "SELECT ts, chat_id, msg_type, raw FROM chat_logs WHERE chat_id=? ORDER BY ts DESC LIMIT ?",
+                (chat_id, limit)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT ts, chat_id, msg_type, raw FROM chat_logs ORDER BY ts DESC LIMIT ?",
+                (limit,)
+            ).fetchall()
+    return [{"source": "legacy", "ts": r["ts"], "chat_id": r["chat_id"], "msg_type": r["msg_type"], "raw": r["raw"]} for r in reversed(rows)]
 
 def get_last_stored_message_text(chat_id, message_id):
     try:
         with sqlite3.connect(CHAT_LOG_DB) as conn:
+            row = conn.execute(
+                "SELECT text FROM chat_message_snapshots WHERE chat_id=? AND message_id=? LIMIT 1",
+                (chat_id, message_id)
+            ).fetchone()
+            if row:
+                return row[0] or ""
             row = conn.execute(
                 """SELECT text FROM chat_events
                    WHERE chat_id=? AND message_id=? AND event_type IN ('new', 'edit')
@@ -1565,23 +1750,12 @@ def log_raw():
 @app.route('/log_db')
 def log_db():
     chat_id = request.args.get('chat_id', type=int)
+    mode = (request.args.get('mode') or 'all').lower()
     limit = min(request.args.get('limit', 600, type=int), 2000)
     try:
-        data = _chat_event_rows(chat_id=chat_id, limit=limit)
+        data = _chat_event_rows(chat_id=chat_id, limit=limit, mode=mode)
         if not data:
-            with sqlite3.connect(CHAT_LOG_DB) as conn:
-                conn.row_factory = sqlite3.Row
-                if chat_id:
-                    rows = conn.execute(
-                        "SELECT ts, chat_id, msg_type, raw FROM chat_logs WHERE chat_id=? ORDER BY ts DESC LIMIT ?",
-                        (chat_id, limit)
-                    ).fetchall()
-                else:
-                    rows = conn.execute(
-                        "SELECT ts, chat_id, msg_type, raw FROM chat_logs ORDER BY ts DESC LIMIT ?",
-                        (limit,)
-                    ).fetchall()
-            data = [{"ts": r["ts"], "chat_id": r["chat_id"], "msg_type": r["msg_type"], "raw": r["raw"]} for r in reversed(rows)]
+            data = _legacy_chat_log_rows(chat_id=chat_id, limit=limit)
         return jsonify(data)
     except Exception as e:
         return jsonify([])
@@ -1589,6 +1763,7 @@ def log_db():
 @app.route('/log_stream')
 def log_stream():
     chat_id = request.args.get('chat_id', type=int)
+    mode = (request.args.get('mode') or 'all').lower()
 
     def generate():
         q = queue.Queue(maxsize=200)
@@ -1601,6 +1776,14 @@ def log_stream():
                     payload = q.get(timeout=25)
                     row = json.loads(payload)
                     if chat_id and row.get("chat_id") != chat_id:
+                        continue
+                    if mode == "audit" and row.get("source") != "audit":
+                        continue
+                    if mode == "edit" and row.get("event_type") != "edit":
+                        continue
+                    if mode == "delete" and row.get("event_type") != "delete":
+                        continue
+                    if mode == "context" and row.get("source") == "audit":
                         continue
                     yield f"data: {payload}\n\n"
                 except queue.Empty:
@@ -1619,7 +1802,11 @@ def log_groups():
     try:
         with sqlite3.connect(CHAT_LOG_DB) as conn:
             rows = conn.execute(
-                "SELECT chat_id, COUNT(*) as cnt FROM chat_events WHERE chat_id IS NOT NULL GROUP BY chat_id ORDER BY cnt DESC"
+                """SELECT chat_id, SUM(cnt) AS cnt FROM (
+                    SELECT chat_id, COUNT(*) AS cnt FROM chat_message_snapshots WHERE chat_id IS NOT NULL GROUP BY chat_id
+                    UNION ALL
+                    SELECT chat_id, COUNT(*) AS cnt FROM chat_events WHERE chat_id IS NOT NULL AND event_type IN ('edit', 'delete') GROUP BY chat_id
+                ) GROUP BY chat_id ORDER BY cnt DESC"""
             ).fetchall()
             if not rows:
                 rows = conn.execute(
@@ -3094,6 +3281,7 @@ async def handler_deleted(event):
                     deleted_info['text'] = stored_text
 
         logger.info(f"[DELETED] Msg={msg_id} | [{event.chat_id}] {deleted_info['name']}: {deleted_info['text']}")
+        mark_message_snapshot_deleted(event.chat_id, msg_id)
         record_chat_event(
             "delete",
             event.chat_id,
@@ -3251,13 +3439,28 @@ async def record_telegram_message_event(event, sender_name=None, msg_type=None, 
     event_type = "edit" if is_message_edited_event(event) else "new"
     if event_type == "edit" and not old_text:
         old_text = get_last_stored_message_text(chat_id, event.id)
-    if event_type == "new":
-        old_text = ""
     event_ts = event.date.timestamp()
     if is_message_edited_event(event) and getattr(event.message, "edit_date", None):
         event_ts = event.message.edit_date.timestamp()
+    sender_role = infer_sender_role(event.sender_id, sender_name)
+    reply_to_msg_id = get_primary_reply_target_id(event.message)
+    if event_type == "new":
+        upsert_message_snapshot(
+            chat_id,
+            event.id,
+            sender_id=event.sender_id,
+            sender_name=sender_name,
+            text=text,
+            msg_type=msg_type,
+            ts=event_ts,
+            reply_to_msg_id=reply_to_msg_id,
+            grouped_id=event.message.grouped_id,
+            sender_role=sender_role,
+        )
+        return
+
     record_chat_event(
-        event_type,
+        "edit",
         chat_id,
         event.id,
         sender_id=event.sender_id,
@@ -3266,9 +3469,22 @@ async def record_telegram_message_event(event, sender_name=None, msg_type=None, 
         old_text=old_text,
         msg_type=msg_type,
         ts=event_ts,
-        reply_to_msg_id=get_primary_reply_target_id(event.message),
+        reply_to_msg_id=reply_to_msg_id,
         grouped_id=event.message.grouped_id,
-        sender_role=infer_sender_role(event.sender_id, sender_name),
+        sender_role=sender_role,
+    )
+    upsert_message_snapshot(
+        chat_id,
+        event.id,
+        sender_id=event.sender_id,
+        sender_name=sender_name,
+        text=text,
+        msg_type=msg_type,
+        ts=event_ts,
+        reply_to_msg_id=reply_to_msg_id,
+        grouped_id=event.message.grouped_id,
+        sender_role=sender_role,
+        broadcast=False,
     )
 
 async def backfill_chat_history():
@@ -3306,8 +3522,7 @@ async def backfill_chat_history():
                     chat_event_id = msg.chat_id or getattr(entity, 'id', chat_id)
                     if isinstance(chat_event_id, int) and chat_event_id > 0:
                         chat_event_id = int(f"-100{chat_event_id}")
-                    row = record_chat_event(
-                        "new",
+                    row = upsert_message_snapshot(
                         chat_event_id,
                         msg.id,
                         sender_id=msg.sender_id,

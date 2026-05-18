@@ -56,6 +56,7 @@ body {
 }
 button, input { font: inherit; }
 button { border: 0; background: transparent; color: inherit; cursor: pointer; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 .custom-scroll, #MiddleColumn .MessageList, .right-column-content { scrollbar-width: thin; scrollbar-color: rgba(112,117,121,.38) transparent; }
 .custom-scroll::-webkit-scrollbar, #MiddleColumn .MessageList::-webkit-scrollbar, .right-column-content::-webkit-scrollbar { width: 6px; }
 .custom-scroll::-webkit-scrollbar-thumb, #MiddleColumn .MessageList::-webkit-scrollbar-thumb, .right-column-content::-webkit-scrollbar-thumb { background: rgba(112,117,121,.38); border-radius: 999px; }
@@ -99,8 +100,16 @@ button { border: 0; background: transparent; color: inherit; cursor: pointer; }
 .MiddleHeader .info { min-width: 0; flex: 1; }
 .MiddleHeader .title, .RightHeader .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .MiddleHeader .subtitle, .RightHeader .subtitle { margin-top: .125rem; color: var(--color-text-secondary); font-size: .8125rem; }
-.Button.round, .HeaderActions .Button { width: 2.5rem; height: 2.5rem; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: var(--color-text-secondary); transition: background-color 150ms ease, color 150ms ease; }
+.Button.round, .HeaderActions .Button { width: 2.75rem; height: 2.75rem; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: var(--color-text-secondary); transition: background-color 150ms ease, color 150ms ease; }
 .Button.round:hover, .HeaderActions .Button:hover { background-color: var(--color-chat-hover); color: var(--color-text); }
+.HeaderActions { display: flex; align-items: center; gap: .25rem; }
+.stream-dot { width: .625rem; height: .625rem; border-radius: 50%; background: #35b56a; box-shadow: 0 0 0 .1875rem rgba(53,181,106,.14); display: inline-block; margin-right: .375rem; }
+.stream-dot.reconnecting { background: #dd962a; box-shadow: 0 0 0 .1875rem rgba(221,150,42,.16); }
+.filter-tabs { display: flex; gap: .375rem; padding: .5rem .75rem; background: rgba(255,255,255,.86); border-bottom: 1px solid var(--color-borders); overflow-x: auto; scrollbar-width: none; }
+.filter-tabs::-webkit-scrollbar { display: none; }
+.filter-tab { min-height: 2.25rem; padding: 0 .8125rem; border-radius: 1.125rem; color: var(--color-text-secondary); font-weight: 600; font-size: .875rem; white-space: nowrap; border: 1px solid transparent; transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease; }
+.filter-tab:hover { background: var(--color-chat-hover); color: var(--color-text); }
+.filter-tab.active { color: var(--color-primary); background: #e8f3ff; border-color: #c8e3ff; }
 .input-search {
   flex: 1;
   height: 2.5rem;
@@ -147,8 +156,6 @@ button { border: 0; background: transparent; color: inherit; cursor: pointer; }
 .chat-item-row { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
 .chat-item-subtitle { margin-top: .25rem; color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ListItem.selected .chat-item-subtitle { color: rgba(255, 255, 255, .82); }
-.badge { min-width: 1.375rem; height: 1.375rem; padding: 0 .4375rem; border-radius: .6875rem; background: #c4c9cc; color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: .75rem; font-weight: 600; }
-.ListItem.selected .badge { background: #fff; color: var(--color-primary); }
 .messages-layout { height: 100%; display: flex; flex-direction: column; }
 .MessageList {
   position: relative;
@@ -159,6 +166,8 @@ button { border: 0; background: transparent; color: inherit; cursor: pointer; }
   background-image: radial-gradient(circle at 25% 25%, rgba(255,255,255,.75) 0 1px, transparent 1.35px), radial-gradient(circle at 72% 64%, rgba(255,255,255,.62) 0 1px, transparent 1.35px);
   background-size: 6.25rem 6.25rem, 8rem 8rem;
 }
+.deleted-context .message-content { opacity: .72; }
+.deleted-context .message-content::after { content: "deleted"; position: absolute; top: .25rem; right: .5rem; color: #df3f40; font-size: .625rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
 .messages-container { width: min(45.5rem, 100%); margin: 0 auto; padding: 0 1rem; }
 .local-action-message, .date { display: flex; justify-content: center; margin: .375rem 0; }
 .local-action-message > span, .date > span {
@@ -175,6 +184,7 @@ button { border: 0; background: transparent; color: inherit; cursor: pointer; }
 .local-action-message.alert > span { background: rgba(220, 80, 70, .82); }
 .local-action-message.audit > span { background: rgba(220, 150, 42, .86); }
 .local-action-message.deleted > span { background: rgba(126, 132, 136, .82); }
+.local-action-message.audit > span, .local-action-message.deleted > span { white-space: pre-wrap; text-align: left; }
 .Message {
   --background-color: var(--color-background);
   --hover-color: var(--color-reply-hover);
@@ -286,18 +296,23 @@ button { border: 0; background: transparent; color: inherit; cursor: pointer; }
 .empty-placeholder { height: 100%; display: grid; place-items: center; color: var(--color-text-secondary); font-weight: 600; }
 @media (max-width: 925px) {
   #Main { display: block; }
-  #LeftColumn { position: fixed; z-index: 5; top: 0; left: 0; width: 26.5rem !important; transform: translate3d(-5rem,0,0); transition: transform var(--layer-transition); }
-  #MiddleColumn { position: fixed; inset: 0; transition: transform var(--layer-transition); }
+  #LeftColumn { position: fixed; z-index: 12; top: 0; left: 0; width: min(26.5rem, 88vw) !important; height: 100%; transform: translate3d(-105%,0,0); transition: transform var(--layer-transition); box-shadow: 4px 0 18px rgba(0,0,0,.18); }
+  #MiddleColumn { position: fixed; inset: 0; border-left: 0; transform: none; transition: none; }
   #Main.left-column-open #LeftColumn { transform: translate3d(0,0,0); }
-  #Main.left-column-open #MiddleColumn { transform: translate3d(26.5rem,0,0); }
+  #Main.left-column-open #MiddleColumn { transform: none; }
+  #Main.left-column-open::after { content: ""; position: fixed; inset: 0; z-index: 11; background: rgba(0,0,0,.28); }
 }
 @media (max-width: 600px) {
-  #LeftColumn { width: 100vw !important; max-width: none; transform: translate3d(-20vw,0,0); }
-  #Main.left-column-open #MiddleColumn { transform: translate3d(100vw,0,0); }
+  #LeftColumn { width: 100vw !important; max-width: none; transform: translate3d(-105%,0,0); }
+  .MiddleHeader { padding: 0 .5rem; gap: .5rem; }
+  .MiddleHeader .Avatar { width: 2.375rem; height: 2.375rem; }
+  .HeaderActions .Button { width: 2.75rem; height: 2.75rem; }
+  .filter-tabs { padding: .4375rem .5rem; }
   .messages-container { padding: 0 .5rem; }
   .Message { padding-left: 2.875rem; margin-bottom: .25rem; }
   .Message.own { padding-right: .25rem; }
   .message-content-wrapper { max-width: min(var(--max-width), calc(100vw - 4.5rem)); }
+  .local-action-message > span, .date > span { max-width: 92%; }
 }
 </style>
 </head>
@@ -315,9 +330,16 @@ button { border: 0; background: transparent; color: inherit; cursor: pointer; }
       <header class="MiddleHeader">
         <button class="Button round" title="会话列表" onclick="openLeftColumn()">‹</button>
         <div class="Avatar" id="headAvatar">L</div>
-        <div class="info"><div class="title" id="headTitle">全部消息</div><div class="subtitle" id="headSub">正在加载…</div></div>
+        <div class="info"><div class="title" id="headTitle">全部消息</div><div class="subtitle" id="headSub"><span class="stream-dot reconnecting" id="streamDot"></span><span id="headSubText">正在加载…</span></div></div>
         <div class="HeaderActions"><button class="Button" onclick="loadMessages()" title="刷新">↻</button><button class="Button" onclick="scrollBottom()" title="到底部">⌄</button></div>
       </header>
+      <nav class="filter-tabs" aria-label="日志筛选">
+        <button class="filter-tab active" data-mode="all" onclick="setMode('all')">全部</button>
+        <button class="filter-tab" data-mode="audit" onclick="setMode('audit')">审计</button>
+        <button class="filter-tab" data-mode="delete" onclick="setMode('delete')">删除</button>
+        <button class="filter-tab" data-mode="edit" onclick="setMode('edit')">编辑</button>
+        <button class="filter-tab" data-mode="context" onclick="setMode('context')">上下文</button>
+      </nav>
       <section class="MessageList custom-scroll" id="messages"></section>
     </div>
     <aside id="RightColumn-wrapper">
@@ -336,7 +358,7 @@ button { border: 0; background: transparent; color: inherit; cursor: pointer; }
   </div>
 </div>
 <script>
-let groups=[];let allLogs=[];let activeChatId=null;let activeChatName='全部消息';let ctxTarget=null;let logStream=null;
+let groups=[];let allLogs=[];let activeChatId=null;let activeChatName='全部消息';let activeMode='all';let ctxTarget=null;let logStream=null;
 const colors=['#6bb8ff','#ff8a65','#ba68c8','#4db6ac','#ffd54f','#7986cb','#f06292','#81c784'];
 function hcol(s){let h=0;for(const c of String(s||''))h=(h*31+c.charCodeAt(0))|0;return colors[Math.abs(h)%colors.length];}
 function escH(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -351,22 +373,24 @@ async function loadGroups(){
 function renderGroups(){
   const q=(document.getElementById('sideSearch').value||'').toLowerCase().trim();
   const list=document.getElementById('chatList');
-  const items=[{chat_id:null,name:'全部消息',count:allLogs.length||0}].concat(groups).filter(g=>!q||String(g.name||g.chat_id).toLowerCase().includes(q));
+  const items=[{chat_id:null,name:'全部消息'}].concat(groups).filter(g=>!q||String(g.name||g.chat_id).toLowerCase().includes(q));
   list.innerHTML=items.map(g=>{
     const active=(String(g.chat_id||'')===String(activeChatId||''));
     const name=escH(g.name||g.chat_id||'全部消息'); const ini=escH(String(g.name||'L').charAt(0).toUpperCase());
     return `<div class="ListItem chat-item-button ${active?'selected':''}" onclick="selectGroup(${g.chat_id===null?'null':g.chat_id}, '${encodeURIComponent(g.name||'全部消息')}')">
       <div class="Avatar" style="background:${hcol(g.name||g.chat_id||'all')}">${ini}</div>
-      <div class="chat-item-info"><div class="chat-item-row"><div class="chat-item-title">${name}</div><span class="badge">${g.count||0}</span></div><div class="chat-item-subtitle">${g.chat_id||'所有会话'} · 日志</div></div>
+      <div class="chat-item-info"><div class="chat-item-row"><div class="chat-item-title">${name}</div></div><div class="chat-item-subtitle">${g.chat_id||'所有会话'} · 本地取证记录</div></div>
     </div>`;
   }).join('')||'<div class="empty-placeholder">没有匹配的会话</div>';
 }
 function selectGroup(id,name){activeChatId=id;activeChatName=decodeURIComponent(name||'全部消息');closeLeftColumn();updateHead();loadMessages();renderGroups();}
 function updateHead(){document.getElementById('headTitle').textContent=activeChatName;document.getElementById('headAvatar').textContent=(activeChatName||'L').charAt(0).toUpperCase();document.getElementById('headAvatar').style.background=hcol(activeChatName);}
+function updateSub(text,reconnecting=false){document.getElementById('headSubText').textContent=text;document.getElementById('streamDot').classList.toggle('reconnecting',!!reconnecting);}
+function setMode(mode){activeMode=mode;document.querySelectorAll('.filter-tab').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));loadMessages();}
 async function loadMessages(){
   const el=document.getElementById('messages');el.innerHTML='<div class="empty-placeholder">加载中…</div>';
-  const url='/log_db?limit=1000'+(activeChatId?'&chat_id='+activeChatId:'');
-  try{allLogs=await fetch(url).then(r=>r.json());document.getElementById('headSub').textContent=allLogs.length+' 条记录 · 实时同步中';render();renderGroups();scrollBottom();startStream();}
+  const url='/log_db?limit=1000&mode='+encodeURIComponent(activeMode)+(activeChatId?'&chat_id='+activeChatId:'');
+  try{allLogs=await fetch(url).then(r=>r.json());updateSub(allLogs.length+' 条记录 · 实时同步中');render();renderGroups();scrollBottom();startStream();}
   catch(e){el.innerHTML='<div class="empty-placeholder">加载失败</div>';}
 }
 function parseLog(row){
@@ -396,7 +420,7 @@ function renderEntry(e,i,first,last){
   const type=e.msg_type||'sys';const id='msg-'+i;
   if(type==='alert'||type==='audit'||type==='deleted')return `<div class="local-action-message ${type}" id="${id}" oncontextmenu="showCtx(event,${i})"><span>${type==='deleted'?'🗑️ ':''}${escH(e.tx)}</span></div>`;
   const own=type==='cs';const name=e.sn||'用户';const color=hcol(name);const title=(!own&&first&&e.sn)?`<div class="message-title" style="color:${color}">${escH(e.sn)}</div>`:'';const avatar=own?'':`<div class="Avatar" style="background:${color}">${escH(name.charAt(0).toUpperCase())}</div>`;
-  return `<div class="Message ${own?'own':''} ${first?'first-in-group':''} ${last?'last-in-group':''}" id="${id}" data-i="${i}">${avatar}<div class="message-content-wrapper"><div class="message-content text" oncontextmenu="showCtx(event,${i})"><div class="content-inner">${title}<div class="text-content">${escH(e.tx||'')}</div><span class="message-time">${escH(e.time)}${own?'<span class="message-status">✓✓</span>':''}</span></div></div></div></div>`;
+  return `<div class="Message ${own?'own':''} ${e.is_deleted?'deleted-context':''} ${first?'first-in-group':''} ${last?'last-in-group':''}" id="${id}" data-i="${i}">${avatar}<div class="message-content-wrapper"><div class="message-content text" oncontextmenu="showCtx(event,${i})"><div class="content-inner">${title}<div class="text-content">${escH(e.tx||'')}</div><span class="message-time">${escH(e.time)}${own?'<span class="message-status">✓✓</span>':''}</span></div></div></div></div>`;
 }
 function showCtx(ev,i){
   ev.preventDefault();ctxTarget={i,e:parseLog(allLogs[i])};
@@ -408,17 +432,17 @@ function showCtx(ev,i){
 document.addEventListener('click',e=>{if(!e.target.closest('#ctxMenu')){document.getElementById('ctxMenu').classList.remove('open');document.querySelectorAll('.has-menu-open').forEach(n=>n.classList.remove('has-menu-open'));}});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){document.getElementById('ctxMenu').classList.remove('open');closeFlow();}});
 function copyText(){if(ctxTarget)navigator.clipboard.writeText(ctxTarget.e.tx||ctxTarget.e.raw||'');document.getElementById('ctxMenu').classList.remove('open');}
-function relatedRows(e){const mid=e.msgId;if(!mid)return[];const token='Msg='+mid;const alt='Msg('+mid;return allLogs.filter(r=>r.raw&&(r.raw.includes(token)||r.raw.includes(alt)));}
+function relatedRows(e){const mid=String(e.msgId||'');if(!mid)return[];return allLogs.filter(r=>String(r.message_id||'')===mid||String(r.reply_to_msg_id||'')===mid||(r.raw&&(r.raw.includes('Msg='+mid)||r.raw.includes('Msg('+mid))));}
 function openFlow(){
   if(!ctxTarget)return;const e=ctxTarget.e;const rel=relatedRows(e);document.getElementById('flowTitle').textContent=e.msgId?'Msg='+e.msgId+' 消息流':'消息流';document.getElementById('flowSub').textContent=rel.length?rel.length+' 条关联日志':'未找到关联日志';
-  const body=document.getElementById('flowBody');body.innerHTML=rel.length?rel.map(r=>{const p=parseLog(r);return `<div class="flow-row ${p.msg_type||'sys'}"><div class="flow-time">${escH(p.time)} · ${escH(p.msg_type||'sys')}</div><div class="flow-text">${escH(stripDate(p.raw))}</div></div>`;}).join(''):'<div class="empty-placeholder" style="height:10rem">此条目没有可关联的 Msg ID</div>';
+  const body=document.getElementById('flowBody');body.innerHTML=rel.length?rel.map(r=>{const p=parseLog(r);return `<div class="flow-row ${p.msg_type||'sys'}"><div class="flow-time">${escH(p.time)} · ${escH(p.msg_type||p.event_type||'sys')}</div><div class="flow-text">${escH(p.tx||stripDate(p.raw))}</div></div>`;}).join(''):'<div class="empty-placeholder" style="height:10rem">此条目没有可关联的 Msg ID</div>';
   document.getElementById('RightColumn-wrapper').classList.add('open');document.getElementById('ctxMenu').classList.remove('open');
 }
 function closeFlow(){document.getElementById('RightColumn-wrapper').classList.remove('open');}
 function reportBug(type){
   if(!ctxTarget)return;const e=ctxTarget.e,mid=e.msgId,cTs=e.ts||0;let lines=['=== '+type+'反馈报告 ===','涉及 Msg: '+(mid||'未知'),''];
-  const rel=relatedRows(e);if(rel.length){lines.push('-- 关联记录 --');rel.forEach(r=>{const p=parseLog(r);lines.push('['+p.time+'] '+stripDate(p.raw));});lines.push('');}
-  lines.push('-- 时间窗口 (±5分钟) --');allLogs.filter(r=>Math.abs((r.ts||0)-cTs)<=300).forEach(r=>{const p=parseLog(r);lines.push('['+p.time+'] '+stripDate(p.raw));});
+  const rel=relatedRows(e);if(rel.length){lines.push('-- 关联记录 --');rel.forEach(r=>{const p=parseLog(r);lines.push('['+p.time+'] '+(p.tx||stripDate(p.raw)));});lines.push('');}
+  lines.push('-- 时间窗口 (±5分钟) --');allLogs.filter(r=>Math.abs((r.ts||0)-cTs)<=300).forEach(r=>{const p=parseLog(r);lines.push('['+p.time+'] '+(p.tx||stripDate(p.raw)));});
   navigator.clipboard.writeText(lines.join('\n')).then(()=>alert('已复制 ['+type+'] 详情'));document.getElementById('ctxMenu').classList.remove('open');
 }
 function doSearch(){const term=(document.getElementById('sideSearch').value||'').toLowerCase().trim();if(!term)return;let found=false;Array.from(document.querySelectorAll('.Message')).reverse().forEach(row=>{if(row.textContent.toLowerCase().includes(term)){row.scrollIntoView({behavior:'smooth',block:'center'});found=true;return;}});}
@@ -427,7 +451,8 @@ function scrollBottom(){const m=document.getElementById('messages');m.scrollTop=
 function rowKey(row){return row.id?`id:${row.id}`:`${row.event_type||row.msg_type}:${row.chat_id}:${row.message_id}:${row.ts}:${row.raw}`;}
 function startStream(){
   if(logStream)logStream.close();
-  const url='/log_stream'+(activeChatId?'?chat_id='+activeChatId:'');
+  const params=new URLSearchParams({mode:activeMode});if(activeChatId)params.set('chat_id',activeChatId);
+  const url='/log_stream?'+params.toString();
   logStream=new EventSource(url);
   logStream.onmessage=ev=>{
     const row=JSON.parse(ev.data);
@@ -437,13 +462,15 @@ function startStream(){
     if(allLogs.some(r=>rowKey(r)===key))return;
     allLogs.push(row);
     if(allLogs.length>1000)allLogs.shift();
-    document.getElementById('headSub').textContent=allLogs.length+' 条记录 · 实时同步中';
+    updateSub(allLogs.length+' 条记录 · 实时同步中');
     render();
     if(atBottom)scrollBottom();
     loadGroups();
   };
-  logStream.onerror=()=>{document.getElementById('headSub').textContent=allLogs.length+' 条记录 · 正在重连';};
+  logStream.onopen=()=>updateSub(allLogs.length+' 条记录 · 实时同步中');
+  logStream.onerror=()=>{updateSub(allLogs.length+' 条记录 · 正在重连',true);};
 }
+document.getElementById('Main').addEventListener('click',e=>{if(e.target.id==='Main'&&document.getElementById('Main').classList.contains('left-column-open'))closeLeftColumn();});
 updateHead();loadGroups();loadMessages();
 </script>
 </body>
