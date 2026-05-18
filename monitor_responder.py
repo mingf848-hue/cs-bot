@@ -333,6 +333,12 @@ def event_text_preview(event, limit=120):
 BACKEND_UNLOCK_PHRASES = ("短信获取次数过多", "短信解锁", "验证码解锁")
 BACKEND_UNLOCK_DEFAULT_PATTERN = r"^\s*([A-Za-z0-9][A-Za-z0-9._-]{1,63})\s*(?:短信获取次数过多|短信解锁|验证码解锁)\b"
 
+def rule_has_backend_unlock(rule):
+    return any(
+        isinstance(step, dict) and step.get("type") == "backend_unlock"
+        for step in (rule or {}).get("replies", [])
+    )
+
 def extract_backend_unlock_member(text, pattern=""):
     msg_text = str(text or "").strip()
     if not msg_text:
@@ -352,6 +358,14 @@ def extract_backend_unlock_member(text, pattern=""):
     if any(phrase in msg_text for phrase in BACKEND_UNLOCK_PHRASES):
         words = msg_text.split()
         return words[0].lower() if words else None
+    return None
+
+def extract_backend_unlock_member_for_rule(rule, text):
+    for step in (rule or {}).get("replies", []):
+        if isinstance(step, dict) and step.get("type") == "backend_unlock":
+            member_name = extract_backend_unlock_member(text, step.get("member_pattern", ""))
+            if member_name:
+                return member_name
     return None
 
 def record_runtime_event(kind, status, detail="", rule=None, event=None, sender_name="", target_account="", action_count=0, duration_ms=0):
@@ -2125,15 +2139,17 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_obj, check_c
 
     if event.chat_id not in rule.get("groups", []): return False, "群组不符", None
     if event.is_reply: return False, "是回复消息", None
-    if await is_monitor_sender_cs(client, event, other_cs_ids, sender_obj):
+    is_backend_unlock_rule = rule_has_backend_unlock(rule)
+    text = (event.text or "")
+    backend_unlock_member = extract_backend_unlock_member_for_rule(rule, text) if is_backend_unlock_rule else None
+    if not is_backend_unlock_rule and await is_monitor_sender_cs(client, event, other_cs_ids, sender_obj):
         return False, "发送者是客服", None
     
     # v69: Pass sender object, not name string
-    if not check_sender_allowed(sender_obj, rule):
+    if not is_backend_unlock_rule and not check_sender_allowed(sender_obj, rule):
         return False, "发送者被排除", None
 
     check_file = rule.get("check_file", False)
-    text = (event.text or "")
     
     if check_file:
         if not event.message.file: return False, "非文件消息", None
@@ -2153,7 +2169,8 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_obj, check_c
         if fn_kws:
             if not any(k.lower() in filename_lower for k in fn_kws): return False, "文件名关键词不符", None
     else:
-        if not match_text(text, rule): return False, "文本关键词不符", None
+        if not match_text(text, rule) and not backend_unlock_member:
+            return False, "文本关键词不符", None
     
     if check_cooldown:
         rule_id = ensure_rule_id(rule)
@@ -3086,6 +3103,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                 duration_ms=(time.time() - match_started) * 1000
                             )
                     break
+                elif rule_has_backend_unlock(rule) and any(phrase in (event.text or "") for phrase in BACKEND_UNLOCK_PHRASES):
+                    logger.info(f"🔎 [BackendUnlock] 规则 '{rule.get('name')}' 未触发: {reason} | Chat={event.chat_id} | Msg={event.id}")
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
     logger.info("🛠️ [Monitor] Ultimate UI v78 (Full Source) 已启动")
