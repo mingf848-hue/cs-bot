@@ -1846,10 +1846,12 @@ def log_raw():
 def log_db():
     chat_id = request.args.get('chat_id', type=int)
     mode = (request.args.get('mode') or 'all').lower()
+    if mode not in {"all", "audit", "edit", "delete", "context"}:
+        mode = "all"
     limit = min(request.args.get('limit', 600, type=int), 2000)
     try:
         data = _chat_event_rows(chat_id=chat_id, limit=limit, mode=mode)
-        if not data:
+        if not data and mode == "all":
             data = _legacy_chat_log_rows(chat_id=chat_id, limit=limit)
         return jsonify(data)
     except Exception as e:

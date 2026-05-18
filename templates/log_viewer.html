@@ -438,6 +438,13 @@ function selectGroup(id,name){closeDiscussion(false);closeFlow();activeChatId=id
 function updateHead(){document.getElementById('headTitle').textContent=activeChatName;document.getElementById('headAvatar').textContent=(activeChatName||'L').charAt(0).toUpperCase();document.getElementById('headAvatar').style.background=hcol(activeChatName);}
 function updateSub(text,reconnecting=false){document.getElementById('headSubText').textContent=text;document.getElementById('streamDot').classList.toggle('reconnecting',!!reconnecting);}
 function setMode(mode){closeDiscussion(false);activeMode=mode;document.querySelectorAll('.filter-tab').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));loadMessages();}
+function filterRowsForMode(rows){
+  if(activeMode==='edit')return rows.filter(r=>r.event_type==='edit');
+  if(activeMode==='delete')return rows.filter(r=>r.event_type==='delete');
+  if(activeMode==='audit')return rows.filter(r=>r.source==='audit'||r.event_type==='edit'||r.event_type==='delete');
+  if(activeMode==='context')return rows.filter(r=>r.source!=='audit'&&r.event_type!=='edit'&&r.event_type!=='delete');
+  return rows;
+}
 async function loadMessages(){
   const seq=++loadSeq;
   if(logStream){logStream.close();logStream=null;}
@@ -446,7 +453,7 @@ async function loadMessages(){
   try{
     const rows=await fetch(url).then(r=>r.json());
     if(seq!==loadSeq)return;
-    allLogs=rows;visibleCount=80;updateSub('实时同步中');render();renderGroups();scrollBottom();startStream();
+    allLogs=filterRowsForMode(rows);visibleCount=80;updateSub('实时同步中');render();renderGroups();scrollBottom();startStream();
   }
   catch(e){if(seq===loadSeq)el.innerHTML='<div class="empty-placeholder">加载失败</div>';}
 }
