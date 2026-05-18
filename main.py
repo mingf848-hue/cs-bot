@@ -50,7 +50,7 @@ logger.addHandler(console_handler)
 CHAT_LOG_DB = 'chat_logs.db'
 CHAT_CONTEXT_RETENTION_DAYS = int(os.environ.get("CHAT_CONTEXT_RETENTION_DAYS", os.environ.get("CHAT_LOG_RETENTION_DAYS", "90")) or "90")
 CHAT_AUDIT_RETENTION_DAYS = int(os.environ.get("CHAT_AUDIT_RETENTION_DAYS", "0") or "0")
-CHAT_HISTORY_BACKFILL_LIMIT = int(os.environ.get("CHAT_HISTORY_BACKFILL_LIMIT", "200") or "0")
+CHAT_HISTORY_BACKFILL_LIMIT = int(os.environ.get("CHAT_HISTORY_BACKFILL_LIMIT", "500") or "0")
 _db_lock = Lock()
 _sse_clients = []
 _sse_clients_lock = Lock()
@@ -1906,7 +1906,7 @@ def log_groups():
         result = []
         for chat_id, cnt in rows:
             name = _group_name_cache.get(chat_id, str(chat_id))
-            result.append({"chat_id": chat_id, "name": name, "count": cnt})
+            result.append({"chat_id": chat_id, "name": name})
         return jsonify(result)
     except Exception as e:
         return jsonify([])
