@@ -373,6 +373,11 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-prima
         <div class="info"><div class="title" id="headTitle">全部消息</div><div class="subtitle" id="headSub"><span class="stream-dot reconnecting" id="streamDot"></span><span id="headSubText">正在加载…</span></div></div>
         <div class="HeaderActions"><button class="Button" onclick="loadMessages()" title="刷新">↻</button><button class="Button" onclick="scrollBottom()" title="到底部">⌄</button></div>
       </header>
+      <header class="MiddleHeader" id="discussionHeader" style="display:none">
+        <button class="Button round" title="返回" onclick="closeDiscussion()">‹</button>
+        <div class="Avatar" id="discussionAvatar">R</div>
+        <div class="info"><div class="title" id="discussionTitle">消息讨论</div><div class="subtitle" id="discussionSub">Replies</div></div>
+      </header>
       <nav class="filter-tabs" aria-label="日志筛选">
         <button class="filter-tab active" data-mode="all" onclick="setMode('all')">全部</button>
         <button class="filter-tab" data-mode="audit" onclick="setMode('audit')">审计</button>
@@ -390,7 +395,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-prima
 </div>
 <div class="MessageContextMenu" id="ctxMenu">
   <div class="bubble">
-    <button class="MenuItem" onclick="openFlow()"><span>💬</span><span>查看消息流</span></button>
+    <button class="MenuItem" onclick="openDiscussion()"><span>💬</span><span>查看 Replies</span></button>
     <button class="MenuItem" onclick="copyText()"><span>📋</span><span>复制文本</span></button>
     <div class="MenuSeparator"></div>
     <button class="MenuItem destructive" id="ctxMissed" onclick="reportBug('漏回误报')"><span>⚠️</span><span>漏回误报反馈</span></button>
@@ -398,7 +403,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-prima
   </div>
 </div>
 <script>
-let groups=[];let allLogs=[];let parsedLogs=[];let messageIndex=new Map();let relationIndex=new Map();let visibleCount=80;let activeChatId=null;let activeChatName='全部消息';let activeMode='all';let ctxTarget=null;let logStream=null;
+let groups=[];let allLogs=[];let parsedLogs=[];let messageIndex=new Map();let relationIndex=new Map();let visibleCount=80;let activeChatId=null;let activeChatName='全部消息';let activeMode='all';let ctxTarget=null;let logStream=null;let discussionSource=null;
 const colors=['#6bb8ff','#ff8a65','#ba68c8','#4db6ac','#ffd54f','#7986cb','#f06292','#81c784'];
 function hcol(s){let h=0;for(const c of String(s||''))h=(h*31+c.charCodeAt(0))|0;return colors[Math.abs(h)%colors.length];}
 function escH(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -487,6 +492,15 @@ function render(){
     const type=e.msg_type||'sys';const first=lastSender!==e.sn||lastType!==type;const last=!next||(next.msg_type||'sys')!==type||next.sn!==e.sn;lastSender=e.sn;lastType=type;html+=renderEntry(e,i,first,last);});
   el.innerHTML=html+'</div>';
 }
+function renderRows(rows, options={}){
+  const oldLogs=allLogs,oldParsed=parsedLogs,oldMessage=messageIndex,oldRelation=relationIndex;
+  allLogs=rows||[];prepareLogState();
+  const logs=parsedLogs;let html='<div class="messages-container">',lastDate='',lastSender='',lastType='';
+  logs.forEach((e,i)=>{const next=logs[i+1];const d=fmtDate(e.ts);if(d!==lastDate){html+=`<div class="date"><span>${d}</span></div>`;lastDate=d;lastSender='';lastType='';}
+    const type=e.msg_type||'sys';const first=lastSender!==e.sn||lastType!==type;const last=!next||(next.msg_type||'sys')!==type||next.sn!==e.sn;lastSender=e.sn;lastType=type;html+=renderEntry(e,i,first,last);});
+  allLogs=oldLogs;parsedLogs=oldParsed;messageIndex=oldMessage;relationIndex=oldRelation;
+  return html+'</div>';
+}
 function showMoreMessages(){const m=document.getElementById('messages');const oldHeight=m.scrollHeight;visibleCount=Math.min(parsedLogs.length,visibleCount+80);render();m.scrollTop=m.scrollHeight-oldHeight;}
 function renderEntry(e,i,first,last){
   const type=e.msg_type||'sys';const id='msg-'+i;
@@ -532,7 +546,7 @@ function jumpToMessage(chatId,msgId){
   const row=document.getElementById('msg-'+idx);
   if(row){row.scrollIntoView({behavior:'smooth',block:'center'});row.classList.add('is-selected');setTimeout(()=>row.classList.remove('is-selected'),1200);}
 }
-function openFlowForIndex(i){ctxTarget={i,e:parseLog(allLogs[i])};openFlow();}
+function openFlowForIndex(i){ctxTarget={i,e:parseLog(allLogs[i])};openDiscussion();}
 function showCtx(ev,i){
   ev.preventDefault();ctxTarget={i,e:parseLog(allLogs[i])};
   document.querySelectorAll('.Message.has-menu-open,.local-action-message.has-menu-open').forEach(n=>n.classList.remove('has-menu-open'));
@@ -551,15 +565,31 @@ function relatedRows(e){
 async function fetchFlowRows(e){
   if(!e||!e.msgId||!e.chat_id)return relatedRows(e);
   try{
-    const rows=await fetch(`/log_flow?chat_id=${encodeURIComponent(e.chat_id)}&message_id=${encodeURIComponent(e.msgId)}&window=300&limit=500`).then(r=>r.json());
+    const rows=await fetch(`/log_flow?chat_id=${encodeURIComponent(e.chat_id)}&message_id=${encodeURIComponent(e.msgId)}&limit=500`).then(r=>r.json());
     return rows&&rows.length?rows:relatedRows(e);
   }catch(_){return relatedRows(e);}
 }
+function setDiscussionMode(on){
+  document.querySelector('.messages-layout > .MiddleHeader').style.display=on?'none':'flex';
+  document.getElementById('discussionHeader').style.display=on?'flex':'none';
+  document.querySelector('.filter-tabs').style.display=on?'none':'flex';
+}
+async function openDiscussion(){
+  if(!ctxTarget)return;const e=ctxTarget.e;discussionSource=e;setDiscussionMode(true);
+  document.getElementById('discussionTitle').textContent=e.msgId?'Msg='+e.msgId+' Replies':'Replies';
+  document.getElementById('discussionSub').textContent='加载中…';
+  document.getElementById('discussionAvatar').textContent='R';
+  const el=document.getElementById('messages');el.innerHTML='<div class="empty-placeholder">加载中…</div>';
+  const rows=await fetchFlowRows(e);document.getElementById('discussionSub').textContent=rows.length?rows.length+' 条直接关联记录':'没有直接回复';
+  el.innerHTML=rows.length?renderRows(rows):'<div class="empty-placeholder">没有直接回复</div>';
+  scrollBottom();
+}
+function closeDiscussion(){discussionSource=null;setDiscussionMode(false);render();scrollBottom();}
 async function openFlow(){
-  if(!ctxTarget)return;const e=ctxTarget.e;document.getElementById('flowTitle').textContent=e.msgId?'Msg='+e.msgId+' 消息流':'消息流';document.getElementById('flowSub').textContent='加载中…';
+  if(!ctxTarget)return;const e=ctxTarget.e;document.getElementById('flowTitle').textContent=e.msgId?'Msg='+e.msgId+' Replies':'Replies';document.getElementById('flowSub').textContent='加载中…';
   const body=document.getElementById('flowBody');body.innerHTML='<div class="empty-placeholder" style="height:10rem">加载中…</div>';
   document.getElementById('RightColumn-wrapper').classList.add('open');document.getElementById('ctxMenu').classList.remove('open');
-  const rel=await fetchFlowRows(e);document.getElementById('flowSub').textContent=rel.length?rel.length+' 条关联日志':'未找到关联日志';
+  const rel=await fetchFlowRows(e);document.getElementById('flowSub').textContent=rel.length?rel.length+' 条直接关联记录':'没有直接回复';
   body.innerHTML=rel.length?rel.map(r=>{const p=parseLog(r);return `<div class="flow-row ${p.msg_type||'sys'}"><div class="flow-time">${escH(p.time)} · ${escH(p.msg_type||p.event_type||'sys')} · Msg=${escH(p.msgId||'')}</div><div class="flow-text">${escH(rowDetail(p))}</div></div>`;}).join(''):'<div class="empty-placeholder" style="height:10rem">此条目没有可关联的 Msg ID</div>';
 }
 function closeFlow(){document.getElementById('RightColumn-wrapper').classList.remove('open');}

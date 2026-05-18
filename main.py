@@ -381,7 +381,7 @@ def _legacy_chat_log_rows(chat_id=None, limit=600):
             ).fetchall()
     return [{"source": "legacy", "ts": r["ts"], "chat_id": r["chat_id"], "msg_type": r["msg_type"], "raw": r["raw"]} for r in reversed(rows)]
 
-def _flow_rows(chat_id, message_id, window_seconds=300, limit=300):
+def _flow_rows(chat_id, message_id, window_seconds=0, limit=300):
     if not chat_id or not message_id:
         return []
     message_id = int(message_id)
@@ -409,9 +409,6 @@ def _flow_rows(chat_id, message_id, window_seconds=300, limit=300):
         if parent_id:
             snapshot_sql += " OR message_id=?"
             snapshot_params.append(parent_id)
-        if target_ts is not None and window_seconds > 0:
-            snapshot_sql += " OR first_ts BETWEEN ? AND ?"
-            snapshot_params.extend([target_ts - window_seconds, target_ts + window_seconds])
         snapshot_sql += ") ORDER BY first_ts DESC LIMIT ?"
         snapshot_params.append(limit)
         snapshots = conn.execute(snapshot_sql, tuple(snapshot_params)).fetchall()
@@ -425,9 +422,6 @@ def _flow_rows(chat_id, message_id, window_seconds=300, limit=300):
         if parent_id:
             audit_sql += " OR message_id=?"
             audit_params.append(parent_id)
-        if target_ts is not None and window_seconds > 0:
-            audit_sql += " OR ts BETWEEN ? AND ?"
-            audit_params.extend([target_ts - window_seconds, target_ts + window_seconds])
         audit_sql += ") ORDER BY ts DESC, id DESC LIMIT ?"
         audit_params.append(limit)
         audits = conn.execute(audit_sql, tuple(audit_params)).fetchall()
@@ -1879,7 +1873,7 @@ def log_stream():
 def log_flow():
     chat_id = request.args.get('chat_id', type=int)
     message_id = request.args.get('message_id', type=int)
-    window = min(max(request.args.get('window', 300, type=int), 0), 3600)
+    window = min(max(request.args.get('window', 0, type=int), 0), 3600)
     limit = min(max(request.args.get('limit', 300, type=int), 1), 800)
     try:
         return jsonify(_flow_rows(chat_id, message_id, window_seconds=window, limit=limit))
