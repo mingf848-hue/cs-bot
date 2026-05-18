@@ -992,6 +992,20 @@ def queue_backend_unlock_command(member_name, rule, event):
     })
     return cmd_id
 
+def lease_next_pending_command():
+    now = time.time()
+    for cmd_id, leased in list(pending_command_leases.items()):
+        if now - float(leased.get("leased_at", 0)) > 30:
+            pending_command_leases.pop(cmd_id, None)
+            pending_commands.appendleft(leased["cmd"])
+    if not pending_commands:
+        return None
+    cmd = pending_commands.popleft()
+    cmd_id = cmd.get("id") or f"cmd_{int(now * 1000)}"
+    cmd["id"] = cmd_id
+    pending_command_leases[cmd_id] = {"cmd": cmd, "leased_at": now}
+    return cmd
+
 def ensure_scheduled_message_id(item):
     if not item.get("id"):
         item["id"] = f"schedule_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
@@ -2398,17 +2412,18 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     def cmd_poll():
         if request.args.get("secret") != CMD_SECRET:
             return jsonify({"ok": False}), 403
-        now = time.time()
-        for cmd_id, leased in list(pending_command_leases.items()):
-            if now - float(leased.get("leased_at", 0)) > 30:
-                pending_command_leases.pop(cmd_id, None)
-                pending_commands.appendleft(leased["cmd"])
-        if pending_commands:
-            cmd = pending_commands.popleft()
-            cmd_id = cmd.get("id") or f"cmd_{int(now * 1000)}"
-            cmd["id"] = cmd_id
-            pending_command_leases[cmd_id] = {"cmd": cmd, "leased_at": now}
-            return jsonify({"ok": True, "cmd": cmd})
+        try:
+            wait_seconds = max(0.0, min(25.0, float(request.args.get("wait", 0) or 0)))
+        except Exception:
+            wait_seconds = 0.0
+        deadline = time.time() + wait_seconds
+        while True:
+            cmd = lease_next_pending_command()
+            if cmd:
+                return jsonify({"ok": True, "cmd": cmd})
+            if time.time() >= deadline:
+                break
+            time.sleep(0.4)
         return jsonify({"ok": True, "cmd": None})
 
     @app.route('/api/cmd/ack', methods=['POST'])
@@ -2547,9 +2562,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     return new Promise((resolve, reject) => {{
       GM_xmlhttpRequest({{
         method: 'GET',
-        url: `${{BOT_BASE}}/api/cmd/poll?secret=${{encodeURIComponent(CMD_SECRET)}}`,
+        url: `${{BOT_BASE}}/api/cmd/poll?wait=25&secret=${{encodeURIComponent(CMD_SECRET)}}`,
         headers: {{ 'accept': 'application/json' }},
-        timeout: 10000,
+        timeout: 35000,
         onload: (resp) => {{
           try {{
             resolve(JSON.parse(resp.responseText || '{{}}'));
@@ -2573,12 +2588,12 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
       }} else {{
         status('轮询中，暂无命令', '#64748b');
       }}
-    }} catch (err) {{
-      console.warn('[CS Bot] poll failed', err);
-      status('轮询失败: ' + err.message, '#dc2626');
-    }} finally {{
-      setTimeout(poll, 2500);
-    }}
+      }} catch (err) {{
+        console.warn('[CS Bot] poll failed', err);
+        status('轮询失败: ' + err.message, '#dc2626');
+      }} finally {{
+      setTimeout(poll, document.hidden ? 250 : 100);
+      }}
   }}
 
   console.log('[CS Bot] ZD unlock userscript started. member_name will be lower-cased before unlock.');
