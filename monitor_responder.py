@@ -8,6 +8,7 @@ import re
 import unicodedata
 import warnings
 import urllib.request
+import urllib.error
 import threading
 from collections import deque
 from datetime import datetime, timedelta, timezone
@@ -329,6 +330,97 @@ def event_text_preview(event, limit=120):
     if len(text) > limit:
         return text[:limit] + "..."
     return text
+
+BACKEND_UNLOCK_PHRASES = ("短信获取次数过多", "短信解锁", "验证码解锁")
+BACKEND_UNLOCK_DEFAULT_PATTERN = r"^\s*([A-Za-z0-9][A-Za-z0-9._-]{1,63})\s*(?:短信获取次数过多|短信解锁|验证码解锁)\b"
+
+def extract_backend_unlock_member(text, pattern=""):
+    msg_text = str(text or "").strip()
+    if not msg_text:
+        return None
+    patterns = [pattern.strip()] if pattern and pattern.strip() else []
+    patterns.append(BACKEND_UNLOCK_DEFAULT_PATTERN)
+    for pat in patterns:
+        try:
+            m = re.search(pat, msg_text, flags=re.IGNORECASE)
+        except re.error as e:
+            logger.warning(f"⚠️ [BackendUnlock] 账号正则无效: {e}")
+            continue
+        if m and m.lastindex:
+            member_name = str(m.group(1) or "").strip()
+            if member_name:
+                return member_name
+    if any(phrase in msg_text for phrase in BACKEND_UNLOCK_PHRASES):
+        words = msg_text.split()
+        return words[0] if words else None
+    return None
+
+def build_zd_unlock_headers():
+    raw_headers = os.environ.get("ZD_UNLOCK_HEADERS_JSON", "").strip()
+    if raw_headers:
+        try:
+            headers = json.loads(raw_headers)
+            if isinstance(headers, dict):
+                return {str(k): str(v) for k, v in headers.items() if v is not None}
+        except Exception as e:
+            raise RuntimeError(f"ZD_UNLOCK_HEADERS_JSON 不是有效 JSON: {e}")
+
+    headers = {
+        "accept": "*/*",
+        "content-type": "application/json",
+        "use-new-api": "true",
+        "x-api-client": "web",
+        "x-api-appkey": os.environ.get("ZD_UNLOCK_APPKEY", ""),
+        "x-api-site": os.environ.get("ZD_UNLOCK_SITE", "9001"),
+        "x-api-token": os.environ.get("ZD_UNLOCK_TOKEN", ""),
+        "x-api-user": os.environ.get("ZD_UNLOCK_USER", ""),
+        "x-api-uuid": os.environ.get("ZD_UNLOCK_UUID", ""),
+        "x-api-version": os.environ.get("ZD_UNLOCK_VERSION", "0.1"),
+        "x-api-xsn": os.environ.get("ZD_UNLOCK_XSN", ""),
+        "x-api-xts": os.environ.get("ZD_UNLOCK_XTS", ""),
+    }
+    cookie = os.environ.get("ZD_UNLOCK_COOKIE", "").strip()
+    if cookie:
+        headers["cookie"] = cookie
+    return {k: v for k, v in headers.items() if v}
+
+def call_zd_backend_unlock(member_name):
+    member_name = str(member_name or "").strip()
+    if not member_name:
+        raise RuntimeError("缺少会员账号名")
+    value = os.environ.get("ZD_UNLOCK_VALUE", "").strip()
+    if not value:
+        raise RuntimeError("缺少 ZD_UNLOCK_VALUE 环境变量")
+    url = os.environ.get(
+        "ZD_UNLOCK_URL",
+        "https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/unlockIpOrNameForCheckPhone"
+    ).strip()
+    headers = build_zd_unlock_headers()
+    lower_headers = {k.lower(): v for k, v in headers.items()}
+    missing = []
+    for key in ("x-api-token", "x-api-user", "x-api-uuid", "x-api-xsn", "x-api-xts"):
+        if not lower_headers.get(key):
+            missing.append(key)
+    if missing:
+        raise RuntimeError("缺少后台请求头: " + ", ".join(missing))
+    referrer = os.environ.get("ZD_UNLOCK_REFERRER", "https://9sitebg.mvj4e7.com/app/vip-manange/vip-list").strip()
+    if referrer and "referer" not in lower_headers:
+        headers["referer"] = referrer
+    payload = json.dumps({"value": value, "name": member_name}, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=float(os.environ.get("ZD_UNLOCK_TIMEOUT", "12"))) as resp:
+            body = resp.read(4096).decode("utf-8", errors="ignore")
+            status = getattr(resp, "status", 200)
+    except urllib.error.HTTPError as e:
+        body = e.read(4096).decode("utf-8", errors="ignore")
+        raise RuntimeError(f"HTTP {e.code}: {body[:300]}")
+    if status < 200 or status >= 300:
+        raise RuntimeError(f"HTTP {status}: {body[:300]}")
+    return {"status": status, "body": body[:300]}
+
+async def trigger_zd_backend_unlock(member_name):
+    return await asyncio.to_thread(call_zd_backend_unlock, member_name)
 
 def record_runtime_event(kind, status, detail="", rule=None, event=None, sender_name="", target_account="", action_count=0, duration_ms=0):
     ts = now_bj()
@@ -1109,6 +1201,7 @@ def load_config(system_cs_prefixes):
             if r.get("type") not in VALID_REPLY_TYPES: r["type"] = "text"
             r["text"] = str(r.get("text", "") or "")
             r["forward_to"] = str(r.get("forward_to", "") or "").strip()
+            r["member_pattern"] = str(r.get("member_pattern", "") or "").strip()
             if r.get("type") == "amount_logic":
                 amount_delay_defaults = (
                     ("high_reply_min", r.get("min", 1.0)),
@@ -1218,6 +1311,7 @@ def save_config(new_config):
                 if r.get("type") not in VALID_REPLY_TYPES: r["type"] = "text"
                 r["text"] = str(r.get("text", "") or "")
                 r["forward_to"] = str(r.get("forward_to", "") or "").strip()
+                r["member_pattern"] = str(r.get("member_pattern", "") or "").strip()
                 if r.get("type") == "amount_logic":
                     amount_delay_defaults = (
                         ("high_reply_min", r.get("min", 1.0)),
@@ -1708,8 +1802,8 @@ SETTINGS_HTML = """
                                         <div class="grid grid-cols-1 gap-2">
                                             <div class="visual-field">
                                                 <div class="visual-label"><i class="fa-solid fa-unlock"></i>提取账号名的正则</div>
-                                                <input v-model="reply.member_pattern" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] font-mono text-orange-700 bg-orange-50 border-orange-200" placeholder="例如：(\S+)\s+解锁">
-                                                <div class="text-[9px] text-slate-400 mt-0.5">从消息文本中提取会员账号名，第一个捕获组即为账号。留空则取消息第一个单词。</div>
+                                                <input v-model="reply.member_pattern" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] font-mono text-orange-700 bg-orange-50 border-orange-200" placeholder="默认：账号 + 短信获取次数过多/短信解锁/验证码解锁">
+                                                <div class="text-[9px] text-slate-400 mt-0.5">从消息文本中提取会员账号名，第一个捕获组即为账号。留空时自动识别：wesley333 短信获取次数过多 / 短信解锁 / 验证码解锁。</div>
                                             </div>
                                         </div>
                                     </template>
@@ -1814,6 +1908,7 @@ SETTINGS_HTML = """
             const normalizeStep = (reply) => {
                 if (!reply.text) reply.text = '';
                 if (!reply.forward_to) reply.forward_to = '';
+                if (!reply.member_pattern) reply.member_pattern = '';
                 if (reply.min === undefined || reply.min === null || reply.min === '') reply.min = 1;
                 if (reply.max === undefined || reply.max === null || reply.max === '') reply.max = 3;
                 if (reply.type === 'amount_logic') {
@@ -2750,6 +2845,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
                     sent_msgs = []
                     notify_sent = False
+                    backend_actions = 0
                     action_failed = False
                     preempted = False
                     try:
@@ -2857,20 +2953,14 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                     logger.info(f"🔔 [Notify] 规则 '{rule.get('name')}' 已通过 Telegram Bot 通知: {notify_target}")
 
                             elif stype == "backend_unlock":
-                                msg_text = event.text or ""
-                                pattern = step.get("member_pattern", "").strip()
-                                member_name = None
-                                if pattern:
-                                    m = re.search(pattern, msg_text)
-                                    if m and m.lastindex:
-                                        member_name = m.group(1)
-                                if not member_name:
-                                    # 兜底：取消息第一个非空单词
-                                    words = msg_text.split()
-                                    member_name = words[0] if words else None
+                                member_name = extract_backend_unlock_member(event.text or "", step.get("member_pattern", ""))
                                 if member_name:
                                     pending_commands.append({"action": "unlock_sms", "member_name": member_name})
-                                    logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 推送解锁指令: {member_name}")
+                                    result = await trigger_zd_backend_unlock(member_name)
+                                    backend_actions += 1
+                                    logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 已触发后台解锁: {member_name} | HTTP {result.get('status')}")
+                                else:
+                                    logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 未提取到账号名，已跳过")
 
                             else: # text
                                 content = step.get("text", "")
@@ -2880,7 +2970,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                     if global_main_handler: asyncio.create_task(global_main_handler(events.NewMessage.Event(sent)))
                     except Exception as e:
                         action_failed = True
-                        if sent_msgs or notify_sent:
+                        if sent_msgs or notify_sent or backend_actions:
                             rule_timers[rule_id] = time.time()
                             logger.warning(f"⚠️ [Monitor] 规则 '{rule.get('name')}' 已部分发送，已进入冷却")
                         logger.error(f"❌ [Monitor] 规则 '{rule.get('name')}' 执行动作失败: {e}")
@@ -2892,12 +2982,12 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                             event=event,
                             sender_name=sender_name,
                             target_account=target_name,
-                            action_count=len(sent_msgs) + (1 if notify_sent else 0),
+                            action_count=len(sent_msgs) + (1 if notify_sent else 0) + backend_actions,
                             duration_ms=(time.time() - match_started) * 1000
                         )
 
                     if not action_failed:
-                        action_count = len(sent_msgs) + (1 if notify_sent else 0)
+                        action_count = len(sent_msgs) + (1 if notify_sent else 0) + backend_actions
                         if preempted:
                             record_runtime_event(
                                 "monitor",
@@ -2910,7 +3000,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                 action_count=action_count,
                                 duration_ms=(time.time() - match_started) * 1000
                             )
-                        elif sent_msgs or notify_sent:
+                        elif sent_msgs or notify_sent or backend_actions:
                             rule_timers[rule_id] = time.time()
                             record_runtime_event(
                                 "monitor",
