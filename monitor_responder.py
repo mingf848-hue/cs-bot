@@ -8,7 +8,6 @@ import re
 import unicodedata
 import warnings
 import urllib.request
-import urllib.error
 import threading
 from collections import deque
 from datetime import datetime, timedelta, timezone
@@ -354,73 +353,6 @@ def extract_backend_unlock_member(text, pattern=""):
         words = msg_text.split()
         return words[0] if words else None
     return None
-
-def build_zd_unlock_headers():
-    raw_headers = os.environ.get("ZD_UNLOCK_HEADERS_JSON", "").strip()
-    if raw_headers:
-        try:
-            headers = json.loads(raw_headers)
-            if isinstance(headers, dict):
-                return {str(k): str(v) for k, v in headers.items() if v is not None}
-        except Exception as e:
-            raise RuntimeError(f"ZD_UNLOCK_HEADERS_JSON 不是有效 JSON: {e}")
-
-    headers = {
-        "accept": "*/*",
-        "content-type": "application/json",
-        "use-new-api": "true",
-        "x-api-client": "web",
-        "x-api-appkey": os.environ.get("ZD_UNLOCK_APPKEY", ""),
-        "x-api-site": os.environ.get("ZD_UNLOCK_SITE", "9001"),
-        "x-api-token": os.environ.get("ZD_UNLOCK_TOKEN", ""),
-        "x-api-user": os.environ.get("ZD_UNLOCK_USER", ""),
-        "x-api-uuid": os.environ.get("ZD_UNLOCK_UUID", ""),
-        "x-api-version": os.environ.get("ZD_UNLOCK_VERSION", "0.1"),
-        "x-api-xsn": os.environ.get("ZD_UNLOCK_XSN", ""),
-        "x-api-xts": os.environ.get("ZD_UNLOCK_XTS", ""),
-    }
-    cookie = os.environ.get("ZD_UNLOCK_COOKIE", "").strip()
-    if cookie:
-        headers["cookie"] = cookie
-    return {k: v for k, v in headers.items() if v}
-
-def call_zd_backend_unlock(member_name):
-    member_name = str(member_name or "").strip()
-    if not member_name:
-        raise RuntimeError("缺少会员账号名")
-    value = os.environ.get("ZD_UNLOCK_VALUE", "").strip()
-    if not value:
-        raise RuntimeError("缺少 ZD_UNLOCK_VALUE 环境变量")
-    url = os.environ.get(
-        "ZD_UNLOCK_URL",
-        "https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/unlockIpOrNameForCheckPhone"
-    ).strip()
-    headers = build_zd_unlock_headers()
-    lower_headers = {k.lower(): v for k, v in headers.items()}
-    missing = []
-    for key in ("x-api-token", "x-api-user", "x-api-uuid", "x-api-xsn", "x-api-xts"):
-        if not lower_headers.get(key):
-            missing.append(key)
-    if missing:
-        raise RuntimeError("缺少后台请求头: " + ", ".join(missing))
-    referrer = os.environ.get("ZD_UNLOCK_REFERRER", "https://9sitebg.mvj4e7.com/app/vip-manange/vip-list").strip()
-    if referrer and "referer" not in lower_headers:
-        headers["referer"] = referrer
-    payload = json.dumps({"value": value, "name": member_name}, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=float(os.environ.get("ZD_UNLOCK_TIMEOUT", "12"))) as resp:
-            body = resp.read(4096).decode("utf-8", errors="ignore")
-            status = getattr(resp, "status", 200)
-    except urllib.error.HTTPError as e:
-        body = e.read(4096).decode("utf-8", errors="ignore")
-        raise RuntimeError(f"HTTP {e.code}: {body[:300]}")
-    if status < 200 or status >= 300:
-        raise RuntimeError(f"HTTP {status}: {body[:300]}")
-    return {"status": status, "body": body[:300]}
-
-async def trigger_zd_backend_unlock(member_name):
-    return await asyncio.to_thread(call_zd_backend_unlock, member_name)
 
 def record_runtime_event(kind, status, detail="", rule=None, event=None, sender_name="", target_account="", action_count=0, duration_ms=0):
     ts = now_bj()
@@ -2435,6 +2367,109 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             return jsonify({"ok": True, "cmd": pending_commands.popleft()})
         return jsonify({"ok": True, "cmd": None})
 
+    @app.route('/tool/backend_unlock_userscript')
+    def backend_unlock_userscript():
+        bot_base = request.url_root.rstrip("/")
+        script = f"""// ==UserScript==
+// @name         CS Bot ZD Backend Unlock
+// @namespace    cs-bot-zd-unlock
+// @version      1.0.0
+// @description  Poll CS Bot commands and unlock SMS checks from a whitelisted ZD browser session.
+// @match        https://9sitebg.mvj4e7.com/*
+// @grant        GM_xmlhttpRequest
+// @connect      {request.host.split(':')[0]}
+// ==/UserScript==
+
+(function () {{
+  'use strict';
+
+  const BOT_BASE = {json.dumps(bot_base)};
+  const CMD_SECRET = {json.dumps(CMD_SECRET)};
+  const UNLOCK_URL = 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/unlockIpOrNameForCheckPhone';
+  const REFERRER = 'https://9sitebg.mvj4e7.com/app/vip-manange/vip-list';
+
+  function cfg(key, fallback = '') {{
+    return localStorage.getItem('csbot_zd_' + key) || fallback;
+  }}
+
+  function headers() {{
+    return {{
+      'accept': '*/*',
+      'accept-language': 'zh-CN,zh;q=0.9',
+      'content-type': 'application/json',
+      'use-new-api': 'true',
+      'x-api-appkey': cfg('appkey'),
+      'x-api-client': 'web',
+      'x-api-site': cfg('site', '9001'),
+      'x-api-token': cfg('token'),
+      'x-api-user': cfg('user'),
+      'x-api-uuid': cfg('uuid'),
+      'x-api-version': cfg('version', '0.1'),
+      'x-api-xsn': cfg('xsn'),
+      'x-api-xts': cfg('xts')
+    }};
+  }}
+
+  function unlock(memberName) {{
+    const value = cfg('value');
+    if (!value) {{
+      console.warn('[CS Bot] Missing localStorage csbot_zd_value');
+      return;
+    }}
+    fetch(UNLOCK_URL, {{
+      method: 'POST',
+      mode: 'cors',
+      credentials: 'include',
+      referrer: REFERRER,
+      headers: headers(),
+      body: JSON.stringify({{ value, name: memberName }})
+    }}).then(async (res) => {{
+      const text = await res.text();
+      console.log('[CS Bot] unlock', memberName, res.status, text.slice(0, 300));
+    }}).catch((err) => {{
+      console.error('[CS Bot] unlock failed', memberName, err);
+    }});
+  }}
+
+  function pollCommand() {{
+    return new Promise((resolve, reject) => {{
+      GM_xmlhttpRequest({{
+        method: 'GET',
+        url: `${{BOT_BASE}}/api/cmd/poll?secret=${{encodeURIComponent(CMD_SECRET)}}`,
+        headers: {{ 'accept': 'application/json' }},
+        timeout: 10000,
+        onload: (resp) => {{
+          try {{
+            resolve(JSON.parse(resp.responseText || '{{}}'));
+          }} catch (err) {{
+            reject(err);
+          }}
+        }},
+        onerror: reject,
+        ontimeout: () => reject(new Error('poll timeout'))
+      }});
+    }});
+  }}
+
+  async function poll() {{
+    try {{
+      const data = await pollCommand();
+      if (data && data.ok && data.cmd && data.cmd.action === 'unlock_sms' && data.cmd.member_name) {{
+        unlock(data.cmd.member_name);
+      }}
+    }} catch (err) {{
+      console.warn('[CS Bot] poll failed', err);
+    }} finally {{
+      setTimeout(poll, 2500);
+    }}
+  }}
+
+  console.log('[CS Bot] ZD unlock userscript started. Configure localStorage keys: csbot_zd_value/token/user/uuid/xsn/xts/appkey');
+  poll();
+}})();
+"""
+        return Response(script, mimetype='application/javascript; charset=utf-8')
+
     @app.route('/api/batch_recovery', methods=['POST'])
     def trigger_batch_recovery():
         data = request.get_json(silent=True) or {}
@@ -2955,10 +2990,17 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                             elif stype == "backend_unlock":
                                 member_name = extract_backend_unlock_member(event.text or "", step.get("member_pattern", ""))
                                 if member_name:
-                                    pending_commands.append({"action": "unlock_sms", "member_name": member_name})
-                                    result = await trigger_zd_backend_unlock(member_name)
+                                    pending_commands.append({
+                                        "action": "unlock_sms",
+                                        "member_name": member_name,
+                                        "source": "monitor",
+                                        "rule": rule.get("name") or rule.get("id") or "",
+                                        "chat_id": event.chat_id,
+                                        "message_id": event.id,
+                                        "queued_at": now_bj().isoformat(),
+                                    })
                                     backend_actions += 1
-                                    logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 已触发后台解锁: {member_name} | HTTP {result.get('status')}")
+                                    logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 已下发油猴解锁指令: {member_name}")
                                 else:
                                     logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 未提取到账号名，已跳过")
 
