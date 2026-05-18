@@ -348,10 +348,10 @@ def extract_backend_unlock_member(text, pattern=""):
         if m and m.lastindex:
             member_name = str(m.group(1) or "").strip()
             if member_name:
-                return member_name
+                return member_name.lower()
     if any(phrase in msg_text for phrase in BACKEND_UNLOCK_PHRASES):
         words = msg_text.split()
-        return words[0] if words else None
+        return words[0].lower() if words else None
     return None
 
 def record_runtime_event(kind, status, detail="", rule=None, event=None, sender_name="", target_account="", action_count=0, duration_ms=0):
@@ -1735,7 +1735,7 @@ SETTINGS_HTML = """
                                             <div class="visual-field">
                                                 <div class="visual-label"><i class="fa-solid fa-unlock"></i>提取账号名的正则</div>
                                                 <input v-model="reply.member_pattern" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] font-mono text-orange-700 bg-orange-50 border-orange-200" placeholder="默认：账号 + 短信获取次数过多/短信解锁/验证码解锁">
-                                                <div class="text-[9px] text-slate-400 mt-0.5">从消息文本中提取会员账号名，第一个捕获组即为账号。留空时自动识别：wesley333 短信获取次数过多 / 短信解锁 / 验证码解锁。</div>
+                                                <div class="text-[9px] text-slate-400 mt-0.5">从消息文本中提取会员账号名，第一个捕获组即为账号，会自动转小写后下发给油猴。</div>
                                             </div>
                                         </div>
                                     </template>
@@ -2370,6 +2370,17 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     @app.route('/tool/backend_unlock_userscript')
     def backend_unlock_userscript():
         bot_base = request.url_root.rstrip("/")
+        default_zd_config = {
+            "value": "x8Bffk8DR9QOcdHPe6fFvQ==",
+            "appkey": "NDbTd5RysclL",
+            "site": "9001",
+            "token": "ZD_BHoMOAbPiZVNsqZXLxn3nuZK6ow8s02i",
+            "user": "aratakito",
+            "uuid": "8510640B-F2AC-4B05-9ADD-52C740C363DB",
+            "version": "0.1",
+            "xsn": "ef187eb236d1f9c0455561a473a0dafc",
+            "xts": "1779105168",
+        }
         script = f"""// ==UserScript==
 // @name         CS Bot ZD Backend Unlock
 // @namespace    cs-bot-zd-unlock
@@ -2377,7 +2388,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 // @description  Poll CS Bot commands and unlock SMS checks from a whitelisted ZD browser session.
 // @match        https://9sitebg.mvj4e7.com/*
 // @grant        GM_xmlhttpRequest
-// @connect      {request.host.split(':')[0]}
+// @connect      *
 // ==/UserScript==
 
 (function () {{
@@ -2387,9 +2398,10 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
   const CMD_SECRET = {json.dumps(CMD_SECRET)};
   const UNLOCK_URL = 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/unlockIpOrNameForCheckPhone';
   const REFERRER = 'https://9sitebg.mvj4e7.com/app/vip-manange/vip-list';
+  const DEFAULT_ZD_CONFIG = {json.dumps(default_zd_config, ensure_ascii=False)};
 
   function cfg(key, fallback = '') {{
-    return localStorage.getItem('csbot_zd_' + key) || fallback;
+    return localStorage.getItem('csbot_zd_' + key) || DEFAULT_ZD_CONFIG[key] || fallback;
   }}
 
   function headers() {{
@@ -2411,6 +2423,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
   }}
 
   function unlock(memberName) {{
+    memberName = String(memberName || '').trim().toLowerCase();
+    if (!memberName) return;
     const value = cfg('value');
     if (!value) {{
       console.warn('[CS Bot] Missing localStorage csbot_zd_value');
@@ -2464,7 +2478,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     }}
   }}
 
-  console.log('[CS Bot] ZD unlock userscript started. Configure localStorage keys: csbot_zd_value/token/user/uuid/xsn/xts/appkey');
+  console.log('[CS Bot] ZD unlock userscript started. member_name will be lower-cased before unlock.');
   poll();
 }})();
 """
