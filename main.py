@@ -849,7 +849,7 @@ group_to_msg_ids_cache = {}
 
 cs_activity_log = {}
 
-IS_WORKING = False
+IS_WORKING = True
 MY_ID = None
 bot_loop = None
 stop_work_lock = None

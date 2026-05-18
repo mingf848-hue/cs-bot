@@ -195,6 +195,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-prima
 .edit-audit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
 .edit-side { padding: .5rem .625rem; border-radius: .625rem; background: rgba(255,255,255,.18); }
 .edit-label { display: block; margin-bottom: .25rem; font-size: .6875rem; font-weight: 700; opacity: .9; }
+.audit-time { display: block; margin-top: .375rem; font-size: .75rem; opacity: .9; text-align: center; }
 .Message {
   --background-color: var(--color-background);
   --hover-color: var(--color-reply-hover);
@@ -503,10 +504,21 @@ function renderRows(rows, options={}){
   return html+'</div>';
 }
 function showMoreMessages(){const m=document.getElementById('messages');const oldHeight=m.scrollHeight;visibleCount=Math.min(parsedLogs.length,visibleCount+80);render();m.scrollTop=m.scrollHeight-oldHeight;}
+function appendVisibleRow(index){
+  prepareLogState();
+  const container=document.querySelector('#messages .messages-container');
+  if(!container){render();return;}
+  const e=parsedLogs[index];if(!e)return;
+  const prev=parsedLogs[index-1];const d=fmtDate(e.ts);
+  if(!prev||fmtDate(prev.ts)!==d)container.insertAdjacentHTML('beforeend',`<div class="date"><span>${d}</span></div>`);
+  const next=parsedLogs[index+1];const type=e.msg_type||'sys';const first=!prev||prev.sn!==e.sn||(prev.msg_type||'sys')!==type;const last=!next||(next.msg_type||'sys')!==type||next.sn!==e.sn;
+  container.insertAdjacentHTML('beforeend',renderEntry(e,index,first,last));
+}
 function renderEntry(e,i,first,last){
   const type=e.msg_type||'sys';const id='msg-'+i;
   if(type==='audit')return `<div class="local-action-message audit" id="${id}" oncontextmenu="showCtx(event,${i})"><span>${renderEditAudit(e)}</span></div>`;
-  if(type==='alert'||type==='deleted')return `<div class="local-action-message ${type}" id="${id}" oncontextmenu="showCtx(event,${i})"><span>${type==='deleted'?'🗑️ ':''}${escH(e.tx)}</span></div>`;
+  if(type==='deleted')return `<div class="local-action-message deleted" id="${id}" oncontextmenu="showCtx(event,${i})"><span>🗑️ ${escH(e.tx)}<span class="audit-time">${escH(e.time)}</span></span></div>`;
+  if(type==='alert')return `<div class="local-action-message ${type}" id="${id}" oncontextmenu="showCtx(event,${i})"><span>${escH(e.tx)}</span></div>`;
   const own=type==='cs';const name=e.sn||'用户';const color=hcol(name);const title=(!own&&first&&e.sn)?`<div class="message-title" style="color:${color}">${escH(e.sn)}</div>`:'';const avatar=own?'':`<div class="Avatar" style="background:${color}">${escH(name.charAt(0).toUpperCase())}</div>`;
   const reply=renderReplyPreview(e);const flow=flowCount(e);const badge=flow>1?`<button class="flow-badge" title="消息流 ${flow} 条" onclick="openFlowForIndex(${i});event.stopPropagation()">${flow}</button>`:'';
   return `<div class="Message ${own?'own':''} ${e.is_deleted?'deleted-context':''} ${first?'first-in-group':''} ${last?'last-in-group':''}" id="${id}" data-i="${i}">${avatar}<div class="message-content-wrapper"><div class="message-content text" oncontextmenu="showCtx(event,${i})"><div class="content-inner">${title}${reply}<div class="text-content">${escH(e.tx||'')}</div><span class="message-time">${escH(e.time)}${own?'<span class="message-status">✓✓</span>':''}</span>${badge}</div></div></div></div>`;
@@ -519,6 +531,7 @@ function renderEditAudit(e){
       <div class="edit-side"><span class="edit-label">编辑前</span>${escH(e.old_text||'[空]')}</div>
       <div class="edit-side"><span class="edit-label">编辑后</span>${escH(e.text||'[空]')}</div>
     </div>
+    <span class="audit-time">${escH(e.time)}</span>
   </div>`;
 }
 function rowDetail(p){
@@ -620,8 +633,7 @@ function startStream(){
     allLogs.push(row);
     if(allLogs.length>300)allLogs.shift();
     updateSub('实时同步中');
-    render();
-    if(atBottom)scrollBottom();
+    if(!discussionSource){appendVisibleRow(allLogs.length-1);if(atBottom)scrollBottom();}
     loadGroups();
   };
   logStream.onopen=()=>updateSub('实时同步中');
