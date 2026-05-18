@@ -398,7 +398,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-prima
   </div>
 </div>
 <script>
-let groups=[];let allLogs=[];let parsedLogs=[];let messageIndex=new Map();let relationIndex=new Map();let activeChatId=null;let activeChatName='全部消息';let activeMode='all';let ctxTarget=null;let logStream=null;
+let groups=[];let allLogs=[];let parsedLogs=[];let messageIndex=new Map();let relationIndex=new Map();let visibleCount=80;let activeChatId=null;let activeChatName='全部消息';let activeMode='all';let ctxTarget=null;let logStream=null;
 const colors=['#6bb8ff','#ff8a65','#ba68c8','#4db6ac','#ffd54f','#7986cb','#f06292','#81c784'];
 function hcol(s){let h=0;for(const c of String(s||''))h=(h*31+c.charCodeAt(0))|0;return colors[Math.abs(h)%colors.length];}
 function escH(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -434,7 +434,7 @@ function setMode(mode){activeMode=mode;document.querySelectorAll('.filter-tab').
 async function loadMessages(){
   const el=document.getElementById('messages');el.innerHTML='<div class="empty-placeholder">加载中…</div>';
   const url='/log_db?limit=300&mode='+encodeURIComponent(activeMode)+(activeChatId?'&chat_id='+activeChatId:'');
-  try{allLogs=await fetch(url).then(r=>r.json());updateSub('实时同步中');render();renderGroups();scrollBottom();startStream();}
+  try{allLogs=await fetch(url).then(r=>r.json());visibleCount=80;updateSub('实时同步中');render();renderGroups();scrollBottom();startStream();}
   catch(e){el.innerHTML='<div class="empty-placeholder">加载失败</div>';}
 }
 function parseLog(row){
@@ -479,11 +479,15 @@ function render(){
   const el=document.getElementById('messages');
   if(!allLogs.length){el.innerHTML='<div class="empty-placeholder">暂无消息</div>';return;}
   prepareLogState();
-  const logs=parsedLogs;let html='<div class="messages-container">',lastDate='',lastSender='',lastType='';
-  logs.forEach((e,i)=>{const next=logs[i+1];const d=fmtDate(e.ts);if(d!==lastDate){html+=`<div class="date"><span>${d}</span></div>`;lastDate=d;lastSender='';lastType='';}
+  const start=Math.max(0,parsedLogs.length-visibleCount);
+  const logs=parsedLogs.slice(start);let html='<div class="messages-container">';
+  if(start>0)html+=`<div class="local-action-message"><span><button onclick="showMoreMessages()" style="color:white;font-weight:700">加载更早记录</button></span></div>`;
+  let lastDate='',lastSender='',lastType='';
+  logs.forEach((e,localIdx)=>{const i=start+localIdx;const next=parsedLogs[i+1];const d=fmtDate(e.ts);if(d!==lastDate){html+=`<div class="date"><span>${d}</span></div>`;lastDate=d;lastSender='';lastType='';}
     const type=e.msg_type||'sys';const first=lastSender!==e.sn||lastType!==type;const last=!next||(next.msg_type||'sys')!==type||next.sn!==e.sn;lastSender=e.sn;lastType=type;html+=renderEntry(e,i,first,last);});
   el.innerHTML=html+'</div>';
 }
+function showMoreMessages(){const m=document.getElementById('messages');const oldHeight=m.scrollHeight;visibleCount=Math.min(parsedLogs.length,visibleCount+80);render();m.scrollTop=m.scrollHeight-oldHeight;}
 function renderEntry(e,i,first,last){
   const type=e.msg_type||'sys';const id='msg-'+i;
   if(type==='audit')return `<div class="local-action-message audit" id="${id}" oncontextmenu="showCtx(event,${i})"><span>${renderEditAudit(e)}</span></div>`;
