@@ -1360,6 +1360,8 @@ SETTINGS_HTML = """
         .step-help { border: 1px solid #FDE68A; background: #FFFBEB; color: #92400E; border-radius: 6px; padding: 6px 8px; font-size: 10px; font-weight: 600; line-height: 1.4; }
         #app > nav { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 16px; background: rgba(255,255,255,.94); border-bottom: 1px solid #E5E7EB; position: sticky; top: 0; z-index: 50; backdrop-filter: blur(10px); }
         #app > nav > div { min-width: 0; }
+        .script-link { height: 28px; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border: 1px solid #C7D2FE; border-radius: 6px; background: #EEF2FF; color: #4F46E5; font-size: 11px; font-weight: 800; text-decoration: none; white-space: nowrap; }
+        .script-link:hover { background: #E0E7FF; border-color: #A5B4FC; }
         main { width: 100%; max-width: 1400px; margin: 0 auto; padding: 24px 16px 80px; }
         main > * + * { margin-top: 24px; }
         main > .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; align-items: start; }
@@ -1483,6 +1485,7 @@ SETTINGS_HTML = """
         </div>
 
         <div class="flex items-center gap-3">
+            <a href="/tool/backend_unlock_userscript" target="_blank" rel="noopener" class="script-link"><i class="fa-solid fa-code"></i>油猴脚本</a>
             <label class="flex items-center gap-1.5 cursor-pointer select-none bg-slate-50 px-2 py-1 rounded border border-slate-200 hover:border-slate-300 transition-colors" title="手动总开关">
                 <div class="w-2 h-2 rounded-full" :class="config.enabled ? 'bg-green-500' : 'bg-red-500'"></div>
                 <input type="checkbox" v-model="config.enabled" @change="saveConfig" class="hidden">

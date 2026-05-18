@@ -164,6 +164,8 @@
         .search-box { width: 205px; padding: 0 12px; color: var(--subtle); }
         .search-box input { width: 100%; border: 0; outline: 0; background: transparent; min-width: 0; }
         .icon-btn { width: 44px; justify-content: center; color: #536078; }
+        .script-btn { padding: 0 12px; color: var(--primary); font-weight: 780; text-decoration: none; white-space: nowrap; }
+        .script-btn:hover { border-color: rgba(99, 91, 255, .36); background: var(--primary-soft); }
         .more-btn { padding: 0 16px; font-weight: 720; }
         .primary-btn { padding: 0 18px; color: #fff; background: linear-gradient(135deg, #756bff, #4f46e5); border-color: transparent; font-weight: 780; box-shadow: 0 12px 24px rgba(99, 91, 255, .26); }
         .ghost-btn { padding: 0 14px; color: #536078; font-weight: 700; }
@@ -767,6 +769,9 @@
                         <i data-lucide="search"></i>
                         <input v-model="ui.globalSearch" placeholder="全局搜索">
                     </label>
+                    <a class="env-pill script-btn" href="/tool/backend_unlock_userscript" target="_blank" rel="noopener">
+                        <i data-lucide="code-2"></i><span>油猴脚本</span>
+                    </a>
                     <button class="icon-btn" aria-label="通知"><i data-lucide="bell"></i></button>
                     <button class="icon-btn" aria-label="帮助"><i data-lucide="circle-help"></i></button>
                     <button class="icon-btn" aria-label="主题"><i data-lucide="sun"></i></button>
