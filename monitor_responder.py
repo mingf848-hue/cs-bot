@@ -9,6 +9,8 @@ import unicodedata
 import warnings
 import urllib.request
 import threading
+import io
+import zipfile
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from flask import request, jsonify, Response, render_template_string
@@ -1529,6 +1531,7 @@ SETTINGS_HTML = """
 
         <div class="flex items-center gap-3">
             <a href="/tool/backend_unlock_userscript" target="_blank" rel="noopener" class="script-link"><i class="fa-solid fa-code"></i>油猴脚本</a>
+            <a href="/tool/zd_unlock_extension.zip" class="script-link"><i class="fa-solid fa-puzzle-piece"></i>Chrome扩展</a>
             <label class="flex items-center gap-1.5 cursor-pointer select-none bg-slate-50 px-2 py-1 rounded border border-slate-200 hover:border-slate-300 transition-colors" title="手动总开关">
                 <div class="w-2 h-2 rounded-full" :class="config.enabled ? 'bg-green-500' : 'bg-red-500'"></div>
                 <input type="checkbox" v-model="config.enabled" @change="saveConfig" class="hidden">
@@ -2602,6 +2605,23 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 }})();
 """
         return Response(script, mimetype='application/javascript; charset=utf-8')
+
+    @app.route('/tool/zd_unlock_extension.zip')
+    def zd_unlock_extension_zip():
+        extension_dir = os.path.join(os.path.dirname(__file__), "extensions", "zd-unlock-extension")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for root, _, files in os.walk(extension_dir):
+                for filename in files:
+                    path = os.path.join(root, filename)
+                    rel = os.path.relpath(path, extension_dir)
+                    zf.write(path, rel)
+        buf.seek(0)
+        return Response(
+            buf.getvalue(),
+            mimetype="application/zip",
+            headers={"Content-Disposition": "attachment; filename=zd-unlock-extension.zip"}
+        )
 
     @app.route('/api/batch_recovery', methods=['POST'])
     def trigger_batch_recovery():

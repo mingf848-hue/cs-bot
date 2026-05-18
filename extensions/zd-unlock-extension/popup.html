@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CS Bot ZD Unlock</title>
+  <style>
+    body { width: 360px; margin: 0; padding: 14px; font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #111827; background: #f8fafc; }
+    h1 { margin: 0 0 10px; font-size: 16px; }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+    .status { font-weight: 700; }
+    .muted { color: #64748b; font-size: 12px; margin-top: 4px; word-break: break-all; }
+    label { display: block; margin-top: 8px; font-weight: 700; font-size: 12px; color: #475569; }
+    input, textarea { width: 100%; box-sizing: border-box; margin-top: 4px; border: 1px solid #cbd5e1; border-radius: 6px; padding: 7px; font: 12px ui-monospace, Menlo, monospace; }
+    textarea { min-height: 110px; resize: vertical; }
+    .row { display: flex; gap: 8px; align-items: center; }
+    button { border: 0; border-radius: 7px; padding: 8px 10px; font-weight: 800; cursor: pointer; }
+    .primary { background: #4f46e5; color: #fff; }
+    .secondary { background: #e2e8f0; color: #0f172a; }
+    .toggle { margin-right: 6px; }
+  </style>
+</head>
+<body>
+  <h1>CS Bot ZD Unlock</h1>
+  <div class="card">
+    <div class="status" id="status">加载中</div>
+    <div class="muted" id="detail"></div>
+  </div>
+  <div class="card">
+    <label class="row"><input class="toggle" type="checkbox" id="enabled">启用轮询</label>
+    <label>Bot Base</label>
+    <input id="botBase">
+    <label>Command Secret</label>
+    <input id="cmdSecret">
+    <label>Unlock Value</label>
+    <input id="value">
+    <label>Headers JSON</label>
+    <textarea id="headers"></textarea>
+  </div>
+  <div class="row">
+    <button class="primary" id="save">保存并立即轮询</button>
+    <button class="secondary" id="poll">立即轮询</button>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
