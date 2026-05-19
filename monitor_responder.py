@@ -594,14 +594,24 @@ def clean_group_ids(raw):
         match = re.search(r'-?\d+', item)
         if match:
             try:
-                result.append(int(match.group()))
+                result.append(canonical_group_id(match.group()))
             except Exception:
                 pass
     return result
 
+def canonical_group_id(value):
+    group_id = int(value)
+    if group_id > 0:
+        raw = str(group_id)
+        if raw.startswith("100") and len(raw) >= 12:
+            return -group_id
+        if len(raw) >= 9:
+            return int(f"-100{raw}")
+    return group_id
+
 def rule_matches_group(chat_id, groups):
     try:
-        cid = int(chat_id)
+        cid = canonical_group_id(chat_id)
     except Exception:
         return False
     return cid in set(clean_group_ids(groups))

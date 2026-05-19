@@ -1912,7 +1912,13 @@ createApp({
             const raw = String(value ?? "").trim();
             if (!raw) return "";
             const num = Number(raw);
-            return Number.isSafeInteger(num) ? num : String(value || "").trim();
+            if (!Number.isSafeInteger(num)) return raw;
+            if (num > 0) {
+                const digits = String(num);
+                if (digits.startsWith("100") && digits.length >= 12) return -num;
+                if (digits.length >= 9) return Number(`-100${digits}`);
+            }
+            return num;
         };
         const hydrateResources = (resources = {}) => ({
             groups: Array.isArray(resources.groups) ? resources.groups.map((item) => ({
