@@ -3386,6 +3386,11 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                 duration_ms=(time.time() - match_started) * 1000
                             )
                     break
+                elif rule_matches_group(event.chat_id, rule.get("groups", [])) and reason in ("是回复消息", "发送者是客服", "发送者被排除", "冷却中"):
+                    logger.info(
+                        f"↪️ [MonitorSkip] 规则 '{rule.get('name')}' 未执行: {reason} | "
+                        f"Chat={event.chat_id} Msg={event.id} Sender={sender_name}"
+                    )
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
     logger.info("🛠️ [Monitor] Ultimate UI v78 (Full Source) 已启动")
