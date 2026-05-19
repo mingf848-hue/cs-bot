@@ -960,7 +960,7 @@ DEFAULT_CONFIG = {
             "filename_keywords": [],
             "sender_mode": "exclude",
             "sender_prefixes": [],
-            "cooldown": 60,
+            "cooldown": 1,
             "replies": [{"type": "text", "text": "收到", "min": 1, "max": 2}],
             "approval_action": {}
         }
@@ -1139,7 +1139,7 @@ def load_config(system_cs_prefixes):
         if "filename_keywords" not in rule: rule["filename_keywords"] = []
         if "sender_mode" not in rule: rule["sender_mode"] = "exclude"
         if "sender_prefixes" not in rule: rule["sender_prefixes"] = []
-        if "cooldown" not in rule: rule["cooldown"] = 60
+        if "cooldown" not in rule: rule["cooldown"] = 1
         if not isinstance(rule.get("replies"), list): rule["replies"] = []
         if not isinstance(rule.get("approval_action"), dict): rule["approval_action"] = {}
 
@@ -1151,9 +1151,9 @@ def load_config(system_cs_prefixes):
         if rule.get("sender_mode") not in ("exclude", "include"):
             rule["sender_mode"] = "exclude"
         try:
-            rule["cooldown"] = int(rule.get("cooldown", 60))
+            rule["cooldown"] = int(rule.get("cooldown", 1))
         except Exception:
-            rule["cooldown"] = 60
+            rule["cooldown"] = 1
         
         aa = rule["approval_action"]
         if "reply_admin" not in aa: aa["reply_admin"] = ""
@@ -1268,8 +1268,8 @@ def save_config(new_config):
             raw_prefixes = rule.get("sender_prefixes", [])
             rule["sender_prefixes"] = split_config_items(raw_prefixes, split_commas=True)
             
-            try: rule["cooldown"] = int(rule.get("cooldown", 60))
-            except: rule["cooldown"] = 60
+            try: rule["cooldown"] = int(rule.get("cooldown", 1))
+            except: rule["cooldown"] = 1
             clean_replies = []
             raw_replies = rule.get("replies", [])
             if not isinstance(raw_replies, list):
@@ -1989,7 +1989,7 @@ SETTINGS_HTML = """
                     groups: [], check_file: false, keywords: [], file_extensions: [], filename_keywords: [],
                     enable_approval: false,
                     approval_action: defaultApprovalAction(),
-                    sender_mode: 'exclude', sender_prefixes: [], cooldown: 60,
+                    sender_mode: 'exclude', sender_prefixes: [], cooldown: 1,
                     replies: [hydrateReply({type:'text', text: '', min: 1, max: 2})],
                     reply_account: ''
                 });
@@ -2224,7 +2224,7 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_obj, check_c
         rule_id = ensure_rule_id(rule)
         last_time = rule_timers.get(rule_id, 0)
         now = time.time()
-        if now - last_time < rule.get("cooldown", 60): return False, "冷却中", None
+        if now - last_time < rule.get("cooldown", 1): return False, "冷却中", None
     
     return True, "✅ 匹配成功", None
 

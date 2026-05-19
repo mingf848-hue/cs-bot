@@ -1668,7 +1668,7 @@ createApp({
                 approval_action: hydrateApprovalAction(rule.approval_action),
                 sender_mode: rule.sender_mode || "exclude",
                 sender_prefixes: Array.isArray(rule.sender_prefixes) ? rule.sender_prefixes : [],
-                cooldown: rule.cooldown ?? 60,
+                cooldown: rule.cooldown ?? 1,
                 replies: Array.isArray(rule.replies) ? rule.replies.map(hydrateReply) : [],
                 reply_account: rule.reply_account || "",
                 note: rule.note || ""
@@ -1846,6 +1846,7 @@ createApp({
             const rule = hydrateRule({
                 id: `rule_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
                 name: `新规则 #${config.rules.length + 1}`,
+                cooldown: 1,
                 replies: [hydrateReply({ type: "text", text: "", min: 1, max: 2 })]
             });
             config.rules.push(rule);
