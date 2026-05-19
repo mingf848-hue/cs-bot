@@ -758,7 +758,7 @@ def check_sender_allowed(sender_obj, rule):
         
     return True
 
-async def is_monitor_sender_cs(client, event, other_cs_ids, sender_obj=None):
+async def is_monitor_own_account(client, event, other_cs_ids):
     sender_id = event.sender_id
     if event.out:
         return True
@@ -780,6 +780,12 @@ async def is_monitor_sender_cs(client, event, other_cs_ids, sender_obj=None):
                     return True
         except Exception:
             pass
+
+    return False
+
+async def is_monitor_sender_cs(client, event, other_cs_ids, sender_obj=None):
+    if await is_monitor_own_account(client, event, other_cs_ids):
+        return True
 
     if sender_obj is None:
         try:
@@ -2335,8 +2341,8 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_obj, check_c
     is_backend_unlock_rule = rule_has_backend_unlock(rule)
     text = (event.text or "")
     backend_unlock_member = extract_backend_unlock_member_for_rule(rule, text, use_default=False) if is_backend_unlock_rule else None
-    if not is_backend_unlock_rule and await is_monitor_sender_cs(client, event, other_cs_ids, sender_obj):
-        return False, "发送者是客服", None
+    if not is_backend_unlock_rule and await is_monitor_own_account(client, event, other_cs_ids):
+        return False, "发送者是已登录账号", None
     
     # v69: Pass sender object, not name string
     if not is_backend_unlock_rule and not check_sender_allowed(sender_obj, rule):
@@ -2986,8 +2992,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             if approval_keyword_matches(event_text, app_kws):
                 try:
                     approver = await event.get_sender()
-                    if await is_monitor_sender_cs(client, event, other_cs_ids, approver):
-                        logger.info("🛡️ [Approval] 忽略自己/客服账号发出的审批触发词")
+                    if await is_monitor_own_account(client, event, other_cs_ids):
+                        logger.info("🛡️ [Approval] 忽略已登录账号发出的审批触发词")
                         return
 
                     replied_msg = await event.get_reply_message()
@@ -3386,7 +3392,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                 duration_ms=(time.time() - match_started) * 1000
                             )
                     break
-                elif rule_matches_group(event.chat_id, rule.get("groups", [])) and reason in ("是回复消息", "发送者是客服", "发送者被排除", "冷却中"):
+                elif rule_matches_group(event.chat_id, rule.get("groups", [])) and reason in ("是回复消息", "发送者是已登录账号", "发送者被排除", "冷却中"):
                     logger.info(
                         f"↪️ [MonitorSkip] 规则 '{rule.get('name')}' 未执行: {reason} | "
                         f"Chat={event.chat_id} Msg={event.id} Sender={sender_name}"
