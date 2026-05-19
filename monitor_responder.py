@@ -332,21 +332,7 @@ def event_text_preview(event, limit=120):
         return text[:limit] + "..."
     return text
 
-BACKEND_UNLOCK_PHRASES = (
-    "验证码限制",
-    "验证码解锁",
-    "短信解锁",
-    "验证码获取次数过多",
-    "获取验证码次数过多",
-    "解锁短信",
-    "短信验证解锁",
-    "短信频繁 解锁",
-    "解锁短信限制",
-    "验证码频繁",
-    "短信获取次数过多",
-)
-BACKEND_UNLOCK_PHRASE_PATTERN = "|".join(re.escape(phrase).replace(r"\ ", r"\s*") for phrase in BACKEND_UNLOCK_PHRASES)
-BACKEND_UNLOCK_DEFAULT_PATTERN = rf"^\s*([A-Za-z0-9][A-Za-z0-9._-]{{1,63}})\s*(?:{BACKEND_UNLOCK_PHRASE_PATTERN})\b"
+BACKEND_UNLOCK_ACCOUNT_PATTERN = r"([A-Za-z0-9][A-Za-z0-9._-]{1,63})"
 
 def rule_has_backend_unlock(rule):
     return any(
@@ -354,12 +340,13 @@ def rule_has_backend_unlock(rule):
         for step in (rule or {}).get("replies", [])
     )
 
-def extract_backend_unlock_member(text, pattern=""):
+def extract_backend_unlock_member(text, pattern="", use_default=True):
     msg_text = str(text or "").strip()
     if not msg_text:
         return None
     patterns = [pattern.strip()] if pattern and pattern.strip() else []
-    patterns.append(BACKEND_UNLOCK_DEFAULT_PATTERN)
+    if use_default:
+        patterns.append(BACKEND_UNLOCK_ACCOUNT_PATTERN)
     for pat in patterns:
         try:
             m = re.search(pat, msg_text, flags=re.IGNORECASE)
@@ -370,15 +357,12 @@ def extract_backend_unlock_member(text, pattern=""):
             member_name = str(m.group(1) or "").strip()
             if member_name:
                 return member_name.lower()
-    if any(phrase in msg_text for phrase in BACKEND_UNLOCK_PHRASES):
-        words = msg_text.split()
-        return words[0].lower() if words else None
     return None
 
-def extract_backend_unlock_member_for_rule(rule, text):
+def extract_backend_unlock_member_for_rule(rule, text, use_default=True):
     for step in (rule or {}).get("replies", []):
         if isinstance(step, dict) and step.get("type") == "backend_unlock":
-            member_name = extract_backend_unlock_member(text, step.get("member_pattern", ""))
+            member_name = extract_backend_unlock_member(text, step.get("member_pattern", ""), use_default=use_default)
             if member_name:
                 return member_name
     return None
@@ -1796,8 +1780,8 @@ SETTINGS_HTML = """
                                         <div class="grid grid-cols-1 gap-2">
                                             <div class="visual-field">
                                                 <div class="visual-label"><i class="fa-solid fa-unlock"></i>提取账号名的正则</div>
-                                                <input v-model="reply.member_pattern" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] font-mono text-orange-700 bg-orange-50 border-orange-200" placeholder="留空即可使用默认账号识别">
-                                                <div class="text-[9px] text-slate-400 mt-0.5">默认已覆盖短信/验证码解锁常用说法；需要特殊格式时才填写，第一个捕获组为账号。</div>
+                                                <input v-model="reply.member_pattern" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] font-mono text-orange-700 bg-orange-50 border-orange-200" placeholder="留空：从已匹配消息里提取账号">
+                                                <div class="text-[9px] text-slate-400 mt-0.5">触发词在监听关键词里维护；这里仅负责提取账号。留空会取消息中的第一个账号样式文本。</div>
                                             </div>
                                         </div>
                                     </template>
@@ -2186,7 +2170,7 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_obj, check_c
     if event.is_reply: return False, "是回复消息", None
     is_backend_unlock_rule = rule_has_backend_unlock(rule)
     text = (event.text or "")
-    backend_unlock_member = extract_backend_unlock_member_for_rule(rule, text) if is_backend_unlock_rule else None
+    backend_unlock_member = extract_backend_unlock_member_for_rule(rule, text, use_default=False) if is_backend_unlock_rule else None
     if not is_backend_unlock_rule and await is_monitor_sender_cs(client, event, other_cs_ids, sender_obj):
         return False, "发送者是客服", None
     
@@ -3233,8 +3217,6 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                 duration_ms=(time.time() - match_started) * 1000
                             )
                     break
-                elif rule_has_backend_unlock(rule) and any(phrase in (event.text or "") for phrase in BACKEND_UNLOCK_PHRASES):
-                    logger.info(f"🔎 [BackendUnlock] 规则 '{rule.get('name')}' 未触发: {reason} | Chat={event.chat_id} | Msg={event.id}")
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
 
     logger.info("🛠️ [Monitor] Ultimate UI v78 (Full Source) 已启动")

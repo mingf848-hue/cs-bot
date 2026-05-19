@@ -1037,9 +1037,9 @@
                                         <div class="field-card" v-if="step.type === 'backend_unlock'">
                                             <div class="field">
                                                 <label>提取账号名的正则</label>
-                                                <input class="input font-mono" v-model="step.member_pattern" placeholder="留空即可使用默认账号识别">
+                                                <input class="input font-mono" v-model="step.member_pattern" placeholder="留空：从已匹配消息里提取账号">
                                             </div>
-                                            <span class="hint">默认已覆盖短信/验证码解锁常用说法；需要特殊格式时才填写，第一个捕获组为账号。</span>
+                                            <span class="hint">触发词在监听关键词里维护；这里仅负责提取账号。留空会取消息中的第一个账号样式文本。</span>
                                         </div>
                                     </div>
                                     <div style="display:grid;gap:6px;">
