@@ -971,17 +971,22 @@ current_config = DEFAULT_CONFIG.copy()
 rule_timers = {}
 scheduled_message_runs = {}
 VALID_REPLY_TYPES = {"text", "edit_prev", "forward", "copy_file", "amount_logic", "preempt_check", "notify_user", "backend_unlock"}
+BACKEND_UNLOCK_ACTIONS = {"unlock_sms", "clear_login_error"}
 
-# 后台操作指令队列（Tampermonkey 轮询取指令）
+# 后台操作指令队列（Chrome 扩展轮询取指令）
 CMD_SECRET = "J7kN3mQxR9vTsW2pYzBf"
 pending_commands = deque(maxlen=200)
 pending_command_leases = {}
 
-def queue_backend_unlock_command(member_name, rule, event):
+def normalize_backend_action(action):
+    action = str(action or "unlock_sms").strip()
+    return action if action in BACKEND_UNLOCK_ACTIONS else "unlock_sms"
+
+def queue_backend_unlock_command(member_name, rule, event, action="unlock_sms"):
     cmd_id = f"unlock_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
     pending_commands.append({
         "id": cmd_id,
-        "action": "unlock_sms",
+        "action": normalize_backend_action(action),
         "member_name": member_name,
         "source": "monitor",
         "rule": rule.get("name") or rule.get("id") or "",
@@ -1176,6 +1181,7 @@ def load_config(system_cs_prefixes):
             r["text"] = str(r.get("text", "") or "")
             r["forward_to"] = str(r.get("forward_to", "") or "").strip()
             r["member_pattern"] = str(r.get("member_pattern", "") or "").strip()
+            r["backend_action"] = normalize_backend_action(r.get("backend_action", "unlock_sms"))
             if r.get("type") == "amount_logic":
                 amount_delay_defaults = (
                     ("high_reply_min", r.get("min", 1.0)),
@@ -1286,6 +1292,7 @@ def save_config(new_config):
                 r["text"] = str(r.get("text", "") or "")
                 r["forward_to"] = str(r.get("forward_to", "") or "").strip()
                 r["member_pattern"] = str(r.get("member_pattern", "") or "").strip()
+                r["backend_action"] = normalize_backend_action(r.get("backend_action", "unlock_sms"))
                 if r.get("type") == "amount_logic":
                     amount_delay_defaults = (
                         ("high_reply_min", r.get("min", 1.0)),
@@ -1541,7 +1548,6 @@ SETTINGS_HTML = """
         </div>
 
         <div class="flex items-center gap-3">
-            <a href="/tool/backend_unlock_userscript" target="_blank" rel="noopener" class="script-link"><i class="fa-solid fa-code"></i>油猴脚本</a>
             <a href="/tool/zd_unlock_extension.zip" class="script-link"><i class="fa-solid fa-puzzle-piece"></i>Chrome扩展</a>
             <label class="flex items-center gap-1.5 cursor-pointer select-none bg-slate-50 px-2 py-1 rounded border border-slate-200 hover:border-slate-300 transition-colors" title="手动总开关">
                 <div class="w-2 h-2 rounded-full" :class="config.enabled ? 'bg-green-500' : 'bg-red-500'"></div>
@@ -1793,6 +1799,13 @@ SETTINGS_HTML = """
                                     <template v-if="reply.type === 'backend_unlock'">
                                         <div class="grid grid-cols-1 gap-2">
                                             <div class="visual-field">
+                                                <div class="visual-label"><i class="fa-solid fa-key"></i>解锁类型</div>
+                                                <select v-model="reply.backend_action" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] text-orange-700 bg-orange-50 border-orange-200">
+                                                    <option value="unlock_sms">短信/验证码限制</option>
+                                                    <option value="clear_login_error">登录密码试错限制</option>
+                                                </select>
+                                            </div>
+                                            <div class="visual-field">
                                                 <div class="visual-label"><i class="fa-solid fa-unlock"></i>提取账号名的正则</div>
                                                 <input v-model="reply.member_pattern" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] font-mono text-orange-700 bg-orange-50 border-orange-200" placeholder="留空：从已匹配消息里提取账号">
                                                 <div class="text-[9px] text-slate-400 mt-0.5">触发词在监听关键词里维护；这里仅负责提取账号。留空会取消息中的第一个账号样式文本。</div>
@@ -1869,6 +1882,7 @@ SETTINGS_HTML = """
                 text: rep.text || '',
                 forward_to: rep.forward_to || '',
                 member_pattern: rep.member_pattern || '',
+                backend_action: rep.backend_action || 'unlock_sms',
                 min: rep.min ?? 1,
                 max: rep.max ?? 3,
                 high_reply_min: rep.high_reply_min ?? rep.min ?? 1,
@@ -1901,6 +1915,7 @@ SETTINGS_HTML = """
                 if (!reply.text) reply.text = '';
                 if (!reply.forward_to) reply.forward_to = '';
                 if (!reply.member_pattern) reply.member_pattern = '';
+                if (!reply.backend_action) reply.backend_action = 'unlock_sms';
                 if (reply.min === undefined || reply.min === null || reply.min === '') reply.min = 1;
                 if (reply.max === undefined || reply.max === null || reply.max === '') reply.max = 3;
                 if (reply.type === 'amount_logic') {
@@ -2460,172 +2475,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         member_name = str(data.get("member_name") or "")
         if cmd_id:
             pending_command_leases.pop(cmd_id, None)
-        logger.info(f"🔓 [BackendUnlock] 油猴回执: id={cmd_id or '-'} member={member_name or '-'} status={status or '-'}")
+        logger.info(f"🔓 [BackendUnlock] 扩展回执: id={cmd_id or '-'} member={member_name or '-'} status={status or '-'}")
         return jsonify({"ok": True})
-
-    @app.route('/tool/backend_unlock_userscript')
-    def backend_unlock_userscript():
-        bot_base = request.url_root.rstrip("/")
-        default_zd_config = {
-            "value": "x8Bffk8DR9QOcdHPe6fFvQ==",
-            "appkey": "NDbTd5RysclL",
-            "site": "9001",
-            "token": "ZD_BHoMOAbPiZVNsqZXLxn3nuZK6ow8s02i",
-            "user": "aratakito",
-            "uuid": "8510640B-F2AC-4B05-9ADD-52C740C363DB",
-            "version": "0.1",
-            "xsn": "ef187eb236d1f9c0455561a473a0dafc",
-            "xts": "1779105168",
-        }
-        script = f"""// ==UserScript==
-// @name         CS Bot ZD Backend Unlock
-// @namespace    cs-bot-zd-unlock
-// @version      1.0.0
-// @description  Poll CS Bot commands and unlock SMS checks from a whitelisted ZD browser session.
-// @match        https://9sitebg.mvj4e7.com/*
-// @grant        GM_xmlhttpRequest
-// @connect      *
-// ==/UserScript==
-
-(function () {{
-  'use strict';
-
-  const BOT_BASE = {json.dumps(bot_base)};
-  const CMD_SECRET = {json.dumps(CMD_SECRET)};
-  const UNLOCK_URL = 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/unlockIpOrNameForCheckPhone';
-  const REFERRER = 'https://9sitebg.mvj4e7.com/app/vip-manange/vip-list';
-  const DEFAULT_ZD_CONFIG = {json.dumps(default_zd_config, ensure_ascii=False)};
-
-  function cfg(key, fallback = '') {{
-    return localStorage.getItem('csbot_zd_' + key) || DEFAULT_ZD_CONFIG[key] || fallback;
-  }}
-
-  function status(message, tone = '#2563eb') {{
-    let el = document.getElementById('csbot-zd-unlock-status');
-    if (!el) {{
-      el = document.createElement('div');
-      el.id = 'csbot-zd-unlock-status';
-      el.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:999999;padding:8px 10px;border-radius:8px;background:#111827;color:white;font:12px/1.35 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.22);max-width:300px;';
-      document.documentElement.appendChild(el);
-    }}
-    el.style.borderLeft = '4px solid ' + tone;
-    el.textContent = '[CS Bot] ' + message;
-  }}
-
-  function headers() {{
-    return {{
-      'accept': '*/*',
-      'accept-language': 'zh-CN,zh;q=0.9',
-      'content-type': 'application/json',
-      'use-new-api': 'true',
-      'x-api-appkey': cfg('appkey'),
-      'x-api-client': 'web',
-      'x-api-site': cfg('site', '9001'),
-      'x-api-token': cfg('token'),
-      'x-api-user': cfg('user'),
-      'x-api-uuid': cfg('uuid'),
-      'x-api-version': cfg('version', '0.1'),
-      'x-api-xsn': cfg('xsn'),
-      'x-api-xts': cfg('xts')
-    }};
-  }}
-
-  async function ack(cmd, ackStatus, detail = '') {{
-    if (!cmd || !cmd.id) return;
-    try {{
-      await new Promise((resolve, reject) => {{
-        GM_xmlhttpRequest({{
-          method: 'POST',
-          url: `${{BOT_BASE}}/api/cmd/ack?secret=${{encodeURIComponent(CMD_SECRET)}}`,
-          headers: {{ 'content-type': 'application/json', 'accept': 'application/json' }},
-          data: JSON.stringify({{ id: cmd.id, status: ackStatus, member_name: cmd.member_name, detail }}),
-          timeout: 10000,
-          onload: resolve,
-          onerror: reject,
-          ontimeout: () => reject(new Error('ack timeout'))
-        }});
-      }});
-    }} catch (err) {{
-      console.warn('[CS Bot] ack failed', err);
-    }}
-  }}
-
-  async function unlock(cmd) {{
-    let memberName = cmd && cmd.member_name;
-    memberName = String(memberName || '').trim().toLowerCase();
-    if (!memberName) return;
-    const value = cfg('value');
-    if (!value) {{
-      console.warn('[CS Bot] Missing localStorage csbot_zd_value');
-      status('缺少 csbot_zd_value', '#dc2626');
-      await ack(cmd, 'missing_value', 'missing value');
-      return;
-    }}
-    status('执行解锁 ' + memberName, '#f59e0b');
-    try {{
-      const res = await fetch(UNLOCK_URL, {{
-        method: 'POST',
-        mode: 'cors',
-        credentials: 'include',
-        referrer: REFERRER,
-        headers: headers(),
-        body: JSON.stringify({{ value, name: memberName }})
-      }});
-      const text = await res.text();
-      console.log('[CS Bot] unlock', memberName, res.status, text.slice(0, 300));
-      status('解锁 ' + memberName + ' HTTP ' + res.status, res.ok ? '#16a34a' : '#dc2626');
-      await ack(cmd, res.ok ? 'success' : 'http_' + res.status, text.slice(0, 300));
-    }} catch (err) {{
-      console.error('[CS Bot] unlock failed', memberName, err);
-      status('解锁失败 ' + memberName + ': ' + err.message, '#dc2626');
-      await ack(cmd, 'fetch_failed', String(err && err.message || err));
-    }}
-  }}
-
-  function pollCommand() {{
-    return new Promise((resolve, reject) => {{
-      GM_xmlhttpRequest({{
-        method: 'GET',
-        url: `${{BOT_BASE}}/api/cmd/poll?wait=25&secret=${{encodeURIComponent(CMD_SECRET)}}`,
-        headers: {{ 'accept': 'application/json' }},
-        timeout: 35000,
-        onload: (resp) => {{
-          try {{
-            resolve(JSON.parse(resp.responseText || '{{}}'));
-          }} catch (err) {{
-            reject(err);
-          }}
-        }},
-        onerror: reject,
-        ontimeout: () => reject(new Error('poll timeout'))
-      }});
-    }});
-  }}
-
-  async function poll() {{
-    try {{
-      const data = await pollCommand();
-      if (data && data.ok && data.cmd && data.cmd.action === 'unlock_sms' && data.cmd.member_name) {{
-        console.log('[CS Bot] command received', data.cmd);
-        status('收到命令 ' + data.cmd.member_name, '#2563eb');
-        await unlock(data.cmd);
-      }} else {{
-        status('轮询中，暂无命令', '#64748b');
-      }}
-      }} catch (err) {{
-        console.warn('[CS Bot] poll failed', err);
-        status('轮询失败: ' + err.message, '#dc2626');
-      }} finally {{
-      setTimeout(poll, document.hidden ? 250 : 100);
-      }}
-  }}
-
-  console.log('[CS Bot] ZD unlock userscript started. member_name will be lower-cased before unlock.');
-  status('油猴已启动，正在轮询 ' + BOT_BASE, '#16a34a');
-  poll();
-}})();
-"""
-        return Response(script, mimetype='application/javascript; charset=utf-8')
 
     @app.route('/tool/zd_unlock_extension.zip')
     def zd_unlock_extension_zip():
@@ -3170,9 +3021,10 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                             elif stype == "backend_unlock":
                                 member_name = extract_backend_unlock_member(event.text or "", step.get("member_pattern", ""))
                                 if member_name:
-                                    cmd_id = queue_backend_unlock_command(member_name, rule, event)
+                                    backend_action = normalize_backend_action(step.get("backend_action", "unlock_sms"))
+                                    cmd_id = queue_backend_unlock_command(member_name, rule, event, backend_action)
                                     backend_actions += 1
-                                    logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 已下发油猴解锁指令: {member_name} | id={cmd_id}")
+                                    logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 已下发后台指令: {backend_action} {member_name} | id={cmd_id}")
                                 else:
                                     logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 未提取到账号名，已跳过")
 

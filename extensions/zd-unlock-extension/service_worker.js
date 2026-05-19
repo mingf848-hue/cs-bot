@@ -2,6 +2,7 @@ const DEFAULT_CONFIG = {
   botBase: 'https://arcshelp.zeabur.app',
   cmdSecret: 'J7kN3mQxR9vTsW2pYzBf',
   unlockUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/unlockIpOrNameForCheckPhone',
+  loginErrorUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/clearLoginErrorRedisKey',
   value: 'x8Bffk8DR9QOcdHPe6fFvQ==',
   headers: {
     accept: '*/*',
@@ -76,27 +77,48 @@ async function ack(config, cmd, status, detail = '') {
   }
 }
 
-async function unlock(config, cmd) {
+function commandLabel(action) {
+  if (action === 'clear_login_error') return '登录限制解锁';
+  return '短信/验证码解锁';
+}
+
+function commandRequest(config, action, memberName) {
+  if (action === 'clear_login_error') {
+    return {
+      url: config.loginErrorUrl,
+      body: { name: memberName }
+    };
+  }
+  return {
+    url: config.unlockUrl,
+    body: { value: config.value, name: memberName }
+  };
+}
+
+async function runBackendCommand(config, cmd) {
   const memberName = String(cmd.member_name || '').trim().toLowerCase();
   if (!memberName) return;
-  await setStatus({ state: 'running', message: `执行解锁 ${memberName}` });
+  const action = cmd.action === 'clear_login_error' ? 'clear_login_error' : 'unlock_sms';
+  const label = commandLabel(action);
+  await setStatus({ state: 'running', message: `执行${label} ${memberName}` });
   try {
-    const res = await fetch(config.unlockUrl, {
+    const request = commandRequest(config, action, memberName);
+    const res = await fetch(request.url, {
       method: 'POST',
       mode: 'cors',
       credentials: 'include',
       headers: config.headers,
-      body: JSON.stringify({ value: config.value, name: memberName })
+      body: JSON.stringify(request.body)
     });
     const text = await res.text();
     await setStatus({
       state: res.ok ? 'success' : 'error',
-      message: `解锁 ${memberName} HTTP ${res.status}`,
+      message: `${label} ${memberName} HTTP ${res.status}`,
       detail: text.slice(0, 300)
     });
     await ack(config, cmd, res.ok ? 'success' : `http_${res.status}`, text);
   } catch (err) {
-    await setStatus({ state: 'error', message: `解锁失败 ${memberName}`, detail: err.message });
+    await setStatus({ state: 'error', message: `${label}失败 ${memberName}`, detail: err.message });
     await ack(config, cmd, 'fetch_failed', err.message);
   }
 }
@@ -118,9 +140,9 @@ async function pollOnce() {
       cache: 'no-store'
     });
     const data = await res.json();
-    if (data && data.ok && data.cmd && data.cmd.action === 'unlock_sms') {
+    if (data && data.ok && data.cmd && ['unlock_sms', 'clear_login_error'].includes(data.cmd.action)) {
       await setStatus({ state: 'received', message: `收到命令 ${data.cmd.member_name}` });
-      await unlock(config, data.cmd);
+      await runBackendCommand(config, data.cmd);
     } else {
       await setStatus({ state: 'idle', message: '暂无命令' });
     }

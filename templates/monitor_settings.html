@@ -769,9 +769,6 @@
                         <i data-lucide="search"></i>
                         <input v-model="ui.globalSearch" placeholder="全局搜索">
                     </label>
-                    <a class="env-pill script-btn" href="/tool/backend_unlock_userscript" target="_blank" rel="noopener">
-                        <i data-lucide="code-2"></i><span>油猴脚本</span>
-                    </a>
                     <a class="env-pill script-btn" href="/tool/zd_unlock_extension.zip">
                         <i data-lucide="package"></i><span>Chrome扩展</span>
                     </a>
@@ -1035,6 +1032,13 @@
                                         </div>
 
                                         <div class="field-card" v-if="step.type === 'backend_unlock'">
+                                            <div class="field">
+                                                <label>解锁类型</label>
+                                                <select class="select" v-model="step.backend_action">
+                                                    <option value="unlock_sms">短信/验证码限制</option>
+                                                    <option value="clear_login_error">登录密码试错限制</option>
+                                                </select>
+                                            </div>
                                             <div class="field">
                                                 <label>提取账号名的正则</label>
                                                 <input class="input font-mono" v-model="step.member_pattern" placeholder="留空：从已匹配消息里提取账号">
@@ -1637,6 +1641,7 @@ createApp({
             text: rep.text || "",
             forward_to: rep.forward_to || "",
             member_pattern: rep.member_pattern || "",
+            backend_action: rep.backend_action || "unlock_sms",
             min: rep.min ?? 1,
             max: rep.max ?? 3,
             high_reply_min: rep.high_reply_min ?? rep.min ?? 1,
@@ -1900,6 +1905,7 @@ createApp({
             step.text = step.text || "";
             step.forward_to = step.forward_to || "";
             step.member_pattern = step.member_pattern || "";
+            step.backend_action = step.backend_action || "unlock_sms";
             step.min = step.min ?? 1;
             step.max = step.max ?? 3;
             if (step.type === "amount_logic") {
