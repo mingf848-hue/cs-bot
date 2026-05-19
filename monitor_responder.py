@@ -332,8 +332,21 @@ def event_text_preview(event, limit=120):
         return text[:limit] + "..."
     return text
 
-BACKEND_UNLOCK_PHRASES = ("短信获取次数过多", "短信解锁", "验证码解锁")
-BACKEND_UNLOCK_DEFAULT_PATTERN = r"^\s*([A-Za-z0-9][A-Za-z0-9._-]{1,63})\s*(?:短信获取次数过多|短信解锁|验证码解锁)\b"
+BACKEND_UNLOCK_PHRASES = (
+    "验证码限制",
+    "验证码解锁",
+    "短信解锁",
+    "验证码获取次数过多",
+    "获取验证码次数过多",
+    "解锁短信",
+    "短信验证解锁",
+    "短信频繁 解锁",
+    "解锁短信限制",
+    "验证码频繁",
+    "短信获取次数过多",
+)
+BACKEND_UNLOCK_PHRASE_PATTERN = "|".join(re.escape(phrase).replace(r"\ ", r"\s*") for phrase in BACKEND_UNLOCK_PHRASES)
+BACKEND_UNLOCK_DEFAULT_PATTERN = rf"^\s*([A-Za-z0-9][A-Za-z0-9._-]{{1,63}})\s*(?:{BACKEND_UNLOCK_PHRASE_PATTERN})\b"
 
 def rule_has_backend_unlock(rule):
     return any(
@@ -1783,8 +1796,8 @@ SETTINGS_HTML = """
                                         <div class="grid grid-cols-1 gap-2">
                                             <div class="visual-field">
                                                 <div class="visual-label"><i class="fa-solid fa-unlock"></i>提取账号名的正则</div>
-                                                <input v-model="reply.member_pattern" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] font-mono text-orange-700 bg-orange-50 border-orange-200" placeholder="默认：账号 + 短信获取次数过多/短信解锁/验证码解锁">
-                                                <div class="text-[9px] text-slate-400 mt-0.5">从消息文本中提取会员账号名，第一个捕获组即为账号，会自动转小写后下发给油猴。</div>
+                                                <input v-model="reply.member_pattern" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] font-mono text-orange-700 bg-orange-50 border-orange-200" placeholder="留空即可使用默认账号识别">
+                                                <div class="text-[9px] text-slate-400 mt-0.5">默认已覆盖短信/验证码解锁常用说法；需要特殊格式时才填写，第一个捕获组为账号。</div>
                                             </div>
                                         </div>
                                     </template>

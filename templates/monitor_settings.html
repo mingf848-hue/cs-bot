@@ -1037,9 +1037,9 @@
                                         <div class="field-card" v-if="step.type === 'backend_unlock'">
                                             <div class="field">
                                                 <label>提取账号名的正则</label>
-                                                <input class="input font-mono" v-model="step.member_pattern" placeholder="默认：账号 + 短信获取次数过多/短信解锁/验证码解锁">
+                                                <input class="input font-mono" v-model="step.member_pattern" placeholder="留空即可使用默认账号识别">
                                             </div>
-                                            <span class="hint">从消息文本中提取会员账号名，第一个捕获组为账号，会自动转小写后下发给油猴。</span>
+                                            <span class="hint">默认已覆盖短信/验证码解锁常用说法；需要特殊格式时才填写，第一个捕获组为账号。</span>
                                         </div>
                                     </div>
                                     <div style="display:grid;gap:6px;">
