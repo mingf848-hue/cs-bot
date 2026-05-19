@@ -1053,13 +1053,18 @@
                                                 <select class="select" v-model="step.backend_action">
                                                     <option value="unlock_sms">短信/验证码限制</option>
                                                     <option value="clear_login_error">登录密码试错限制</option>
+                                                    <option value="add_proxy_whitelist">代理 IP 加白</option>
                                                 </select>
                                             </div>
-                                            <div class="field">
+                                            <div class="field" v-if="step.backend_action !== 'add_proxy_whitelist'">
                                                 <label>提取账号名的正则</label>
                                                 <input class="input font-mono" v-model="step.member_pattern" placeholder="留空：从已匹配消息里提取账号">
                                             </div>
-                                            <span class="hint">触发词在监听关键词里维护；这里仅负责提取账号。留空会取消息中的第一个账号样式文本。</span>
+                                            <div class="field" v-else>
+                                                <label>提取 IP 的正则</label>
+                                                <input class="input font-mono" v-model="step.ip_pattern" placeholder="留空：从已匹配消息里提取 IPv4">
+                                            </div>
+                                            <span class="hint">触发词在监听关键词里维护；这里仅负责提取目标值。账号类取账号，代理加白取 IPv4。</span>
                                         </div>
                                     </div>
                                     <div style="display:grid;gap:6px;">
@@ -1657,6 +1662,7 @@ createApp({
             text: rep.text || "",
             forward_to: rep.forward_to || "",
             member_pattern: rep.member_pattern || "",
+            ip_pattern: rep.ip_pattern || "",
             backend_action: rep.backend_action || "unlock_sms",
             min: rep.min ?? 1,
             max: rep.max ?? 3,
@@ -1921,6 +1927,7 @@ createApp({
             step.text = step.text || "";
             step.forward_to = step.forward_to || "";
             step.member_pattern = step.member_pattern || "";
+            step.ip_pattern = step.ip_pattern || "";
             step.backend_action = step.backend_action || "unlock_sms";
             step.min = step.min ?? 1;
             step.max = step.max ?? 3;

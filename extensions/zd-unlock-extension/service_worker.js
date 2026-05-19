@@ -3,6 +3,7 @@ const DEFAULT_CONFIG = {
   cmdSecret: 'J7kN3mQxR9vTsW2pYzBf',
   unlockUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/unlockIpOrNameForCheckPhone',
   loginErrorUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/clearLoginErrorRedisKey',
+  proxyWhitelistUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/system/siteAccessManage/add',
   value: 'x8Bffk8DR9QOcdHPe6fFvQ==',
   headers: {
     accept: '*/*',
@@ -78,31 +79,47 @@ async function ack(config, cmd, status, detail = '') {
 }
 
 function commandLabel(action) {
+  if (action === 'add_proxy_whitelist') return '代理IP加白';
   if (action === 'clear_login_error') return '登录限制解锁';
   return '短信/验证码解锁';
 }
 
-function commandRequest(config, action, memberName) {
+function commandRequest(config, action, targetValue) {
+  if (action === 'add_proxy_whitelist') {
+    return {
+      url: config.proxyWhitelistUrl,
+      body: {
+        ruleType: '2',
+        clientType: 'agent_web',
+        ipType: 0,
+        expMatcher: targetValue,
+        isOperatorOther: 0
+      }
+    };
+  }
   if (action === 'clear_login_error') {
     return {
       url: config.loginErrorUrl,
-      body: { name: memberName }
+      body: { name: targetValue }
     };
   }
   return {
     url: config.unlockUrl,
-    body: { value: config.value, name: memberName }
+    body: { value: config.value, name: targetValue }
   };
 }
 
 async function runBackendCommand(config, cmd) {
-  const memberName = String(cmd.member_name || '').trim().toLowerCase();
-  if (!memberName) return;
-  const action = cmd.action === 'clear_login_error' ? 'clear_login_error' : 'unlock_sms';
+  const action = ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist'].includes(cmd.action) ? cmd.action : 'unlock_sms';
+  const rawValue = cmd.target_value || cmd.member_name || '';
+  const targetValue = action === 'add_proxy_whitelist'
+    ? String(rawValue).trim()
+    : String(rawValue).trim().toLowerCase();
+  if (!targetValue) return;
   const label = commandLabel(action);
-  await setStatus({ state: 'running', message: `执行${label} ${memberName}` });
+  await setStatus({ state: 'running', message: `执行${label} ${targetValue}` });
   try {
-    const request = commandRequest(config, action, memberName);
+    const request = commandRequest(config, action, targetValue);
     const res = await fetch(request.url, {
       method: 'POST',
       mode: 'cors',
@@ -113,12 +130,12 @@ async function runBackendCommand(config, cmd) {
     const text = await res.text();
     await setStatus({
       state: res.ok ? 'success' : 'error',
-      message: `${label} ${memberName} HTTP ${res.status}`,
+      message: `${label} ${targetValue} HTTP ${res.status}`,
       detail: text.slice(0, 300)
     });
     await ack(config, cmd, res.ok ? 'success' : `http_${res.status}`, text);
   } catch (err) {
-    await setStatus({ state: 'error', message: `${label}失败 ${memberName}`, detail: err.message });
+    await setStatus({ state: 'error', message: `${label}失败 ${targetValue}`, detail: err.message });
     await ack(config, cmd, 'fetch_failed', err.message);
   }
 }
@@ -140,8 +157,8 @@ async function pollOnce() {
       cache: 'no-store'
     });
     const data = await res.json();
-    if (data && data.ok && data.cmd && ['unlock_sms', 'clear_login_error'].includes(data.cmd.action)) {
-      await setStatus({ state: 'received', message: `收到命令 ${data.cmd.member_name}` });
+    if (data && data.ok && data.cmd && ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist'].includes(data.cmd.action)) {
+      await setStatus({ state: 'received', message: `收到命令 ${data.cmd.target_value || data.cmd.member_name || ''}` });
       await runBackendCommand(config, data.cmd);
     } else {
       await setStatus({ state: 'idle', message: '暂无命令' });

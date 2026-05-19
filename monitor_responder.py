@@ -333,6 +333,7 @@ def event_text_preview(event, limit=120):
     return text
 
 BACKEND_UNLOCK_ACCOUNT_PATTERN = r"([A-Za-z0-9][A-Za-z0-9._-]{1,63})"
+BACKEND_PROXY_IP_PATTERN = r"\b((?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d))\b"
 
 def rule_has_backend_unlock(rule):
     return any(
@@ -362,10 +363,35 @@ def extract_backend_unlock_member(text, pattern="", use_default=True):
 def extract_backend_unlock_member_for_rule(rule, text, use_default=True):
     for step in (rule or {}).get("replies", []):
         if isinstance(step, dict) and step.get("type") == "backend_unlock":
-            member_name = extract_backend_unlock_member(text, step.get("member_pattern", ""), use_default=use_default)
-            if member_name:
-                return member_name
+            target_value = extract_backend_target(text, step, use_default=use_default)
+            if target_value:
+                return target_value
     return None
+
+def extract_backend_proxy_ip(text, pattern="", use_default=True):
+    msg_text = str(text or "").strip()
+    if not msg_text:
+        return None
+    patterns = [pattern.strip()] if pattern and pattern.strip() else []
+    if use_default:
+        patterns.append(BACKEND_PROXY_IP_PATTERN)
+    for pat in patterns:
+        try:
+            m = re.search(pat, msg_text, flags=re.IGNORECASE)
+        except re.error as e:
+            logger.warning(f"⚠️ [BackendUnlock] IP 正则无效: {e}")
+            continue
+        if m and m.lastindex:
+            ip = str(m.group(1) or "").strip()
+            if ip:
+                return ip
+    return None
+
+def extract_backend_target(text, step, use_default=True):
+    action = normalize_backend_action((step or {}).get("backend_action", "unlock_sms"))
+    if action == "add_proxy_whitelist":
+        return extract_backend_proxy_ip(text, (step or {}).get("ip_pattern", ""), use_default=use_default)
+    return extract_backend_unlock_member(text, (step or {}).get("member_pattern", ""), use_default=use_default)
 
 def record_runtime_event(kind, status, detail="", rule=None, event=None, sender_name="", target_account="", action_count=0, duration_ms=0):
     ts = now_bj()
@@ -971,7 +997,7 @@ current_config = DEFAULT_CONFIG.copy()
 rule_timers = {}
 scheduled_message_runs = {}
 VALID_REPLY_TYPES = {"text", "edit_prev", "forward", "copy_file", "amount_logic", "preempt_check", "notify_user", "backend_unlock"}
-BACKEND_UNLOCK_ACTIONS = {"unlock_sms", "clear_login_error"}
+BACKEND_UNLOCK_ACTIONS = {"unlock_sms", "clear_login_error", "add_proxy_whitelist"}
 
 # 后台操作指令队列（Chrome 扩展轮询取指令）
 CMD_SECRET = "J7kN3mQxR9vTsW2pYzBf"
@@ -982,12 +1008,14 @@ def normalize_backend_action(action):
     action = str(action or "unlock_sms").strip()
     return action if action in BACKEND_UNLOCK_ACTIONS else "unlock_sms"
 
-def queue_backend_unlock_command(member_name, rule, event, action="unlock_sms"):
+def queue_backend_unlock_command(target_value, rule, event, action="unlock_sms"):
     cmd_id = f"unlock_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+    action = normalize_backend_action(action)
     pending_commands.append({
         "id": cmd_id,
-        "action": normalize_backend_action(action),
-        "member_name": member_name,
+        "action": action,
+        "member_name": target_value,
+        "target_value": target_value,
         "source": "monitor",
         "rule": rule.get("name") or rule.get("id") or "",
         "chat_id": event.chat_id,
@@ -1181,6 +1209,7 @@ def load_config(system_cs_prefixes):
             r["text"] = str(r.get("text", "") or "")
             r["forward_to"] = str(r.get("forward_to", "") or "").strip()
             r["member_pattern"] = str(r.get("member_pattern", "") or "").strip()
+            r["ip_pattern"] = str(r.get("ip_pattern", "") or "").strip()
             r["backend_action"] = normalize_backend_action(r.get("backend_action", "unlock_sms"))
             if r.get("type") == "amount_logic":
                 amount_delay_defaults = (
@@ -1292,6 +1321,7 @@ def save_config(new_config):
                 r["text"] = str(r.get("text", "") or "")
                 r["forward_to"] = str(r.get("forward_to", "") or "").strip()
                 r["member_pattern"] = str(r.get("member_pattern", "") or "").strip()
+                r["ip_pattern"] = str(r.get("ip_pattern", "") or "").strip()
                 r["backend_action"] = normalize_backend_action(r.get("backend_action", "unlock_sms"))
                 if r.get("type") == "amount_logic":
                     amount_delay_defaults = (
@@ -1803,12 +1833,18 @@ SETTINGS_HTML = """
                                                 <select v-model="reply.backend_action" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] text-orange-700 bg-orange-50 border-orange-200">
                                                     <option value="unlock_sms">短信/验证码限制</option>
                                                     <option value="clear_login_error">登录密码试错限制</option>
+                                                    <option value="add_proxy_whitelist">代理 IP 加白</option>
                                                 </select>
                                             </div>
-                                            <div class="visual-field">
+                                            <div class="visual-field" v-if="reply.backend_action !== 'add_proxy_whitelist'">
                                                 <div class="visual-label"><i class="fa-solid fa-unlock"></i>提取账号名的正则</div>
                                                 <input v-model="reply.member_pattern" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] font-mono text-orange-700 bg-orange-50 border-orange-200" placeholder="留空：从已匹配消息里提取账号">
                                                 <div class="text-[9px] text-slate-400 mt-0.5">触发词在监听关键词里维护；这里仅负责提取账号。留空会取消息中的第一个账号样式文本。</div>
+                                            </div>
+                                            <div class="visual-field" v-else>
+                                                <div class="visual-label"><i class="fa-solid fa-network"></i>提取 IP 的正则</div>
+                                                <input v-model="reply.ip_pattern" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] font-mono text-orange-700 bg-orange-50 border-orange-200" placeholder="留空：从已匹配消息里提取 IPv4">
+                                                <div class="text-[9px] text-slate-400 mt-0.5">触发词在监听关键词里维护；这里仅负责提取 IPv4。</div>
                                             </div>
                                         </div>
                                     </template>
@@ -1882,6 +1918,7 @@ SETTINGS_HTML = """
                 text: rep.text || '',
                 forward_to: rep.forward_to || '',
                 member_pattern: rep.member_pattern || '',
+                ip_pattern: rep.ip_pattern || '',
                 backend_action: rep.backend_action || 'unlock_sms',
                 min: rep.min ?? 1,
                 max: rep.max ?? 3,
@@ -1915,6 +1952,7 @@ SETTINGS_HTML = """
                 if (!reply.text) reply.text = '';
                 if (!reply.forward_to) reply.forward_to = '';
                 if (!reply.member_pattern) reply.member_pattern = '';
+                if (!reply.ip_pattern) reply.ip_pattern = '';
                 if (!reply.backend_action) reply.backend_action = 'unlock_sms';
                 if (reply.min === undefined || reply.min === null || reply.min === '') reply.min = 1;
                 if (reply.max === undefined || reply.max === null || reply.max === '') reply.max = 3;
@@ -3019,14 +3057,14 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                     logger.info(f"🔔 [Notify] 规则 '{rule.get('name')}' 已通过 Telegram Bot 通知: {notify_target}")
 
                             elif stype == "backend_unlock":
-                                member_name = extract_backend_unlock_member(event.text or "", step.get("member_pattern", ""))
-                                if member_name:
-                                    backend_action = normalize_backend_action(step.get("backend_action", "unlock_sms"))
-                                    cmd_id = queue_backend_unlock_command(member_name, rule, event, backend_action)
+                                backend_action = normalize_backend_action(step.get("backend_action", "unlock_sms"))
+                                target_value = extract_backend_target(event.text or "", step)
+                                if target_value:
+                                    cmd_id = queue_backend_unlock_command(target_value, rule, event, backend_action)
                                     backend_actions += 1
-                                    logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 已下发后台指令: {backend_action} {member_name} | id={cmd_id}")
+                                    logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 已下发后台指令: {backend_action} {target_value} | id={cmd_id}")
                                 else:
-                                    logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 未提取到账号名，已跳过")
+                                    logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 未提取到目标值，已跳过")
 
                             else: # text
                                 content = step.get("text", "")
