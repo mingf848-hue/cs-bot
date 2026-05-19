@@ -521,13 +521,19 @@
             background: #fff;
             padding: 10px;
             display: grid;
-            grid-template-columns: 58px minmax(0, 1fr) 32px;
+            grid-template-columns: 58px minmax(0, 1fr) 34px;
             gap: 12px;
             align-items: start;
-            transition: border .16s ease, box-shadow .16s ease;
+            transition: border .16s ease, box-shadow .16s ease, opacity .14s ease, transform .14s ease;
         }
 
         .flow-item:hover { border-color: #cfd6ff; box-shadow: 0 10px 26px rgba(28,39,64,.06); }
+        .flow-list.drag-active .flow-item { user-select: none; }
+        .flow-item.is-dragging { opacity: .46; transform: scale(.992); }
+        .flow-item.is-drop-target {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(37,99,235,.11), 0 12px 28px rgba(28,39,64,.08);
+        }
         .delay-pill {
             display: grid;
             place-items: center;
@@ -549,8 +555,11 @@
         .delay-text { color: #657187; font-size: 12px; font-weight: 700; }
         .flow-main { display: grid; gap: 7px; min-width: 0; }
         .flow-top { display: grid; grid-template-columns: minmax(165px, .36fr) minmax(0, 1fr); gap: 12px; }
+        .step-actions { display: grid; gap: 6px; }
         .step-menu { width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; color: #536078; }
         .step-menu:hover { background: #f2f5fb; }
+        .step-drag { cursor: grab; color: #7a8498; }
+        .step-drag:active { cursor: grabbing; }
         .delay-grid { display: grid; grid-template-columns: 1fr 12px 1fr; gap: 5px; align-items: center; }
         .delay-grid .input { text-align: center; padding: 0 6px; }
         .field-card { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fbfcff; display: grid; gap: 8px; }
@@ -957,8 +966,14 @@
                                 <div class="section-title">执行动作流</div>
                                 <button class="tiny-btn" @click="addStep(currentRule)"><i data-lucide="plus"></i>添加步骤</button>
                             </div>
-                            <div class="flow-list">
-                                <article class="flow-item" v-for="(step, index) in currentRule.replies" :key="index">
+                            <div class="flow-list" :class="{'drag-active': isStepDragScope('main')}">
+                                <article class="flow-item"
+                                    v-for="(step, index) in currentRule.replies"
+                                    :key="index"
+                                    :class="{'is-dragging': isStepDragging('main', index), 'is-drop-target': isStepDropTarget('main', index)}"
+                                    @dragenter.prevent="overStepDrag('main', index)"
+                                    @dragover.prevent="overStepDrag('main', index, $event)"
+                                    @drop.prevent="dropStepDrag('main', index)">
                                     <div class="delay-pill">
                                         <div class="delay-circle">{{ index + 1 }}</div>
                                         <div class="delay-text">{{ displayDelay(step) }}</div>
@@ -1096,7 +1111,13 @@
                                             <span class="hint">触发词在监听关键词里维护；这里仅负责提取目标值。账号类取账号，代理加白取 IPv4。</span>
                                         </div>
                                     </div>
-                                    <div style="display:grid;gap:6px;">
+                                    <div class="step-actions">
+                                        <button class="step-menu step-drag"
+                                            draggable="true"
+                                            @dragstart="startStepDrag('main', index, $event)"
+                                            @dragend="endStepDrag"
+                                            aria-label="拖动排序"
+                                            title="拖动排序"><i data-lucide="grip-vertical"></i></button>
                                         <button class="step-menu" @click="duplicateStep(currentRule, index)" aria-label="复制步骤"><i data-lucide="copy"></i></button>
                                         <button class="step-menu" @click="removeStep(currentRule, index)" aria-label="删除步骤"><i data-lucide="trash-2"></i></button>
                                     </div>
@@ -1134,8 +1155,14 @@
                                     </div>
                                     <button class="tiny-btn" @click="addStep(currentRule.approval_action)"><i data-lucide="plus"></i>添加动作</button>
                                 </div>
-                                <div class="flow-list">
-                                    <article class="flow-item" v-for="(step, index) in currentRule.approval_action.replies" :key="`approval-${index}`">
+                                <div class="flow-list" :class="{'drag-active': isStepDragScope('approval')}">
+                                    <article class="flow-item"
+                                        v-for="(step, index) in currentRule.approval_action.replies"
+                                        :key="`approval-${index}`"
+                                        :class="{'is-dragging': isStepDragging('approval', index), 'is-drop-target': isStepDropTarget('approval', index)}"
+                                        @dragenter.prevent="overStepDrag('approval', index)"
+                                        @dragover.prevent="overStepDrag('approval', index, $event)"
+                                        @drop.prevent="dropStepDrag('approval', index)">
                                         <div class="delay-pill">
                                             <div class="delay-circle">{{ index + 1 }}</div>
                                             <div class="delay-text">{{ displayDelay(step) }}</div>
@@ -1220,7 +1247,13 @@
                                                 </div>
                                             </div>
                                         </div>
-                                        <div style="display:grid;gap:6px;">
+                                        <div class="step-actions">
+                                            <button class="step-menu step-drag"
+                                                draggable="true"
+                                                @dragstart="startStepDrag('approval', index, $event)"
+                                                @dragend="endStepDrag"
+                                                aria-label="拖动排序"
+                                                title="拖动排序"><i data-lucide="grip-vertical"></i></button>
                                             <button class="step-menu" @click="duplicateStep(currentRule.approval_action, index)" aria-label="复制动作"><i data-lucide="copy"></i></button>
                                             <button class="step-menu" @click="removeStep(currentRule.approval_action, index)" aria-label="删除动作"><i data-lucide="trash-2"></i></button>
                                         </div>
@@ -1727,6 +1760,7 @@ createApp({
             autoSaving: false,
             togglingMonitor: false
         });
+        const stepDrag = reactive({ scope: "", from: -1, over: -1 });
         const toast = reactive({ show: false, msg: "", type: "success" });
         const formatDateTimeLocal = (date) => {
             const pad = value => String(value).padStart(2, "0");
@@ -2151,6 +2185,56 @@ createApp({
             rule.replies.splice(index, 1);
             refreshIcons();
         };
+        const stepListByScope = (scope) => {
+            const rule = currentRule.value;
+            if (!rule) return [];
+            if (scope === "approval") {
+                ensureApprovalAction(rule);
+                return rule.approval_action.replies || [];
+            }
+            return rule.replies || [];
+        };
+        const startStepDrag = (scope, index, event) => {
+            stepDrag.scope = scope;
+            stepDrag.from = index;
+            stepDrag.over = index;
+            if (event?.dataTransfer) {
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("text/plain", `${scope}:${index}`);
+                const card = event.currentTarget?.closest?.(".flow-item");
+                if (card && event.dataTransfer.setDragImage) {
+                    event.dataTransfer.setDragImage(card, 28, 20);
+                }
+            }
+        };
+        const overStepDrag = (scope, index, event) => {
+            if (stepDrag.scope !== scope || stepDrag.from < 0) return;
+            stepDrag.over = index;
+            if (event?.dataTransfer) event.dataTransfer.dropEffect = "move";
+        };
+        const dropStepDrag = (scope, index) => {
+            if (stepDrag.scope !== scope || stepDrag.from < 0) {
+                endStepDrag();
+                return;
+            }
+            const list = stepListByScope(scope);
+            const from = stepDrag.from;
+            const to = Math.max(0, Math.min(index, list.length - 1));
+            if (from !== to && list[from]) {
+                const [moved] = list.splice(from, 1);
+                list.splice(to, 0, moved);
+            }
+            endStepDrag();
+            refreshIcons();
+        };
+        const endStepDrag = () => {
+            stepDrag.scope = "";
+            stepDrag.from = -1;
+            stepDrag.over = -1;
+        };
+        const isStepDragScope = (scope) => stepDrag.scope === scope;
+        const isStepDragging = (scope, index) => stepDrag.scope === scope && stepDrag.from === index;
+        const isStepDropTarget = (scope, index) => stepDrag.scope === scope && stepDrag.over === index && stepDrag.from !== index;
         const normalizeStep = (step) => {
             step.text = step.text || "";
             step.forward_to = step.forward_to || "";
@@ -2527,6 +2611,7 @@ createApp({
             keywordsRaw,
             listToString, setList, setIntList, splitInline, shortGroups, primaryKeyword, stepCount,
             addStep, duplicateStep, removeStep, normalizeStep, displayDelay,
+            startStepDrag, overStepDrag, dropStepDrag, endStepDrag, isStepDragScope, isStepDragging, isStepDropTarget,
             amountPart, setAmountPart, amountLowLines, setAmountLowLines,
             ensureApprovalAction, onRecoveryImage, clearRecoveryImage, runRecovery,
             deltaText, statusLabel, recordClass, recordIcon, formatRecordTime, recordFilterCount
