@@ -571,6 +571,23 @@ def split_config_items(raw, split_commas=False):
         items = [raw]
     return [str(x).strip() for x in items if str(x).strip()]
 
+def split_sender_prefix_items(raw):
+    items = split_config_items(raw, split_commas=True)
+    result = []
+    for item in items:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        parts = re.findall(r'@[A-Za-z0-9_]{2,}', text)
+        compact = re.sub(r'\s+', '', text)
+        if len(parts) > 1 and ''.join(parts) == compact:
+            result.extend(parts)
+        elif len(parts) > 1 and compact.count('@') == len(parts):
+            result.extend(parts)
+        else:
+            result.append(text)
+    return result
+
 def clean_group_ids(raw):
     result = []
     for item in split_config_items(raw, split_commas=True):
@@ -581,6 +598,13 @@ def clean_group_ids(raw):
             except Exception:
                 pass
     return result
+
+def rule_matches_group(chat_id, groups):
+    try:
+        cid = int(chat_id)
+    except Exception:
+        return False
+    return cid in set(clean_group_ids(groups))
 
 def normalize_resource_label(value, fallback="未命名"):
     text = str(value or "").strip()
@@ -628,23 +652,24 @@ def normalize_monitor_resources(raw_resources=None, rules=None, default_prefixes
         raw_prefix_resources = split_config_items(raw_prefix_resources, split_commas=True)
     for item in raw_prefix_resources:
         if isinstance(item, dict):
-            value = str(item.get("value", item.get("name", item.get("label", ""))) or "").strip()
-            label = item.get("label", item.get("name", value))
+            raw_value = str(item.get("value", item.get("name", item.get("label", ""))) or "").strip()
+            raw_label = item.get("label", item.get("name", raw_value))
         else:
-            value = str(item or "").strip()
-            label = value
-        if not value:
-            continue
-        key = value.lower()
-        if key in seen_prefixes:
-            continue
-        seen_prefixes.add(key)
-        sender_prefixes.append({
-            "value": value,
-            "label": normalize_resource_label(label, value)
-        })
+            raw_value = str(item or "").strip()
+            raw_label = raw_value
+        for value in split_sender_prefix_items(raw_value):
+            if not value:
+                continue
+            key = value.lower()
+            if key in seen_prefixes:
+                continue
+            seen_prefixes.add(key)
+            sender_prefixes.append({
+                "value": value,
+                "label": normalize_resource_label(raw_label if raw_value == value else value, value)
+            })
 
-    for prefix in list(default_prefixes) + [p for rule in rules if isinstance(rule, dict) for p in split_config_items(rule.get("sender_prefixes", []), split_commas=True)]:
+    for prefix in list(default_prefixes) + [p for rule in rules if isinstance(rule, dict) for p in split_sender_prefix_items(rule.get("sender_prefixes", []))]:
         value = str(prefix or "").strip()
         if not value:
             continue
@@ -1089,6 +1114,41 @@ def normalize_backend_action(action):
     action = str(action or "unlock_sms").strip()
     return action if action in BACKEND_UNLOCK_ACTIONS else "unlock_sms"
 
+def normalize_reply_steps(raw_replies):
+    clean_replies = []
+    if not isinstance(raw_replies, list):
+        return clean_replies
+    for r in raw_replies:
+        if not isinstance(r, dict):
+            continue
+        try: r["min"] = float(r.get("min", 1.0))
+        except Exception: r["min"] = 1.0
+        try: r["max"] = float(r.get("max", 3.0))
+        except Exception: r["max"] = 3.0
+        if "type" not in r: r["type"] = "text"
+        if r.get("type") not in VALID_REPLY_TYPES: r["type"] = "text"
+        r["text"] = str(r.get("text", "") or "")
+        r["forward_to"] = str(r.get("forward_to", "") or "").strip()
+        r["member_pattern"] = str(r.get("member_pattern", "") or "").strip()
+        r["ip_pattern"] = str(r.get("ip_pattern", "") or "").strip()
+        r["backend_action"] = normalize_backend_action(r.get("backend_action", "unlock_sms"))
+        if r.get("type") == "amount_logic":
+            amount_delay_defaults = (
+                ("high_reply_min", r.get("min", 1.0)),
+                ("high_reply_max", r.get("max", 3.0)),
+                ("low_first_min", r.get("min", 1.0)),
+                ("low_first_max", r.get("max", 3.0)),
+                ("low_forward_min", 1.5),
+                ("low_forward_max", 3.0),
+                ("low_reply_min", 1.5),
+                ("low_reply_max", 3.0),
+            )
+            for key, default in amount_delay_defaults:
+                try: r[key] = float(r.get(key, default))
+                except Exception: r[key] = default
+        clean_replies.append(r)
+    return clean_replies
+
 def queue_backend_unlock_command(target_value, rule, event, action="unlock_sms"):
     cmd_id = f"unlock_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
     action = normalize_backend_action(action)
@@ -1261,7 +1321,7 @@ def load_config(system_cs_prefixes):
         rule["keywords"] = split_config_items(rule.get("keywords", []))
         rule["file_extensions"] = [x.lower().replace('.', '') for x in split_config_items(rule.get("file_extensions", []), split_commas=True)]
         rule["filename_keywords"] = split_config_items(rule.get("filename_keywords", []), split_commas=True)
-        rule["sender_prefixes"] = split_config_items(rule.get("sender_prefixes", []), split_commas=True)
+        rule["sender_prefixes"] = split_sender_prefix_items(rule.get("sender_prefixes", []))
         if rule.get("sender_mode") not in ("exclude", "include"):
             rule["sender_mode"] = "exclude"
         try:
@@ -1273,41 +1333,12 @@ def load_config(system_cs_prefixes):
         if "reply_admin" not in aa: aa["reply_admin"] = ""
         if "reply_origin" not in aa: aa["reply_origin"] = ""
         if "forward_to" not in aa: aa["forward_to"] = ""
+        aa["replies"] = normalize_reply_steps(aa.get("replies", []))
         for i in range(1, 4):
             if f"delay_{i}_min" not in aa: aa[f"delay_{i}_min"] = 1.0
             if f"delay_{i}_max" not in aa: aa[f"delay_{i}_max"] = 2.0
 
-        clean_replies = []
-        for r in rule.get("replies", []):
-            if not isinstance(r, dict):
-                continue
-            try: r["min"] = float(r.get("min", 1.0))
-            except Exception: r["min"] = 1.0
-            try: r["max"] = float(r.get("max", 3.0))
-            except Exception: r["max"] = 3.0
-            if "type" not in r: r["type"] = "text"
-            if r.get("type") not in VALID_REPLY_TYPES: r["type"] = "text"
-            r["text"] = str(r.get("text", "") or "")
-            r["forward_to"] = str(r.get("forward_to", "") or "").strip()
-            r["member_pattern"] = str(r.get("member_pattern", "") or "").strip()
-            r["ip_pattern"] = str(r.get("ip_pattern", "") or "").strip()
-            r["backend_action"] = normalize_backend_action(r.get("backend_action", "unlock_sms"))
-            if r.get("type") == "amount_logic":
-                amount_delay_defaults = (
-                    ("high_reply_min", r.get("min", 1.0)),
-                    ("high_reply_max", r.get("max", 3.0)),
-                    ("low_first_min", r.get("min", 1.0)),
-                    ("low_first_max", r.get("max", 3.0)),
-                    ("low_forward_min", 1.5),
-                    ("low_forward_max", 3.0),
-                    ("low_reply_min", 1.5),
-                    ("low_reply_max", 3.0),
-                )
-                for key, default in amount_delay_defaults:
-                    try: r[key] = float(r.get(key, default))
-                    except Exception: r[key] = default
-            clean_replies.append(r)
-        rule["replies"] = clean_replies
+        rule["replies"] = normalize_reply_steps(rule.get("replies", []))
 
         if rule["sender_mode"] == "exclude" and not rule["sender_prefixes"]:
             rule["sender_prefixes"] = list(system_cs_prefixes)
@@ -1375,6 +1406,7 @@ def save_config(new_config):
             aa["reply_admin"] = str(aa.get("reply_admin", "")).strip()
             aa["reply_origin"] = str(aa.get("reply_origin", "")).strip()
             aa["forward_to"] = str(aa.get("forward_to", "")).strip()
+            aa["replies"] = normalize_reply_steps(aa.get("replies", []))
             
             for i in range(1, 4):
                 try: aa[f"delay_{i}_min"] = float(aa.get(f"delay_{i}_min", 1.0))
@@ -1383,44 +1415,11 @@ def save_config(new_config):
                 except: aa[f"delay_{i}_max"] = 2.0
             
             raw_prefixes = rule.get("sender_prefixes", [])
-            rule["sender_prefixes"] = split_config_items(raw_prefixes, split_commas=True)
+            rule["sender_prefixes"] = split_sender_prefix_items(raw_prefixes)
             
             try: rule["cooldown"] = int(rule.get("cooldown", 1))
             except: rule["cooldown"] = 1
-            clean_replies = []
-            raw_replies = rule.get("replies", [])
-            if not isinstance(raw_replies, list):
-                raw_replies = []
-            for r in raw_replies:
-                if not isinstance(r, dict):
-                    continue
-                try: r["min"] = float(r.get("min", 1.0))
-                except: r["min"] = 1.0
-                try: r["max"] = float(r.get("max", 3.0))
-                except: r["max"] = 3.0
-                if "type" not in r: r["type"] = "text"
-                if r.get("type") not in VALID_REPLY_TYPES: r["type"] = "text"
-                r["text"] = str(r.get("text", "") or "")
-                r["forward_to"] = str(r.get("forward_to", "") or "").strip()
-                r["member_pattern"] = str(r.get("member_pattern", "") or "").strip()
-                r["ip_pattern"] = str(r.get("ip_pattern", "") or "").strip()
-                r["backend_action"] = normalize_backend_action(r.get("backend_action", "unlock_sms"))
-                if r.get("type") == "amount_logic":
-                    amount_delay_defaults = (
-                        ("high_reply_min", r.get("min", 1.0)),
-                        ("high_reply_max", r.get("max", 3.0)),
-                        ("low_first_min", r.get("min", 1.0)),
-                        ("low_first_max", r.get("max", 3.0)),
-                        ("low_forward_min", 1.5),
-                        ("low_forward_max", 3.0),
-                        ("low_reply_min", 1.5),
-                        ("low_reply_max", 3.0),
-                    )
-                    for key, default in amount_delay_defaults:
-                        try: r[key] = float(r.get(key, default))
-                        except Exception: r[key] = default
-                clean_replies.append(r)
-            rule["replies"] = clean_replies
+            rule["replies"] = normalize_reply_steps(rule.get("replies", []))
             clean_rules.append(rule)
 
         new_config["rules"] = clean_rules
@@ -2321,7 +2320,7 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_obj, check_c
     if not rule.get("enabled", True): 
         return False, "规则已关闭", None
 
-    if event.chat_id not in rule.get("groups", []): return False, "群组不符", None
+    if not rule_matches_group(event.chat_id, rule.get("groups", [])): return False, "群组不符", None
     if event.is_reply: return False, "是回复消息", None
     is_backend_unlock_rule = rule_has_backend_unlock(rule)
     text = (event.text or "")
@@ -2820,6 +2819,151 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             except Exception as e:
                 logger.error(f"❌ [OTP] 初始化 {acc_name} 失败: {e}")
 
+    async def execute_rule_steps(target_client, rule, source_event, source_message, sender_name, steps=None):
+        sent_msgs = []
+        notify_sent = False
+        backend_actions = 0
+        preempted = False
+        action_failed = False
+        steps = normalize_reply_steps(steps if steps is not None else rule.get("replies", []))
+        source_chat_id = getattr(source_event, "chat_id", None)
+        source_msg_id = getattr(source_event, "id", None)
+        source_text = getattr(source_event, "text", None) or getattr(source_event, "raw_text", "") or ""
+        source_file = getattr(source_message, "file", None)
+        source_media = getattr(source_message, "media", None) or getattr(source_file, "media", None)
+
+        try:
+            for step in steps:
+                stype = step.get("type", "text")
+                if stype != "amount_logic":
+                    await asyncio.sleep(random.uniform(step.get("min", 1), step.get("max", 3)))
+
+                if stype == "forward":
+                    tgt = step.get("forward_to")
+                    if tgt:
+                        tgt_chat_id = parse_peer_target(tgt)
+                        sent = await target_client.forward_messages(tgt_chat_id, source_message)
+                        remember_sent_message(sent_msgs, tgt_chat_id, sent)
+
+                elif stype == "edit_prev":
+                    content = format_caption(step.get("text", ""))
+                    if not content:
+                        continue
+                    last_chat_id, last_sent = get_last_sent_record(sent_msgs)
+                    last_msg_id = getattr(last_sent, "id", last_sent)
+                    if not last_chat_id or not last_msg_id:
+                        logger.info(f"📝 [EditPrev] 规则 '{rule.get('name')}' 暂无可编辑的上一条消息，已跳过")
+                        continue
+                    edited = await target_client.edit_message(last_chat_id, last_msg_id, content)
+                    if edited:
+                        sent_msgs[-1] = (last_chat_id, edited)
+
+                elif stype == "copy_file":
+                    tgt = step.get("forward_to")
+                    if tgt and source_media:
+                        tgt_chat_id = parse_peer_target(tgt)
+                        sent = await target_client.send_file(tgt_chat_id, source_media, caption=format_caption(step.get("text", "")))
+                        remember_sent_message(sent_msgs, tgt_chat_id, sent)
+
+                elif stype == "amount_logic":
+                    cfg = step.get("text", "")
+                    tgt = step.get("forward_to")
+                    parts = cfg.split('|')
+                    if len(parts) >= 3:
+                        thresh = float(parts[0])
+                        found, amt = parse_smart_amount(source_text)
+                        if found:
+                            logger.info(f"💰 [Amount] 识别到金额: {amt}")
+                            if amt >= thresh:
+                                await asyncio.sleep(random_delay_from_step(step, "high_reply_min", "high_reply_max", step.get("min", 1), step.get("max", 3)))
+                                sent = await target_client.send_message(source_chat_id, format_caption(parts[1]), reply_to=source_msg_id)
+                                remember_sent_message(sent_msgs, source_chat_id, sent)
+                            else:
+                                low_replies = split_reply_sequence(parts[2])
+                                if low_replies:
+                                    await asyncio.sleep(random_delay_from_step(step, "low_first_min", "low_first_max", step.get("min", 1), step.get("max", 3)))
+                                    sent = await target_client.send_message(source_chat_id, format_caption(low_replies[0]), reply_to=source_msg_id)
+                                    remember_sent_message(sent_msgs, source_chat_id, sent)
+                                if tgt:
+                                    tgt_chat_id = parse_peer_target(tgt)
+                                    if low_replies:
+                                        await asyncio.sleep(random_delay_from_step(step, "low_forward_min", "low_forward_max"))
+                                    fwd_msg = await target_client.forward_messages(tgt_chat_id, source_message)
+                                    remember_sent_message(sent_msgs, tgt_chat_id, fwd_msg)
+                                for sub_msg in low_replies[1:]:
+                                    await asyncio.sleep(random_delay_from_step(step, "low_reply_min", "low_reply_max"))
+                                    sent = await target_client.send_message(source_chat_id, format_caption(sub_msg), reply_to=source_msg_id)
+                                    remember_sent_message(sent_msgs, source_chat_id, sent)
+                        else:
+                            logger.warning(f"⚠️ [Monitor] Amount logic matched text but no specific amount found.")
+
+                elif stype == "preempt_check":
+                    if not sent_msgs:
+                        continue
+                    me = await target_client.get_me()
+                    source_sent_ids = get_sent_ids_for_chat(sent_msgs, source_chat_id)
+                    first_source_sent_id = get_first_sent_id_for_chat(sent_msgs, source_chat_id)
+                    if not first_source_sent_id:
+                        logger.info(f"🛡️ [Preempt] 原群尚无本规则发送消息，跳过抢答检测")
+                        continue
+                    hist_limit = max(20, len(source_sent_ids) + 10)
+                    hist = await target_client.get_messages(source_chat_id, limit=hist_limit, min_id=source_msg_id)
+                    has_preempt = False
+                    for m in hist:
+                        if not getattr(m, "id", None) or m.id >= first_source_sent_id:
+                            continue
+                        if m.id in source_sent_ids:
+                            continue
+                        if not getattr(m, "sender_id", None) or m.sender_id in (me.id, getattr(source_event, "sender_id", None)):
+                            continue
+                        if not is_same_reply_flow(m, source_message):
+                            continue
+                        has_preempt = True
+                        break
+                    if has_preempt:
+                        await delete_sent_messages(target_client, sent_msgs)
+                        sent_msgs = []
+                        preempted = True
+                        logger.info(f"🧹 [Preempt] 检测到抢答，已删除规则 '{rule.get('name')}' 的已发送消息")
+                        break
+
+                elif stype == "notify_user":
+                    notify_target = parse_peer_target(step.get("forward_to"))
+                    notify_text = format_bot_notice(step.get("text", ""), source_event, rule, sender_name)
+                    if notify_target and notify_text:
+                        await send_bot_notice(notify_target, notify_text)
+                        notify_sent = True
+                        logger.info(f"🔔 [Notify] 规则 '{rule.get('name')}' 已通过 Telegram Bot 通知: {notify_target}")
+
+                elif stype == "backend_unlock":
+                    backend_action = normalize_backend_action(step.get("backend_action", "unlock_sms"))
+                    target_value = extract_backend_target(source_text, step)
+                    if target_value:
+                        cmd_id = queue_backend_unlock_command(target_value, rule, source_event, backend_action)
+                        backend_actions += 1
+                        logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 已下发后台指令: {backend_action} {target_value} | id={cmd_id}")
+                    else:
+                        logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 未提取到目标值，已跳过")
+
+                else:
+                    content = step.get("text", "")
+                    if content:
+                        sent = await target_client.send_message(source_chat_id, format_caption(content), reply_to=source_msg_id)
+                        remember_sent_message(sent_msgs, source_chat_id, sent)
+                        if global_main_handler:
+                            asyncio.create_task(global_main_handler(events.NewMessage.Event(sent)))
+        except Exception as e:
+            action_failed = True
+            logger.error(f"❌ [Monitor] 规则 '{rule.get('name')}' 执行动作失败: {e}")
+        return {
+            "sent_msgs": sent_msgs,
+            "notify_sent": notify_sent,
+            "backend_actions": backend_actions,
+            "preempted": preempted,
+            "action_failed": action_failed,
+            "action_count": len(sent_msgs) + (1 if notify_sent else 0) + backend_actions,
+        }
+
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
         if event.text == "/debug": await event.reply("Monitor Debug: Alive v78 (Full Source)"); return
@@ -2917,33 +3061,51 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                     )
                                     return
 
-                                await asyncio.sleep(random.uniform(float(action.get("delay_1_min", 1.0)), float(action.get("delay_1_max", 2.0))))
-                                if action.get("reply_admin"):
-                                    await replier_client.send_message(event.chat_id, format_caption(action["reply_admin"]), reply_to=event.id)
-                                    approval_actions += 1
-                                
-                                await asyncio.sleep(random.uniform(float(action.get("delay_2_min", 1.0)), float(action.get("delay_2_max", 3.0))))
-                                fwd_tgt = action.get("forward_to")
-                                if fwd_tgt:
-                                    try:
-                                        await replier_client.forward_messages(parse_peer_target(fwd_tgt), original_msg)
+                                try:
+                                    await asyncio.sleep(random.uniform(float(action.get("delay_1_min", 1.0)), float(action.get("delay_1_max", 2.0))))
+                                    if action.get("reply_admin"):
+                                        await replier_client.send_message(event.chat_id, format_caption(action["reply_admin"]), reply_to=event.id)
                                         approval_actions += 1
-                                    except Exception as e:
-                                        approval_errors.append(f"转发失败：{e}")
-                                        logger.error(f"❌ [Approval] 转发失败: {e}")
+                                except Exception as e:
+                                    approval_errors.append(f"回复领导失败：{e}")
+                                    logger.error(f"❌ [Approval] 回复领导失败: {e}")
 
-                                await asyncio.sleep(random.uniform(float(action.get("delay_3_min", 1.0)), float(action.get("delay_3_max", 2.0))))
-                                if action.get("reply_origin"):
-                                    try:
-                                        await replier_client.send_message(original_msg.chat_id, format_caption(action["reply_origin"]), reply_to=original_msg.id)
-                                        approval_actions += 1
-                                    except Exception as e:
-                                        approval_errors.append(f"回复原消息失败：{e}")
-                                        logger.error(f"❌ [Approval] 回复原消息失败: {e}")
+                                approval_steps = normalize_reply_steps(action.get("replies", []))
+                                if not approval_steps:
+                                    legacy_forward = str(action.get("forward_to") or "").strip()
+                                    legacy_reply = str(action.get("reply_origin") or "").strip()
+                                    if legacy_forward:
+                                        approval_steps.append({
+                                            "type": "forward",
+                                            "forward_to": legacy_forward,
+                                            "min": action.get("delay_2_min", 1.0),
+                                            "max": action.get("delay_2_max", 3.0),
+                                        })
+                                    if legacy_reply:
+                                        approval_steps.append({
+                                            "type": "text",
+                                            "text": legacy_reply,
+                                            "min": action.get("delay_3_min", 1.0),
+                                            "max": action.get("delay_3_max", 2.0),
+                                        })
+
+                                step_result = await execute_rule_steps(
+                                    replier_client,
+                                    rule,
+                                    MessageEventView(original_msg),
+                                    original_msg,
+                                    get_sender_name(orig_sender),
+                                    steps=approval_steps,
+                                )
+                                approval_actions += step_result["action_count"]
+                                if step_result["action_failed"]:
+                                    approval_errors.append("同意后动作流执行失败")
+                                if step_result["preempted"]:
+                                    approval_errors.append("抢答检测命中，已删除同意后动作流消息")
                                 record_runtime_event(
                                     "approval",
-                                    "failed" if approval_errors else "success",
-                                    "；".join(approval_errors) if approval_errors else "审批动作执行完成",
+                                    "skipped" if step_result["preempted"] else ("failed" if approval_errors else "success"),
+                                    "；".join(approval_errors) if approval_errors else "审批动作流执行完成",
                                     rule=rule,
                                     event=event,
                                     sender_name=get_sender_name(approver),

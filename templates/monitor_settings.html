@@ -1000,13 +1000,19 @@
 
                                         <div class="field" v-if="step.type === 'forward'">
                                             <label>转发目标群</label>
-                                            <input class="input" v-model="step.forward_to" placeholder="-1001234567890">
+                                            <select class="select" v-model="step.forward_to">
+                                                <option value="">选择资源群</option>
+                                                <option v-for="group in resourceGroupOptions" :key="`step-forward-${group.id}`" :value="String(group.id)">{{ group.name }}</option>
+                                            </select>
                                         </div>
 
                                         <div class="form-grid" v-if="step.type === 'copy_file'">
                                             <div class="field">
                                                 <label>转发目标群</label>
-                                                <input class="input" v-model="step.forward_to" placeholder="-1001234567890">
+                                                <select class="select" v-model="step.forward_to">
+                                                    <option value="">选择资源群</option>
+                                                    <option v-for="group in resourceGroupOptions" :key="`step-copy-${group.id}`" :value="String(group.id)">{{ group.name }}</option>
+                                                </select>
                                             </div>
                                             <div class="field">
                                                 <label>新文案</label>
@@ -1030,7 +1036,10 @@
                                                 </div>
                                                 <div class="field">
                                                     <label>小额转发群</label>
-                                                    <input class="input" v-model="step.forward_to" placeholder="-1001234567890">
+                                                    <select class="select" v-model="step.forward_to">
+                                                        <option value="">不转发</option>
+                                                        <option v-for="group in resourceGroupOptions" :key="`step-amount-${group.id}`" :value="String(group.id)">{{ group.name }}</option>
+                                                    </select>
                                                 </div>
                                                 <div class="field">
                                                     <label>小额转发延迟</label>
@@ -1110,31 +1119,113 @@
                             <div class="field-card" v-if="currentRule.enable_approval">
                                 <div class="form-grid">
                                     <div class="field full">
-                                        <label>同意后回复领导引用消息</label>
-                                        <textarea class="textarea" v-model="currentRule.approval_action.reply_admin" placeholder="请稍等ART"></textarea>
+                                        <label>同意后回复领导引用消息（可选）</label>
+                                        <textarea class="textarea" v-model="currentRule.approval_action.reply_admin" placeholder="留空则不回复领导"></textarea>
                                     </div>
                                     <div class="field">
-                                        <label>同意后转发原始报备到群</label>
-                                        <input class="input" v-model="currentRule.approval_action.forward_to" placeholder="-1001234567890">
-                                    </div>
-                                    <div class="field">
-                                        <label>同意后回复原始报备</label>
-                                        <textarea class="textarea" v-model="currentRule.approval_action.reply_origin" placeholder="请稍等ART"></textarea>
-                                    </div>
-                                </div>
-                                <div class="form-grid three">
-                                    <div class="field">
-                                        <label>先回领导延迟</label>
+                                        <label>回复领导延迟</label>
                                         <div class="delay-grid"><input class="input" type="number" v-model.number="currentRule.approval_action.delay_1_min"><span class="hint">-</span><input class="input" type="number" v-model.number="currentRule.approval_action.delay_1_max"></div>
                                     </div>
-                                    <div class="field">
-                                        <label>转发延迟</label>
-                                        <div class="delay-grid"><input class="input" type="number" v-model.number="currentRule.approval_action.delay_2_min"><span class="hint">-</span><input class="input" type="number" v-model.number="currentRule.approval_action.delay_2_max"></div>
+                                </div>
+                                <div class="section-head compact">
+                                    <div>
+                                        <div class="section-title">同意后动作流</div>
+                                        <span class="hint">领导引用回复“同意”后，在原始报备消息上执行；可接抢答检测自删。</span>
                                     </div>
-                                    <div class="field">
-                                        <label>回原始报备延迟</label>
-                                        <div class="delay-grid"><input class="input" type="number" v-model.number="currentRule.approval_action.delay_3_min"><span class="hint">-</span><input class="input" type="number" v-model.number="currentRule.approval_action.delay_3_max"></div>
-                                    </div>
+                                    <button class="tiny-btn" @click="addStep(currentRule.approval_action)"><i data-lucide="plus"></i>添加动作</button>
+                                </div>
+                                <div class="flow-list">
+                                    <article class="flow-item" v-for="(step, index) in currentRule.approval_action.replies" :key="`approval-${index}`">
+                                        <div class="delay-pill">
+                                            <div class="delay-circle">{{ index + 1 }}</div>
+                                            <div class="delay-text">{{ displayDelay(step) }}</div>
+                                        </div>
+                                        <div class="flow-main">
+                                            <div class="flow-top">
+                                                <div class="field">
+                                                    <label>动作类型</label>
+                                                    <select class="select" v-model="step.type" @change="normalizeStep(step)">
+                                                        <option value="text">回复原始报备</option>
+                                                        <option value="edit_prev">编辑上一条</option>
+                                                        <option value="forward">转发原始报备</option>
+                                                        <option value="copy_file">转发文件+新文案</option>
+                                                        <option value="preempt_check">抢答检测（自删）</option>
+                                                        <option value="notify_user">Bot私聊通知</option>
+                                                        <option value="backend_unlock">触发后台解锁</option>
+                                                    </select>
+                                                </div>
+                                                <div class="field">
+                                                    <label>延迟区间（秒）</label>
+                                                    <div class="delay-grid">
+                                                        <input class="input" type="number" v-model.number="step.min">
+                                                        <span class="hint" style="text-align:center;">-</span>
+                                                        <input class="input" type="number" v-model.number="step.max">
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="field" v-if="step.type === 'text' || step.type === 'edit_prev'">
+                                                <label>{{ step.type === 'edit_prev' ? '编辑为' : '回复内容' }}</label>
+                                                <textarea class="textarea" v-model="step.text" placeholder="输入同意后要回复到原群的文字"></textarea>
+                                            </div>
+                                            <div class="field" v-if="step.type === 'forward'">
+                                                <label>转发目标群</label>
+                                                <select class="select" v-model="step.forward_to">
+                                                    <option value="">选择资源群</option>
+                                                    <option v-for="group in resourceGroupOptions" :key="`approval-forward-${group.id}`" :value="String(group.id)">{{ group.name }}</option>
+                                                </select>
+                                            </div>
+                                            <div class="form-grid" v-if="step.type === 'copy_file'">
+                                                <div class="field">
+                                                    <label>转发目标群</label>
+                                                    <select class="select" v-model="step.forward_to">
+                                                        <option value="">选择资源群</option>
+                                                        <option v-for="group in resourceGroupOptions" :key="`approval-copy-${group.id}`" :value="String(group.id)">{{ group.name }}</option>
+                                                    </select>
+                                                </div>
+                                                <div class="field">
+                                                    <label>新文案</label>
+                                                    <textarea class="textarea" v-model="step.text" placeholder="发送文件/图片时附带的文案"></textarea>
+                                                </div>
+                                            </div>
+                                            <div class="field-card" v-if="step.type === 'preempt_check'">
+                                                <strong>抢答检测（自删）</strong>
+                                                <span class="hint">若同一条原始报备已有他人更快引用回复，会删除本动作流已发出的消息。</span>
+                                            </div>
+                                            <div class="form-grid" v-if="step.type === 'notify_user'">
+                                                <div class="field">
+                                                    <label>Bot通知对象</label>
+                                                    <input class="input" v-model="step.forward_to" placeholder="用户ID 或 @username">
+                                                </div>
+                                                <div class="field">
+                                                    <label>通知内容</label>
+                                                    <textarea class="textarea" v-model="step.text" placeholder="{rule} 已审批处理 {sender}：{message}"></textarea>
+                                                </div>
+                                            </div>
+                                            <div class="field-card" v-if="step.type === 'backend_unlock'">
+                                                <div class="field">
+                                                    <label>解锁类型</label>
+                                                    <select class="select" v-model="step.backend_action">
+                                                        <option value="unlock_sms">短信/验证码限制</option>
+                                                        <option value="clear_login_error">登录密码试错限制</option>
+                                                        <option value="add_proxy_whitelist">代理 IP 加白</option>
+                                                    </select>
+                                                </div>
+                                                <div class="field" v-if="step.backend_action !== 'add_proxy_whitelist'">
+                                                    <label>提取账号名的正则</label>
+                                                    <input class="input font-mono" v-model="step.member_pattern" placeholder="留空：从原始报备里提取账号">
+                                                </div>
+                                                <div class="field" v-else>
+                                                    <label>提取 IP 的正则</label>
+                                                    <input class="input font-mono" v-model="step.ip_pattern" placeholder="留空：从原始报备里提取 IPv4">
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div style="display:grid;gap:6px;">
+                                            <button class="step-menu" @click="duplicateStep(currentRule.approval_action, index)" aria-label="复制动作"><i data-lucide="copy"></i></button>
+                                            <button class="step-menu" @click="removeStep(currentRule.approval_action, index)" aria-label="删除动作"><i data-lucide="trash-2"></i></button>
+                                        </div>
+                                    </article>
+                                    <div v-if="!currentRule.approval_action.replies.length" class="empty-state">同意后暂不执行动作</div>
                                 </div>
                             </div>
                         </section>
@@ -1686,6 +1777,7 @@ createApp({
             reply_admin: "",
             reply_origin: "",
             forward_to: "",
+            replies: [],
             delay_1_min: 1,
             delay_1_max: 2,
             delay_2_min: 1,
@@ -1695,12 +1787,30 @@ createApp({
         });
 
         const hydrateApprovalAction = (action = {}) => {
+            const source = action || {};
             const base = defaultApprovalAction();
-            const merged = { ...base, ...(action || {}) };
+            const merged = { ...base, ...source };
             ["reply_admin", "reply_origin", "forward_to"].forEach(key => merged[key] = merged[key] || "");
             for (let i = 1; i <= 3; i++) {
                 merged[`delay_${i}_min`] = Number(merged[`delay_${i}_min`] ?? base[`delay_${i}_min`]);
                 merged[`delay_${i}_max`] = Number(merged[`delay_${i}_max`] ?? base[`delay_${i}_max`]);
+            }
+            merged.replies = Array.isArray(merged.replies) ? merged.replies.map(hydrateReply) : [];
+            if (!merged.replies.length && merged.forward_to) {
+                merged.replies.push(hydrateReply({
+                    type: "forward",
+                    forward_to: merged.forward_to,
+                    min: merged.delay_2_min,
+                    max: merged.delay_2_max
+                }));
+            }
+            if (merged.reply_origin && (Array.isArray(source.replies) ? source.replies.length === 0 : !source.replies)) {
+                merged.replies.push(hydrateReply({
+                    type: "text",
+                    text: merged.reply_origin,
+                    min: merged.delay_3_min,
+                    max: merged.delay_3_max
+                }));
             }
             return merged;
         };
@@ -1709,7 +1819,7 @@ createApp({
             ...rep,
             type: rep.type || "text",
             text: rep.text || "",
-            forward_to: rep.forward_to || "",
+            forward_to: String(rep.forward_to || ""),
             member_pattern: rep.member_pattern || "",
             ip_pattern: rep.ip_pattern || "",
             backend_action: rep.backend_action || "unlock_sms",
@@ -1765,7 +1875,9 @@ createApp({
         });
 
         const normalizeGroupId = (value) => {
-            const num = Number(value);
+            const raw = String(value ?? "").trim();
+            if (!raw) return "";
+            const num = Number(raw);
             return Number.isSafeInteger(num) ? num : String(value || "").trim();
         };
         const hydrateResources = (resources = {}) => ({
@@ -1792,6 +1904,10 @@ createApp({
             const normalized = normalizeGroupId(groupId);
             const found = resourceGroupOptions.value.find(item => normalizeGroupId(item.id) === normalized);
             return found?.name || "未命名群组";
+        };
+        const targetGroupLabel = (groupId) => {
+            const value = String(groupId ?? "").trim();
+            return value ? groupLabel(value) : "未配置";
         };
         const isSelected = (list, value) => {
             const normalized = normalizeGroupId(value);
@@ -2092,15 +2208,16 @@ createApp({
             copy_file: "转发 + 新文案",
             amount_logic: "金额分流",
             preempt_check: "抢答检测（自删）",
-            notify_user: "Bot私聊通知"
+            notify_user: "Bot私聊通知",
+            backend_unlock: "触发后台解锁"
         }[step.type] || "发送文本");
         const stepDesc = (step) => {
-            if (step.type === "forward") return `目标群：${step.forward_to || "未配置"}`;
-            if (step.type === "copy_file") return `目标群：${step.forward_to || "未配置"}\\n文案：${step.text || "未配置"}`;
+            if (step.type === "forward") return `目标群：${targetGroupLabel(step.forward_to)}`;
+            if (step.type === "copy_file") return `目标群：${targetGroupLabel(step.forward_to)}\\n文案：${step.text || "未配置"}`;
             if (step.type === "amount_logic") {
                 const lowReplies = splitReplyLines(amountPart(step, 2));
                 const lowFlow = lowReplies.length
-                    ? `小额：${lowReplies[0]} -> 转发${step.forward_to ? ` ${step.forward_to}` : ""}${lowReplies.slice(1).length ? ` -> ${lowReplies.slice(1).join(" -> ")}` : ""}\\n大额回复延迟：${step.high_reply_min ?? step.min ?? 1}-${step.high_reply_max ?? step.max ?? 3}s\\n小额首句延迟：${step.low_first_min ?? step.min ?? 1}-${step.low_first_max ?? step.max ?? 3}s\\n小额转发延迟：${step.low_forward_min ?? 1.5}-${step.low_forward_max ?? 3}s\\n小额后续回复延迟：${step.low_reply_min ?? 1.5}-${step.low_reply_max ?? 3}s`
+                    ? `小额：${lowReplies[0]} -> 转发${step.forward_to ? ` ${targetGroupLabel(step.forward_to)}` : ""}${lowReplies.slice(1).length ? ` -> ${lowReplies.slice(1).join(" -> ")}` : ""}\\n大额回复延迟：${step.high_reply_min ?? step.min ?? 1}-${step.high_reply_max ?? step.max ?? 3}s\\n小额首句延迟：${step.low_first_min ?? step.min ?? 1}-${step.low_first_max ?? step.max ?? 3}s\\n小额转发延迟：${step.low_forward_min ?? 1.5}-${step.low_forward_max ?? 3}s\\n小额后续回复延迟：${step.low_reply_min ?? 1.5}-${step.low_reply_max ?? 3}s`
                     : "小额：未配置";
                 return `阈值：${amountPart(step, 0) || "未配置"}\\n大额：${amountPart(step, 1) || "未配置"}\\n${lowFlow}`;
             }
@@ -2127,9 +2244,14 @@ createApp({
             if (rule.enable_approval) {
                 const action = rule.approval_action || {};
                 steps.push({ title: "等待领导同意", desc: `触发词：${(config.approval_keywords || []).join(", ") || "未配置"}\\n领导需引用大额回复或原始报备`, delay: "审批" });
-                steps.push({ title: "引用领导消息回复", desc: action.reply_admin || "未配置", delay: `延迟 ${Number(action.delay_1_max || action.delay_1_min || 0).toFixed(1).replace(".0", "")}s` });
-                steps.push({ title: "转发原始报备", desc: `目标群：${action.forward_to || "未配置"}`, delay: `延迟 ${Number(action.delay_2_max || action.delay_2_min || 0).toFixed(1).replace(".0", "")}s` });
-                steps.push({ title: "引用原始报备回复", desc: action.reply_origin || "未配置", delay: `延迟 ${Number(action.delay_3_max || action.delay_3_min || 0).toFixed(1).replace(".0", "")}s` });
+                if (action.reply_admin) {
+                    steps.push({ title: "回复领导引用消息", desc: action.reply_admin, delay: `延迟 ${Number(action.delay_1_max || action.delay_1_min || 0).toFixed(1).replace(".0", "")}s` });
+                }
+                (action.replies || []).forEach(step => steps.push({
+                    title: `同意后：${stepTitle(step)}`,
+                    desc: stepDesc(step),
+                    delay: `延迟 ${compactDelay(step.max || step.min)}s`
+                }));
             }
             return steps;
         });
@@ -2143,7 +2265,8 @@ createApp({
                 const low = Number(step.low_first_max ?? step.max ?? 0) + Number(step.low_forward_max ?? 0) + Number(step.low_reply_max ?? 0);
                 return sum + Math.max(high, low);
             }, 0);
-            const approval = rule.enable_approval ? Number(rule.approval_action?.delay_1_max || 0) + Number(rule.approval_action?.delay_2_max || 0) + Number(rule.approval_action?.delay_3_max || 0) : 0;
+            const approvalSteps = rule.enable_approval ? (rule.approval_action?.replies || []).reduce((sum, step) => sum + Number(step.max || step.min || 0), 0) : 0;
+            const approval = rule.enable_approval ? Number(rule.approval_action?.reply_admin ? (rule.approval_action?.delay_1_max || 0) : 0) + approvalSteps : 0;
             return (stepTotal + approval).toFixed(1);
         });
 
