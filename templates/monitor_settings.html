@@ -333,6 +333,19 @@
         }
         .tag-row { display: flex; gap: 7px; margin-top: 10px; flex-wrap: wrap; }
         .tag { min-height: 24px; border-radius: 6px; background: #f0f3f8; color: #536078; padding: 3px 8px; font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; gap: 5px; }
+        .pick-list { border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 6px; display: grid; gap: 6px; max-height: 170px; overflow: auto; }
+        .pick-item { min-height: 32px; border-radius: 7px; padding: 0 8px; display: flex; align-items: center; gap: 8px; color: #344056; font-size: 13px; font-weight: 680; cursor: pointer; }
+        .pick-item:hover { background: #f5f7fb; }
+        .pick-item input { width: 14px; height: 14px; margin: 0; accent-color: var(--primary); }
+        .select-menu { position: relative; }
+        .select-menu summary { min-height: 38px; border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 0 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #344056; font-size: 13px; font-weight: 760; cursor: pointer; list-style: none; }
+        .select-menu summary::-webkit-details-marker { display: none; }
+        .select-menu summary::after { content: "⌄"; color: var(--muted); font-size: 14px; }
+        .select-menu[open] summary { border-color: #c8c1ff; box-shadow: 0 0 0 3px rgba(99, 91, 255, .08); }
+        .select-menu .pick-list { position: absolute; z-index: 16; left: 0; right: 0; top: calc(100% + 6px); box-shadow: var(--shadow-soft); }
+        .resource-list { display: grid; gap: 8px; }
+        .resource-row { display: grid; grid-template-columns: minmax(130px, 1fr) minmax(170px, 1fr) auto; gap: 8px; align-items: center; }
+        .resource-row.prefix { grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) auto; }
         .status-badge { height: 26px; border-radius: 7px; padding: 0 9px; display: inline-flex; align-items: center; color: var(--green); background: var(--green-soft); font-weight: 760; font-size: 12px; }
         .status-badge.disabled { color: #748094; background: #eef1f6; }
         .status-badge.draft { color: #b36b00; background: #fff5df; }
@@ -734,6 +747,8 @@
             .rule-list { max-height: none; }
             .ops-popover { right: 14px; top: 128px; }
             .dashboard-grid, .resource-grid, .settings-grid, .account-list.cards, .metrics-grid.wide, .records-toolbar { grid-template-columns: 1fr; }
+            .resource-row, .resource-row.prefix { grid-template-columns: 1fr auto; }
+            .resource-row .input:first-child { grid-column: 1 / -1; }
             .hour-bars { gap: 3px; }
             .hour-cell small { display: none; }
             .record-table { overflow-x: auto; }
@@ -911,8 +926,17 @@
                             <div class="section-title">基础信息</div>
                             <div class="form-grid">
                                 <div class="field">
-                                    <div class="label-row"><label>监听来源</label><span class="hint">群 ID 每行一个</span></div>
-                                    <textarea class="textarea" v-model="groupsRaw" placeholder="-1001234567890"></textarea>
+                                    <div class="label-row"><label>监听来源</label><span class="hint">{{ (currentRule.groups || []).length }} 个群</span></div>
+                                    <details class="select-menu">
+                                        <summary>{{ selectedGroupNames(currentRule) }}</summary>
+                                        <div class="pick-list">
+                                            <label v-for="group in resourceGroupOptions" :key="group.id" class="pick-item">
+                                                <input type="checkbox" :checked="isSelected(currentRule.groups, group.id)" @change="toggleListValue(currentRule.groups, group.id)">
+                                                <span>{{ group.name }}</span>
+                                            </label>
+                                            <div v-if="resourceGroupOptions.length === 0" class="empty-state">先到资源管理添加监听群</div>
+                                        </div>
+                                    </details>
                                 </div>
                                 <div class="field">
                                     <div class="label-row">
@@ -924,10 +948,6 @@
                                         <input class="input" :value="listToString(currentRule.filename_keywords).replace(/\\n/g, ', ')" @input="setList($event, currentRule, 'filename_keywords', true)" placeholder="文件名关键词">
                                     </div>
                                     <textarea v-else class="textarea" v-model="keywordsRaw" placeholder="普通: 代存&#10;正则: r:(代|带)存|入[金款]"></textarea>
-                                </div>
-                                <div class="field full">
-                                    <div class="label-row"><label>备注（可选）</label><span class="hint">{{ (currentRule.note || '').length }}/200</span></div>
-                                    <input class="input" v-model="currentRule.note" maxlength="200" placeholder="给这条规则添加内部备注">
                                 </div>
                             </div>
                         </section>
@@ -1130,14 +1150,6 @@
                         </section>
                     </div>
 
-                    <div class="editor-body" v-if="ui.activeTab === 'notes'">
-                        <section class="section">
-                            <div class="section-title">备注说明</div>
-                            <textarea class="textarea" style="min-height:180px;" v-model="currentRule.note" maxlength="200" placeholder="记录规则用途、审批负责人或目标群说明"></textarea>
-                            <div class="hint">规则 ID：{{ currentRule.id }}</div>
-                        </section>
-                    </div>
-
                     <div class="editor-body" v-if="ui.activeTab === 'permissions'">
                         <section class="section">
                             <div class="section-title">权限与账号</div>
@@ -1158,8 +1170,17 @@
                                     </select>
                                 </div>
                                 <div class="field">
-                                    <label>允许用户/标签</label>
-                                    <input class="input" :value="listToString(currentRule.sender_prefixes).replace(/\\n/g, ', ')" @input="setList($event, currentRule, 'sender_prefixes', true)" placeholder="@xy_cszb2, @xycs01">
+                                    <div class="label-row"><label>{{ currentRule.sender_mode === 'include' ? '允许名单' : '排除名单' }}</label><span class="hint">{{ (currentRule.sender_prefixes || []).length }} 项</span></div>
+                                    <details class="select-menu">
+                                        <summary>{{ selectedPrefixNames(currentRule) }}</summary>
+                                        <div class="pick-list">
+                                            <label v-for="item in senderPrefixOptions" :key="item.value" class="pick-item">
+                                                <input type="checkbox" :checked="(currentRule.sender_prefixes || []).includes(item.value)" @change="toggleStringValue(currentRule.sender_prefixes, item.value)">
+                                                <span>{{ item.label || item.value }}</span>
+                                            </label>
+                                            <div v-if="senderPrefixOptions.length === 0" class="empty-state">先到资源管理添加名单</div>
+                                        </div>
+                                    </details>
                                 </div>
                                 <div class="field full">
                                     <label>冷却 CD</label>
@@ -1356,6 +1377,34 @@
                 </section>
 
                 <section class="page-wide resource-grid" v-if="ui.page === 'resources'">
+                    <article class="panel page-card">
+                        <div class="panel-head">
+                            <div class="panel-title"><i data-lucide="messages-square"></i>监听群资源</div>
+                            <button class="tiny-btn" @click="addGroupResource"><i data-lucide="plus"></i>添加群</button>
+                        </div>
+                        <div class="page-body resource-list">
+                            <div v-for="(group, index) in config.resources.groups" :key="index" class="resource-row">
+                                <input class="input" v-model="group.name" placeholder="群名">
+                                <input class="input font-mono" v-model="group.id" placeholder="群 ID，仅资源管理显示">
+                                <button class="step-menu" @click="removeGroupResource(index)" aria-label="删除群资源"><i data-lucide="trash-2"></i></button>
+                            </div>
+                            <div v-if="config.resources.groups.length === 0" class="empty-state">暂无监听群资源</div>
+                        </div>
+                    </article>
+                    <article class="panel page-card">
+                        <div class="panel-head">
+                            <div class="panel-title"><i data-lucide="user-check"></i>允许/排除名单资源</div>
+                            <button class="tiny-btn" @click="addPrefixResource"><i data-lucide="plus"></i>添加名单</button>
+                        </div>
+                        <div class="page-body resource-list">
+                            <div v-for="(item, index) in config.resources.sender_prefixes" :key="index" class="resource-row prefix">
+                                <input class="input" v-model="item.label" placeholder="显示名">
+                                <input class="input font-mono" v-model="item.value" placeholder="@username 或名称前缀">
+                                <button class="step-menu" @click="removePrefixResource(index)" aria-label="删除名单资源"><i data-lucide="trash-2"></i></button>
+                            </div>
+                            <div v-if="config.resources.sender_prefixes.length === 0" class="empty-state">暂无名单资源</div>
+                        </div>
+                    </article>
                     <article class="panel page-card" v-for="item in resourceCards" :key="item.key">
                         <div class="panel-head"><div class="panel-title"><i :data-lucide="item.icon"></i>{{ item.label }}</div><strong>{{ item.count }}</strong></div>
                         <div class="page-body tag-row">
@@ -1552,6 +1601,7 @@ createApp({
             extra_enabled: true,
             approval_keywords: [],
             schedule: { active: false, start: "09:00", end: "21:00" },
+            resources: { groups: [], sender_prefixes: [] },
             scheduled_messages: [],
             rules: []
         });
@@ -1601,7 +1651,6 @@ createApp({
         const tabs = [
             { key: "basic", label: "基础配置" },
             { key: "advanced", label: "高级设置" },
-            { key: "notes", label: "备注说明" },
             { key: "permissions", label: "权限设置" }
         ];
         const navItems = [
@@ -1697,8 +1746,7 @@ createApp({
                 sender_prefixes: Array.isArray(rule.sender_prefixes) ? rule.sender_prefixes : [],
                 cooldown: rule.cooldown ?? 1,
                 replies: Array.isArray(rule.replies) ? rule.replies.map(hydrateReply) : [],
-                reply_account: rule.reply_account || "",
-                note: rule.note || ""
+                reply_account: rule.reply_account || ""
             };
             return { ...rule, ...hydrated };
         };
@@ -1716,11 +1764,84 @@ createApp({
             last_sent_at: item.last_sent_at || ""
         });
 
+        const normalizeGroupId = (value) => {
+            const num = Number(value);
+            return Number.isSafeInteger(num) ? num : String(value || "").trim();
+        };
+        const hydrateResources = (resources = {}) => ({
+            groups: Array.isArray(resources.groups) ? resources.groups.map((item) => ({
+                id: normalizeGroupId(item.id ?? item.value ?? item.group_id ?? ""),
+                name: item.name || item.label || item.title || "未命名群组"
+            })).filter(item => item.id !== "") : [],
+            sender_prefixes: Array.isArray(resources.sender_prefixes) ? resources.sender_prefixes.map((item) => ({
+                value: String(item.value ?? item.name ?? item.label ?? "").trim(),
+                label: item.label || item.name || item.value || ""
+            })).filter(item => item.value) : []
+        });
+        const resourceGroupOptions = computed(() => config.resources.groups || []);
+        const senderPrefixOptions = computed(() => config.resources.sender_prefixes || []);
+        const selectedGroupNames = (rule) => (rule.groups || []).map(groupLabel).join("、") || "未配置";
+        const selectedPrefixNames = (rule) => {
+            const labels = (rule.sender_prefixes || []).map((value) => {
+                const found = senderPrefixOptions.value.find(item => String(item.value || "").trim().toLowerCase() === String(value || "").trim().toLowerCase());
+                return found?.label || value;
+            });
+            return labels.join("、") || "未配置";
+        };
+        const groupLabel = (groupId) => {
+            const normalized = normalizeGroupId(groupId);
+            const found = resourceGroupOptions.value.find(item => normalizeGroupId(item.id) === normalized);
+            return found?.name || "未命名群组";
+        };
+        const isSelected = (list, value) => {
+            const normalized = normalizeGroupId(value);
+            return (list || []).some(item => normalizeGroupId(item) === normalized);
+        };
+        const toggleListValue = (list, value) => {
+            const normalized = normalizeGroupId(value);
+            const index = (list || []).findIndex(item => normalizeGroupId(item) === normalized);
+            if (index >= 0) list.splice(index, 1);
+            else list.push(normalized);
+        };
+        const toggleStringValue = (list, value) => {
+            const normalized = String(value || "").trim();
+            if (!normalized) return;
+            const index = (list || []).findIndex(item => String(item || "").trim().toLowerCase() === normalized.toLowerCase());
+            if (index >= 0) list.splice(index, 1);
+            else list.push(normalized);
+        };
+        const addGroupResource = () => {
+            config.resources.groups.push({ id: "", name: "新群组" });
+            refreshIcons();
+        };
+        const removeGroupResource = (index) => {
+            const removed = config.resources.groups.splice(index, 1)[0];
+            if (removed) {
+                const removedId = normalizeGroupId(removed.id);
+                config.rules.forEach(rule => {
+                    rule.groups = (rule.groups || []).filter(item => normalizeGroupId(item) !== removedId);
+                });
+            }
+        };
+        const addPrefixResource = () => {
+            config.resources.sender_prefixes.push({ value: "", label: "新名单" });
+        };
+        const removePrefixResource = (index) => {
+            const removed = config.resources.sender_prefixes.splice(index, 1)[0];
+            if (removed) {
+                const removedValue = String(removed.value || "").trim().toLowerCase();
+                config.rules.forEach(rule => {
+                    rule.sender_prefixes = (rule.sender_prefixes || []).filter(item => String(item || "").trim().toLowerCase() !== removedValue);
+                });
+            }
+        };
+
         const applyConfigData = (data = {}) => {
             config.enabled = data.enabled ?? true;
             config.extra_enabled = data.extra_enabled ?? true;
             config.approval_keywords = Array.isArray(data.approval_keywords) ? data.approval_keywords : ["同意", "批准", "ok"];
             config.schedule = data.schedule || { active: false, start: "09:00", end: "21:00" };
+            config.resources = hydrateResources(data.resources || {});
             config.scheduled_messages = (data.scheduled_messages || []).map(hydrateScheduledMessage);
             config.rules = (data.rules || []).map(hydrateRule);
             identity.mainAccount = data.main_account || identity.mainAccount;
@@ -1813,7 +1934,7 @@ createApp({
             return config.rules.filter(rule => {
                 const status = ruleStatus(rule).kind || "running";
                 const statusOk = ui.statusFilter === "all" || ui.statusFilter === status;
-                const hay = [rule.name, ...(rule.groups || []), ...(rule.keywords || []), ...(rule.file_extensions || [])].join(" ").toLowerCase();
+                const hay = [rule.name, ...(rule.groups || []).map(groupLabel), ...(rule.keywords || []), ...(rule.file_extensions || [])].join(" ").toLowerCase();
                 return statusOk && (!query || hay.includes(query));
             });
         });
@@ -1840,21 +1961,12 @@ createApp({
             rule[key] = String(event.target.value || "").split(/[\r\n,，]+/).map(s => s.trim()).filter(Boolean);
         };
 
-        const groupsRaw = ref('');
         const keywordsRaw = ref('');
 
         const syncRawTexts = (rule) => {
-            groupsRaw.value = rule ? listToString(rule.groups) : '';
             keywordsRaw.value = rule ? listToString(rule.keywords) : '';
         };
 
-        watch(groupsRaw, (val) => {
-            if (!currentRule.value) return;
-            const parsed = String(val).split(/[\r\n,，]+/).map(s => s.trim()).filter(Boolean);
-            const cur = currentRule.value.groups;
-            if (!Array.isArray(cur) || cur.length !== parsed.length || cur.some((v, i) => v !== parsed[i]))
-                currentRule.value.groups = parsed;
-        });
         watch(keywordsRaw, (val) => {
             if (!currentRule.value) return;
             const parsed = String(val).split(/[\r\n]+/).map(s => s.trim()).filter(Boolean);
@@ -1968,7 +2080,7 @@ createApp({
             return `${compactDelay(step.max || step.min)}s`;
         };
         const stepCount = (rule) => Array.isArray(rule.replies) ? rule.replies.length : 0;
-        const shortGroups = (rule) => (rule.groups || []).slice(0, 1).join("") || "未配置";
+        const shortGroups = (rule) => (rule.groups || []).slice(0, 1).map(groupLabel).join("") || "未配置";
         const primaryKeyword = (rule) => {
             if (rule.check_file) return (rule.file_extensions || [])[0]?.toUpperCase() || "文件";
             return (rule.keywords || [])[0] || "关键词";
@@ -2132,10 +2244,11 @@ createApp({
             copy_file: "转发+新文案",
             amount_logic: "金额分流",
             preempt_check: "抢答检测",
-            notify_user: "Bot通知"
+            notify_user: "Bot通知",
+            backend_unlock: "后台动作"
         };
         const resourceCards = computed(() => {
-            const groups = unique(config.rules.flatMap(rule => rule.groups || []));
+            const groups = unique(config.rules.flatMap(rule => (rule.groups || []).map(groupLabel)));
             const keywords = unique(config.rules.flatMap(rule => rule.keywords || []));
             const fileTypes = unique(config.rules.flatMap(rule => rule.file_extensions || []));
             const approvalRules = unique(config.rules.filter(rule => rule.enable_approval).map(rule => rule.name || rule.id));
@@ -2284,9 +2397,11 @@ createApp({
             currentRule, filteredRules, stats, previewSteps, estimatedTotal,
             mainAccount, avatarText, lastRefreshText, selectedRuleStats, currentRuleRecords,
             filteredRecords, hourlyBars, compactHourlyBars, topRules, accountRows, resourceCards,
+            resourceGroupOptions, senderPrefixOptions, selectedGroupNames, selectedPrefixNames,
             loadConfig, loadRuntimeStats, loadAll, saveConfig, toggleRuleEnabled, toggleMonitorEnabled, selectRule, setPage, addRule, removeRule, ruleStatus,
+            addGroupResource, removeGroupResource, addPrefixResource, removePrefixResource, isSelected, toggleListValue, toggleStringValue,
             addScheduledMessage, removeScheduledMessage, formatScheduleLastSent,
-            groupsRaw, keywordsRaw,
+            keywordsRaw,
             listToString, setList, setIntList, splitInline, shortGroups, primaryKeyword, stepCount,
             addStep, duplicateStep, removeStep, normalizeStep, displayDelay,
             amountPart, setAmountPart, amountLowLines, setAmountLowLines,

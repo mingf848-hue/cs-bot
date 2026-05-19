@@ -582,6 +582,83 @@ def clean_group_ids(raw):
                 pass
     return result
 
+def normalize_resource_label(value, fallback="未命名"):
+    text = str(value or "").strip()
+    return text or fallback
+
+def normalize_monitor_resources(raw_resources=None, rules=None, default_prefixes=None):
+    raw_resources = raw_resources if isinstance(raw_resources, dict) else {}
+    rules = rules or []
+    default_prefixes = default_prefixes or []
+
+    groups = []
+    seen_group_ids = set()
+    for item in raw_resources.get("groups", []):
+        if isinstance(item, dict):
+            raw_id = item.get("id", item.get("value", item.get("group_id", "")))
+            name = item.get("name", item.get("label", item.get("title", "")))
+        else:
+            raw_id = item
+            name = ""
+        ids = clean_group_ids([raw_id])
+        if not ids:
+            continue
+        group_id = ids[0]
+        if group_id in seen_group_ids:
+            continue
+        seen_group_ids.add(group_id)
+        groups.append({
+            "id": group_id,
+            "name": normalize_resource_label(name, "未命名群组")
+        })
+
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        for group_id in clean_group_ids(rule.get("groups", [])):
+            if group_id in seen_group_ids:
+                continue
+            seen_group_ids.add(group_id)
+            groups.append({"id": group_id, "name": "未命名群组"})
+
+    sender_prefixes = []
+    seen_prefixes = set()
+    raw_prefix_resources = raw_resources.get("sender_prefixes", [])
+    if isinstance(raw_prefix_resources, str):
+        raw_prefix_resources = split_config_items(raw_prefix_resources, split_commas=True)
+    for item in raw_prefix_resources:
+        if isinstance(item, dict):
+            value = str(item.get("value", item.get("name", item.get("label", ""))) or "").strip()
+            label = item.get("label", item.get("name", value))
+        else:
+            value = str(item or "").strip()
+            label = value
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen_prefixes:
+            continue
+        seen_prefixes.add(key)
+        sender_prefixes.append({
+            "value": value,
+            "label": normalize_resource_label(label, value)
+        })
+
+    for prefix in list(default_prefixes) + [p for rule in rules if isinstance(rule, dict) for p in split_config_items(rule.get("sender_prefixes", []), split_commas=True)]:
+        value = str(prefix or "").strip()
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen_prefixes:
+            continue
+        seen_prefixes.add(key)
+        sender_prefixes.append({"value": value, "label": value})
+
+    return {
+        "groups": groups,
+        "sender_prefixes": sender_prefixes
+    }
+
 def ensure_rule_id(rule):
     rule_id = str(rule.get("id", "")).strip()
     if not rule_id:
@@ -971,6 +1048,10 @@ DEFAULT_CONFIG = {
         "start": "09:00",
         "end": "21:00"
     },
+    "resources": {
+        "groups": [],
+        "sender_prefixes": []
+    },
     "scheduled_messages": [],
     "rules": [
         {
@@ -1232,6 +1313,7 @@ def load_config(system_cs_prefixes):
             rule["sender_prefixes"] = list(system_cs_prefixes)
         clean_rules.append(rule)
     current_config["rules"] = clean_rules
+    current_config["resources"] = normalize_monitor_resources(current_config.get("resources", {}), clean_rules, system_cs_prefixes)
 
 def save_config(new_config):
     global current_config
@@ -1342,6 +1424,7 @@ def save_config(new_config):
             clean_rules.append(rule)
 
         new_config["rules"] = clean_rules
+        new_config["resources"] = normalize_monitor_resources(new_config.get("resources", {}), clean_rules, system_cs_prefixes)
         
         serialized_config = json.dumps(new_config, ensure_ascii=False)
         if redis_client:
