@@ -315,6 +315,22 @@
         .drag-dots span { width: 4px; height: 4px; border-radius: 999px; background: currentColor; }
         .rule-name { font-weight: 800; font-size: 16px; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .rule-meta { color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+        .rule-meta-icon {
+            width: 16px;
+            height: 16px;
+            flex: 0 0 16px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--muted);
+        }
+        .rule-meta-icon svg,
+        .tag svg {
+            width: 14px;
+            height: 14px;
+            flex: 0 0 14px;
+            display: block;
+        }
         .tag-row { display: flex; gap: 7px; margin-top: 10px; flex-wrap: wrap; }
         .tag { min-height: 24px; border-radius: 6px; background: #f0f3f8; color: #536078; padding: 3px 8px; font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; gap: 5px; }
         .status-badge { height: 26px; border-radius: 7px; padding: 0 9px; display: inline-flex; align-items: center; color: var(--green); background: var(--green-soft); font-weight: 760; font-size: 12px; }
@@ -853,7 +869,7 @@
                             <div>
                                 <div class="rule-name">{{ rule.name || '未命名规则' }}</div>
                                 <div class="rule-meta">
-                                    <i data-lucide="activity"></i>
+                                    <span class="rule-meta-icon"><i data-lucide="activity"></i></span>
                                     <span>监听：{{ shortGroups(rule) }}</span>
                                 </div>
                                 <div class="tag-row">
