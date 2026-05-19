@@ -2201,7 +2201,7 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_obj, check_c
         if not match_text(text, rule) and not backend_unlock_member:
             return False, "文本关键词不符", None
     
-    if check_cooldown:
+    if check_cooldown and not is_backend_unlock_rule:
         rule_id = ensure_rule_id(rule)
         last_time = rule_timers.get(rule_id, 0)
         now = time.time()
