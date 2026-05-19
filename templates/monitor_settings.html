@@ -1689,26 +1689,30 @@ createApp({
             last_sent_at: item.last_sent_at || ""
         });
 
+        const applyConfigData = (data = {}) => {
+            config.enabled = data.enabled ?? true;
+            config.extra_enabled = data.extra_enabled ?? true;
+            config.approval_keywords = Array.isArray(data.approval_keywords) ? data.approval_keywords : ["同意", "批准", "ok"];
+            config.schedule = data.schedule || { active: false, start: "09:00", end: "21:00" };
+            config.scheduled_messages = (data.scheduled_messages || []).map(hydrateScheduledMessage);
+            config.rules = (data.rules || []).map(hydrateRule);
+            identity.mainAccount = data.main_account || identity.mainAccount;
+            available_accounts.splice(0, available_accounts.length, ...((data.available_accounts || [])));
+            if (Array.isArray(data.accounts) && data.accounts.length) {
+                runtime.accounts.splice(0, runtime.accounts.length, ...data.accounts);
+            }
+            if (!ui.selectedId || !config.rules.some(rule => rule.id === ui.selectedId)) {
+                ui.selectedId = config.rules[0]?.id || "";
+            }
+            syncRawTexts(currentRule.value);
+            refreshIcons();
+        };
+
         const loadConfig = async () => {
             try {
                 const res = await fetch("/tool/monitor_settings_json");
                 const data = await res.json();
-                config.enabled = data.enabled ?? true;
-                config.extra_enabled = data.extra_enabled ?? true;
-                config.approval_keywords = Array.isArray(data.approval_keywords) ? data.approval_keywords : ["同意", "批准", "ok"];
-                config.schedule = data.schedule || { active: false, start: "09:00", end: "21:00" };
-                config.scheduled_messages = (data.scheduled_messages || []).map(hydrateScheduledMessage);
-                config.rules = (data.rules || []).map(hydrateRule);
-                identity.mainAccount = data.main_account || identity.mainAccount;
-                available_accounts.splice(0, available_accounts.length, ...((data.available_accounts || [])));
-                if (Array.isArray(data.accounts) && data.accounts.length) {
-                    runtime.accounts.splice(0, runtime.accounts.length, ...data.accounts);
-                }
-                if (!ui.selectedId || !config.rules.some(rule => rule.id === ui.selectedId)) {
-                    ui.selectedId = config.rules[0]?.id || "";
-                }
-                syncRawTexts(currentRule.value);
-                refreshIcons();
+                applyConfigData(data);
             } catch (e) {
                 showToast("配置加载失败", "error");
             }
@@ -2133,6 +2137,7 @@ createApp({
                 });
                 const json = await res.json();
                 if (json.success) {
+                    if (json.config) applyConfigData(json.config);
                     if (!silent) showToast(successMessage);
                     return true;
                 }

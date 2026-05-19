@@ -1306,14 +1306,28 @@ def save_config(new_config):
 
         new_config["rules"] = clean_rules
         
+        serialized_config = json.dumps(new_config, ensure_ascii=False)
         if redis_client:
             try: 
-                redis_client.set(REDIS_KEY, json.dumps(new_config, ensure_ascii=False))
+                if not redis_client.set(REDIS_KEY, serialized_config):
+                    return False, "Redis 保存失败"
+                saved_raw = redis_client.get(REDIS_KEY)
+                if saved_raw != serialized_config:
+                    return False, "Redis 保存校验失败"
             except Exception as e:
                 logger.error(f"❌ [Monitor] Redis 保存失败: {e}")
+                return False, f"Redis 保存失败: {e}"
         
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(new_config, f, indent=4, ensure_ascii=False)
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                saved_file = json.load(f)
+            if saved_file.get("rules") != new_config.get("rules"):
+                return False, "本地配置保存校验失败"
+        except Exception as e:
+            logger.error(f"❌ [Monitor] 本地配置保存校验失败: {e}")
+            return False, f"本地配置保存校验失败: {e}"
         
         current_config = new_config
         logger.info(f"💾 [Monitor] 配置已更新并保存")
@@ -1919,10 +1933,7 @@ SETTINGS_HTML = """
                     .catch(e => console.log('Heartbeat skipped'));
             };
 
-            // Initial full load
-            fetch('/tool/monitor_settings_json')
-                .then(r => r.json())
-                .then(data => { 
+            const applyConfigData = (data = {}) => {
                     config.enabled = data.enabled; 
                     if(data.extra_enabled !== undefined) config.extra_enabled = data.extra_enabled;
                     syncAvailableAccounts(data.available_accounts);
@@ -1948,7 +1959,12 @@ SETTINGS_HTML = """
                         r.approval_action = hydrateApprovalAction(r.approval_action);
                         return r;
                     });
-                });
+            };
+
+            // Initial full load
+            fetch('/tool/monitor_settings_json')
+                .then(r => r.json())
+                .then(applyConfigData);
 
             // Start Heartbeat (every 3 seconds)
             setInterval(refreshStatus, 3000);
@@ -1985,7 +2001,10 @@ SETTINGS_HTML = """
                 try {
                     const res = await fetch('/api/monitor_settings', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(config) });
                     const json = await res.json();
-                    if (json.success) showToast('配置已保存', 'success');
+                    if (json.success) {
+                        if (json.config) applyConfigData(json.config);
+                        showToast('配置已保存', 'success');
+                    }
                     else showToast('保存失败: ' + json.msg, 'error');
                 } catch(e) { showToast('网络错误', 'error'); }
             };
@@ -2393,7 +2412,12 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     @app.route('/api/monitor_settings', methods=['POST'])
     def update_monitor_settings():
         success, msg = save_config(request.get_json(silent=True) or {})
-        return jsonify({"success": success, "msg": msg if not success else ""})
+        data = current_config.copy() if success else {}
+        if success:
+            data["available_accounts"] = [k for k in global_clients.keys() if k != MAIN_NAME]
+            data["main_account"] = MAIN_NAME
+            data["accounts"] = get_account_summaries()
+        return jsonify({"success": success, "msg": msg if not success else "", "config": data})
 
     @app.route('/api/monitor_toggle', methods=['POST'])
     def update_monitor_toggle():
