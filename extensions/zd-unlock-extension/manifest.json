@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "CS Bot ZD Unlock",
+  "name": "CS Bot Unlock",
   "version": "1.0.0",
-  "description": "Poll CS Bot unlock commands and call the 9site SMS unlock endpoint.",
+  "description": "Poll CS Bot unlock commands and call the backend unlock endpoint.",
   "permissions": ["alarms", "storage"],
   "host_permissions": [
     "https://arcshelp.zeabur.app/*",
@@ -20,6 +20,6 @@
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "CS Bot ZD Unlock"
+    "default_title": "CS Bot Unlock"
   }
 }

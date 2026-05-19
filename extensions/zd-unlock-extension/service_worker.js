@@ -111,8 +111,8 @@ async function pollOnce() {
       return;
     }
     const authLabel = config.pageAuth
-      ? `，已捕获9site登录态 ${headerSummary((config.pageAuth && config.pageAuth.headers) || {})}`
-      : '，未捕获9site登录态';
+      ? `，已捕获当前登录态 ${headerSummary((config.pageAuth && config.pageAuth.headers) || {})}`
+      : '，未捕获当前登录态';
     await setStatus({ state: 'polling', message: '正在轮询命令' + authLabel });
     const res = await fetch(`${config.botBase}/api/cmd/poll?wait=25&secret=${encodeURIComponent(config.cmdSecret)}`, {
       cache: 'no-store'
@@ -161,12 +161,26 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
   }
+  if (message && message.type === 'setEnabled') {
+    chrome.storage.local.set({ enabled: message.enabled !== false })
+      .then(() => {
+        chrome.alarms.create('poll', { periodInMinutes: 0.5 });
+        if (message.enabled !== false) {
+          pollOnce();
+        } else {
+          setStatus({ state: 'paused', message: '扩展已暂停' });
+        }
+        sendResponse({ ok: true });
+      })
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
   if (message && message.type === 'pageAuth') {
     chrome.storage.local.set({ pageAuth: message.auth })
       .then(() => setStatus({
         state: 'auth',
-        message: `已捕获9site登录态: ${headerSummary((message.auth && message.auth.headers) || {})}`,
-        detail: message.auth && message.auth.href
+        message: `已捕获当前登录态: ${headerSummary((message.auth && message.auth.headers) || {})}`,
+        detail: '登录态已更新'
       }))
       .then(() => sendResponse({ ok: true }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
