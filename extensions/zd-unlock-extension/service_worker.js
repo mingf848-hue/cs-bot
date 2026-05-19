@@ -27,7 +27,8 @@ function nowText() {
 }
 
 async function getConfig() {
-  const stored = await chrome.storage.local.get(['config', 'enabled']);
+  const stored = await chrome.storage.local.get(['config', 'enabled', 'pageAuth']);
+  const dynamicHeaders = (stored.pageAuth && stored.pageAuth.headers) || {};
   return {
     enabled: stored.enabled !== false,
     config: {
@@ -35,8 +36,10 @@ async function getConfig() {
       ...(stored.config || {}),
       headers: {
         ...DEFAULT_CONFIG.headers,
-        ...((stored.config && stored.config.headers) || {})
-      }
+        ...((stored.config && stored.config.headers) || {}),
+        ...dynamicHeaders
+      },
+      pageAuth: stored.pageAuth || null
     }
   };
 }
@@ -102,7 +105,8 @@ async function pollOnce() {
       await setStatus({ state: 'paused', message: '扩展已暂停' });
       return;
     }
-    await setStatus({ state: 'polling', message: '正在轮询命令' });
+    const authLabel = config.pageAuth ? `，已捕获9site登录态 ${config.pageAuth.capturedAt || ''}` : '，未捕获9site登录态';
+    await setStatus({ state: 'polling', message: '正在轮询命令' + authLabel });
     const res = await fetch(`${config.botBase}/api/cmd/poll?wait=25&secret=${encodeURIComponent(config.cmdSecret)}`, {
       cache: 'no-store'
     });
@@ -147,6 +151,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         pollOnce();
         sendResponse({ ok: true });
       })
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+  if (message && message.type === 'pageAuth') {
+    chrome.storage.local.set({ pageAuth: message.auth })
+      .then(() => sendResponse({ ok: true }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
   }

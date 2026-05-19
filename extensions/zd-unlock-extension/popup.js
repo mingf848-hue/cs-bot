@@ -33,14 +33,18 @@ function renderStatus(s) {
 }
 
 async function load() {
-  const data = await chrome.storage.local.get(['config', 'enabled', 'status']);
+  const data = await chrome.storage.local.get(['config', 'enabled', 'status', 'pageAuth']);
   const config = { ...DEFAULT_CONFIG, ...(data.config || {}), headers: { ...DEFAULT_CONFIG.headers, ...((data.config || {}).headers || {}) } };
   enabled.checked = data.enabled !== false;
   botBase.value = config.botBase || '';
   cmdSecret.value = config.cmdSecret || '';
   value.value = config.value || '';
   headers.value = JSON.stringify(config.headers || {}, null, 2);
-  renderStatus(data.status || { message: '尚未轮询' });
+  const currentStatus = data.status || { message: '尚未轮询' };
+  if (data.pageAuth && data.pageAuth.capturedAt) {
+    currentStatus.detail = `${currentStatus.detail || ''}\n已捕获9site登录态: ${data.pageAuth.capturedAt}`;
+  }
+  renderStatus(currentStatus);
 }
 
 async function save() {
