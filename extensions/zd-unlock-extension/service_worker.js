@@ -23,6 +23,9 @@ const DEFAULT_CONFIG = {
 };
 
 let polling = false;
+const RECORDER_LIMIT = 400;
+const RECORDER_BODY_LIMIT = 8000;
+const RECORDER_RESPONSE_LIMIT = 20000;
 
 function nowText() {
   return new Date().toLocaleString('zh-CN', { hour12: false });
@@ -58,6 +61,86 @@ async function setStatus(status) {
 function headerSummary(headers = {}) {
   const keys = ['x-api-token', 'x-api-user', 'x-api-uuid', 'x-api-xsn', 'x-api-xts', 'x-api-appkey'];
   return keys.filter((key) => headers[key]).join(', ') || 'none';
+}
+
+function truncateText(value, limit) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit)}\n...[truncated ${text.length - limit} chars]`;
+}
+
+function sanitizeHeaders(headers = {}) {
+  const out = {};
+  for (const [rawKey, rawValue] of Object.entries(headers || {})) {
+    const key = String(rawKey).toLowerCase();
+    const value = String(rawValue ?? '');
+    if (/(token|authorization|cookie|secret|password)/i.test(key)) {
+      out[key] = value ? '[redacted]' : '';
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+function normalizeRecord(record = {}) {
+  return {
+    id: `rec_${Date.now()}_${Math.floor(Math.random() * 100000)}`,
+    captured_at: new Date().toISOString(),
+    page_url: String(record.page_url || ''),
+    transport: String(record.transport || ''),
+    method: String(record.method || 'GET').toUpperCase(),
+    url: String(record.url || ''),
+    request_headers: sanitizeHeaders(record.request_headers || {}),
+    request_body: truncateText(record.request_body || '', RECORDER_BODY_LIMIT),
+    status: record.status ?? null,
+    ok: record.ok ?? null,
+    duration_ms: Math.max(0, Number(record.duration_ms || 0)),
+    response_url: String(record.response_url || ''),
+    response_body: truncateText(record.response_body || '', RECORDER_RESPONSE_LIMIT),
+    error: String(record.error || '')
+  };
+}
+
+async function startRecorder() {
+  await chrome.storage.local.set({
+    recorderState: { enabled: true, startedAt: new Date().toISOString(), stoppedAt: '', count: 0 },
+    recorderRecords: []
+  });
+}
+
+async function stopRecorder() {
+  const stored = await chrome.storage.local.get(['recorderState', 'recorderRecords']);
+  const records = stored.recorderRecords || [];
+  await chrome.storage.local.set({
+    recorderState: {
+      ...(stored.recorderState || {}),
+      enabled: false,
+      stoppedAt: new Date().toISOString(),
+      count: records.length
+    }
+  });
+}
+
+async function clearRecorder() {
+  await chrome.storage.local.set({
+    recorderState: { enabled: false, startedAt: '', stoppedAt: '', count: 0 },
+    recorderRecords: []
+  });
+}
+
+async function appendRecorderRecord(record) {
+  const stored = await chrome.storage.local.get(['recorderState', 'recorderRecords']);
+  const state = stored.recorderState || {};
+  if (!state.enabled) return { ok: true, skipped: true };
+  const records = Array.isArray(stored.recorderRecords) ? stored.recorderRecords : [];
+  records.push(normalizeRecord(record));
+  while (records.length > RECORDER_LIMIT) records.shift();
+  await chrome.storage.local.set({
+    recorderRecords: records,
+    recorderState: { ...state, count: records.length, lastCapturedAt: new Date().toISOString() }
+  });
+  return { ok: true, count: records.length };
 }
 
 async function ack(config, cmd, status, detail = '') {
@@ -171,7 +254,13 @@ async function pollOnce() {
 }
 
 chrome.runtime.onInstalled.addListener(async () => {
-  await chrome.storage.local.set({ config: DEFAULT_CONFIG, enabled: true });
+  const stored = await chrome.storage.local.get(['recorderState', 'recorderRecords']);
+  await chrome.storage.local.set({
+    config: DEFAULT_CONFIG,
+    enabled: true,
+    recorderState: stored.recorderState || { enabled: false, startedAt: '', stoppedAt: '', count: 0 },
+    recorderRecords: stored.recorderRecords || []
+  });
   chrome.alarms.create('poll', { periodInMinutes: 0.5 });
   pollOnce();
 });
@@ -222,6 +311,30 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         detail: '登录态已更新'
       }))
       .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+  if (message && message.type === 'recorderStart') {
+    startRecorder()
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+  if (message && message.type === 'recorderStop') {
+    stopRecorder()
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+  if (message && message.type === 'recorderClear') {
+    clearRecorder()
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+  if (message && message.type === 'recorderRecord') {
+    appendRecorderRecord(message.record || {})
+      .then((result) => sendResponse(result))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
   }
