@@ -2623,6 +2623,12 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             headers={"Content-Disposition": "attachment; filename=zd-unlock-extension.zip"}
         )
 
+    @app.route('/tool/9site_storage_scan.js')
+    def nine_site_storage_scan_script():
+        script_path = os.path.join(os.path.dirname(__file__), "tools", "9site_storage_scan.js")
+        with open(script_path, "r", encoding="utf-8") as f:
+            return Response(f.read(), mimetype="application/javascript; charset=utf-8")
+
     @app.route('/api/batch_recovery', methods=['POST'])
     def trigger_batch_recovery():
         data = request.get_json(silent=True) or {}
