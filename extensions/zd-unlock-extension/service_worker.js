@@ -34,9 +34,24 @@ function nowText() {
   return new Date().toLocaleString('zh-CN', { hour12: false });
 }
 
+function authHost(auth = {}) {
+  try {
+    return new URL(auth.href || '').host;
+  } catch {
+    return '';
+  }
+}
+
+function actionHost(action) {
+  return action === 'migrate_milan' ? '6sitebg.oj61i4.com' : '9sitebg.mvj4e7.com';
+}
+
+function actionSite(action) {
+  return action === 'migrate_milan' ? '6001' : '9001';
+}
+
 async function getConfig() {
-  const stored = await chrome.storage.local.get(['config', 'enabled', 'pageAuth']);
-  const dynamicHeaders = (stored.pageAuth && stored.pageAuth.headers) || {};
+  const stored = await chrome.storage.local.get(['config', 'enabled', 'pageAuth', 'pageAuthByHost']);
   return {
     enabled: stored.enabled !== false,
     config: {
@@ -44,11 +59,33 @@ async function getConfig() {
       ...(stored.config || {}),
       headers: {
         ...DEFAULT_CONFIG.headers,
-        ...((stored.config && stored.config.headers) || {}),
-        ...dynamicHeaders
+        ...((stored.config && stored.config.headers) || {})
       },
-      pageAuth: stored.pageAuth || null
+      pageAuth: stored.pageAuth || null,
+      pageAuthByHost: stored.pageAuthByHost || {}
     }
+  };
+}
+
+function configForAction(config, action) {
+  const targetHost = actionHost(action);
+  const targetSite = actionSite(action);
+  const byHost = config.pageAuthByHost || {};
+  const currentAuth = config.pageAuth || null;
+  const matchedAuth = byHost[targetHost]
+    || (authHost(currentAuth) === targetHost ? currentAuth : null)
+    || (String(((currentAuth || {}).headers || {})['x-api-site'] || '') === targetSite ? currentAuth : null);
+  const authHeaders = (matchedAuth && matchedAuth.headers) || {};
+  if (!matchedAuth || !authHeaders['x-api-token'] || !authHeaders['x-api-user']) {
+    throw new Error(`${targetSite === '6001' ? '6站' : '9站'}未登录`);
+  }
+  return {
+    ...config,
+    headers: {
+      ...config.headers,
+      ...(matchedAuth.headers || {})
+    },
+    pageAuth: matchedAuth
   };
 }
 
@@ -298,6 +335,7 @@ async function runBackendCommand(config, cmd) {
   const label = commandLabel(action);
   await setStatus({ state: 'running', message: `执行${label} ${targetValue}` });
   try {
+    config = configForAction(config, action);
     if (action === 'migrate_milan') {
       await runMigrateMilanCommand(config, cmd, targetValue);
       return;
@@ -408,7 +446,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
   if (message && message.type === 'pageAuth') {
-    chrome.storage.local.set({ pageAuth: message.auth })
+    const host = authHost(message.auth || {});
+    chrome.storage.local.get(['pageAuthByHost'])
+      .then((stored) => {
+        const pageAuthByHost = stored.pageAuthByHost || {};
+        if (host) pageAuthByHost[host] = message.auth;
+        return chrome.storage.local.set({ pageAuth: message.auth, pageAuthByHost });
+      })
       .then(() => setStatus({
         state: 'auth',
         message: '已登录',
