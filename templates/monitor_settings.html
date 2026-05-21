@@ -1935,6 +1935,12 @@ createApp({
                 label: item.label || item.name || item.value || ""
             })).filter(item => item.value) : []
         });
+        const hasIncompleteResourceDraft = () => {
+            const groups = config.resources.groups || [];
+            const prefixes = config.resources.sender_prefixes || [];
+            return groups.some(item => !String(item.id ?? "").trim())
+                || prefixes.some(item => !String(item.value ?? "").trim());
+        };
         const resourceGroupOptions = computed(() => config.resources.groups || []);
         const senderPrefixOptions = computed(() => config.resources.sender_prefixes || []);
         const selectedGroupNames = (rule) => (rule.groups || []).map(groupLabel).join("、") || "未配置";
@@ -1972,7 +1978,7 @@ createApp({
             else list.push(normalized);
         };
         const addGroupResource = () => {
-            config.resources.groups.push({ id: "", name: "新群组" });
+            config.resources.groups.push({ id: "", name: "新群组", _draft: Date.now() });
             refreshIcons();
         };
         const removeGroupResource = (index) => {
@@ -1985,7 +1991,7 @@ createApp({
             }
         };
         const addPrefixResource = () => {
-            config.resources.sender_prefixes.push({ value: "", label: "新名单" });
+            config.resources.sender_prefixes.push({ value: "", label: "新名单", _draft: Date.now() });
         };
         const removePrefixResource = (index) => {
             const removed = config.resources.sender_prefixes.splice(index, 1)[0];
@@ -2524,6 +2530,10 @@ createApp({
         const scheduleAutoSave = () => {
             if (!autoSaveReady || suppressAutoSave || ui.saving) return;
             clearTimeout(autoSaveTimer);
+            if (ui.page === "resources" && hasIncompleteResourceDraft()) {
+                ui.autoSaving = false;
+                return;
+            }
             ui.autoSaving = true;
             autoSaveTimer = setTimeout(async () => {
                 if (suppressAutoSave || ui.saving) {
