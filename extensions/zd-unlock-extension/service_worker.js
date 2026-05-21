@@ -4,7 +4,8 @@ const DEFAULT_CONFIG = {
   unlockUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/unlockIpOrNameForCheckPhone',
   loginErrorUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/clearLoginErrorRedisKey',
   proxyWhitelistUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/system/siteAccessManage/add',
-  migrateMilanUrl: '',
+  migrationRecordsUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/pilgrimage/recordsV2',
+  migrateMilanUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/pilgrimage/migration',
   value: 'x8Bffk8DR9QOcdHPe6fFvQ==',
   headers: {
     accept: '*/*',
@@ -189,18 +190,87 @@ function commandRequest(config, action, targetValue) {
     };
   }
   if (action === 'migrate_milan') {
-    if (!config.migrateMilanUrl) {
-      throw new Error('迁移米兰接口未配置，请先提供 6站点 fetch');
-    }
+    if (!config.migrateMilanUrl) throw new Error('迁移米兰接口未配置');
     return {
       url: config.migrateMilanUrl,
-      body: { name: targetValue }
+      body: { members: [{ name: targetValue }], siteIdTo: 9001 }
     };
   }
   return {
     url: config.unlockUrl,
     body: { value: config.value, name: targetValue }
   };
+}
+
+function parseJsonText(text) {
+  try {
+    return JSON.parse(text || '{}');
+  } catch {
+    return {};
+  }
+}
+
+async function postJson(url, headers, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    mode: 'cors',
+    credentials: 'include',
+    headers,
+    body: JSON.stringify(body)
+  });
+  const text = await res.text();
+  return { res, text, data: parseJsonText(text) };
+}
+
+function apiOk(res, data) {
+  return res.ok && (data.status_code === undefined || Number(data.status_code) === 6000);
+}
+
+function requireSixSiteAuth(config) {
+  const site = String((config.headers && config.headers['x-api-site']) || '');
+  const href = String((config.pageAuth && config.pageAuth.href) || '');
+  if (site !== '6001' && !href.includes('6sitebg.oj61i4.com')) {
+    throw new Error('未捕获6站点登录态，请打开6site后台页面并刷新一次');
+  }
+}
+
+async function runMigrateMilanCommand(config, cmd, targetValue) {
+  requireSixSiteAuth(config);
+  await setStatus({ state: 'running', message: `查询迁移记录 ${targetValue}` });
+
+  const query = await postJson(config.migrationRecordsUrl, config.headers, {
+    name: targetValue,
+    pageNum: 1,
+    pageSize: 20
+  });
+  if (!apiOk(query.res, query.data)) {
+    throw new Error(`查询迁移记录失败 HTTP ${query.res.status}: ${query.text.slice(0, 300)}`);
+  }
+
+  const list = (((query.data || {}).data || {}).list || []);
+  const member = list.find((item) => String(item.name || '').toLowerCase() === targetValue) || list[0];
+  if (!member || !member.id || !member.name) {
+    throw new Error(`未找到迁移会员：${targetValue}`);
+  }
+
+  await setStatus({ state: 'running', message: `执行迁移米兰 ${member.name}` });
+  const migration = await postJson(config.migrateMilanUrl, config.headers, {
+    members: [{ id: member.id, name: member.name }],
+    siteIdTo: 9001
+  });
+  const result = ((migration.data || {}).data || {});
+  const ok = apiOk(migration.res, migration.data) && Number(result.passCount || 0) > 0;
+  const reason = result.firstRefuseReason || migration.data.message || migration.text.slice(0, 300);
+  const detail = ok
+    ? `迁移米兰成功：${member.name} pass=${result.passCount || 1}/${result.total || 1}`
+    : `迁移米兰失败：${member.name} ${reason}`;
+
+  await setStatus({
+    state: ok ? 'success' : 'error',
+    message: detail,
+    detail: migration.text.slice(0, 300)
+  });
+  await ack(config, cmd, ok ? 'success' : 'failed', detail);
 }
 
 async function runBackendCommand(config, cmd) {
@@ -213,6 +283,10 @@ async function runBackendCommand(config, cmd) {
   const label = commandLabel(action);
   await setStatus({ state: 'running', message: `执行${label} ${targetValue}` });
   try {
+    if (action === 'migrate_milan') {
+      await runMigrateMilanCommand(config, cmd, targetValue);
+      return;
+    }
     const request = commandRequest(config, action, targetValue);
     const res = await fetch(request.url, {
       method: 'POST',
