@@ -1,6 +1,7 @@
 const DEFAULT_CONFIG = {
   botBase: 'https://arcshelp.zeabur.app',
   cmdSecret: 'J7kN3mQxR9vTsW2pYzBf',
+  memberListUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/list',
   unlockUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/unlockIpOrNameForCheckPhone',
   loginErrorUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/clearLoginErrorRedisKey',
   proxyWhitelistUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/system/siteAccessManage/add',
@@ -221,6 +222,25 @@ function apiOk(res, data) {
   return res.ok && (data.status_code === undefined || Number(data.status_code) === 6000);
 }
 
+async function findExactMember(config, targetValue) {
+  if (!config.memberListUrl) throw new Error('会员查询接口未配置');
+  await setStatus({ state: 'running', message: `查询会员 ${targetValue}` });
+  const query = await postJson(config.memberListUrl, config.headers, {
+    name: targetValue,
+    pageNum: 1,
+    pageSize: 20
+  });
+  if (!apiOk(query.res, query.data)) {
+    throw new Error(`查询会员失败 HTTP ${query.res.status}: ${query.text.slice(0, 300)}`);
+  }
+  const list = (((query.data || {}).data || {}).list || []);
+  const member = list.find((item) => String(item.name || '').toLowerCase() === targetValue);
+  if (!member) {
+    throw new Error(`未找到会员：${targetValue}`);
+  }
+  return member;
+}
+
 function requireSixSiteAuth(config) {
   const site = String((config.headers && config.headers['x-api-site']) || '');
   const href = String((config.pageAuth && config.pageAuth.href) || '');
@@ -281,6 +301,9 @@ async function runBackendCommand(config, cmd) {
     if (action === 'migrate_milan') {
       await runMigrateMilanCommand(config, cmd, targetValue);
       return;
+    }
+    if (action === 'unlock_sms' || action === 'clear_login_error') {
+      await findExactMember(config, targetValue);
     }
     const request = commandRequest(config, action, targetValue);
     const res = await fetch(request.url, {
