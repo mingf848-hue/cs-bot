@@ -60,11 +60,6 @@ async function setStatus(status) {
   });
 }
 
-function headerSummary(headers = {}) {
-  const keys = ['x-api-token', 'x-api-user', 'x-api-uuid', 'x-api-xsn', 'x-api-xts', 'x-api-appkey'];
-  return keys.filter((key) => headers[key]).join(', ') || 'none';
-}
-
 function truncateText(value, limit) {
   const text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
   if (text.length <= limit) return text;
@@ -230,7 +225,7 @@ function requireSixSiteAuth(config) {
   const site = String((config.headers && config.headers['x-api-site']) || '');
   const href = String((config.pageAuth && config.pageAuth.href) || '');
   if (site !== '6001' && !href.includes('6sitebg.oj61i4.com')) {
-    throw new Error(`未捕获6站点登录态，请打开6site后台页面并刷新一次；当前site=${site || '-'} href=${href || '-'}`);
+    throw new Error('未登录');
   }
 }
 
@@ -318,10 +313,7 @@ async function pollOnce() {
       await setStatus({ state: 'paused', message: '扩展已暂停' });
       return;
     }
-    const authLabel = config.pageAuth
-      ? `，已捕获当前登录态 ${headerSummary((config.pageAuth && config.pageAuth.headers) || {})}`
-      : '，未捕获当前登录态';
-    await setStatus({ state: 'polling', message: '正在轮询命令' + authLabel });
+    await setStatus({ state: 'polling', message: '正在轮询命令' });
     const res = await fetch(`${config.botBase}/api/cmd/poll?wait=25&secret=${encodeURIComponent(config.cmdSecret)}`, {
       cache: 'no-store'
     });
@@ -393,8 +385,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     chrome.storage.local.set({ pageAuth: message.auth })
       .then(() => setStatus({
         state: 'auth',
-        message: `已捕获当前登录态: ${headerSummary((message.auth && message.auth.headers) || {})}`,
-        detail: '登录态已更新'
+        message: '已登录',
+        detail: ''
       }))
       .then(() => sendResponse({ ok: true }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));

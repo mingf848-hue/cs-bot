@@ -1,6 +1,7 @@
 const enabled = document.getElementById('enabled');
 const status = document.getElementById('status');
 const detail = document.getElementById('detail');
+const loginBadge = document.getElementById('loginBadge');
 const poll = document.getElementById('poll');
 const recStart = document.getElementById('recStart');
 const recStop = document.getElementById('recStop');
@@ -12,10 +13,11 @@ const recorderDetail = document.getElementById('recorderDetail');
 function renderStatus(s = {}, pageAuth = null) {
   status.textContent = `${s.message || '暂无状态'} (${s.time || '-'})`;
   const lines = [];
-  if (s.detail) lines.push(String(s.detail).includes('9site') ? '登录态已更新' : s.detail);
-  else if (s.state) lines.push(s.state);
-  if (pageAuth && pageAuth.capturedAt) lines.push(`已捕获当前登录态: ${pageAuth.capturedAt}`);
+  if (s.detail && s.state !== 'auth') lines.push(s.detail);
+  else if (s.state && s.state !== 'auth') lines.push(s.state);
   detail.textContent = lines.join('\n');
+  loginBadge.textContent = pageAuth && pageAuth.capturedAt ? '已登录' : '未登录';
+  loginBadge.classList.toggle('on', !!(pageAuth && pageAuth.capturedAt));
 }
 
 async function load() {
