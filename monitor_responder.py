@@ -1188,6 +1188,7 @@ def queue_site_inner_message_command(members, title=None, content=None, source="
         "member_name": ",".join(clean_members[:5]) + ("..." if len(clean_members) > 5 else ""),
         "target_value": ",".join(clean_members),
         "members": clean_members,
+        "template_id": 243,
         "title": title or "【存款温馨提示】",
         "content": content or "系统检测到您的存款订单已取消，为了让您的存款更加通畅，请您使用银联支付的方式存款，联系私人专属经理，申请更高彩金活动加赠！ 👉如无私人专属经理，截图此条消息，联系在线客服发送：“申请专属经理”，享更多优惠～",
         "source": source,

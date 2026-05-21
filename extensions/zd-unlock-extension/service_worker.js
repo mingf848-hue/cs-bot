@@ -5,6 +5,7 @@ const DEFAULT_CONFIG = {
   unlockUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/unlockIpOrNameForCheckPhone',
   loginErrorUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/clearLoginErrorRedisKey',
   proxyWhitelistUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/system/siteAccessManage/add',
+  siteInnerMsgTemplateUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/operation/cmCfg/template/info/list',
   siteInnerMsgAddUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/operation/cmCfg/siteInnerMsg/add',
   migrationRecordsUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/pilgrimage/recordsV2',
   migrateMilanUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/pilgrimage/migration',
@@ -335,13 +336,15 @@ async function runSiteInnerMessageCommand(config, cmd) {
   const uniqueMembers = [...new Set(members)];
   if (!uniqueMembers.length) throw new Error('站内信账号列表为空');
 
-  const title = String(cmd.title || '【存款温馨提示】');
-  const content = String(cmd.content || '系统检测到您的存款订单已取消，为了让您的存款更加通畅，请您使用银联支付的方式存款，联系私人专属经理，申请更高彩金活动加赠！ 👉如无私人专属经理，截图此条消息，联系在线客服发送：“申请专属经理”，享更多优惠～');
+  const template = await loadSiteInnerMessageTemplate(config, cmd);
+  const title = template.title;
+  const content = template.content;
+  const moduleId = template.id;
   await setStatus({ state: 'running', message: `发送站内信 ${uniqueMembers.length}人` });
   const sent = await postJson(config.siteInnerMsgAddUrl, config.headers, {
     clients: '0,1,2,3,8,9',
     sendType: 1,
-    module: 243,
+    module: moduleId,
     sendMembers: uniqueMembers.join(','),
     title,
     msgType: 1,
@@ -371,6 +374,38 @@ async function runSiteInnerMessageCommand(config, cmd) {
     detail: sent.text.slice(0, 300)
   });
   await ack(config, cmd, ok ? 'success' : 'failed', detail);
+}
+
+async function loadSiteInnerMessageTemplate(config, cmd) {
+  const fallback = {
+    id: Number(cmd.template_id || 243),
+    title: String(cmd.title || '【存款温馨提示】'),
+    content: String(cmd.content || '系统检测到您的存款订单已取消，为了让您的存款更加通畅，请您使用银联支付的方式存款，联系私人专属经理，申请更高彩金活动加赠！ 👉如无私人专属经理，截图此条消息，联系在线客服发送：“申请专属经理”，享更多优惠～')
+  };
+  if (!config.siteInnerMsgTemplateUrl) return fallback;
+
+  await setStatus({ state: 'running', message: '读取站内信模板' });
+  const query = await postJson(config.siteInnerMsgTemplateUrl, config.headers, {
+    ifCommon: '1',
+    module: '1',
+    pageNum: 1,
+    pageSize: 100
+  });
+  if (!apiOk(query.res, query.data)) {
+    throw new Error(`读取站内信模板失败 HTTP ${query.res.status}: ${query.text.slice(0, 300)}`);
+  }
+  const list = (((query.data || {}).data || {}).list || []);
+  const templateId = Number(cmd.template_id || 243);
+  const matched = list.find((item) => Number(item.id) === templateId)
+    || list.find((item) => String(item.title || '').trim() === fallback.title);
+  if (!matched || !matched.title || !matched.content) {
+    throw new Error(`未找到站内信模板：${templateId}`);
+  }
+  return {
+    id: Number(matched.id),
+    title: String(matched.title),
+    content: String(matched.content)
+  };
 }
 
 async function runBackendCommand(config, cmd) {
