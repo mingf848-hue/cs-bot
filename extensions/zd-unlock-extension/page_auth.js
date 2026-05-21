@@ -331,7 +331,6 @@
   });
 
   sendAuth();
-  injectMainWorldCapture();
   syncRecorderState();
   setInterval(() => sendAuth(), 5000);
   setInterval(() => syncRecorderState(), 5000);
