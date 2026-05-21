@@ -1164,6 +1164,7 @@ BACKEND_UNLOCK_ACTIONS = {"unlock_sms", "clear_login_error", "add_proxy_whitelis
 CMD_SECRET = "J7kN3mQxR9vTsW2pYzBf"
 pending_commands = deque(maxlen=200)
 pending_command_leases = {}
+backend_command_results = {}
 
 def normalize_backend_action(action):
     action = str(action or "unlock_sms").strip()
@@ -1187,6 +1188,8 @@ def normalize_reply_steps(raw_replies):
         r["member_pattern"] = str(r.get("member_pattern", "") or "").strip()
         r["ip_pattern"] = str(r.get("ip_pattern", "") or "").strip()
         r["backend_action"] = normalize_backend_action(r.get("backend_action", "unlock_sms"))
+        r["fail_notify_to"] = str(r.get("fail_notify_to", "") or "").strip()
+        r["fail_notify_text"] = str(r.get("fail_notify_text", "") or "").strip()
         if r.get("type") == "amount_logic":
             amount_delay_defaults = (
                 ("high_reply_min", r.get("min", 1.0)),
@@ -1233,6 +1236,66 @@ def lease_next_pending_command():
     cmd["id"] = cmd_id
     pending_command_leases[cmd_id] = {"cmd": cmd, "leased_at": now}
     return cmd
+
+async def wait_backend_command_result(cmd_id, timeout=90.0):
+    deadline = time.time() + max(1.0, float(timeout or 90.0))
+    while time.time() < deadline:
+        result = backend_command_results.pop(cmd_id, None)
+        if result:
+            return result
+        await asyncio.sleep(0.5)
+    pending_command_leases.pop(cmd_id, None)
+    return {"status": "timeout", "detail": "等待后台回执超时"}
+
+def backend_result_ok(result):
+    return str((result or {}).get("status") or "") == "success"
+
+async def notify_backend_failure(step, rule, event, target_value, action, result):
+    notify_target = parse_peer_target((step or {}).get("fail_notify_to"))
+    if not notify_target:
+        return False
+    status = str((result or {}).get("status") or "failed")
+    detail = str((result or {}).get("detail") or "")
+    default_text = "后台自动处理失败，请人工核查。\n规则：{rule}\n动作：{action}\n目标：{target}\n状态：{status}"
+    tpl = (step or {}).get("fail_notify_text") or default_text
+    text = format_bot_notice(tpl, event, rule, "")
+    replacements = {
+        "{target}": str(target_value or ""),
+        "{action}": command_action_label(action),
+        "{status}": status,
+        "{detail}": detail[:500],
+    }
+    for key, value in replacements.items():
+        text = text.replace(key, value)
+    await send_bot_notice(notify_target, text)
+    return True
+
+async def execute_backend_unlock_step(step, rule, event, source_text):
+    backend_action = normalize_backend_action((step or {}).get("backend_action", "unlock_sms"))
+    target_value = extract_backend_target(source_text or "", step)
+    if not target_value:
+        result = {"status": "no_target", "detail": "未提取到目标值"}
+        await notify_backend_failure(step, rule, event, "", backend_action, result)
+        raise RuntimeError(f"后台动作未提取到目标值：{command_action_label(backend_action)}")
+
+    cmd_id = queue_backend_unlock_command(target_value, rule, event, backend_action)
+    logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 已下发后台指令: {backend_action} {target_value} | id={cmd_id}")
+    result = await wait_backend_command_result(cmd_id, timeout=90.0)
+    if not backend_result_ok(result):
+        notified = await notify_backend_failure(step, rule, event, target_value, backend_action, result)
+        suffix = "，已通知人工核查" if notified else "，未配置失败通知对象"
+        raise RuntimeError(f"后台动作失败：{command_action_label(backend_action)} {target_value} status={result.get('status')}{suffix}")
+    logger.info(f"✅ [BackendUnlock] 规则 '{rule.get('name')}' 后台动作成功: {backend_action} {target_value} | id={cmd_id}")
+    return cmd_id
+
+def command_action_label(action):
+    if action == "add_proxy_whitelist":
+        return "代理 IP 加白"
+    if action == "clear_login_error":
+        return "登录密码试错限制"
+    if action == "migrate_milan":
+        return "迁移米兰"
+    return "短信/验证码限制"
 
 def ensure_scheduled_message_id(item):
     if not item.get("id"):
@@ -1983,6 +2046,14 @@ SETTINGS_HTML = """
                                                 <input v-model="reply.ip_pattern" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] font-mono text-orange-700 bg-orange-50 border-orange-200" placeholder="留空：从已匹配消息里提取 IPv4">
                                                 <div class="text-[9px] text-slate-400 mt-0.5">触发词在监听关键词里维护；这里仅负责提取 IPv4。</div>
                                             </div>
+                                            <div class="visual-field">
+                                                <div class="visual-label"><i class="fa-solid fa-bell"></i>失败通知对象</div>
+                                                <input v-model="reply.fail_notify_to" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] text-red-700 bg-red-50 border-red-100" placeholder="用户ID 或 @username">
+                                            </div>
+                                            <div class="visual-field">
+                                                <div class="visual-label"><i class="fa-solid fa-message"></i>失败通知内容</div>
+                                                <textarea v-model="reply.fail_notify_text" rows="2" class="bento-input w-full px-2 py-1.5 text-[11px] resize-none bg-red-50 border-red-100" placeholder="留空使用默认：后台自动处理失败，请人工核查"></textarea>
+                                            </div>
                                         </div>
                                     </template>
                                 </div>
@@ -2057,6 +2128,8 @@ SETTINGS_HTML = """
                 member_pattern: rep.member_pattern || '',
                 ip_pattern: rep.ip_pattern || '',
                 backend_action: rep.backend_action || 'unlock_sms',
+                fail_notify_to: rep.fail_notify_to || '',
+                fail_notify_text: rep.fail_notify_text || '',
                 min: rep.min ?? 1,
                 max: rep.max ?? 3,
                 high_reply_min: rep.high_reply_min ?? rep.min ?? 1,
@@ -2091,6 +2164,8 @@ SETTINGS_HTML = """
                 if (!reply.member_pattern) reply.member_pattern = '';
                 if (!reply.ip_pattern) reply.ip_pattern = '';
                 if (!reply.backend_action) reply.backend_action = 'unlock_sms';
+                if (!reply.fail_notify_to) reply.fail_notify_to = '';
+                if (!reply.fail_notify_text) reply.fail_notify_text = '';
                 if (reply.min === undefined || reply.min === null || reply.min === '') reply.min = 1;
                 if (reply.max === undefined || reply.max === null || reply.max === '') reply.max = 3;
                 if (reply.type === 'amount_logic') {
@@ -2653,6 +2728,14 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         detail = str(data.get("detail") or "")
         if cmd_id:
             pending_command_leases.pop(cmd_id, None)
+            backend_command_results[cmd_id] = {
+                "status": status,
+                "member_name": member_name,
+                "detail": detail,
+                "acked_at": now_bj().isoformat(),
+            }
+            while len(backend_command_results) > 500:
+                backend_command_results.pop(next(iter(backend_command_results)), None)
         logger.info(
             f"🔓 [BackendUnlock] 扩展回执: id={cmd_id or '-'} "
             f"member={member_name or '-'} status={status or '-'} detail={detail[:500] or '-'}"
@@ -2992,14 +3075,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                         logger.info(f"🔔 [Notify] 规则 '{rule.get('name')}' 已通过 Telegram Bot 通知: {notify_target}")
 
                 elif stype == "backend_unlock":
-                    backend_action = normalize_backend_action(step.get("backend_action", "unlock_sms"))
-                    target_value = extract_backend_target(source_text, step)
-                    if target_value:
-                        cmd_id = queue_backend_unlock_command(target_value, rule, source_event, backend_action)
-                        backend_actions += 1
-                        logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 已下发后台指令: {backend_action} {target_value} | id={cmd_id}")
-                    else:
-                        logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 未提取到目标值，已跳过")
+                    await execute_backend_unlock_step(step, rule, source_event, source_text)
+                    backend_actions += 1
 
                 else:
                     content = step.get("text", "")
@@ -3355,14 +3432,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                     logger.info(f"🔔 [Notify] 规则 '{rule.get('name')}' 已通过 Telegram Bot 通知: {notify_target}")
 
                             elif stype == "backend_unlock":
-                                backend_action = normalize_backend_action(step.get("backend_action", "unlock_sms"))
-                                target_value = extract_backend_target(event.text or "", step)
-                                if target_value:
-                                    cmd_id = queue_backend_unlock_command(target_value, rule, event, backend_action)
-                                    backend_actions += 1
-                                    logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 已下发后台指令: {backend_action} {target_value} | id={cmd_id}")
-                                else:
-                                    logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 未提取到目标值，已跳过")
+                                await execute_backend_unlock_step(step, rule, event, event.text or "")
+                                backend_actions += 1
 
                             else: # text
                                 content = step.get("text", "")

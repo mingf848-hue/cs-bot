@@ -291,12 +291,15 @@ async function runBackendCommand(config, cmd) {
       body: JSON.stringify(request.body)
     });
     const text = await res.text();
+    const data = parseJsonText(text);
+    const ok = apiOk(res, data);
+    const reason = (data && data.message) || text;
     await setStatus({
-      state: res.ok ? 'success' : 'error',
+      state: ok ? 'success' : 'error',
       message: `${label} ${targetValue} HTTP ${res.status}`,
       detail: text.slice(0, 300)
     });
-    await ack(config, cmd, res.ok ? 'success' : `http_${res.status}`, text);
+    await ack(config, cmd, ok ? 'success' : `http_${res.status}`, reason);
   } catch (err) {
     const detail = `${label}失败 ${targetValue}: ${err && err.stack ? err.stack : (err && err.message ? err.message : String(err || 'unknown'))}`;
     await setStatus({ state: 'error', message: `${label}失败 ${targetValue}`, detail: detail.slice(0, 500) });

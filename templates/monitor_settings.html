@@ -1109,6 +1109,14 @@
                                                 <label>提取 IP 的正则</label>
                                                 <input class="input font-mono" v-model="step.ip_pattern" placeholder="留空：从已匹配消息里提取 IPv4">
                                             </div>
+                                            <div class="field">
+                                                <label>失败通知对象</label>
+                                                <input class="input" v-model="step.fail_notify_to" placeholder="用户ID 或 @username">
+                                            </div>
+                                            <div class="field">
+                                                <label>失败通知内容</label>
+                                                <textarea class="textarea" v-model="step.fail_notify_text" placeholder="留空使用默认：后台自动处理失败，请人工核查"></textarea>
+                                            </div>
                                             <span class="hint">触发词在监听关键词里维护；这里仅负责提取目标值。账号类取账号，代理加白取 IPv4。</span>
                                         </div>
                                     </div>
@@ -1246,6 +1254,14 @@
                                                 <div class="field" v-else>
                                                     <label>提取 IP 的正则</label>
                                                     <input class="input font-mono" v-model="step.ip_pattern" placeholder="留空：从原始报备里提取 IPv4">
+                                                </div>
+                                                <div class="field">
+                                                    <label>失败通知对象</label>
+                                                    <input class="input" v-model="step.fail_notify_to" placeholder="用户ID 或 @username">
+                                                </div>
+                                                <div class="field">
+                                                    <label>失败通知内容</label>
+                                                    <textarea class="textarea" v-model="step.fail_notify_text" placeholder="留空使用默认：后台自动处理失败，请人工核查"></textarea>
                                                 </div>
                                             </div>
                                         </div>
@@ -1862,6 +1878,8 @@ createApp({
             member_pattern: rep.member_pattern || "",
             ip_pattern: rep.ip_pattern || "",
             backend_action: rep.backend_action || "unlock_sms",
+            fail_notify_to: String(rep.fail_notify_to || ""),
+            fail_notify_text: rep.fail_notify_text || "",
             min: rep.min ?? 1,
             max: rep.max ?? 3,
             high_reply_min: rep.high_reply_min ?? rep.min ?? 1,
@@ -2266,6 +2284,8 @@ createApp({
             step.member_pattern = step.member_pattern || "";
             step.ip_pattern = step.ip_pattern || "";
             step.backend_action = step.backend_action || "unlock_sms";
+            step.fail_notify_to = step.fail_notify_to || "";
+            step.fail_notify_text = step.fail_notify_text || "";
             step.min = step.min ?? 1;
             step.max = step.max ?? 3;
             if (step.type === "amount_logic") {
