@@ -936,7 +936,7 @@
                             <div class="form-grid">
                                 <div class="field">
                                     <div class="label-row"><label>监听来源</label><span class="hint">{{ (currentRule.groups || []).length }} 个群</span></div>
-                                    <details class="select-menu">
+                                    <details class="select-menu" data-select-menu>
                                         <summary>{{ selectedGroupNames(currentRule) }}</summary>
                                         <div class="pick-list">
                                             <label v-for="group in resourceGroupOptions" :key="group.id" class="pick-item">
@@ -1297,7 +1297,7 @@
                                 </div>
                                 <div class="field">
                                     <div class="label-row"><label>{{ currentRule.sender_mode === 'include' ? '允许名单' : '排除名单' }}</label><span class="hint">{{ (currentRule.sender_prefixes || []).length }} 项</span></div>
-                                    <details class="select-menu">
+                                    <details class="select-menu" data-select-menu>
                                         <summary>{{ selectedPrefixNames(currentRule) }}</summary>
                                         <div class="pick-list">
                                             <label v-for="item in senderPrefixOptions" :key="item.value" class="pick-item">
@@ -2529,20 +2529,8 @@ createApp({
 
         const scheduleAutoSave = () => {
             if (!autoSaveReady || suppressAutoSave || ui.saving) return;
+            ui.autoSaving = false;
             clearTimeout(autoSaveTimer);
-            if (ui.page === "resources" && hasIncompleteResourceDraft()) {
-                ui.autoSaving = false;
-                return;
-            }
-            ui.autoSaving = true;
-            autoSaveTimer = setTimeout(async () => {
-                if (suppressAutoSave || ui.saving) {
-                    ui.autoSaving = false;
-                    return;
-                }
-                await saveConfig({ silent: true });
-                ui.autoSaving = false;
-            }, 900);
         };
 
         const toggleRuleEnabled = async (rule) => {
@@ -2633,6 +2621,12 @@ createApp({
             }
         };
 
+        const closeSelectMenus = (event) => {
+            document.querySelectorAll("details[data-select-menu][open]").forEach((menu) => {
+                if (!menu.contains(event.target)) menu.removeAttribute("open");
+            });
+        };
+
         watch(() => [ui.activeTab, ui.showOps, config.rules.length, ui.selectedId], refreshIcons);
         watch(() => [ui.page, ui.recordFilter, ui.recordQuery], refreshIcons);
         watch(currentRule, refreshIcons);
@@ -2640,6 +2634,7 @@ createApp({
         onMounted(() => {
             loadAll();
             setInterval(refreshStatus, 3000);
+            document.addEventListener("click", closeSelectMenus);
             refreshIcons();
         });
 
