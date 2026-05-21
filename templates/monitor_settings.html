@@ -1077,7 +1077,7 @@
 
                                         <div class="field-card" v-if="step.type === 'preempt_check'">
                                             <strong>抢答检测（自删）</strong>
-                                            <span class="hint">只检测同一条原始消息流中、排在本规则第一条回复前的他人引用回复。</span>
+                                            <span class="hint">检测同一条消息流里更快的他人引用回复；命中后会删除已发消息并停止后续动作。</span>
                                         </div>
 
                                         <div class="form-grid" v-if="step.type === 'notify_user'">
@@ -1217,7 +1217,7 @@
                                             </div>
                                             <div class="field-card" v-if="step.type === 'preempt_check'">
                                                 <strong>抢答检测（自删）</strong>
-                                                <span class="hint">若同一条原始报备已有他人更快引用回复，会删除本动作流已发出的消息。</span>
+                                                <span class="hint">检测领导同意后、同一条消息流里更快的他人引用回复；命中后删除已发消息并停止后续动作。</span>
                                             </div>
                                             <div class="form-grid" v-if="step.type === 'notify_user'">
                                                 <div class="field">
@@ -2330,7 +2330,7 @@ createApp({
                     : "小额：未配置";
                 return `阈值：${amountPart(step, 0) || "未配置"}\\n大额：${amountPart(step, 1) || "未配置"}\\n${lowFlow}`;
             }
-            if (step.type === "preempt_check") return "若有人更快，会删除本规则已发出的消息";
+            if (step.type === "preempt_check") return "若有人更快，会删除已发消息并停止后续动作";
             if (step.type === "notify_user") return `通知：${step.forward_to || "未配置"}`;
             return step.text || "未配置发送内容";
         };

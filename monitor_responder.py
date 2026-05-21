@@ -864,6 +864,30 @@ def is_same_reply_flow(message, origin_message):
         return False
     return origin_id in get_message_reply_target_ids(message)
 
+async def find_preempting_reply(client, chat_id, origin_message, after_msg_id, before_msg_id=None, own_sent_ids=None, ignored_sender_ids=None, extra_target_ids=None):
+    target_ids = {getattr(origin_message, "id", None), *(extra_target_ids or [])}
+    target_ids = {msg_id for msg_id in target_ids if msg_id}
+    own_sent_ids = set(own_sent_ids or [])
+    ignored_sender_ids = {sender_id for sender_id in (ignored_sender_ids or []) if sender_id}
+    kwargs = {"limit": 80}
+    if after_msg_id:
+        kwargs["min_id"] = after_msg_id
+    if before_msg_id:
+        kwargs["max_id"] = before_msg_id
+    hist = await client.get_messages(chat_id, **kwargs)
+    for m in hist:
+        msg_id = getattr(m, "id", None)
+        if not msg_id:
+            continue
+        if msg_id in own_sent_ids:
+            continue
+        sender_id = getattr(m, "sender_id", None)
+        if not sender_id or sender_id in ignored_sender_ids:
+            continue
+        if target_ids and target_ids.intersection(get_message_reply_target_ids(m)):
+            return m
+    return None
+
 async def delete_sent_messages(client, sent_records):
     ids_by_chat = {}
     for chat_id, sent in sent_records:
@@ -1920,7 +1944,7 @@ SETTINGS_HTML = """
                                     </template>
 
                                     <template v-if="reply.type === 'preempt_check'">
-                                        <div class="step-help"><i class="fa-solid fa-user-shield mr-1"></i>只检测在本规则第一条回复之前、且引用同一条原始消息的他人回复；若有人更快，会删除本规则已发出的消息。</div>
+                                        <div class="step-help"><i class="fa-solid fa-user-shield mr-1"></i>检测同一条消息流里更快的他人引用回复；命中后会删除已发消息并停止后续动作。</div>
                                     </template>
 
                                     <template v-if="reply.type === 'notify_user'">
@@ -2853,8 +2877,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             except Exception as e:
                 logger.error(f"❌ [OTP] 初始化 {acc_name} 失败: {e}")
 
-    async def execute_rule_steps(target_client, rule, source_event, source_message, sender_name, steps=None):
-        sent_msgs = []
+    async def execute_rule_steps(target_client, rule, source_event, source_message, sender_name, steps=None, initial_sent_msgs=None, preempt_after_id=None, preempt_extra_target_ids=None):
+        sent_msgs = list(initial_sent_msgs or [])
+        initial_sent_count = len(sent_msgs)
         notify_sent = False
         backend_actions = 0
         preempted = False
@@ -2932,33 +2957,26 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                             logger.warning(f"⚠️ [Monitor] Amount logic matched text but no specific amount found.")
 
                 elif stype == "preempt_check":
-                    if not sent_msgs:
-                        continue
                     me = await target_client.get_me()
                     source_sent_ids = get_sent_ids_for_chat(sent_msgs, source_chat_id)
                     first_source_sent_id = get_first_sent_id_for_chat(sent_msgs, source_chat_id)
-                    if not first_source_sent_id:
-                        logger.info(f"🛡️ [Preempt] 原群尚无本规则发送消息，跳过抢答检测")
-                        continue
-                    hist_limit = max(20, len(source_sent_ids) + 10)
-                    hist = await target_client.get_messages(source_chat_id, limit=hist_limit, min_id=source_msg_id)
-                    has_preempt = False
-                    for m in hist:
-                        if not getattr(m, "id", None) or m.id >= first_source_sent_id:
-                            continue
-                        if m.id in source_sent_ids:
-                            continue
-                        if not getattr(m, "sender_id", None) or m.sender_id in (me.id, getattr(source_event, "sender_id", None)):
-                            continue
-                        if not is_same_reply_flow(m, source_message):
-                            continue
-                        has_preempt = True
-                        break
-                    if has_preempt:
-                        await delete_sent_messages(target_client, sent_msgs)
+                    min_preempt_id = preempt_after_id or source_msg_id
+                    preempt_msg = await find_preempting_reply(
+                        target_client,
+                        source_chat_id,
+                        source_message,
+                        min_preempt_id,
+                        before_msg_id=first_source_sent_id,
+                        own_sent_ids=source_sent_ids,
+                        ignored_sender_ids={me.id, getattr(source_event, "sender_id", None)},
+                        extra_target_ids=preempt_extra_target_ids,
+                    )
+                    if preempt_msg:
+                        if sent_msgs:
+                            await delete_sent_messages(target_client, sent_msgs)
                         sent_msgs = []
                         preempted = True
-                        logger.info(f"🧹 [Preempt] 检测到抢答，已删除规则 '{rule.get('name')}' 的已发送消息")
+                        logger.info(f"🧹 [Preempt] 检测到抢答 Msg={getattr(preempt_msg, 'id', '-')}, 已停止规则 '{rule.get('name')}' 后续动作")
                         break
 
                 elif stype == "notify_user":
@@ -2995,7 +3013,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             "backend_actions": backend_actions,
             "preempted": preempted,
             "action_failed": action_failed,
-            "action_count": len(sent_msgs) + (1 if notify_sent else 0) + backend_actions,
+            "action_count": max(0, len(sent_msgs) - initial_sent_count) + (1 if notify_sent else 0) + backend_actions,
         }
 
     @client.on(events.NewMessage())
@@ -3095,10 +3113,12 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                     )
                                     return
 
+                                approval_sent_msgs = []
                                 try:
                                     await asyncio.sleep(random.uniform(float(action.get("delay_1_min", 1.0)), float(action.get("delay_1_max", 2.0))))
                                     if action.get("reply_admin"):
-                                        await replier_client.send_message(event.chat_id, format_caption(action["reply_admin"]), reply_to=event.id)
+                                        sent_admin_reply = await replier_client.send_message(event.chat_id, format_caption(action["reply_admin"]), reply_to=event.id)
+                                        remember_sent_message(approval_sent_msgs, event.chat_id, sent_admin_reply)
                                         approval_actions += 1
                                 except Exception as e:
                                     approval_errors.append(f"回复领导失败：{e}")
@@ -3130,6 +3150,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                     original_msg,
                                     get_sender_name(orig_sender),
                                     steps=approval_steps,
+                                    initial_sent_msgs=approval_sent_msgs,
+                                    preempt_after_id=event.id,
+                                    preempt_extra_target_ids=[event.id],
                                 )
                                 approval_actions += step_result["action_count"]
                                 if step_result["action_failed"]:
@@ -3299,32 +3322,24 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                         logger.warning(f"⚠️ [Monitor] Amount logic matched text but no specific amount found.")
 
                             elif stype == "preempt_check":
-                                if not sent_msgs: continue
                                 me = await target_client.get_me()
                                 source_sent_ids = get_sent_ids_for_chat(sent_msgs, event.chat_id)
                                 first_source_sent_id = get_first_sent_id_for_chat(sent_msgs, event.chat_id)
-                                if not first_source_sent_id:
-                                    logger.info(f"🛡️ [Preempt] 原群尚无本规则发送消息，跳过抢答检测")
-                                    continue
-                                hist_limit = max(20, len(source_sent_ids) + 10)
-                                hist = await target_client.get_messages(event.chat_id, limit=hist_limit, min_id=event.id)
-                                has_preempt = False
-                                for m in hist:
-                                    if not getattr(m, "id", None) or m.id >= first_source_sent_id:
-                                        continue
-                                    if m.id in source_sent_ids:
-                                        continue
-                                    if not getattr(m, "sender_id", None) or m.sender_id in (me.id, event.sender_id):
-                                        continue
-                                    if not is_same_reply_flow(m, event.message):
-                                        continue
-                                    has_preempt = True
-                                    break
-                                if has_preempt:
-                                    await delete_sent_messages(target_client, sent_msgs)
+                                preempt_msg = await find_preempting_reply(
+                                    target_client,
+                                    event.chat_id,
+                                    event.message,
+                                    event.id,
+                                    before_msg_id=first_source_sent_id,
+                                    own_sent_ids=source_sent_ids,
+                                    ignored_sender_ids={me.id, event.sender_id},
+                                )
+                                if preempt_msg:
+                                    if sent_msgs:
+                                        await delete_sent_messages(target_client, sent_msgs)
                                     sent_msgs = []
                                     preempted = True
-                                    logger.info(f"🧹 [Preempt] 检测到抢答，已删除规则 '{rule.get('name')}' 的已发送消息")
+                                    logger.info(f"🧹 [Preempt] 检测到抢答 Msg={getattr(preempt_msg, 'id', '-')}, 已停止规则 '{rule.get('name')}' 后续动作")
                                     break
 
                             elif stype == "notify_user":
