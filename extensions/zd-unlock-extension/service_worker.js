@@ -4,6 +4,7 @@ const DEFAULT_CONFIG = {
   unlockUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/unlockIpOrNameForCheckPhone',
   loginErrorUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/clearLoginErrorRedisKey',
   proxyWhitelistUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/system/siteAccessManage/add',
+  migrateMilanUrl: '',
   value: 'x8Bffk8DR9QOcdHPe6fFvQ==',
   headers: {
     accept: '*/*',
@@ -164,6 +165,7 @@ async function ack(config, cmd, status, detail = '') {
 function commandLabel(action) {
   if (action === 'add_proxy_whitelist') return '代理IP加白';
   if (action === 'clear_login_error') return '登录限制解锁';
+  if (action === 'migrate_milan') return '迁移米兰';
   return '短信/验证码解锁';
 }
 
@@ -186,6 +188,15 @@ function commandRequest(config, action, targetValue) {
       body: { name: targetValue }
     };
   }
+  if (action === 'migrate_milan') {
+    if (!config.migrateMilanUrl) {
+      throw new Error('迁移米兰接口未配置，请先提供 6站点 fetch');
+    }
+    return {
+      url: config.migrateMilanUrl,
+      body: { name: targetValue }
+    };
+  }
   return {
     url: config.unlockUrl,
     body: { value: config.value, name: targetValue }
@@ -193,7 +204,7 @@ function commandRequest(config, action, targetValue) {
 }
 
 async function runBackendCommand(config, cmd) {
-  const action = ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist'].includes(cmd.action) ? cmd.action : 'unlock_sms';
+  const action = ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan'].includes(cmd.action) ? cmd.action : 'unlock_sms';
   const rawValue = cmd.target_value || cmd.member_name || '';
   const targetValue = action === 'add_proxy_whitelist'
     ? String(rawValue).trim()
@@ -240,7 +251,7 @@ async function pollOnce() {
       cache: 'no-store'
     });
     const data = await res.json();
-    if (data && data.ok && data.cmd && ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist'].includes(data.cmd.action)) {
+    if (data && data.ok && data.cmd && ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan'].includes(data.cmd.action)) {
       await setStatus({ state: 'received', message: `收到命令 ${data.cmd.target_value || data.cmd.member_name || ''}` });
       await runBackendCommand(config, data.cmd);
     } else {

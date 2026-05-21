@@ -341,6 +341,18 @@ def rule_has_backend_unlock(rule):
         for step in (rule or {}).get("replies", [])
     )
 
+def rule_backend_actions(rule):
+    return {
+        normalize_backend_action(step.get("backend_action", "unlock_sms"))
+        for step in (rule or {}).get("replies", [])
+        if isinstance(step, dict) and step.get("type") == "backend_unlock"
+    }
+
+def text_mentions_secondary_password(text):
+    normalized = unicodedata.normalize("NFKC", str(text or "")).lower()
+    normalized = re.sub(r"\s+", "", normalized)
+    return bool(re.search(r"(二级密码|二级.*密码|密码.*二级|2级.*密码|密码.*2级)", normalized))
+
 def extract_backend_unlock_member(text, pattern="", use_default=True):
     msg_text = str(text or "").strip()
     if not msg_text:
@@ -1119,7 +1131,7 @@ current_config = DEFAULT_CONFIG.copy()
 rule_timers = {}
 scheduled_message_runs = {}
 VALID_REPLY_TYPES = {"text", "edit_prev", "forward", "copy_file", "amount_logic", "preempt_check", "notify_user", "backend_unlock"}
-BACKEND_UNLOCK_ACTIONS = {"unlock_sms", "clear_login_error", "add_proxy_whitelist"}
+BACKEND_UNLOCK_ACTIONS = {"unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan"}
 
 # 后台操作指令队列（Chrome 扩展轮询取指令）
 CMD_SECRET = "J7kN3mQxR9vTsW2pYzBf"
@@ -2340,7 +2352,9 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_obj, check_c
     if event.is_reply: return False, "是回复消息", None
     is_backend_unlock_rule = rule_has_backend_unlock(rule)
     text = (event.text or "")
-    backend_unlock_member = extract_backend_unlock_member_for_rule(rule, text, use_default=False) if is_backend_unlock_rule else None
+    backend_actions = rule_backend_actions(rule) if is_backend_unlock_rule else set()
+    if "clear_login_error" in backend_actions and text_mentions_secondary_password(text):
+        return False, "二级密码消息不触发登录密码解锁", None
     if not is_backend_unlock_rule and await is_monitor_own_account(client, event, other_cs_ids):
         return False, "发送者是已登录账号", None
     
@@ -2368,7 +2382,7 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_obj, check_c
         if fn_kws:
             if not any(k.lower() in filename_lower for k in fn_kws): return False, "文件名关键词不符", None
     else:
-        if not match_text(text, rule) and not backend_unlock_member:
+        if not match_text(text, rule):
             return False, "文本关键词不符", None
     
     if check_cooldown and not is_backend_unlock_rule:
@@ -3392,7 +3406,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                 duration_ms=(time.time() - match_started) * 1000
                             )
                     break
-                elif rule_matches_group(event.chat_id, rule.get("groups", [])) and reason in ("是回复消息", "发送者是已登录账号", "发送者被排除", "冷却中"):
+                elif rule_matches_group(event.chat_id, rule.get("groups", [])) and reason in ("是回复消息", "发送者是已登录账号", "发送者被排除", "冷却中", "二级密码消息不触发登录密码解锁"):
                     logger.info(
                         f"↪️ [MonitorSkip] 规则 '{rule.get('name')}' 未执行: {reason} | "
                         f"Chat={event.chat_id} Msg={event.id} Sender={sender_name}"
