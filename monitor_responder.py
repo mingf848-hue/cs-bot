@@ -864,8 +864,11 @@ def is_same_reply_flow(message, origin_message):
         return False
     return origin_id in get_message_reply_target_ids(message)
 
-async def find_preempting_reply(client, chat_id, origin_message, after_msg_id, before_msg_id=None, own_sent_ids=None, ignored_sender_ids=None, extra_target_ids=None):
-    target_ids = {getattr(origin_message, "id", None), *(extra_target_ids or [])}
+async def find_preempting_reply(client, chat_id, origin_message, after_msg_id, before_msg_id=None, own_sent_ids=None, ignored_sender_ids=None, extra_target_ids=None, target_ids=None):
+    if target_ids is None:
+        target_ids = {getattr(origin_message, "id", None), *(extra_target_ids or [])}
+    else:
+        target_ids = set(target_ids)
     target_ids = {msg_id for msg_id in target_ids if msg_id}
     own_sent_ids = set(own_sent_ids or [])
     ignored_sender_ids = {sender_id for sender_id in (ignored_sender_ids or []) if sender_id}
@@ -1944,7 +1947,7 @@ SETTINGS_HTML = """
                                     </template>
 
                                     <template v-if="reply.type === 'preempt_check'">
-                                        <div class="step-help"><i class="fa-solid fa-user-shield mr-1"></i>检测同一条消息流里更快的他人引用回复；命中后会删除已发消息并停止后续动作。</div>
+                                        <div class="step-help"><i class="fa-solid fa-user-shield mr-1"></i>普通规则检测引用原始消息的抢答；同意审批动作流检测引用领导同意消息的抢答。命中后删除已发消息并停止后续动作。</div>
                                     </template>
 
                                     <template v-if="reply.type === 'notify_user'">
@@ -2877,7 +2880,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             except Exception as e:
                 logger.error(f"❌ [OTP] 初始化 {acc_name} 失败: {e}")
 
-    async def execute_rule_steps(target_client, rule, source_event, source_message, sender_name, steps=None, initial_sent_msgs=None, preempt_after_id=None, preempt_extra_target_ids=None):
+    async def execute_rule_steps(target_client, rule, source_event, source_message, sender_name, steps=None, initial_sent_msgs=None, preempt_after_id=None, preempt_extra_target_ids=None, preempt_target_ids=None):
         sent_msgs = list(initial_sent_msgs or [])
         initial_sent_count = len(sent_msgs)
         notify_sent = False
@@ -2970,6 +2973,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                         own_sent_ids=source_sent_ids,
                         ignored_sender_ids={me.id, getattr(source_event, "sender_id", None)},
                         extra_target_ids=preempt_extra_target_ids,
+                        target_ids=preempt_target_ids,
                     )
                     if preempt_msg:
                         if sent_msgs:
@@ -3152,7 +3156,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                     steps=approval_steps,
                                     initial_sent_msgs=approval_sent_msgs,
                                     preempt_after_id=event.id,
-                                    preempt_extra_target_ids=[event.id],
+                                    preempt_target_ids=[event.id],
                                 )
                                 approval_actions += step_result["action_count"]
                                 if step_result["action_failed"]:

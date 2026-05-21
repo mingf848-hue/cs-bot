@@ -1077,7 +1077,7 @@
 
                                         <div class="field-card" v-if="step.type === 'preempt_check'">
                                             <strong>抢答检测（自删）</strong>
-                                            <span class="hint">检测同一条消息流里更快的他人引用回复；命中后会删除已发消息并停止后续动作。</span>
+                                            <span class="hint">普通规则检测引用原始消息的抢答；命中后会删除已发消息并停止后续动作。</span>
                                         </div>
 
                                         <div class="form-grid" v-if="step.type === 'notify_user'">
@@ -1217,7 +1217,7 @@
                                             </div>
                                             <div class="field-card" v-if="step.type === 'preempt_check'">
                                                 <strong>抢答检测（自删）</strong>
-                                                <span class="hint">检测领导同意后、同一条消息流里更快的他人引用回复；命中后删除已发消息并停止后续动作。</span>
+                                                <span class="hint">检测领导同意后、别人更快引用领导同意消息回复“稍等”的抢答；命中后删除已发消息并停止后续动作。</span>
                                             </div>
                                             <div class="form-grid" v-if="step.type === 'notify_user'">
                                                 <div class="field">
