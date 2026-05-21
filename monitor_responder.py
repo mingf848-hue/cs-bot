@@ -1158,7 +1158,7 @@ current_config = DEFAULT_CONFIG.copy()
 rule_timers = {}
 scheduled_message_runs = {}
 VALID_REPLY_TYPES = {"text", "edit_prev", "forward", "copy_file", "amount_logic", "preempt_check", "notify_user", "backend_unlock"}
-BACKEND_UNLOCK_ACTIONS = {"unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan"}
+BACKEND_UNLOCK_ACTIONS = {"unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan", "send_site_inner_msg"}
 
 # 后台操作指令队列（Chrome 扩展轮询取指令）
 CMD_SECRET = "J7kN3mQxR9vTsW2pYzBf"
@@ -1169,6 +1169,31 @@ backend_command_results = {}
 def normalize_backend_action(action):
     action = str(action or "unlock_sms").strip()
     return action if action in BACKEND_UNLOCK_ACTIONS else "unlock_sms"
+
+def queue_site_inner_message_command(members, title=None, content=None, source="bot_private"):
+    clean_members = []
+    seen = set()
+    for member in members or []:
+        name = str(member or "").strip().lower()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        clean_members.append(name)
+    if not clean_members:
+        raise ValueError("账号列表为空")
+    cmd_id = f"site_msg_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+    pending_commands.append({
+        "id": cmd_id,
+        "action": "send_site_inner_msg",
+        "member_name": ",".join(clean_members[:5]) + ("..." if len(clean_members) > 5 else ""),
+        "target_value": ",".join(clean_members),
+        "members": clean_members,
+        "title": title or "【存款温馨提示】",
+        "content": content or "系统检测到您的存款订单已取消，为了让您的存款更加通畅，请您使用银联支付的方式存款，联系私人专属经理，申请更高彩金活动加赠！ 👉如无私人专属经理，截图此条消息，联系在线客服发送：“申请专属经理”，享更多优惠～",
+        "source": source,
+        "queued_at": now_bj().isoformat(),
+    })
+    return cmd_id, clean_members
 
 def normalize_reply_steps(raw_replies):
     clean_replies = []

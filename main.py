@@ -595,11 +595,13 @@ except ImportError as e:
     init_stats_blueprint = None
 
 try:
-    from monitor_responder import init_monitor
+    from monitor_responder import init_monitor, queue_site_inner_message_command, wait_backend_command_result
     logger.info("✅ 自动回复模块 (monitor_responder) 导入成功")
 except ImportError as e:
     logger.error(f"❌ 自动回复模块导入失败: {e}")
     init_monitor = None
+    queue_site_inner_message_command = None
+    wait_backend_command_result = None
 
 # ==========================================
 # 模块 1: 基础函数 (强力清洗版)
@@ -2812,6 +2814,42 @@ def _bot_send_reply(chat_id, text, reply_to_message_id=None, message_thread_id=N
 def is_bot_command(text, command):
     return bool(re.match(rf"^/{re.escape(command)}(?:@[A-Za-z0-9_]+)?(?:\s|$)", str(text or "").strip(), re.IGNORECASE))
 
+def parse_site_message_members(text):
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    if len(lines) < 2 or lines[-1].lower() != "sb":
+        return []
+    raw = "\n".join(lines[:-1]).replace("，", ",")
+    members = []
+    seen = set()
+    for item in re.split(r"[,;\s]+", raw):
+        name = item.strip().lower()
+        if not name or name in seen:
+            continue
+        if not re.fullmatch(r"[a-z0-9_@.\-]{3,32}", name):
+            continue
+        seen.add(name)
+        members.append(name)
+    return members
+
+async def handle_site_message_bot_request(message):
+    if not queue_site_inner_message_command or not wait_backend_command_result:
+        return "站内信模块未加载，无法执行。"
+    members = parse_site_message_members(message.get("text") or "")
+    if not members:
+        return None
+    cmd_id, clean_members = queue_site_inner_message_command(members, source="telegram_bot_sb")
+    result = await wait_backend_command_result(cmd_id, timeout=120.0)
+    status = str((result or {}).get("status") or "timeout")
+    detail = str((result or {}).get("detail") or "无回执")
+    ok = status == "success"
+    return "\n".join([
+        "站内信发送结果",
+        "类型：存款温馨提示",
+        f"人数：{len(clean_members)}",
+        f"状态：{'成功' if ok else '失败'}",
+        f"详情：{detail}",
+    ])
+
 async def bot_command_polling_task():
     if not BOT_TOKEN:
         return
@@ -2842,7 +2880,12 @@ async def bot_command_polling_task():
                 elif is_bot_command(text, "id"):
                     reply_text = format_id_command_reply(message)
                 else:
-                    continue
+                    chat = message.get("chat", {})
+                    if chat.get("type") != "private":
+                        continue
+                    reply_text = await handle_site_message_bot_request(message)
+                    if not reply_text:
+                        continue
 
                 chat = message.get("chat", {})
                 chat_id = chat.get("id")

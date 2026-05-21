@@ -5,6 +5,7 @@ const DEFAULT_CONFIG = {
   unlockUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/unlockIpOrNameForCheckPhone',
   loginErrorUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/clearLoginErrorRedisKey',
   proxyWhitelistUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/system/siteAccessManage/add',
+  siteInnerMsgAddUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/operation/cmCfg/siteInnerMsg/add',
   migrationRecordsUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/pilgrimage/recordsV2',
   migrateMilanUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/pilgrimage/migration',
   value: 'x8Bffk8DR9QOcdHPe6fFvQ==',
@@ -200,6 +201,7 @@ function commandLabel(action) {
   if (action === 'add_proxy_whitelist') return '代理IP加白';
   if (action === 'clear_login_error') return '登录限制解锁';
   if (action === 'migrate_milan') return '迁移米兰';
+  if (action === 'send_site_inner_msg') return '发送站内信';
   return '短信/验证码解锁';
 }
 
@@ -325,8 +327,54 @@ async function runMigrateMilanCommand(config, cmd, targetValue) {
   await ack(config, cmd, ok ? 'success' : 'failed', detail);
 }
 
+async function runSiteInnerMessageCommand(config, cmd) {
+  if (!config.siteInnerMsgAddUrl) throw new Error('站内信接口未配置');
+  const members = Array.isArray(cmd.members)
+    ? cmd.members.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)
+    : String(cmd.target_value || cmd.member_name || '').split(/[,，\s]+/).map((item) => item.trim().toLowerCase()).filter(Boolean);
+  const uniqueMembers = [...new Set(members)];
+  if (!uniqueMembers.length) throw new Error('站内信账号列表为空');
+
+  const title = String(cmd.title || '【存款温馨提示】');
+  const content = String(cmd.content || '系统检测到您的存款订单已取消，为了让您的存款更加通畅，请您使用银联支付的方式存款，联系私人专属经理，申请更高彩金活动加赠！ 👉如无私人专属经理，截图此条消息，联系在线客服发送：“申请专属经理”，享更多优惠～');
+  await setStatus({ state: 'running', message: `发送站内信 ${uniqueMembers.length}人` });
+  const sent = await postJson(config.siteInnerMsgAddUrl, config.headers, {
+    clients: '0,1,2,3,8,9',
+    sendType: 1,
+    module: 243,
+    sendMembers: uniqueMembers.join(','),
+    title,
+    msgType: 1,
+    content,
+    sort: 0,
+    iconUrl: '17',
+    pcPath: '',
+    h5Path: '',
+    imgTop: 0,
+    jumpUrlType: 1,
+    pushFlag: 0,
+    devices: '0,1',
+    sysStatus: '0'
+  });
+  const result = ((sent.data || {}).data || {});
+  const success = Number(result.success || 0);
+  const fail = Number(result.fail || 0);
+  const invalid = Number(result.invalid || 0);
+  const ok = apiOk(sent.res, sent.data) && success > 0 && fail === 0 && invalid === 0;
+  const invalidMembers = Array.isArray(result.invalidMembers) ? result.invalidMembers.join(',') : (result.invalidMembers || '');
+  const detail = ok
+    ? `站内信发送成功：${title}，提交${uniqueMembers.length}人，成功${success}人`
+    : `站内信发送失败：${title}，提交${uniqueMembers.length}人，成功${success}，失败${fail}，无效${invalid}${invalidMembers ? `，无效账号:${invalidMembers}` : ''}`;
+  await setStatus({
+    state: ok ? 'success' : 'error',
+    message: detail,
+    detail: sent.text.slice(0, 300)
+  });
+  await ack(config, cmd, ok ? 'success' : 'failed', detail);
+}
+
 async function runBackendCommand(config, cmd) {
-  const action = ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan'].includes(cmd.action) ? cmd.action : 'unlock_sms';
+  const action = ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg'].includes(cmd.action) ? cmd.action : 'unlock_sms';
   const rawValue = cmd.target_value || cmd.member_name || '';
   const targetValue = action === 'add_proxy_whitelist'
     ? String(rawValue).trim()
@@ -338,6 +386,10 @@ async function runBackendCommand(config, cmd) {
     config = configForAction(config, action);
     if (action === 'migrate_milan') {
       await runMigrateMilanCommand(config, cmd, targetValue);
+      return;
+    }
+    if (action === 'send_site_inner_msg') {
+      await runSiteInnerMessageCommand(config, cmd);
       return;
     }
     if (action === 'unlock_sms' || action === 'clear_login_error') {
@@ -382,7 +434,7 @@ async function pollOnce() {
       cache: 'no-store'
     });
     const data = await res.json();
-    if (data && data.ok && data.cmd && ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan'].includes(data.cmd.action)) {
+    if (data && data.ok && data.cmd && ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg'].includes(data.cmd.action)) {
       await setStatus({ state: 'received', message: `收到命令 ${data.cmd.target_value || data.cmd.member_name || ''}` });
       await runBackendCommand(config, data.cmd);
     } else {
