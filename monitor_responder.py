@@ -1166,11 +1166,20 @@ pending_commands = deque(maxlen=200)
 pending_command_leases = {}
 backend_command_results = {}
 
+NEW_REGISTER_SITE_MESSAGE_STEPS = [
+    {"template_id": 259, "msg_type": 1, "icon_url": "17"},
+    {"template_id": 260, "msg_type": 2, "icon_url": "18"},
+    {"template_id": 234, "msg_type": 2, "icon_url": "18"},
+    {"template_id": 233, "msg_type": 2, "icon_url": "18"},
+    {"template_id": 232, "msg_type": 2, "icon_url": "18"},
+    {"template_id": 229, "msg_type": 3, "icon_url": "13"},
+]
+
 def normalize_backend_action(action):
     action = str(action or "unlock_sms").strip()
     return action if action in BACKEND_UNLOCK_ACTIONS else "unlock_sms"
 
-def queue_site_inner_message_command(members, title=None, content=None, source="bot_private"):
+def queue_site_inner_message_command(members, title=None, content=None, source="bot_private", strategy="sb"):
     clean_members = []
     seen = set()
     for member in members or []:
@@ -1181,19 +1190,29 @@ def queue_site_inner_message_command(members, title=None, content=None, source="
         clean_members.append(name)
     if not clean_members:
         raise ValueError("账号列表为空")
+    strategy = str(strategy or "sb").strip().lower()
     cmd_id = f"site_msg_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
-    pending_commands.append({
+    command = {
         "id": cmd_id,
         "action": "send_site_inner_msg",
         "member_name": ",".join(clean_members[:5]) + ("..." if len(clean_members) > 5 else ""),
         "target_value": ",".join(clean_members),
         "members": clean_members,
+        "site_message_strategy": strategy,
         "template_id": 243,
         "title": title or "【存款温馨提示】",
         "content": content or "系统检测到您的存款订单已取消，为了让您的存款更加通畅，请您使用银联支付的方式存款，联系私人专属经理，申请更高彩金活动加赠！ 👉如无私人专属经理，截图此条消息，联系在线客服发送：“申请专属经理”，享更多优惠～",
         "source": source,
         "queued_at": now_bj().isoformat(),
-    })
+    }
+    if strategy == "zc":
+        command.update({
+            "site_message_strategy_name": "新注册",
+            "site_message_steps": NEW_REGISTER_SITE_MESSAGE_STEPS,
+            "step_delay_min": 5,
+            "step_delay_max": 8,
+        })
+    pending_commands.append(command)
     return cmd_id, clean_members
 
 def normalize_reply_steps(raw_replies):

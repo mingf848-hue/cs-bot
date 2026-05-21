@@ -206,6 +206,19 @@ function commandLabel(action) {
   return '短信/验证码解锁';
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function randomDelaySeconds(min, max) {
+  const minValue = Number(min);
+  const maxValue = Number(max);
+  if (!Number.isFinite(minValue) || !Number.isFinite(maxValue) || maxValue <= 0) return 0;
+  const lo = Math.max(0, Math.min(minValue, maxValue));
+  const hi = Math.max(lo, Math.max(minValue, maxValue));
+  return lo + Math.random() * (hi - lo);
+}
+
 function commandRequest(config, action, targetValue) {
   if (action === 'add_proxy_whitelist') {
     return {
@@ -336,27 +349,67 @@ async function runSiteInnerMessageCommand(config, cmd) {
   const uniqueMembers = [...new Set(members)];
   if (!uniqueMembers.length) throw new Error('站内信账号列表为空');
 
+  const steps = Array.isArray(cmd.site_message_steps) && cmd.site_message_steps.length
+    ? cmd.site_message_steps
+    : [cmd];
+  const strategyName = String(cmd.site_message_strategy_name || (steps.length > 1 ? '站内信策略' : '站内信'));
+  const sentTitles = [];
+  let totalSuccess = 0;
+
+  for (let index = 0; index < steps.length; index += 1) {
+    const step = { ...cmd, ...(steps[index] || {}) };
+    const result = await sendOneSiteInnerMessage(config, step, uniqueMembers, index + 1, steps.length);
+    sentTitles.push(result.title);
+    totalSuccess += result.success;
+    if (!result.ok) {
+      await ack(config, cmd, 'failed', result.detail);
+      return;
+    }
+    if (index < steps.length - 1) {
+      const waitSeconds = randomDelaySeconds(cmd.step_delay_min, cmd.step_delay_max);
+      if (waitSeconds > 0) {
+        await setStatus({ state: 'running', message: `${strategyName}等待 ${waitSeconds.toFixed(1)}秒` });
+        await sleep(waitSeconds * 1000);
+      }
+    }
+  }
+
+  const detail = steps.length > 1
+    ? `${strategyName}发送成功：${steps.length}/${steps.length}条，提交${uniqueMembers.length}人，成功${totalSuccess}次`
+    : `站内信发送成功：${sentTitles[0] || ''}，提交${uniqueMembers.length}人，成功${totalSuccess}人`;
+  await setStatus({ state: 'success', message: detail });
+  await ack(config, cmd, 'success', detail);
+}
+
+async function sendOneSiteInnerMessage(config, cmd, uniqueMembers, stepIndex, totalSteps) {
   const template = await loadSiteInnerMessageTemplate(config, cmd);
   const title = template.title;
   const content = template.content;
   const moduleId = template.id;
-  await setStatus({ state: 'running', message: `发送站内信 ${uniqueMembers.length}人` });
+  const msgType = Number(cmd.msg_type || cmd.msgType || 1);
+  const iconUrl = String(cmd.icon_url || cmd.iconUrl || '17');
+  await setStatus({
+    state: 'running',
+    message: totalSteps > 1 ? `发送站内信 ${stepIndex}/${totalSteps}` : `发送站内信 ${uniqueMembers.length}人`
+  });
   const sent = await postJson(config.siteInnerMsgAddUrl, config.headers, {
     clients: '0,1,2,3,8,9',
     sendType: 1,
     module: moduleId,
     sendMembers: uniqueMembers.join(','),
     title,
-    msgType: 1,
+    msgType,
     content,
     sort: 0,
-    iconUrl: '17',
-    pcPath: '',
-    h5Path: '',
+    iconUrl,
+    pcPath: String(cmd.pc_path || cmd.pcPath || template.pcPath || ''),
+    h5Path: String(cmd.h5_path || cmd.h5Path || template.h5Path || ''),
     imgTop: 0,
     jumpUrlType: 1,
     pushFlag: 0,
     devices: '0,1',
+    pcUrl: String(cmd.pc_url || cmd.pcUrl || template.pcUrl || ''),
+    h5Url: String(cmd.h5_url || cmd.h5Url || template.h5Url || ''),
     sysStatus: '0'
   });
   const result = ((sent.data || {}).data || {});
@@ -373,14 +426,18 @@ async function runSiteInnerMessageCommand(config, cmd) {
     message: detail,
     detail: sent.text.slice(0, 300)
   });
-  await ack(config, cmd, ok ? 'success' : 'failed', detail);
+  return { ok, detail, title, success };
 }
 
 async function loadSiteInnerMessageTemplate(config, cmd) {
   const fallback = {
     id: Number(cmd.template_id || 243),
     title: String(cmd.title || '【存款温馨提示】'),
-    content: String(cmd.content || '系统检测到您的存款订单已取消，为了让您的存款更加通畅，请您使用银联支付的方式存款，联系私人专属经理，申请更高彩金活动加赠！ 👉如无私人专属经理，截图此条消息，联系在线客服发送：“申请专属经理”，享更多优惠～')
+    content: String(cmd.content || '系统检测到您的存款订单已取消，为了让您的存款更加通畅，请您使用银联支付的方式存款，联系私人专属经理，申请更高彩金活动加赠！ 👉如无私人专属经理，截图此条消息，联系在线客服发送：“申请专属经理”，享更多优惠～'),
+    pcUrl: '',
+    h5Url: '',
+    pcPath: '',
+    h5Path: ''
   };
   if (!config.siteInnerMsgTemplateUrl) return fallback;
 
@@ -404,7 +461,11 @@ async function loadSiteInnerMessageTemplate(config, cmd) {
   return {
     id: Number(matched.id),
     title: String(matched.title),
-    content: String(matched.content)
+    content: String(matched.content),
+    pcUrl: String(matched.webLink || matched.pcUrl || ''),
+    h5Url: String(matched.h5Link || matched.h5Url || ''),
+    pcPath: String(matched.webPic || matched.pcPath || ''),
+    h5Path: String(matched.h5Pic || matched.h5Path || '')
   };
 }
 

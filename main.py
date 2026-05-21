@@ -2814,10 +2814,13 @@ def _bot_send_reply(chat_id, text, reply_to_message_id=None, message_thread_id=N
 def is_bot_command(text, command):
     return bool(re.match(rf"^/{re.escape(command)}(?:@[A-Za-z0-9_]+)?(?:\s|$)", str(text or "").strip(), re.IGNORECASE))
 
-def parse_site_message_members(text):
+def parse_site_message_request(text):
     lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
-    if len(lines) < 2 or lines[-1].lower() != "sb":
-        return []
+    if len(lines) < 2:
+        return [], ""
+    strategy = lines[-1].lower()
+    if strategy not in {"sb", "zc"}:
+        return [], ""
     raw = "\n".join(lines[:-1]).replace("，", ",")
     members = []
     seen = set()
@@ -2829,22 +2832,23 @@ def parse_site_message_members(text):
             continue
         seen.add(name)
         members.append(name)
-    return members
+    return members, strategy
 
 async def handle_site_message_bot_request(message):
     if not queue_site_inner_message_command or not wait_backend_command_result:
         return "站内信模块未加载，无法执行。"
-    members = parse_site_message_members(message.get("text") or "")
+    members, strategy = parse_site_message_request(message.get("text") or "")
     if not members:
         return None
-    cmd_id, clean_members = queue_site_inner_message_command(members, source="telegram_bot_sb")
-    result = await wait_backend_command_result(cmd_id, timeout=120.0)
+    cmd_id, clean_members = queue_site_inner_message_command(members, source=f"telegram_bot_{strategy}", strategy=strategy)
+    result = await wait_backend_command_result(cmd_id, timeout=180.0)
     status = str((result or {}).get("status") or "timeout")
     detail = str((result or {}).get("detail") or "无回执")
     ok = status == "success"
+    type_label = "新注册连续6条" if strategy == "zc" else "存款温馨提示"
     return "\n".join([
         "站内信发送结果",
-        "类型：存款温馨提示",
+        f"类型：{type_label}",
         f"人数：{len(clean_members)}",
         f"状态：{'成功' if ok else '失败'}",
         f"详情：{detail}",
