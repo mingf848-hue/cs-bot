@@ -8,6 +8,7 @@ import time
 import json
 import queue
 import sqlite3
+import copy
 from collections import deque, defaultdict
 from datetime import datetime, timedelta, timezone
 from threading import Thread, Lock
@@ -27,6 +28,7 @@ except ImportError:
 logger = logging.getLogger("BotLogger")
 logger.setLevel(logging.DEBUG)
 LOG_FILE_PATH = 'bot_debug.log'
+CHAT_LOG_TO_CONSOLE = os.environ.get("CHAT_LOG_TO_CONSOLE", "0").strip().lower() in ("1", "true", "yes", "on")
 
 class BeijingFormatter(logging.Formatter):
     def converter(self, timestamp):
@@ -40,8 +42,41 @@ file_handler = RotatingFileHandler(LOG_FILE_PATH, mode='a', encoding='utf-8', ma
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(file_fmt)
 
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(logging.DEBUG)
+def _is_raw_chat_console_record(message):
+    raw = str(message or "")
+    if "[DELETED]" in raw or "[EDITED]" in raw:
+        return True
+    if "[MSG]" in raw and "Msg=" in raw:
+        return True
+    return False
+
+def _redact_console_message(message):
+    raw = str(message or "")
+    raw = re.sub(r"全文:\n.*", "全文: [已隐藏]", raw, flags=re.S)
+    raw = re.sub(r"内容: \[[^\]]*\]", "内容: [已隐藏]", raw)
+    raw = re.sub(r"Text='[^']*'", "Text=[已隐藏]", raw)
+    raw = re.sub(r"(客服编辑|客服回复|客户发言): \[[^\]]*\]", r"\1: [已隐藏]", raw)
+    return raw
+
+class PrivacyConsoleHandler(logging.StreamHandler):
+    def emit(self, record):
+        try:
+            message = record.getMessage()
+            if not CHAT_LOG_TO_CONSOLE:
+                if _is_raw_chat_console_record(message):
+                    return
+                redacted = _redact_console_message(message)
+                if redacted != message:
+                    record = copy.copy(record)
+                    record.msg = redacted
+                    record.args = ()
+            super().emit(record)
+        except Exception:
+            self.handleError(record)
+
+console_handler = PrivacyConsoleHandler(sys.stdout)
+_console_level_name = os.environ.get("BOT_CONSOLE_LOG_LEVEL", "DEBUG" if CHAT_LOG_TO_CONSOLE else "INFO").upper()
+console_handler.setLevel(getattr(logging, _console_level_name, logging.INFO))
 console_handler.setFormatter(file_fmt)
 
 logger.addHandler(file_handler)
@@ -2825,7 +2860,7 @@ async def bot_command_polling_task():
 async def send_alert(text, link, extra_log="", target_ids=None):
     if not BOT_TOKEN: return
     summary = text.splitlines()[1] if len(text.splitlines()) > 1 else '通知'
-    log_tree(3, f"{extra_log} [ALERT] 发送报警 -> 全文:\n{text}")
+    log_tree(3, f"{extra_log} [ALERT] 发送报警 -> {summary}")
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     loop = asyncio.get_event_loop()
     tasks = []
@@ -3380,16 +3415,16 @@ async def command_handler(event):
 
 @client.on(events.MessageDeleted)
 async def handler_deleted(event):
+    if not event.chat_id or not is_configured_cs_group(event.chat_id):
+        return
     for msg_id in event.deleted_ids:
         deleted_info = {'name': '未知', 'text': '未知'}
-        if event.chat_id:
-            deleted_info = msg_content_cache.get((event.chat_id, msg_id), deleted_info)
-            if deleted_info['text'] == '未知':
-                stored_text = get_last_stored_message_text(event.chat_id, msg_id)
-                if stored_text:
-                    deleted_info['text'] = stored_text
+        deleted_info = msg_content_cache.get((event.chat_id, msg_id), deleted_info)
+        if deleted_info['text'] == '未知':
+            stored_text = get_last_stored_message_text(event.chat_id, msg_id)
+            if stored_text:
+                deleted_info['text'] = stored_text
 
-        logger.info(f"[DELETED] Msg={msg_id} | [{event.chat_id}] {deleted_info['name']}: {deleted_info['text']}")
         mark_message_snapshot_deleted(event.chat_id, msg_id)
         record_chat_event(
             "delete",
@@ -3406,7 +3441,7 @@ async def handler_deleted(event):
             continue
 
         deleted_cache.append(msg_id)
-        sender_info_str = f"发送者: {deleted_info['name']} | 内容: [{deleted_info['text']}]"
+        sender_info_str = f"发送者: {deleted_info['name']} | 内容: [已隐藏]"
 
         if msg_id in wait_tasks: 
             wait_tasks[msg_id].cancel()
@@ -3756,7 +3791,7 @@ async def handler(event):
             
             if is_message_edited_event(event):
                  if real_customer_id or current_thread_id:
-                     cancel_tasks(chat_id, real_customer_id, current_thread_id, reason=f"客服编辑: [{text[:100]}...]")
+                     cancel_tasks(chat_id, real_customer_id, current_thread_id, reason="客服编辑: [已隐藏]")
                  try:
                      is_latest = True
                      latest_found_id = event.id
@@ -3797,7 +3832,7 @@ async def handler(event):
                 elif real_customer_id: source_info = "API实时查询"
                 else: source_info = "追踪失败" 
                 
-                log_tree(1, f"⚡️ 客服操作捕获 | Msg: {reply_to_msg_id} [T={msg_time_str}] | 客服: {sender_name} | 内容: [{text[:100]}] | 归属: {real_customer_id} | 流: {current_thread_id} | 状态: {source_info}")
+                log_tree(1, f"⚡️ 客服操作捕获 | Msg: {reply_to_msg_id} [T={msg_time_str}] | 客服: {sender_name} | 内容: [已隐藏] | 归属: {real_customer_id} | 流: {current_thread_id} | 状态: {source_info}")
 
             cancel_types = None 
             if is_wait_cmd or is_keep_cmd:
@@ -3807,7 +3842,7 @@ async def handler(event):
                 cancel_tasks(chat_id, real_customer_id, 
                              thread_id=current_thread_id, 
                              target_msg_id=reply_to_msg_id, 
-                             reason=f"客服回复: [{text[:100]}...]", 
+                             reason="客服回复: [已隐藏]", 
                              types=cancel_types)
             
             for related_msg_id in get_related_album_msg_ids(chat_id, reply_to_msg_id):
@@ -3884,7 +3919,7 @@ async def handler(event):
                 return
 
             update_msg_cache(chat_id, event.id, sender_id, grouped_id)
-            cancel_tasks(chat_id, sender_id, current_thread_id, reason=f"客户发言: [{text[:100]}...]", types=['reply'])
+            cancel_tasks(chat_id, sender_id, current_thread_id, reason="客户发言: [已隐藏]", types=['reply'])
             
             log_tree(0, f"Msg={event.id} [T={msg_time_str}] | User={sender_id} | [{chat_id}] {sender_name}: {text} [{msg_type}]")
             if chat_id not in _group_name_cache:
