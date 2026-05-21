@@ -230,7 +230,7 @@ function requireSixSiteAuth(config) {
   const site = String((config.headers && config.headers['x-api-site']) || '');
   const href = String((config.pageAuth && config.pageAuth.href) || '');
   if (site !== '6001' && !href.includes('6sitebg.oj61i4.com')) {
-    throw new Error('未捕获6站点登录态，请打开6site后台页面并刷新一次');
+    throw new Error(`未捕获6站点登录态，请打开6site后台页面并刷新一次；当前site=${site || '-'} href=${href || '-'}`);
   }
 }
 
@@ -303,8 +303,9 @@ async function runBackendCommand(config, cmd) {
     });
     await ack(config, cmd, res.ok ? 'success' : `http_${res.status}`, text);
   } catch (err) {
-    await setStatus({ state: 'error', message: `${label}失败 ${targetValue}`, detail: err.message });
-    await ack(config, cmd, 'fetch_failed', err.message);
+    const detail = `${label}失败 ${targetValue}: ${err && err.stack ? err.stack : (err && err.message ? err.message : String(err || 'unknown'))}`;
+    await setStatus({ state: 'error', message: `${label}失败 ${targetValue}`, detail: detail.slice(0, 500) });
+    await ack(config, cmd, 'fetch_failed', detail);
   }
 }
 

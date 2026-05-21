@@ -2623,9 +2623,13 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         cmd_id = str(data.get("id") or "")
         status = str(data.get("status") or "")
         member_name = str(data.get("member_name") or "")
+        detail = str(data.get("detail") or "")
         if cmd_id:
             pending_command_leases.pop(cmd_id, None)
-        logger.info(f"🔓 [BackendUnlock] 扩展回执: id={cmd_id or '-'} member={member_name or '-'} status={status or '-'}")
+        logger.info(
+            f"🔓 [BackendUnlock] 扩展回执: id={cmd_id or '-'} "
+            f"member={member_name or '-'} status={status or '-'} detail={detail[:500] or '-'}"
+        )
         return jsonify({"ok": True})
 
     @app.route('/tool/zd_unlock_extension.zip')
