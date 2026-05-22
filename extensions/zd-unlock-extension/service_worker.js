@@ -10,6 +10,10 @@ const DEFAULT_CONFIG = {
   migrationRecordsUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/pilgrimage/recordsV2',
   migrateMilanUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/pilgrimage/migration',
   merchantStatisticsUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/userReport/getStatistics',
+  merchantTicketListUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/userReport/queryTicketList',
+  merchantNoticeUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/noticeNew/notice',
+  merchantSettlementListUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/settlement/queryNoSettleTicketList',
+  merchantSettlementStatisticsUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/settlement/getStatistics',
   value: '',
   headers: {
     accept: '*/*',
@@ -47,7 +51,11 @@ const SITE_PROFILES = {
     authHosts: ['merchant-own-backstage.dbsportxxxwo8.com', 'api-merchant-backstage.dbsportxxxwo8.com'],
     label: '场馆后台',
     requiredAuthHeaders: ['authorization', 'user-id'],
-    merchantStatisticsUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/userReport/getStatistics'
+    merchantStatisticsUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/userReport/getStatistics',
+    merchantTicketListUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/userReport/queryTicketList',
+    merchantNoticeUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/noticeNew/notice',
+    merchantSettlementListUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/settlement/queryNoSettleTicketList',
+    merchantSettlementStatisticsUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/settlement/getStatistics'
   }
 };
 
@@ -67,6 +75,7 @@ function siteFromCommand(action, cmd = {}) {
   const hint = String(cmd.backend_site || cmd.site || cmd.site_id || cmd.siteId || '').trim().toLowerCase();
   if (
     action === 'merchant_order_statistics'
+    || action === 'urge_settlement'
     || action === 'venue_order_statistics'
     || action === 'merchant_order_query'
     || action === 'venue_order_query'
@@ -284,6 +293,7 @@ function commandLabel(action) {
   if (action === 'migrate_milan') return '迁移米兰';
   if (action === 'send_site_inner_msg') return '发送站内信';
   if (action === 'merchant_order_statistics') return '场馆注单查询';
+  if (action === 'urge_settlement') return '催结算';
   return '短信/验证码解锁';
 }
 
@@ -300,20 +310,22 @@ function normalizeCommandAction(action, cmd = {}) {
     venue_order_query: 'merchant_order_statistics',
     merchant_order_query: 'merchant_order_statistics',
     query_venue_order: 'merchant_order_statistics',
-    query_merchant_order: 'merchant_order_statistics'
+    query_merchant_order: 'merchant_order_statistics',
+    settlement_urge: 'urge_settlement',
+    urge_settle: 'urge_settlement',
+    urge_settlement_order: 'urge_settlement',
+    '催结算': 'urge_settlement'
   };
-  if (hasMerchantCommandHint(cmd) && !['clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg'].includes(raw)) {
-    return 'merchant_order_statistics';
-  }
   const normalized = aliases[raw] || raw;
-  return ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg', 'merchant_order_statistics'].includes(normalized)
+  if (hasMerchantCommandHint(cmd) && (raw === '' || raw === 'unlock_sms')) return 'merchant_order_statistics';
+  return ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg', 'merchant_order_statistics', 'urge_settlement'].includes(normalized)
     ? normalized
     : 'unlock_sms';
 }
 
 function isSupportedCommandAction(action, cmd = {}) {
   const raw = String(action || 'unlock_sms').trim();
-  return hasMerchantCommandHint(cmd) || [
+  return ((raw === '' || raw === 'unlock_sms') && hasMerchantCommandHint(cmd)) || [
     '',
     'unlock_sms',
     'clear_login_error',
@@ -321,11 +333,16 @@ function isSupportedCommandAction(action, cmd = {}) {
     'migrate_milan',
     'send_site_inner_msg',
     'merchant_order_statistics',
+    'urge_settlement',
     'venue_order_statistics',
     'venue_order_query',
     'merchant_order_query',
     'query_venue_order',
-    'query_merchant_order'
+    'query_merchant_order',
+    'settlement_urge',
+    'urge_settle',
+    'urge_settlement_order',
+    '催结算'
   ].includes(raw);
 }
 
@@ -422,6 +439,116 @@ async function postJson(url, headers, body) {
   });
   const text = await res.text();
   return { res, text, data: parseJsonText(text) };
+}
+
+async function postForm(url, headers, body) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(body || {})) {
+    if (value !== undefined && value !== null) params.set(key, String(value));
+  }
+  const res = await fetch(url, {
+    method: 'POST',
+    mode: 'cors',
+    credentials: 'include',
+    headers: {
+      ...headers,
+      'content-type': 'application/x-www-form-urlencoded; charset=UTF-8'
+    },
+    body: params.toString()
+  });
+  const text = await res.text();
+  return { res, text, data: parseJsonText(text) };
+}
+
+function merchantUrl(baseUrl) {
+  return `${baseUrl}?rnd_str_st=${Date.now()}`;
+}
+
+function merchantApiOk(result) {
+  const data = (result && result.data) || {};
+  return !!(result && result.res && result.res.ok && (data.code === undefined || data.code === '0000000') && data.status !== false);
+}
+
+function merchantTicketBody(cmd = {}, orderNo, overrides = {}) {
+  const { startTime, endTime } = merchantDateRange(cmd);
+  return {
+    filter: String(cmd.filter || '1'),
+    orderNo,
+    databaseSwitch: Number(cmd.databaseSwitch ?? cmd.database_switch ?? 1),
+    userIdList: Array.isArray(cmd.userIdList) ? cmd.userIdList : [],
+    startTime,
+    endTime,
+    pageNum: Number(cmd.pageNum || cmd.page_num || 1),
+    fromAppointment: Number(cmd.fromAppointment ?? cmd.from_appointment ?? 0),
+    pageSize: Number(cmd.pageSize || cmd.page_size || 20),
+    accountTag: Number(cmd.accountTag ?? cmd.account_tag ?? 0),
+    ...overrides
+  };
+}
+
+function merchantSettlementBody(cmd = {}, orderNo) {
+  return merchantTicketBody(cmd, orderNo, {
+    filter: String(cmd.settlementFilter || cmd.settlement_filter || '2'),
+    seriesType: Number(cmd.seriesType || cmd.series_type || 1),
+    orderStatusList: Array.isArray(cmd.orderStatusList) ? cmd.orderStatusList : [0],
+    fromNoSettle: 1
+  });
+}
+
+function merchantList(data) {
+  return ((((data || {}).data || {}).list) || []);
+}
+
+function htmlText(value) {
+  return String(value || '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/<[^>]+>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function firstOrderDetail(order = {}) {
+  const details = Array.isArray(order.orderDetailList) ? order.orderDetailList : [];
+  return details[0] || {};
+}
+
+function orderStatusLabel(status) {
+  const value = Number(status);
+  if (value === 0) return '未结算';
+  if (value === 1) return '已结算';
+  if (value === 2) return '已取消';
+  return `状态${status}`;
+}
+
+function settlementTemplate(template, context = {}) {
+  const text = String(template || '{order_no}注单催结算\n赛事ID：{match_id}');
+  return text.replace(/\{([a-zA-Z0-9_]+)\}/g, (_all, key) => String(context[key] ?? ''));
+}
+
+async function sendTelegramFromCommand(config, cmd, text) {
+  const target = String(cmd.telegram_target || cmd.forward_to || '').trim();
+  if (!target) throw new Error('未配置催结算TG群');
+  const res = await fetch(`${config.botBase}/api/cmd/send_telegram?secret=${encodeURIComponent(config.cmdSecret)}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      id: cmd.id,
+      rule: cmd.rule || '',
+      target,
+      account: String(cmd.telegram_account || ''),
+      text
+    })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) {
+    throw new Error(data.error || `TG发送失败 HTTP ${res.status}`);
+  }
+  return data;
 }
 
 function apiOk(res, data) {
@@ -698,12 +825,105 @@ async function runMerchantOrderStatisticsCommand(config, cmd, targetValue) {
   await ack(config, cmd, ok ? 'success' : `http_${query.res.status}`, query.text.slice(0, 500));
 }
 
+async function runUrgeSettlementCommand(config, cmd, orderNo) {
+  if (!config.merchantTicketListUrl) throw new Error('场馆注单列表接口未配置');
+  if (!config.merchantNoticeUrl) throw new Error('场馆公告接口未配置');
+  if (!config.merchantSettlementListUrl) throw new Error('场馆结算状态接口未配置');
+
+  const headers = merchantHeaders(config, cmd);
+  await setStatus({ state: 'running', message: `催结算查询注单 ${orderNo}` });
+  const ticket = await postJson(merchantUrl(config.merchantTicketListUrl), headers, merchantTicketBody(cmd, orderNo));
+  if (!merchantApiOk(ticket)) {
+    throw new Error(`查询注单失败 HTTP ${ticket.res.status}: ${ticket.text.slice(0, 300)}`);
+  }
+  const order = merchantList(ticket.data)[0];
+  if (!order) {
+    throw new Error(`未找到注单：${orderNo}`);
+  }
+
+  const detail = firstOrderDetail(order);
+  const matchId = String(detail.matchId || order.standardMatchId || detail.standardMatchId || '').trim();
+  const matchManageId = String(detail.matchManageId || '').trim();
+  const statusLabel = orderStatusLabel(order.orderStatus);
+  if (Number(order.orderStatus) !== 0) {
+    const msg = `催结算跳过：${orderNo} ${statusLabel}`;
+    await setStatus({ state: 'success', message: msg, detail: ticket.text.slice(0, 300) });
+    await ack(config, cmd, 'success', msg);
+    return;
+  }
+  if (!matchId) {
+    throw new Error(`注单未找到赛事ID：${orderNo}`);
+  }
+
+  await setStatus({ state: 'running', message: `查询赛事公告 ${matchId}` });
+  const notice = await postForm(merchantUrl(config.merchantNoticeUrl), headers, {
+    mid: matchId,
+    status: 1,
+    pgNum: 1,
+    pgSize: 20
+  });
+  if (!merchantApiOk(notice)) {
+    throw new Error(`查询公告失败 HTTP ${notice.res.status}: ${notice.text.slice(0, 300)}`);
+  }
+  const notices = merchantList(notice.data);
+  if (notices.length) {
+    const first = notices[0] || {};
+    const noticeText = [
+      htmlText(first.title || first.zhTitle || first.enTitle || ''),
+      htmlText(first.context || first.zhContext || first.enContext || '')
+    ].filter(Boolean).join('\n');
+    const msg = `催结算跳过：赛事 ${matchId} 已有公告${noticeText ? `\n${noticeText}` : ''}`;
+    await setStatus({ state: 'success', message: `赛事 ${matchId} 已有公告`, detail: noticeText.slice(0, 300) });
+    await ack(config, cmd, 'success', msg.slice(0, 500));
+    return;
+  }
+
+  await setStatus({ state: 'running', message: `查询结算状态 ${orderNo}` });
+  const settlement = await postJson(
+    merchantUrl(config.merchantSettlementListUrl),
+    headers,
+    merchantSettlementBody(cmd, orderNo)
+  );
+  if (!merchantApiOk(settlement)) {
+    throw new Error(`查询结算状态失败 HTTP ${settlement.res.status}: ${settlement.text.slice(0, 300)}`);
+  }
+  const settlementTotal = Number((((settlement.data || {}).data || {}).total) || 0);
+  if (settlementTotal > 0 || merchantList(settlement.data).length > 0) {
+    const msg = `催结算跳过：${orderNo} 结算状态仍可查询到未结算记录`;
+    await setStatus({ state: 'success', message: msg, detail: settlement.text.slice(0, 300) });
+    await ack(config, cmd, 'success', msg);
+    return;
+  }
+
+  const context = {
+    order_no: orderNo,
+    orderNo,
+    match_id: matchId,
+    matchId,
+    match_manage_id: matchManageId,
+    matchManageId,
+    sport: detail.sportName || '',
+    sport_name: detail.sportName || '',
+    match_info: detail.matchInfo || '',
+    matchInfo: detail.matchInfo || '',
+    begin_time: detail.beginTimeStr || '',
+    beginTime: detail.beginTimeStr || '',
+    user_name: order.userName || '',
+    userName: order.userName || ''
+  };
+  const text = settlementTemplate(cmd.telegram_template, context);
+  await sendTelegramFromCommand(config, cmd, text);
+  const msg = `已发送TG催结算：${orderNo} 赛事ID ${matchId}`;
+  await setStatus({ state: 'success', message: msg, detail: text.slice(0, 300) });
+  await ack(config, cmd, 'success', msg);
+}
+
 async function runBackendCommand(config, cmd) {
   const action = normalizeCommandAction(cmd.action, cmd);
-  const rawValue = action === 'merchant_order_statistics'
+  const rawValue = action === 'merchant_order_statistics' || action === 'urge_settlement'
     ? (cmd.orderNo || cmd.order_no || cmd.target_value || cmd.member_name || '')
     : (cmd.target_value || cmd.member_name || '');
-  const targetValue = action === 'add_proxy_whitelist' || action === 'merchant_order_statistics'
+  const targetValue = action === 'add_proxy_whitelist' || action === 'merchant_order_statistics' || action === 'urge_settlement'
     ? String(rawValue).trim()
     : String(rawValue).trim().toLowerCase();
   if (!targetValue) return;
@@ -721,6 +941,10 @@ async function runBackendCommand(config, cmd) {
     }
     if (action === 'merchant_order_statistics') {
       await runMerchantOrderStatisticsCommand(config, cmd, targetValue);
+      return;
+    }
+    if (action === 'urge_settlement') {
+      await runUrgeSettlementCommand(config, cmd, targetValue);
       return;
     }
     if (action === 'unlock_sms' || action === 'clear_login_error') {

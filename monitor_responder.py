@@ -333,6 +333,7 @@ def event_text_preview(event, limit=120):
     return text
 
 BACKEND_UNLOCK_ACCOUNT_PATTERN = r"([A-Za-z0-9][A-Za-z0-9._-]{1,63})"
+BACKEND_ORDER_NO_PATTERN = r"\b(\d{12,24})\b"
 BACKEND_PROXY_IP_PATTERN = r"\b((?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d))\b"
 
 def rule_has_backend_unlock(rule):
@@ -399,10 +400,31 @@ def extract_backend_proxy_ip(text, pattern="", use_default=True):
                 return ip
     return None
 
+def extract_backend_order_no(text, pattern="", use_default=True):
+    msg_text = str(text or "").strip()
+    if not msg_text:
+        return None
+    patterns = [pattern.strip()] if pattern and pattern.strip() else []
+    if use_default:
+        patterns.append(BACKEND_ORDER_NO_PATTERN)
+    for pat in patterns:
+        try:
+            m = re.search(pat, msg_text, flags=re.IGNORECASE)
+        except re.error as e:
+            logger.warning(f"⚠️ [BackendUnlock] 注单号正则无效: {e}")
+            continue
+        if m and m.lastindex:
+            order_no = str(m.group(1) or "").strip()
+            if order_no:
+                return order_no
+    return None
+
 def extract_backend_target(text, step, use_default=True):
     action = normalize_backend_action((step or {}).get("backend_action", "unlock_sms"))
     if action == "add_proxy_whitelist":
         return extract_backend_proxy_ip(text, (step or {}).get("ip_pattern", ""), use_default=use_default)
+    if action == "urge_settlement":
+        return extract_backend_order_no(text, (step or {}).get("member_pattern", ""), use_default=use_default)
     return extract_backend_unlock_member(text, (step or {}).get("member_pattern", ""), use_default=use_default)
 
 def record_runtime_event(kind, status, detail="", rule=None, event=None, sender_name="", target_account="", action_count=0, duration_ms=0):
@@ -1163,7 +1185,7 @@ current_config = DEFAULT_CONFIG.copy()
 rule_timers = {}
 scheduled_message_runs = {}
 VALID_REPLY_TYPES = {"text", "edit_prev", "forward", "copy_file", "amount_logic", "preempt_check", "notify_user", "backend_unlock"}
-BACKEND_UNLOCK_ACTIONS = {"unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan", "send_site_inner_msg"}
+BACKEND_UNLOCK_ACTIONS = {"unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan", "send_site_inner_msg", "urge_settlement"}
 
 # 后台操作指令队列（Chrome 扩展轮询取指令）
 CMD_SECRET = "J7kN3mQxR9vTsW2pYzBf"
@@ -1257,6 +1279,7 @@ def normalize_reply_steps(raw_replies):
         r["member_pattern"] = str(r.get("member_pattern", "") or "").strip()
         r["ip_pattern"] = str(r.get("ip_pattern", "") or "").strip()
         r["backend_action"] = normalize_backend_action(r.get("backend_action", "unlock_sms"))
+        r["telegram_account"] = str(r.get("telegram_account", "") or "").strip()
         r["fail_notify_to"] = str(r.get("fail_notify_to", "") or "").strip()
         r["fail_notify_text"] = str(r.get("fail_notify_text", "") or "").strip()
         if r.get("type") == "amount_logic":
@@ -1276,10 +1299,10 @@ def normalize_reply_steps(raw_replies):
         clean_replies.append(r)
     return clean_replies
 
-def queue_backend_unlock_command(target_value, rule, event, action="unlock_sms"):
+def queue_backend_unlock_command(target_value, rule, event, action="unlock_sms", step=None):
     cmd_id = f"unlock_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
     action = normalize_backend_action(action)
-    pending_commands.append({
+    command = {
         "id": cmd_id,
         "action": action,
         "member_name": target_value,
@@ -1289,7 +1312,16 @@ def queue_backend_unlock_command(target_value, rule, event, action="unlock_sms")
         "chat_id": event.chat_id,
         "message_id": event.id,
         "queued_at": now_bj().isoformat(),
-    })
+    }
+    if action == "urge_settlement":
+        command.update({
+            "backend_site": "merchant",
+            "orderNo": target_value,
+            "telegram_target": str((step or {}).get("forward_to", "") or "").strip(),
+            "telegram_account": str((step or {}).get("telegram_account", "") or "").strip(),
+            "telegram_template": str((step or {}).get("text", "") or "").strip(),
+        })
+    pending_commands.append(command)
     return cmd_id
 
 def lease_next_pending_command():
@@ -1350,7 +1382,7 @@ async def execute_backend_unlock_step(step, rule, event, source_text):
         await notify_backend_failure(step, rule, event, "", backend_action, result)
         raise RuntimeError(f"后台动作未提取到目标值：{command_action_label(backend_action)}")
 
-    cmd_id = queue_backend_unlock_command(target_value, rule, event, backend_action)
+    cmd_id = queue_backend_unlock_command(target_value, rule, event, backend_action, step=step)
     logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 已下发后台指令: {backend_action} {target_value} | id={cmd_id}")
     result = await wait_backend_command_result(cmd_id, timeout=90.0)
     if not backend_result_ok(result):
@@ -1367,6 +1399,8 @@ def command_action_label(action):
         return "登录密码试错限制"
     if action == "migrate_milan":
         return "迁移米兰"
+    if action == "urge_settlement":
+        return "催结算"
     return "短信/验证码限制"
 
 def ensure_scheduled_message_id(item):
@@ -1644,6 +1678,32 @@ def save_config(new_config):
     except Exception as e:
         logger.error(f"❌ [Monitor] 保存逻辑错误: {e}")
         return False, str(e)
+
+async def send_command_telegram_message(account_name, target, text, cmd=None):
+    target_name = str(account_name or "").strip() or MAIN_NAME
+    if target_name != MAIN_NAME and not current_config.get("extra_enabled", True):
+        raise RuntimeError(f"副账号分身模式已关闭：{target_name}")
+    if target_name not in global_clients:
+        raise RuntimeError(f"发送账号不存在或未注册：{target_name}")
+    target_client = global_clients[target_name]
+    if target_name != MAIN_NAME and hasattr(target_client, "is_connected") and not target_client.is_connected():
+        raise RuntimeError(f"发送账号未连接：{target_name}")
+    peer = parse_peer_target(target)
+    if peer is None:
+        raise RuntimeError("未配置 Telegram 目标群")
+    body = format_caption(text)
+    if not body:
+        raise RuntimeError("Telegram 消息为空")
+    sent = await target_client.send_message(peer, body)
+    record_runtime_event(
+        "settlement_urge",
+        "success",
+        f"催结算消息已发送：{peer}",
+        rule={"id": str((cmd or {}).get("id") or "__settlement_urge__"), "name": str((cmd or {}).get("rule") or "催结算")},
+        target_account=target_name,
+        action_count=1,
+    )
+    return sent
 
 def save_monitor_enabled(enabled):
     global current_config
@@ -2106,9 +2166,14 @@ SETTINGS_HTML = """
                                                     <option value="unlock_sms">短信/验证码限制</option>
                                                     <option value="clear_login_error">登录密码试错限制</option>
                                                     <option value="add_proxy_whitelist">代理 IP 加白</option>
+                                                    <option value="urge_settlement">催结算</option>
                                                 </select>
                                             </div>
-                                            <div class="visual-field" v-if="reply.backend_action !== 'add_proxy_whitelist'">
+                                            <div class="visual-field" v-if="reply.backend_action === 'urge_settlement'">
+                                                <div class="visual-label"><i class="fa-solid fa-receipt"></i>提取注单号的正则</div>
+                                                <input v-model="reply.member_pattern" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] font-mono text-orange-700 bg-orange-50 border-orange-200" placeholder="留空：从已匹配消息里提取 12-24 位注单号">
+                                            </div>
+                                            <div class="visual-field" v-else-if="reply.backend_action !== 'add_proxy_whitelist'">
                                                 <div class="visual-label"><i class="fa-solid fa-unlock"></i>提取账号名的正则</div>
                                                 <input v-model="reply.member_pattern" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] font-mono text-orange-700 bg-orange-50 border-orange-200" placeholder="留空：从已匹配消息里提取账号">
                                                 <div class="text-[9px] text-slate-400 mt-0.5">触发词在监听关键词里维护；这里仅负责提取账号。留空会取消息中的第一个账号样式文本。</div>
@@ -2118,6 +2183,23 @@ SETTINGS_HTML = """
                                                 <input v-model="reply.ip_pattern" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] font-mono text-orange-700 bg-orange-50 border-orange-200" placeholder="留空：从已匹配消息里提取 IPv4">
                                                 <div class="text-[9px] text-slate-400 mt-0.5">触发词在监听关键词里维护；这里仅负责提取 IPv4。</div>
                                             </div>
+                                            <template v-if="reply.backend_action === 'urge_settlement'">
+                                                <div class="visual-field">
+                                                    <div class="visual-label"><i class="fa-brands fa-telegram"></i>TG 催结算群</div>
+                                                    <input v-model="reply.forward_to" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] text-blue-700 bg-blue-50 border-blue-100" placeholder="-1001234567890 或 @username">
+                                                </div>
+                                                <div class="visual-field">
+                                                    <div class="visual-label"><i class="fa-solid fa-user"></i>催结算发送账号</div>
+                                                    <select v-model="reply.telegram_account" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] text-blue-700 bg-blue-50 border-blue-100">
+                                                        <option value="">主账号（默认）</option>
+                                                        <option v-for="acc in available_accounts" :key="acc" :value="acc">{{ acc }}</option>
+                                                    </select>
+                                                </div>
+                                                <div class="visual-field">
+                                                    <div class="visual-label"><i class="fa-solid fa-message"></i>TG 消息模板</div>
+                                                    <textarea v-model="reply.text" rows="2" class="bento-input w-full px-2 py-1.5 text-[11px] resize-none bg-blue-50 border-blue-100" placeholder="留空默认：{order_no}注单催结算&#10;赛事ID：{match_id}"></textarea>
+                                                </div>
+                                            </template>
                                             <div class="visual-field">
                                                 <div class="visual-label"><i class="fa-solid fa-bell"></i>失败通知对象</div>
                                                 <input v-model="reply.fail_notify_to" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] text-red-700 bg-red-50 border-red-100" placeholder="用户ID 或 @username">
@@ -2200,6 +2282,7 @@ SETTINGS_HTML = """
                 member_pattern: rep.member_pattern || '',
                 ip_pattern: rep.ip_pattern || '',
                 backend_action: rep.backend_action || 'unlock_sms',
+                telegram_account: rep.telegram_account || '',
                 fail_notify_to: rep.fail_notify_to || '',
                 fail_notify_text: rep.fail_notify_text || '',
                 min: rep.min ?? 1,
@@ -2236,6 +2319,7 @@ SETTINGS_HTML = """
                 if (!reply.member_pattern) reply.member_pattern = '';
                 if (!reply.ip_pattern) reply.ip_pattern = '';
                 if (!reply.backend_action) reply.backend_action = 'unlock_sms';
+                if (!reply.telegram_account) reply.telegram_account = '';
                 if (!reply.fail_notify_to) reply.fail_notify_to = '';
                 if (!reply.fail_notify_text) reply.fail_notify_text = '';
                 if (reply.min === undefined || reply.min === null || reply.min === '') reply.min = 1;
@@ -2844,6 +2928,33 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             while len(backend_command_progress) > 500:
                 backend_command_progress.pop(next(iter(backend_command_progress)), None)
         return jsonify({"ok": True})
+
+    @app.route('/api/cmd/send_telegram', methods=['POST'])
+    def cmd_send_telegram():
+        if request.args.get("secret") != CMD_SECRET:
+            return jsonify({"ok": False}), 403
+        data = request.get_json(silent=True) or {}
+        cmd_id = str(data.get("id") or "")
+        target = str(data.get("target") or "")
+        account = str(data.get("account") or "")
+        text = str(data.get("text") or "")
+        future = asyncio.run_coroutine_threadsafe(
+            send_command_telegram_message(account, target, text, cmd=data),
+            bot_loop
+        )
+        try:
+            sent = future.result(timeout=30)
+            return jsonify({"ok": True, "message_id": getattr(sent, "id", None)})
+        except Exception as e:
+            logger.error(f"❌ [BackendUnlock] 催结算 TG 发送失败: id={cmd_id or '-'} account={account or MAIN_NAME} target={target or '-'} err={e}")
+            record_runtime_event(
+                "settlement_urge",
+                "failed",
+                f"催结算消息发送失败：{e}",
+                rule={"id": cmd_id or "__settlement_urge__", "name": str(data.get("rule") or "催结算")},
+                target_account=account or MAIN_NAME,
+            )
+            return jsonify({"ok": False, "error": str(e)}), 500
 
     @app.route('/tool/zd_unlock_extension.zip')
     def zd_unlock_extension_zip():

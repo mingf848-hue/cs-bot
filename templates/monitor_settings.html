@@ -1099,9 +1099,14 @@
                                                     <option value="clear_login_error">登录密码试错限制</option>
                                                     <option value="add_proxy_whitelist">代理 IP 加白</option>
                                                     <option value="migrate_milan">迁移米兰</option>
+                                                    <option value="urge_settlement">催结算</option>
                                                 </select>
                                             </div>
-                                            <div class="field" v-if="step.backend_action !== 'add_proxy_whitelist'">
+                                            <div class="field" v-if="step.backend_action === 'urge_settlement'">
+                                                <label>提取注单号的正则</label>
+                                                <input class="input font-mono" v-model="step.member_pattern" placeholder="留空：从已匹配消息里提取 12-24 位注单号">
+                                            </div>
+                                            <div class="field" v-else-if="step.backend_action !== 'add_proxy_whitelist'">
                                                 <label>提取账号名的正则</label>
                                                 <input class="input font-mono" v-model="step.member_pattern" placeholder="留空：从已匹配消息里提取账号">
                                             </div>
@@ -1109,6 +1114,23 @@
                                                 <label>提取 IP 的正则</label>
                                                 <input class="input font-mono" v-model="step.ip_pattern" placeholder="留空：从已匹配消息里提取 IPv4">
                                             </div>
+                                            <template v-if="step.backend_action === 'urge_settlement'">
+                                                <div class="field">
+                                                    <label>TG 催结算群</label>
+                                                    <input class="input" v-model="step.forward_to" placeholder="-1001234567890 或 @username">
+                                                </div>
+                                                <div class="field">
+                                                    <label>催结算发送账号</label>
+                                                    <select class="select" v-model="step.telegram_account">
+                                                        <option value="">主账号（默认）</option>
+                                                        <option v-for="acc in available_accounts" :key="acc" :value="acc">{{ acc }}</option>
+                                                    </select>
+                                                </div>
+                                                <div class="field full">
+                                                    <label>TG 消息模板</label>
+                                                    <textarea class="textarea" v-model="step.text" placeholder="留空默认：{order_no}注单催结算&#10;赛事ID：{match_id}"></textarea>
+                                                </div>
+                                            </template>
                                             <div class="field">
                                                 <label>失败通知对象</label>
                                                 <input class="input" v-model="step.fail_notify_to" placeholder="用户ID 或 @username">
@@ -1117,7 +1139,7 @@
                                                 <label>失败通知内容</label>
                                                 <textarea class="textarea" v-model="step.fail_notify_text" placeholder="留空使用默认：后台自动处理失败，请人工核查"></textarea>
                                             </div>
-                                            <span class="hint">触发词在监听关键词里维护；这里仅负责提取目标值。账号类取账号，代理加白取 IPv4。</span>
+                                            <span class="hint">触发词在监听关键词里维护；这里仅负责提取目标值。账号类取账号，代理加白取 IPv4，催结算取注单号。催结算发送账号只影响 TG 催促消息。</span>
                                         </div>
                                     </div>
                                     <div class="step-actions">
@@ -1245,9 +1267,14 @@
                                                         <option value="clear_login_error">登录密码试错限制</option>
                                                         <option value="add_proxy_whitelist">代理 IP 加白</option>
                                                         <option value="migrate_milan">迁移米兰</option>
+                                                        <option value="urge_settlement">催结算</option>
                                                     </select>
                                                 </div>
-                                                <div class="field" v-if="step.backend_action !== 'add_proxy_whitelist'">
+                                                <div class="field" v-if="step.backend_action === 'urge_settlement'">
+                                                    <label>提取注单号的正则</label>
+                                                    <input class="input font-mono" v-model="step.member_pattern" placeholder="留空：从原始报备里提取 12-24 位注单号">
+                                                </div>
+                                                <div class="field" v-else-if="step.backend_action !== 'add_proxy_whitelist'">
                                                     <label>提取账号名的正则</label>
                                                     <input class="input font-mono" v-model="step.member_pattern" placeholder="留空：从原始报备里提取账号">
                                                 </div>
@@ -1255,6 +1282,23 @@
                                                     <label>提取 IP 的正则</label>
                                                     <input class="input font-mono" v-model="step.ip_pattern" placeholder="留空：从原始报备里提取 IPv4">
                                                 </div>
+                                                <template v-if="step.backend_action === 'urge_settlement'">
+                                                    <div class="field">
+                                                        <label>TG 催结算群</label>
+                                                        <input class="input" v-model="step.forward_to" placeholder="-1001234567890 或 @username">
+                                                    </div>
+                                                    <div class="field">
+                                                        <label>催结算发送账号</label>
+                                                        <select class="select" v-model="step.telegram_account">
+                                                            <option value="">主账号（默认）</option>
+                                                            <option v-for="acc in available_accounts" :key="acc" :value="acc">{{ acc }}</option>
+                                                        </select>
+                                                    </div>
+                                                    <div class="field full">
+                                                        <label>TG 消息模板</label>
+                                                        <textarea class="textarea" v-model="step.text" placeholder="留空默认：{order_no}注单催结算&#10;赛事ID：{match_id}"></textarea>
+                                                    </div>
+                                                </template>
                                                 <div class="field">
                                                     <label>失败通知对象</label>
                                                     <input class="input" v-model="step.fail_notify_to" placeholder="用户ID 或 @username">
@@ -1878,6 +1922,7 @@ createApp({
             member_pattern: rep.member_pattern || "",
             ip_pattern: rep.ip_pattern || "",
             backend_action: rep.backend_action || "unlock_sms",
+            telegram_account: String(rep.telegram_account || ""),
             fail_notify_to: String(rep.fail_notify_to || ""),
             fail_notify_text: rep.fail_notify_text || "",
             min: rep.min ?? 1,
@@ -2284,6 +2329,7 @@ createApp({
             step.member_pattern = step.member_pattern || "";
             step.ip_pattern = step.ip_pattern || "";
             step.backend_action = step.backend_action || "unlock_sms";
+            step.telegram_account = step.telegram_account || "";
             step.fail_notify_to = step.fail_notify_to || "";
             step.fail_notify_text = step.fail_notify_text || "";
             step.min = step.min ?? 1;
