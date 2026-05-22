@@ -194,6 +194,7 @@
           ['/admin/userReport/getStatistics', 'merchantStatisticsUrl'],
           ['/admin/userReport/queryTicketList', 'merchantTicketListUrl'],
           ['/admin/noticeNew/notice', 'merchantNoticeUrl'],
+          ['/admin/noticeNew/noticeDetail', 'merchantNoticeDetailUrl'],
           ['/admin/settlement/queryNoSettleTicketList', 'merchantSettlementListUrl'],
           ['/admin/settlement/getStatistics', 'merchantSettlementStatisticsUrl']
         ];

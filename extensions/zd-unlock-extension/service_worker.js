@@ -12,6 +12,7 @@ const DEFAULT_CONFIG = {
   merchantStatisticsUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/userReport/getStatistics',
   merchantTicketListUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/userReport/queryTicketList',
   merchantNoticeUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/noticeNew/notice',
+  merchantNoticeDetailUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/noticeNew/noticeDetail',
   merchantSettlementListUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/settlement/queryNoSettleTicketList',
   merchantSettlementStatisticsUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/settlement/getStatistics',
   value: '',
@@ -54,6 +55,7 @@ const SITE_PROFILES = {
     merchantStatisticsUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/userReport/getStatistics',
     merchantTicketListUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/userReport/queryTicketList',
     merchantNoticeUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/noticeNew/notice',
+    merchantNoticeDetailUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/noticeNew/noticeDetail',
     merchantSettlementListUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/settlement/queryNoSettleTicketList',
     merchantSettlementStatisticsUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/settlement/getStatistics'
   }
@@ -116,6 +118,7 @@ function isAllowedMerchantEndpoint(key, url) {
     'merchantStatisticsUrl',
     'merchantTicketListUrl',
     'merchantNoticeUrl',
+    'merchantNoticeDetailUrl',
     'merchantSettlementListUrl',
     'merchantSettlementStatisticsUrl'
   ]);
@@ -542,6 +545,10 @@ function htmlText(value) {
     .trim();
 }
 
+function normalizeText(value) {
+  return htmlText(value).toLowerCase().replace(/\s+/g, '');
+}
+
 function firstOrderDetail(order = {}) {
   const details = Array.isArray(order.orderDetailList) ? order.orderDetailList : [];
   return details[0] || {};
@@ -597,6 +604,70 @@ function orderStatusLabel(status) {
   if (value === 1) return '已结算';
   if (value === 2) return '已取消';
   return `状态${status}`;
+}
+
+function failureRiskText(order = {}, detail = {}) {
+  const direct = String(detail.riskEvent || order.riskEvent || '').trim();
+  if (direct) return direct;
+  const remark = String(detail.remark || order.remark || '').trim();
+  const reasonMatch = remark.match(/原因[:：]\s*([^，,。\s]+)/);
+  if (reasonMatch) return reasonMatch[1].trim();
+  const eventMatch = remark.match(/([A-Za-z_]+|[\u4e00-\u9fa5]+)事件拒单/);
+  if (eventMatch) return eventMatch[1].trim();
+  return '盘口变动';
+}
+
+function ticketMatchText(detail = {}) {
+  return String(detail.matchInfo || [detail.homeName, detail.awayName].filter(Boolean).join(' v ') || '').trim();
+}
+
+function betFailureReply(order = {}, detail = {}) {
+  const matchText = ticketMatchText(detail) || '相关赛事';
+  const riskText = failureRiskText(order, detail);
+  return `您好，经核实，因用户下注确认期间其中赛事：${matchText} ${riskText} 导致投注失败，属于系统正常拒单，本金已退回，谢谢。`;
+}
+
+function noticeText(item = {}) {
+  return [
+    item.title,
+    item.context,
+    item.zhTitle,
+    item.zhContext,
+    item.enTitle,
+    item.enContext
+  ].filter(Boolean).join(' ');
+}
+
+function scoreInvalidNotice(item = {}, order = {}, detail = {}) {
+  const text = normalizeText(noticeText(item));
+  const matchInfo = normalizeText(ticketMatchText(detail));
+  const home = normalizeText(detail.homeName);
+  const away = normalizeText(detail.awayName);
+  const risk = normalizeText(failureRiskText(order, detail));
+  const play = normalizeText(detail.playName || detail.originalPlay || '');
+  const option = normalizeText(detail.playOptionName || detail.marketValue || '');
+  let score = 0;
+  if (risk && text.includes(risk)) score += 80;
+  if (matchInfo && text.includes(matchInfo.replace('v', 'vs'))) score += 30;
+  if (home && text.includes(home)) score += 15;
+  if (away && text.includes(away)) score += 15;
+  if (play && text.includes(play)) score += 10;
+  if (option && text.includes(option)) score += 6;
+  if (/无效|invalid|取消|退回|本金/.test(text)) score += 20;
+  if (/不能按时结算|delaysettlement|赛果不明确/.test(text)) score -= 50;
+  return score;
+}
+
+function bestChineseNoticeContext(detailData = {}) {
+  const list = Array.isArray(detailData.list) ? detailData.list : [];
+  const zh = list.find((item) => Number(item.langType) === 1 && item.context)
+    || list.find((item) => item.context);
+  return htmlText((zh && zh.context) || detailData.context || '');
+}
+
+async function replyOrigin(config, cmd, statusMessage, replyText, ticketText = '') {
+  await setStatus({ state: 'success', message: statusMessage, detail: String(ticketText || '').slice(0, 300) });
+  await ack(config, cmd, 'reply_origin', statusMessage, { reply_text: replyText, stop_actions: true });
 }
 
 function settlementTemplate(template, context = {}) {
@@ -899,6 +970,37 @@ async function runMerchantOrderStatisticsCommand(config, cmd, targetValue) {
   await ack(config, cmd, ok ? 'success' : `http_${query.res.status}`, query.text.slice(0, 500));
 }
 
+async function replyInvalidTicketNotice(config, cmd, headers, orderNo, order, detail, ticketText) {
+  if (!config.merchantNoticeUrl) throw new Error('场馆公告接口未配置');
+  if (!config.merchantNoticeDetailUrl) throw new Error('场馆公告详情接口未配置');
+  const matchId = String(detail.matchId || order.standardMatchId || detail.standardMatchId || '').trim();
+  if (!matchId) throw new Error(`注单失效未找到赛事ID：${orderNo}`);
+  const notice = await postForm(merchantUrl(config.merchantNoticeUrl), headers, {
+    mid: matchId,
+    status: 1,
+    pgNum: 1,
+    pgSize: 20
+  });
+  if (!merchantApiOk(notice)) {
+    throw new Error(`查询失效公告失败 HTTP ${notice.res.status}: ${notice.text.slice(0, 300)}`);
+  }
+  const notices = merchantList(notice.data)
+    .map((item) => ({ item, score: scoreInvalidNotice(item, order, detail) }))
+    .sort((a, b) => b.score - a.score);
+  const selected = notices[0];
+  if (!selected || selected.score <= 0) {
+    throw new Error(`未匹配到注单失效公告：${orderNo}`);
+  }
+  const noticeId = selected.item.noticeId || selected.item.id;
+  const noticeDetail = await postForm(merchantUrl(config.merchantNoticeDetailUrl), headers, { id: noticeId });
+  if (!merchantApiOk(noticeDetail)) {
+    throw new Error(`查询公告详情失败 HTTP ${noticeDetail.res.status}: ${noticeDetail.text.slice(0, 300)}`);
+  }
+  const context = bestChineseNoticeContext(noticeDetail.data.data || {});
+  if (!context) throw new Error(`公告详情无中文内容：${noticeId}`);
+  await replyOrigin(config, cmd, `注单失效已回复公告：${orderNo}`, context, ticketText);
+}
+
 async function runUrgeSettlementCommand(config, cmd, orderNo) {
   if (!config.merchantTicketListUrl) throw new Error('场馆注单列表接口未配置');
   if (!config.merchantNoticeUrl) throw new Error('场馆公告接口未配置');
@@ -923,16 +1025,24 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
     const replyText = String(cmd.not_started_reply || '当前注单暂未开赛，请耐心等待。');
     const beginText = String(detail.beginTimeStr || detail.beginTime || order.beginTimeStr || order.beginTime || '');
     const msg = `催结算跳过：${orderNo} 未到开赛时间${beginText ? ` ${beginText}` : ''}`;
-    await setStatus({ state: 'success', message: msg, detail: ticket.text.slice(0, 300) });
-    await ack(config, cmd, 'reply_origin', msg, { reply_text: replyText, stop_actions: true });
+    await replyOrigin(config, cmd, msg, replyText, ticket.text);
     return;
   }
   const statusLabel = orderStatusLabel(order.orderStatus);
+  if (Number(order.orderStatus) === 4 || Number(detail.betStatus) === 5) {
+    const replyText = betFailureReply(order, detail);
+    const msg = `投注失败退本金已回复：${orderNo}`;
+    await replyOrigin(config, cmd, msg, replyText, ticket.text);
+    return;
+  }
+  if (Number(order.orderStatus) === 2 || Number(detail.betStatus) === 3) {
+    await replyInvalidTicketNotice(config, cmd, headers, orderNo, order, detail, ticket.text);
+    return;
+  }
   if (Number(order.orderStatus) !== 0) {
     const replyText = String(cmd.settled_reply || '注单已结算，请刷新注单页面查看。');
     const msg = `催结算跳过：${orderNo} ${statusLabel}`;
-    await setStatus({ state: 'success', message: msg, detail: ticket.text.slice(0, 300) });
-    await ack(config, cmd, 'reply_origin', msg, { reply_text: replyText, stop_actions: true });
+    await replyOrigin(config, cmd, msg, replyText, ticket.text);
     return;
   }
   if (!matchId) {
