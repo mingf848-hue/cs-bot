@@ -993,7 +993,6 @@ async function runMerchantOrderStatisticsCommand(config, cmd, targetValue) {
 
 async function replyInvalidTicketNotice(config, cmd, headers, orderNo, order, detail, ticketText) {
   if (!config.merchantNoticeUrl) throw new Error('场馆公告接口未配置');
-  if (!config.merchantNoticeDetailUrl) throw new Error('场馆公告详情接口未配置');
   const matchId = String(detail.matchId || order.standardMatchId || detail.standardMatchId || '').trim();
   if (!matchId) throw new Error(`注单失效未找到赛事ID：${orderNo}`);
   const notice = await postForm(merchantUrl(config.merchantNoticeUrl), headers, {
@@ -1012,23 +1011,22 @@ async function replyInvalidTicketNotice(config, cmd, headers, orderNo, order, de
   if (!selected || selected.score <= 0) {
     throw new Error(`未匹配到注单失效公告：${orderNo}`);
   }
-  const noticeId = selected.item.noticeId || selected.item.id;
-  const noticeDetail = await postForm(merchantUrl(config.merchantNoticeDetailUrl), headers, { id: noticeId });
-  if (!merchantApiOk(noticeDetail)) {
-    throw new Error(`查询公告详情失败 HTTP ${noticeDetail.res.status}: ${noticeDetail.text.slice(0, 300)}`);
-  }
-  const context = bestChineseNoticeContext(noticeDetail.data.data || {});
-  if (!context) throw new Error(`公告详情无中文内容：${noticeId}`);
+  const context = await noticeReplyText(config, headers, selected.item);
+  if (!context) throw new Error(`公告无可回复中文内容：${orderNo}`);
   await replyOrigin(config, cmd, `注单失效已回复公告：${orderNo}`, context, ticketText);
 }
 
 async function noticeReplyText(config, headers, noticeItem = {}) {
   const noticeId = noticeItem.noticeId || noticeItem.id;
   if (config.merchantNoticeDetailUrl && noticeId) {
-    const noticeDetail = await postForm(merchantUrl(config.merchantNoticeDetailUrl), headers, { id: noticeId });
-    if (merchantApiOk(noticeDetail)) {
-      const context = bestChineseNoticeContext(noticeDetail.data.data || {});
-      if (context) return context;
+    try {
+      const noticeDetail = await postForm(merchantUrl(config.merchantNoticeDetailUrl), headers, { id: noticeId });
+      if (merchantApiOk(noticeDetail)) {
+        const context = bestChineseNoticeContext(noticeDetail.data.data || {});
+        if (context) return context;
+      }
+    } catch {
+      // fall back to list content
     }
   }
   return htmlText([
