@@ -2614,7 +2614,6 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_obj, check_c
         return False, "规则已关闭", None
 
     if not rule_matches_group(event.chat_id, rule.get("groups", [])): return False, "群组不符", None
-    if event.is_reply: return False, "是回复消息", None
     is_backend_unlock_rule = rule_has_backend_unlock(rule)
     text = (event.text or "")
     backend_actions = rule_backend_actions(rule) if is_backend_unlock_rule else set()
@@ -2649,6 +2648,7 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_obj, check_c
     else:
         if not match_text(text, rule):
             return False, "文本关键词不符", None
+    if event.is_reply: return False, "是回复消息", None
     
     if check_cooldown and not is_backend_unlock_rule:
         rule_id = ensure_rule_id(rule)
@@ -3729,7 +3729,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                 duration_ms=(time.time() - match_started) * 1000
                             )
                     break
-                elif rule_matches_group(event.chat_id, rule.get("groups", [])) and reason in ("是回复消息", "发送者是已登录账号", "发送者被排除", "冷却中", "二级密码消息不触发登录密码解锁"):
+                elif rule_matches_group(event.chat_id, rule.get("groups", [])) and reason in ("发送者是已登录账号", "发送者被排除", "冷却中", "二级密码消息不触发登录密码解锁"):
                     logger.info(
                         f"↪️ [MonitorSkip] 规则 '{rule.get('name')}' 未执行: {reason} | "
                         f"Chat={event.chat_id} Msg={event.id} Sender={sender_name}"

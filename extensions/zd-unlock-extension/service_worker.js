@@ -671,7 +671,7 @@ async function replyOrigin(config, cmd, statusMessage, replyText, ticketText = '
 }
 
 function settlementTemplate(template, context = {}) {
-  const text = String(template || '{order_no}注单催结算\n赛事ID：{match_id}');
+  const text = String(template || '{order_no}    注单催结算    US\n赛事ID：{match_id}');
   return text.replace(/\{([a-zA-Z0-9_]+)\}/g, (_all, key) => String(context[key] ?? ''));
 }
 
