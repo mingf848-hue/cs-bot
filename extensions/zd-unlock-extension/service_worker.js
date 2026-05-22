@@ -1001,9 +1001,16 @@ async function pollOnce() {
 }
 
 chrome.runtime.onInstalled.addListener(async () => {
-  const stored = await chrome.storage.local.get(['recorderState', 'recorderRecords']);
+  const stored = await chrome.storage.local.get(['config', 'recorderState', 'recorderRecords']);
   await chrome.storage.local.set({
-    config: DEFAULT_CONFIG,
+    config: {
+      ...DEFAULT_CONFIG,
+      ...(stored.config || {}),
+      headers: {
+        ...DEFAULT_CONFIG.headers,
+        ...((stored.config && stored.config.headers) || {})
+      }
+    },
     enabled: true,
     recorderState: stored.recorderState || { enabled: false, startedAt: '', stoppedAt: '', count: 0 },
     recorderRecords: stored.recorderRecords || []
@@ -1027,7 +1034,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
   if (message && message.type === 'saveConfig') {
-    chrome.storage.local.set({ config: message.config, enabled: true })
+    chrome.storage.local.get(['config'])
+      .then((stored) => {
+        const current = stored.config || {};
+        const incoming = message.config || {};
+        const config = {
+          ...DEFAULT_CONFIG,
+          ...current,
+          ...incoming,
+          value: String(incoming.value || current.value || '').trim(),
+          headers: {
+            ...DEFAULT_CONFIG.headers,
+            ...(current.headers || {}),
+            ...(incoming.headers || {})
+          }
+        };
+        return chrome.storage.local.set({ config, enabled: true });
+      })
       .then(() => {
         chrome.alarms.create('poll', { periodInMinutes: 0.5 });
         pollOnce();
