@@ -920,6 +920,23 @@ wait_check_all_last_request_ts = 0.0
 BEIJING_TZ = timezone(timedelta(hours=8))
 ZC_BATCH_STATE = {}
 ZC_BATCH_TTL_SECONDS = 6 * 60 * 60
+SB_REPORT_WINDOWS = [
+    (0, 0, "00:00-00:59"),
+    (1, 1, "01:00-01:59"),
+    (2, 2, "02:00-02:59"),
+    (3, 3, "03:00-03:59"),
+    (4, 6, "04:00-06:59"),
+    (7, 9, "07:00-09:59"),
+    (10, 12, "10:00-12:59"),
+    (13, 15, "13:00-15:59"),
+    (16, 17, "16:00-17:59"),
+    (18, 18, "18:00-18:59"),
+    (19, 19, "19:00-19:59"),
+    (20, 20, "20:00-20:59"),
+    (21, 21, "21:00-21:59"),
+    (22, 22, "22:00-22:59"),
+    (23, 23, "23:00-23:59"),
+]
 WAIT_CHECK_SHIFT_WINDOWS = {
     "早班全体": ("12:30", "21:00"),
     "中班全体": ("20:45", "05:00"),
@@ -2859,6 +2876,9 @@ def _bot_edit_message_text(chat_id, message_id, text, reply_markup=None):
         log_tree(9, f"Bot 编辑消息异常: {e}")
     return False
 
+def copy_delete_markup():
+    return {"inline_keyboard": [[{"text": "复制后删除", "callback_data": "delete_notice"}]]}
+
 def _bot_answer_callback_query(callback_query_id, text=""):
     if not BOT_TOKEN or not callback_query_id:
         return False
@@ -2933,6 +2953,24 @@ def format_zc_summary(counts):
         "",
         "EBpay优惠卷发放通知",
         "（ML站/  人）",
+    ])
+
+def sb_time_window_text(now=None):
+    now = now or datetime.now(BEIJING_TZ)
+    target_hour = (now.hour - 1) % 24
+    for start_hour, end_hour, label in SB_REPORT_WINDOWS:
+        if start_hour <= target_hour <= end_hour:
+            return label
+    return f"{target_hour:02d}:00-{target_hour:02d}:59"
+
+def format_sb_summary(ml_count, jn_count=0):
+    return "\n".join([
+        "JN/ML站",
+        sb_time_window_text(),
+        "",
+        "v2-v10存款方式存款失败引导",
+        f"（JN站  {jn_count} 人）（ML站 {ml_count}人）",
+        "已发送",
     ])
 
 def progress_bar(percent, width=18):
@@ -3033,6 +3071,16 @@ async def handle_site_message_bot_request(message):
     detail = str((result or {}).get("detail") or "无回执")
     ok = status == "success"
     message_id = message.get("message_id")
+    if strategy == "sb" and ok:
+        return {
+            "text": format_sb_summary(len(clean_members), 0),
+            "delete_source": True,
+            "reply_to_source": False,
+            "skip_send": True,
+            "sent_message_id": progress_message_id,
+            "edit_message_id": progress_message_id,
+            "copy_delete_button": True,
+        }
     if strategy in {"6zc", "9zc"} and ok:
         site_key = "jn" if strategy == "6zc" else "ml"
         state = cleanup_zc_state(chat_id) or {"counts": {}, "marker_ids": [], "source_ids": [], "updated_at": time.time()}
@@ -3051,6 +3099,7 @@ async def handle_site_message_bot_request(message):
                 "skip_send": True,
                 "sent_message_id": progress_message_id,
                 "edit_message_id": progress_message_id,
+                "copy_delete_button": True,
                 "delete_after_send_ids": cleanup_ids,
             }
         return {
@@ -3060,6 +3109,7 @@ async def handle_site_message_bot_request(message):
             "skip_send": True,
             "sent_message_id": progress_message_id,
             "edit_message_id": progress_message_id,
+            "copy_delete_button": True,
             "remember_zc_marker": True,
             "zc_chat_id": chat_id,
         }
@@ -3077,6 +3127,7 @@ async def handle_site_message_bot_request(message):
         "skip_send": True,
         "sent_message_id": progress_message_id,
         "edit_message_id": progress_message_id,
+        "copy_delete_button": True,
     }
 
 async def bot_command_polling_task():
@@ -3116,6 +3167,7 @@ async def bot_command_polling_task():
                 delete_after_send_ids = []
                 skip_send = False
                 edit_message_id = None
+                result_reply_markup = None
                 if is_bot_command(text, "start"):
                     reply_text = format_start_command_reply(message)
                 elif is_bot_command(text, "id"):
@@ -3137,6 +3189,8 @@ async def bot_command_polling_task():
                         skip_send = bool(reply_result.get("skip_send"))
                         edit_message_id = reply_result.get("edit_message_id")
                         sent_message_id = reply_result.get("sent_message_id")
+                        if reply_result.get("copy_delete_button"):
+                            result_reply_markup = copy_delete_markup()
                     else:
                         reply_text = str(reply_result)
                         delete_source = False
@@ -3150,12 +3204,12 @@ async def bot_command_polling_task():
                 if skip_send and edit_message_id:
                     await loop.run_in_executor(
                         None,
-                        lambda cid=chat_id, mid=edit_message_id, txt=reply_text: _bot_edit_message_text(cid, mid, txt)
+                        lambda cid=chat_id, mid=edit_message_id, txt=reply_text, markup=result_reply_markup: _bot_edit_message_text(cid, mid, txt, markup)
                     )
                 else:
                     sent_message_id = await loop.run_in_executor(
                         None,
-                        lambda cid=chat_id, txt=reply_text, mid=(message.get("message_id") if reply_to_source else None), thread=message.get("message_thread_id"): _bot_send_reply(cid, txt, mid, thread)
+                        lambda cid=chat_id, txt=reply_text, mid=(message.get("message_id") if reply_to_source else None), thread=message.get("message_thread_id"), markup=result_reply_markup: _bot_send_reply(cid, txt, mid, thread, markup)
                     )
                 if remember_zc_marker and sent_message_id:
                     state = ZC_BATCH_STATE.get(str(zc_chat_id))
