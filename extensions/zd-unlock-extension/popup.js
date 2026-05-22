@@ -20,9 +20,21 @@ function authHost(auth = {}) {
 }
 
 function siteAuth(pageAuth = null, pageAuthByHost = {}, host, site) {
-  const auth = pageAuthByHost[host]
-    || (authHost(pageAuth) === host ? pageAuth : null)
-    || (String(((pageAuth || {}).headers || {})['x-api-site'] || '') === site ? pageAuth : null);
+  const matches = (auth) => {
+    const headers = (auth && auth.headers) || {};
+    const href = String((auth && auth.href) || '');
+    return authHost(auth) === host || href.includes(host) || String(headers['x-api-site'] || '') === site;
+  };
+  const candidates = [
+    pageAuthByHost[host],
+    pageAuthByHost[site],
+    pageAuth,
+    ...Object.values(pageAuthByHost || {})
+  ].filter(Boolean);
+  const auth = candidates.find((item) => {
+    const headers = (item && item.headers) || {};
+    return matches(item) && (headers['x-api-token'] || headers['x-api-user']);
+  });
   const headers = (auth && auth.headers) || {};
   return !!(auth && auth.capturedAt && (headers['x-api-token'] || headers['x-api-user']));
 }

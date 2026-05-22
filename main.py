@@ -2811,6 +2811,23 @@ def _bot_send_reply(chat_id, text, reply_to_message_id=None, message_thread_id=N
     except Exception as e:
         log_tree(9, f"Bot 命令回复异常: {e}")
 
+def _bot_delete_message(chat_id, message_id):
+    if not BOT_TOKEN or chat_id is None or message_id is None:
+        return False
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage",
+            json={"chat_id": chat_id, "message_id": message_id},
+            timeout=20,
+        )
+        data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+        if resp.status_code == 200 and data.get("ok"):
+            return True
+        log_tree(9, f"Bot 删除账号消息失败: HTTP {resp.status_code} {str(data)[:200]}")
+    except Exception as e:
+        log_tree(9, f"Bot 删除账号消息异常: {e}")
+    return False
+
 def is_bot_command(text, command):
     return bool(re.match(rf"^/{re.escape(command)}(?:@[A-Za-z0-9_]+)?(?:\s|$)", str(text or "").strip(), re.IGNORECASE))
 
@@ -2819,7 +2836,7 @@ def parse_site_message_request(text):
     if len(lines) < 2:
         return [], ""
     strategy = lines[-1].lower()
-    if strategy not in {"sb", "zc"}:
+    if strategy not in {"sb", "9zc", "6zc"}:
         return [], ""
     raw = "\n".join(lines[:-1]).replace("，", ",")
     members = []
@@ -2845,14 +2862,23 @@ async def handle_site_message_bot_request(message):
     status = str((result or {}).get("status") or "timeout")
     detail = str((result or {}).get("detail") or "无回执")
     ok = status == "success"
-    type_label = "新注册连续6条" if strategy == "zc" else "存款温馨提示"
-    return "\n".join([
+    type_labels = {
+        "sb": "存款温馨提示",
+        "9zc": "9站新注册连续6条",
+        "6zc": "6站新注册连续3条",
+    }
+    reply_text = "\n".join([
         "站内信发送结果",
-        f"类型：{type_label}",
+        f"类型：{type_labels.get(strategy, strategy)}",
         f"人数：{len(clean_members)}",
         f"状态：{'成功' if ok else '失败'}",
         f"详情：{detail}",
     ])
+    return {
+        "text": reply_text,
+        "delete_source": ok,
+        "reply_to_source": not ok,
+    }
 
 async def bot_command_polling_task():
     if not BOT_TOKEN:
@@ -2879,6 +2905,8 @@ async def bot_command_polling_task():
 
                 message = update.get("message") or {}
                 text = message.get("text")
+                delete_source = False
+                reply_to_source = True
                 if is_bot_command(text, "start"):
                     reply_text = format_start_command_reply(message)
                 elif is_bot_command(text, "id"):
@@ -2887,9 +2915,17 @@ async def bot_command_polling_task():
                     chat = message.get("chat", {})
                     if chat.get("type") != "private":
                         continue
-                    reply_text = await handle_site_message_bot_request(message)
-                    if not reply_text:
+                    reply_result = await handle_site_message_bot_request(message)
+                    if not reply_result:
                         continue
+                    if isinstance(reply_result, dict):
+                        reply_text = reply_result.get("text") or ""
+                        delete_source = bool(reply_result.get("delete_source"))
+                        reply_to_source = reply_result.get("reply_to_source") is not False
+                    else:
+                        reply_text = str(reply_result)
+                        delete_source = False
+                        reply_to_source = True
 
                 chat = message.get("chat", {})
                 chat_id = chat.get("id")
@@ -2898,8 +2934,13 @@ async def bot_command_polling_task():
 
                 await loop.run_in_executor(
                     None,
-                    lambda cid=chat_id, txt=reply_text, mid=message.get("message_id"), thread=message.get("message_thread_id"): _bot_send_reply(cid, txt, mid, thread)
+                    lambda cid=chat_id, txt=reply_text, mid=(message.get("message_id") if reply_to_source else None), thread=message.get("message_thread_id"): _bot_send_reply(cid, txt, mid, thread)
                 )
+                if delete_source:
+                    await loop.run_in_executor(
+                        None,
+                        lambda cid=chat_id, mid=message.get("message_id"): _bot_delete_message(cid, mid)
+                    )
         except Exception as e:
             log_tree(9, f"Bot /start /id 命令处理异常: {e}")
             await asyncio.sleep(5)

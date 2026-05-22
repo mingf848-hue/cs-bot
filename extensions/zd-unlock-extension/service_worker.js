@@ -22,6 +22,22 @@ let polling = false;
 const RECORDER_LIMIT = 400;
 const RECORDER_BODY_LIMIT = 8000;
 const RECORDER_RESPONSE_LIMIT = 20000;
+const SITE_PROFILES = {
+  '9001': {
+    host: '9sitebg.mvj4e7.com',
+    label: '9站',
+    siteInnerMsgTemplateUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/operation/cmCfg/template/info/list',
+    siteInnerMsgAddUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/operation/cmCfg/siteInnerMsg/add',
+    siteInnerMsgClients: '0,1,2,3,8,9'
+  },
+  '6001': {
+    host: '6sitebg.oj61i4.com',
+    label: '6站',
+    siteInnerMsgTemplateUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/operation/cmCfg/template/info/list',
+    siteInnerMsgAddUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/operation/cmCfg/siteInnerMsg/add',
+    siteInnerMsgClients: '0,1,2,3,8'
+  }
+};
 
 function nowText() {
   return new Date().toLocaleString('zh-CN', { hour12: false });
@@ -35,12 +51,31 @@ function authHost(auth = {}) {
   }
 }
 
-function actionHost(action) {
-  return action === 'migrate_milan' ? '6sitebg.oj61i4.com' : '9sitebg.mvj4e7.com';
+function siteFromCommand(action, cmd = {}) {
+  const hint = String(cmd.backend_site || cmd.site || cmd.site_id || cmd.siteId || '').trim().toLowerCase();
+  if (action === 'migrate_milan' || hint === '6' || hint === '6001' || hint === '6zc') return '6001';
+  return '9001';
 }
 
-function actionSite(action) {
-  return action === 'migrate_milan' ? '6001' : '9001';
+function profileForSite(site) {
+  return SITE_PROFILES[String(site)] || SITE_PROFILES['9001'];
+}
+
+function actionHost(action, cmd = {}) {
+  return profileForSite(siteFromCommand(action, cmd)).host;
+}
+
+function actionSite(action, cmd = {}) {
+  return siteFromCommand(action, cmd);
+}
+
+function authMatches(auth, targetHost, targetSite) {
+  const headers = (auth && auth.headers) || {};
+  const host = authHost(auth);
+  const href = String((auth && auth.href) || '');
+  return host === targetHost
+    || href.includes(targetHost)
+    || String(headers['x-api-site'] || '') === targetSite;
 }
 
 async function getConfig() {
@@ -60,20 +95,29 @@ async function getConfig() {
   };
 }
 
-function configForAction(config, action) {
-  const targetHost = actionHost(action);
-  const targetSite = actionSite(action);
+function configForAction(config, action, cmd = {}) {
+  const targetSite = actionSite(action, cmd);
+  const profile = profileForSite(targetSite);
+  const targetHost = profile.host;
   const byHost = config.pageAuthByHost || {};
   const currentAuth = config.pageAuth || null;
-  const matchedAuth = byHost[targetHost]
-    || (authHost(currentAuth) === targetHost ? currentAuth : null)
-    || (String(((currentAuth || {}).headers || {})['x-api-site'] || '') === targetSite ? currentAuth : null);
+  const candidates = [
+    byHost[targetHost],
+    byHost[targetSite],
+    currentAuth,
+    ...Object.values(byHost)
+  ].filter(Boolean);
+  const matchedAuth = candidates.find((auth) => {
+    const headers = (auth && auth.headers) || {};
+    return authMatches(auth, targetHost, targetSite) && headers['x-api-token'] && headers['x-api-user'];
+  });
   const authHeaders = (matchedAuth && matchedAuth.headers) || {};
   if (!matchedAuth || !authHeaders['x-api-token'] || !authHeaders['x-api-user']) {
-    throw new Error(`${targetSite === '6001' ? '6站' : '9站'}未登录`);
+    throw new Error(`${profile.label}未登录`);
   }
   return {
     ...config,
+    ...profile,
     headers: {
       ...config.headers,
       ...(matchedAuth.headers || {})
@@ -381,12 +425,13 @@ async function sendOneSiteInnerMessage(config, cmd, uniqueMembers, stepIndex, to
   const moduleId = template.id;
   const msgType = Number(cmd.msg_type || cmd.msgType || 1);
   const iconUrl = String(cmd.icon_url || cmd.iconUrl || '17');
+  const clients = String(cmd.clients || config.siteInnerMsgClients || '0,1,2,3,8,9');
   await setStatus({
     state: 'running',
     message: totalSteps > 1 ? `发送站内信 ${stepIndex}/${totalSteps}` : `发送站内信 ${uniqueMembers.length}人`
   });
   const sent = await postJson(config.siteInnerMsgAddUrl, config.headers, {
-    clients: '0,1,2,3,8,9',
+    clients,
     sendType: 1,
     module: moduleId,
     sendMembers: uniqueMembers.join(','),
@@ -472,7 +517,7 @@ async function runBackendCommand(config, cmd) {
   const label = commandLabel(action);
   await setStatus({ state: 'running', message: `执行${label} ${targetValue}` });
   try {
-    config = configForAction(config, action);
+    config = configForAction(config, action, cmd);
     if (action === 'migrate_milan') {
       await runMigrateMilanCommand(config, cmd, targetValue);
       return;
@@ -588,10 +633,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
   if (message && message.type === 'pageAuth') {
     const host = authHost(message.auth || {});
+    const site = String((((message.auth || {}).headers || {})['x-api-site']) || '');
     chrome.storage.local.get(['pageAuthByHost'])
       .then((stored) => {
         const pageAuthByHost = stored.pageAuthByHost || {};
         if (host) pageAuthByHost[host] = message.auth;
+        if (site) pageAuthByHost[site] = message.auth;
         return chrome.storage.local.set({ pageAuth: message.auth, pageAuthByHost });
       })
       .then(() => setStatus({
