@@ -1395,6 +1395,7 @@ async def execute_backend_unlock_step(step, rule, event, source_text, target_cli
         raise RuntimeError(f"后台动作失败：{command_action_label(backend_action)} {target_value} status={result.get('status')}{suffix}")
     reply_text = str((result or {}).get("reply_text") or "").strip()
     if reply_text and target_client:
+        await asyncio.sleep(random_delay_from_step(step or {}, "result_reply_min", "result_reply_max", 1.8, 3.8))
         await target_client.send_message(event.chat_id, reply_text, reply_to=event.id)
     logger.info(f"✅ [BackendUnlock] 规则 '{rule.get('name')}' 后台动作成功: {backend_action} {target_value} | id={cmd_id}")
     return {"id": cmd_id, "stop_actions": bool((result or {}).get("stop_actions"))}
