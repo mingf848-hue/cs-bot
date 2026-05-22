@@ -9,21 +9,12 @@ const DEFAULT_CONFIG = {
   siteInnerMsgAddUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/operation/cmCfg/siteInnerMsg/add',
   migrationRecordsUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/pilgrimage/recordsV2',
   migrateMilanUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/pilgrimage/migration',
-  value: 'x8Bffk8DR9QOcdHPe6fFvQ==',
+  value: '',
   headers: {
     accept: '*/*',
     'accept-language': 'zh-CN,zh;q=0.9',
     'content-type': 'application/json',
-    'use-new-api': 'true',
-    'x-api-appkey': 'NDbTd5RysclL',
-    'x-api-client': 'web',
-    'x-api-site': '9001',
-    'x-api-token': 'ZD_BHoMOAbPiZVNsqZXLxn3nuZK6ow8s02i',
-    'x-api-user': 'aratakito',
-    'x-api-uuid': '8510640B-F2AC-4B05-9ADD-52C740C363DB',
-    'x-api-version': '0.1',
-    'x-api-xsn': 'ef187eb236d1f9c0455561a473a0dafc',
-    'x-api-xts': '1779105168'
+    'use-new-api': 'true'
   }
 };
 
@@ -219,7 +210,7 @@ function randomDelaySeconds(min, max) {
   return lo + Math.random() * (hi - lo);
 }
 
-function commandRequest(config, action, targetValue) {
+function commandRequest(config, action, targetValue, cmd = {}) {
   if (action === 'add_proxy_whitelist') {
     return {
       url: config.proxyWhitelistUrl,
@@ -245,9 +236,11 @@ function commandRequest(config, action, targetValue) {
       body: { members: [{ name: targetValue }], siteIdTo: 9001 }
     };
   }
+  const unlockValue = String(cmd.value || config.value || '').trim();
+  if (!unlockValue) throw new Error('短信解锁 value 未配置');
   return {
     url: config.unlockUrl,
-    body: { value: config.value, name: targetValue }
+    body: { value: unlockValue, name: targetValue }
   };
 }
 
@@ -491,7 +484,7 @@ async function runBackendCommand(config, cmd) {
     if (action === 'unlock_sms' || action === 'clear_login_error') {
       await findExactMember(config, targetValue);
     }
-    const request = commandRequest(config, action, targetValue);
+    const request = commandRequest(config, action, targetValue, cmd);
     const res = await fetch(request.url, {
       method: 'POST',
       mode: 'cors',
