@@ -954,7 +954,7 @@
                                     </div>
                                     <div v-if="currentRule.check_file" class="form-grid">
                                         <input class="input" :value="listToString(currentRule.file_extensions).replace(/\\n/g, ', ')" @input="setList($event, currentRule, 'file_extensions', true)" placeholder="png, jpg">
-                                        <input class="input" :value="listToString(currentRule.filename_keywords).replace(/\\n/g, ', ')" @input="setList($event, currentRule, 'filename_keywords', true)" placeholder="文件名关键词">
+                                        <textarea class="textarea" :value="listToString(currentRule.filename_keywords)" @input="setList($event, currentRule, 'filename_keywords', true)" placeholder="文件名关键词，一行一个"></textarea>
                                     </div>
                                     <textarea v-else class="textarea" v-model="keywordsRaw" placeholder="普通: 代存&#10;正则: r:(代|带)存|入[金款]"></textarea>
                                 </div>
