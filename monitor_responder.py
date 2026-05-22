@@ -333,7 +333,7 @@ def event_text_preview(event, limit=120):
     return text
 
 BACKEND_UNLOCK_ACCOUNT_PATTERN = r"([A-Za-z0-9][A-Za-z0-9._-]{1,63})"
-BACKEND_ORDER_NO_PATTERN = r"\b(\d{12,24})\b"
+BACKEND_ORDER_NO_PATTERN = r"(?<!\d)(\d{12,24})(?!\d)"
 BACKEND_PROXY_IP_PATTERN = r"\b((?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d))\b"
 
 def rule_has_backend_unlock(rule):
