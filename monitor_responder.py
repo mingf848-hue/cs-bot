@@ -931,7 +931,7 @@ def format_bot_notice(tpl, event=None, rule=None, sender_name=""):
         text = text.replace(key, value)
     return text
 
-def _send_bot_message_sync(chat_id, text):
+def _send_bot_message_sync(chat_id, text, reply_markup=None):
     bot_token = os.environ.get("BOT_TOKEN", "").strip()
     if not bot_token:
         raise RuntimeError("BOT_TOKEN 未配置，无法发送 Bot 通知")
@@ -941,6 +941,8 @@ def _send_bot_message_sync(chat_id, text):
         "text": text,
         "disable_web_page_preview": True,
     }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -961,9 +963,12 @@ def _send_bot_message_sync(chat_id, text):
         raise RuntimeError(f"Bot API 发送失败: {str(data)[:200]}")
     return data
 
-async def send_bot_notice(chat_id, text):
+async def send_bot_notice(chat_id, text, delete_button=True):
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, lambda: _send_bot_message_sync(chat_id, text))
+    reply_markup = None
+    if delete_button:
+        reply_markup = {"inline_keyboard": [[{"text": "已读删除", "callback_data": "delete_notice"}]]}
+    return await loop.run_in_executor(None, lambda: _send_bot_message_sync(chat_id, text, reply_markup))
 
 def format_caption(tpl):
     if not tpl: return ""

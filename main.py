@@ -917,6 +917,8 @@ wait_check_all_rate_lock = Lock()
 wait_check_all_last_request_ts = 0.0
 
 BEIJING_TZ = timezone(timedelta(hours=8))
+ZC_BATCH_STATE = {}
+ZC_BATCH_TTL_SECONDS = 6 * 60 * 60
 WAIT_CHECK_SHIFT_WINDOWS = {
     "早班全体": ("12:30", "21:00"),
     "中班全体": ("20:45", "05:00"),
@@ -2773,7 +2775,7 @@ def _bot_get_updates(offset=None, timeout=50):
 
     params = {
         "timeout": timeout,
-        "allowed_updates": json.dumps(["message"]),
+        "allowed_updates": json.dumps(["message", "callback_query"]),
     }
     if offset is not None:
         params["offset"] = offset
@@ -2788,9 +2790,9 @@ def _bot_get_updates(offset=None, timeout=50):
         log_tree(9, f"Bot 命令轮询异常: {e}")
     return None
 
-def _bot_send_reply(chat_id, text, reply_to_message_id=None, message_thread_id=None):
+def _bot_send_reply(chat_id, text, reply_to_message_id=None, message_thread_id=None, reply_markup=None):
     if not BOT_TOKEN:
-        return
+        return None
 
     payload = {
         "chat_id": chat_id,
@@ -2802,14 +2804,19 @@ def _bot_send_reply(chat_id, text, reply_to_message_id=None, message_thread_id=N
         payload["allow_sending_without_reply"] = True
     if message_thread_id:
         payload["message_thread_id"] = message_thread_id
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
 
     try:
         resp = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json=payload, timeout=20)
         data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
         if resp.status_code != 200 or not data.get("ok"):
             log_tree(9, f"Bot 命令回复失败: HTTP {resp.status_code} {str(data)[:200]}")
+            return None
+        return ((data.get("result") or {}).get("message_id"))
     except Exception as e:
         log_tree(9, f"Bot 命令回复异常: {e}")
+        return None
 
 def _bot_delete_message(chat_id, message_id):
     if not BOT_TOKEN or chat_id is None or message_id is None:
@@ -2826,6 +2833,35 @@ def _bot_delete_message(chat_id, message_id):
         log_tree(9, f"Bot 删除账号消息失败: HTTP {resp.status_code} {str(data)[:200]}")
     except Exception as e:
         log_tree(9, f"Bot 删除账号消息异常: {e}")
+    return False
+
+def _bot_answer_callback_query(callback_query_id, text=""):
+    if not BOT_TOKEN or not callback_query_id:
+        return False
+    try:
+        payload = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
+        resp = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery", json=payload, timeout=20)
+        data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+        if resp.status_code == 200 and data.get("ok"):
+            return True
+        log_tree(9, f"Bot 回调确认失败: HTTP {resp.status_code} {str(data)[:200]}")
+    except Exception as e:
+        log_tree(9, f"Bot 回调确认异常: {e}")
+    return False
+
+def _handle_bot_callback_query(callback):
+    data = str(callback.get("data") or "")
+    callback_id = callback.get("id")
+    message = callback.get("message") or {}
+    chat = message.get("chat") or {}
+    chat_id = chat.get("id")
+    message_id = message.get("message_id")
+    if data == "delete_notice":
+        deleted = _bot_delete_message(chat_id, message_id)
+        _bot_answer_callback_query(callback_id, "已删除" if deleted else "删除失败")
+        return True
     return False
 
 def is_bot_command(text, command):
@@ -2851,6 +2887,40 @@ def parse_site_message_request(text):
         members.append(name)
     return members, strategy
 
+def zc_time_window_text(now=None):
+    now = now or datetime.now(BEIJING_TZ)
+    start_hour = (now.hour - 3) % 24
+    end_hour = (now.hour - 1) % 24
+    return f"{start_hour:02d}:00-{end_hour:02d}:59"
+
+def format_zc_summary(counts):
+    jn_count = counts.get("jn", "")
+    ml_count = counts.get("ml", "")
+    return "\n".join([
+        "JN/ML站",
+        zc_time_window_text(),
+        "🎁💰邀友一起狂欢💰🎁",
+        "🎁🎁体育包赔赛事🎁🎁",
+        "🎁💰新人注册五重礼💰🎁",
+        "⏰💰虚拟币存款三重礼💰⏰",
+        "💰EBpay💰",
+        "🌟添加一对一专属经理🌟",
+        f"（JN站 {jn_count}人）（ML站 {ml_count}  人）",
+        "",
+        "EBpay优惠卷发放通知",
+        "（ML站/  人）",
+    ])
+
+def cleanup_zc_state(chat_id):
+    key = str(chat_id)
+    state = ZC_BATCH_STATE.get(key)
+    if not state:
+        return None
+    if time.time() - float(state.get("updated_at", 0)) > ZC_BATCH_TTL_SECONDS:
+        ZC_BATCH_STATE.pop(key, None)
+        return None
+    return state
+
 async def handle_site_message_bot_request(message):
     if not queue_site_inner_message_command or not wait_backend_command_result:
         return "站内信模块未加载，无法执行。"
@@ -2862,6 +2932,32 @@ async def handle_site_message_bot_request(message):
     status = str((result or {}).get("status") or "timeout")
     detail = str((result or {}).get("detail") or "无回执")
     ok = status == "success"
+    chat_id = ((message.get("chat") or {}).get("id"))
+    message_id = message.get("message_id")
+    if strategy in {"6zc", "9zc"} and ok:
+        site_key = "jn" if strategy == "6zc" else "ml"
+        state = cleanup_zc_state(chat_id) or {"counts": {}, "marker_ids": [], "source_ids": [], "updated_at": time.time()}
+        state["counts"][site_key] = len(clean_members)
+        state.setdefault("source_ids", []).append(message_id)
+        state["updated_at"] = time.time()
+        ZC_BATCH_STATE[str(chat_id)] = state
+        if "jn" in state.get("counts", {}) and "ml" in state.get("counts", {}):
+            final_text = format_zc_summary(state["counts"])
+            cleanup_ids = [mid for mid in (state.get("marker_ids", []) + state.get("source_ids", [])) if mid]
+            ZC_BATCH_STATE.pop(str(chat_id), None)
+            return {
+                "text": final_text,
+                "delete_source": False,
+                "reply_to_source": False,
+                "delete_after_send_ids": cleanup_ids,
+            }
+        return {
+            "text": "1",
+            "delete_source": True,
+            "reply_to_source": False,
+            "remember_zc_marker": True,
+            "zc_chat_id": chat_id,
+        }
     type_labels = {
         "sb": "存款温馨提示",
         "9zc": "9站新注册连续6条",
@@ -2903,10 +2999,18 @@ async def bot_command_polling_task():
                 if update_id is not None:
                     offset = update_id + 1
 
+                callback = update.get("callback_query")
+                if callback:
+                    await loop.run_in_executor(None, lambda cb=callback: _handle_bot_callback_query(cb))
+                    continue
+
                 message = update.get("message") or {}
                 text = message.get("text")
                 delete_source = False
                 reply_to_source = True
+                remember_zc_marker = False
+                zc_chat_id = None
+                delete_after_send_ids = []
                 if is_bot_command(text, "start"):
                     reply_text = format_start_command_reply(message)
                 elif is_bot_command(text, "id"):
@@ -2922,6 +3026,9 @@ async def bot_command_polling_task():
                         reply_text = reply_result.get("text") or ""
                         delete_source = bool(reply_result.get("delete_source"))
                         reply_to_source = reply_result.get("reply_to_source") is not False
+                        remember_zc_marker = bool(reply_result.get("remember_zc_marker"))
+                        zc_chat_id = reply_result.get("zc_chat_id")
+                        delete_after_send_ids = list(reply_result.get("delete_after_send_ids") or [])
                     else:
                         reply_text = str(reply_result)
                         delete_source = False
@@ -2932,15 +3039,26 @@ async def bot_command_polling_task():
                 if chat_id is None:
                     continue
 
-                await loop.run_in_executor(
+                sent_message_id = await loop.run_in_executor(
                     None,
                     lambda cid=chat_id, txt=reply_text, mid=(message.get("message_id") if reply_to_source else None), thread=message.get("message_thread_id"): _bot_send_reply(cid, txt, mid, thread)
                 )
+                if remember_zc_marker and sent_message_id:
+                    state = ZC_BATCH_STATE.get(str(zc_chat_id))
+                    if state is not None:
+                        state.setdefault("marker_ids", []).append(sent_message_id)
+                        state["updated_at"] = time.time()
                 if delete_source:
                     await loop.run_in_executor(
                         None,
                         lambda cid=chat_id, mid=message.get("message_id"): _bot_delete_message(cid, mid)
                     )
+                if delete_after_send_ids:
+                    for mid in dict.fromkeys(delete_after_send_ids):
+                        await loop.run_in_executor(
+                            None,
+                            lambda cid=chat_id, delete_mid=mid: _bot_delete_message(cid, delete_mid)
+                        )
         except Exception as e:
             log_tree(9, f"Bot /start /id 命令处理异常: {e}")
             await asyncio.sleep(5)
