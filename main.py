@@ -2876,9 +2876,6 @@ def _bot_edit_message_text(chat_id, message_id, text, reply_markup=None):
         log_tree(9, f"Bot 编辑消息异常: {e}")
     return False
 
-def copy_delete_markup():
-    return {"inline_keyboard": [[{"text": "复制后删除", "callback_data": "delete_notice"}]]}
-
 def _bot_answer_callback_query(callback_query_id, text=""):
     if not BOT_TOKEN or not callback_query_id:
         return False
@@ -3021,6 +3018,13 @@ def cleanup_zc_state(chat_id):
         return None
     return state
 
+async def delete_bot_message_later(chat_id, message_id, delay_seconds=30):
+    if chat_id is None or message_id is None:
+        return
+    await asyncio.sleep(max(0, float(delay_seconds or 30)))
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, lambda: _bot_delete_message(chat_id, message_id))
+
 async def wait_backend_result_with_progress(cmd_id, chat_id, strategy, member_count):
     loop = asyncio.get_event_loop()
     progress_message_id = await loop.run_in_executor(
@@ -3079,7 +3083,7 @@ async def handle_site_message_bot_request(message):
             "skip_send": True,
             "sent_message_id": progress_message_id,
             "edit_message_id": progress_message_id,
-            "copy_delete_button": True,
+            "auto_delete_after": 30,
         }
     if strategy in {"6zc", "9zc"} and ok:
         site_key = "jn" if strategy == "6zc" else "ml"
@@ -3099,7 +3103,7 @@ async def handle_site_message_bot_request(message):
                 "skip_send": True,
                 "sent_message_id": progress_message_id,
                 "edit_message_id": progress_message_id,
-                "copy_delete_button": True,
+                "auto_delete_after": 30,
                 "delete_after_send_ids": cleanup_ids,
             }
         return {
@@ -3109,7 +3113,7 @@ async def handle_site_message_bot_request(message):
             "skip_send": True,
             "sent_message_id": progress_message_id,
             "edit_message_id": progress_message_id,
-            "copy_delete_button": True,
+            "auto_delete_after": 30,
             "remember_zc_marker": True,
             "zc_chat_id": chat_id,
         }
@@ -3127,7 +3131,7 @@ async def handle_site_message_bot_request(message):
         "skip_send": True,
         "sent_message_id": progress_message_id,
         "edit_message_id": progress_message_id,
-        "copy_delete_button": True,
+        "auto_delete_after": 30,
     }
 
 async def bot_command_polling_task():
@@ -3167,7 +3171,7 @@ async def bot_command_polling_task():
                 delete_after_send_ids = []
                 skip_send = False
                 edit_message_id = None
-                result_reply_markup = None
+                auto_delete_after = None
                 if is_bot_command(text, "start"):
                     reply_text = format_start_command_reply(message)
                 elif is_bot_command(text, "id"):
@@ -3189,8 +3193,7 @@ async def bot_command_polling_task():
                         skip_send = bool(reply_result.get("skip_send"))
                         edit_message_id = reply_result.get("edit_message_id")
                         sent_message_id = reply_result.get("sent_message_id")
-                        if reply_result.get("copy_delete_button"):
-                            result_reply_markup = copy_delete_markup()
+                        auto_delete_after = reply_result.get("auto_delete_after")
                     else:
                         reply_text = str(reply_result)
                         delete_source = False
@@ -3204,13 +3207,15 @@ async def bot_command_polling_task():
                 if skip_send and edit_message_id:
                     await loop.run_in_executor(
                         None,
-                        lambda cid=chat_id, mid=edit_message_id, txt=reply_text, markup=result_reply_markup: _bot_edit_message_text(cid, mid, txt, markup)
+                        lambda cid=chat_id, mid=edit_message_id, txt=reply_text: _bot_edit_message_text(cid, mid, txt)
                     )
                 else:
                     sent_message_id = await loop.run_in_executor(
                         None,
-                        lambda cid=chat_id, txt=reply_text, mid=(message.get("message_id") if reply_to_source else None), thread=message.get("message_thread_id"), markup=result_reply_markup: _bot_send_reply(cid, txt, mid, thread, markup)
+                        lambda cid=chat_id, txt=reply_text, mid=(message.get("message_id") if reply_to_source else None), thread=message.get("message_thread_id"): _bot_send_reply(cid, txt, mid, thread)
                     )
+                if auto_delete_after and sent_message_id:
+                    asyncio.create_task(delete_bot_message_later(chat_id, sent_message_id, auto_delete_after))
                 if remember_zc_marker and sent_message_id:
                     state = ZC_BATCH_STATE.get(str(zc_chat_id))
                     if state is not None:
