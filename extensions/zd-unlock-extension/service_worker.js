@@ -269,7 +269,7 @@ async function appendRecorderRecord(record) {
   return { ok: true, count: records.length };
 }
 
-async function ack(config, cmd, status, detail = '') {
+async function ack(config, cmd, status, detail = '', extra = {}) {
   if (!cmd || !cmd.id) return;
   try {
     await fetch(`${config.botBase}/api/cmd/ack?secret=${encodeURIComponent(config.cmdSecret)}`, {
@@ -279,7 +279,8 @@ async function ack(config, cmd, status, detail = '') {
         id: cmd.id,
         status,
         member_name: cmd.member_name,
-        detail: String(detail || '').slice(0, 500)
+        detail: String(detail || '').slice(0, 500),
+        ...extra
       })
     });
   } catch (err) {
@@ -544,6 +545,50 @@ function htmlText(value) {
 function firstOrderDetail(order = {}) {
   const details = Array.isArray(order.orderDetailList) ? order.orderDetailList : [];
   return details[0] || {};
+}
+
+function parseBeijingTime(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const rawText = String(value).trim();
+  if (/^\d+$/.test(rawText)) {
+    const raw = Number(rawText);
+    if (!Number.isFinite(raw) || raw <= 0) return null;
+    return raw > 100000000000 ? raw : raw * 1000;
+  }
+  const match = rawText.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:\s+|T)(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?/);
+  if (!match) return null;
+  const [, y, m, d, h, min, s] = match;
+  const utcMs = Date.UTC(
+    Number(y),
+    Number(m) - 1,
+    Number(d),
+    Number(h) - 8,
+    Number(min),
+    Number(s || 0)
+  );
+  return Number.isFinite(utcMs) ? utcMs : null;
+}
+
+function orderBeginTimeMillis(order = {}, detail = {}) {
+  const candidates = [
+    detail.beginTimeStr,
+    detail.beginTime,
+    detail.matchBeginTime,
+    detail.begin_time,
+    detail.startTime,
+    detail.start_time,
+    order.beginTimeStr,
+    order.beginTime,
+    order.matchBeginTime,
+    order.begin_time,
+    order.startTime,
+    order.start_time
+  ];
+  for (const item of candidates) {
+    const ms = parseBeijingTime(item);
+    if (ms) return ms;
+  }
+  return null;
 }
 
 function orderStatusLabel(status) {
@@ -873,6 +918,15 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
   const detail = firstOrderDetail(order);
   const matchId = String(detail.matchId || order.standardMatchId || detail.standardMatchId || '').trim();
   const matchManageId = String(detail.matchManageId || '').trim();
+  const beginMs = orderBeginTimeMillis(order, detail);
+  if (beginMs && Date.now() < beginMs) {
+    const replyText = String(cmd.not_started_reply || '当前注单暂未开赛，请耐心等待。');
+    const beginText = String(detail.beginTimeStr || detail.beginTime || order.beginTimeStr || order.beginTime || '');
+    const msg = `催结算跳过：${orderNo} 未到开赛时间${beginText ? ` ${beginText}` : ''}`;
+    await setStatus({ state: 'success', message: msg, detail: ticket.text.slice(0, 300) });
+    await ack(config, cmd, 'reply_origin', msg, { reply_text: replyText, stop_actions: true });
+    return;
+  }
   const statusLabel = orderStatusLabel(order.orderStatus);
   if (Number(order.orderStatus) !== 0) {
     const msg = `催结算跳过：${orderNo} ${statusLabel}`;

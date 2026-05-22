@@ -1356,7 +1356,7 @@ def get_backend_command_progress(cmd_id):
     return dict(backend_command_progress.get(str(cmd_id or ""), {}) or {})
 
 def backend_result_ok(result):
-    return str((result or {}).get("status") or "") == "success"
+    return str((result or {}).get("status") or "") in {"success", "reply_origin"}
 
 async def notify_backend_failure(step, rule, event, target_value, action, result):
     notify_target = parse_peer_target((step or {}).get("fail_notify_to"))
@@ -1378,7 +1378,7 @@ async def notify_backend_failure(step, rule, event, target_value, action, result
     await send_bot_notice(notify_target, text)
     return True
 
-async def execute_backend_unlock_step(step, rule, event, source_text):
+async def execute_backend_unlock_step(step, rule, event, source_text, target_client=None):
     backend_action = normalize_backend_action((step or {}).get("backend_action", "unlock_sms"))
     target_value = extract_backend_target(source_text or "", step)
     if not target_value:
@@ -1393,8 +1393,11 @@ async def execute_backend_unlock_step(step, rule, event, source_text):
         notified = await notify_backend_failure(step, rule, event, target_value, backend_action, result)
         suffix = "，已通知人工核查" if notified else "，未配置失败通知对象"
         raise RuntimeError(f"后台动作失败：{command_action_label(backend_action)} {target_value} status={result.get('status')}{suffix}")
+    reply_text = str((result or {}).get("reply_text") or "").strip()
+    if reply_text and target_client:
+        await target_client.send_message(event.chat_id, reply_text, reply_to=event.id)
     logger.info(f"✅ [BackendUnlock] 规则 '{rule.get('name')}' 后台动作成功: {backend_action} {target_value} | id={cmd_id}")
-    return cmd_id
+    return {"id": cmd_id, "stop_actions": bool((result or {}).get("stop_actions"))}
 
 def command_action_label(action):
     if action == "add_proxy_whitelist":
@@ -2886,12 +2889,16 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         status = str(data.get("status") or "")
         member_name = str(data.get("member_name") or "")
         detail = str(data.get("detail") or "")
+        reply_text = str(data.get("reply_text") or "")
+        stop_actions = bool(data.get("stop_actions"))
         if cmd_id:
             pending_command_leases.pop(cmd_id, None)
             backend_command_results[cmd_id] = {
                 "status": status,
                 "member_name": member_name,
                 "detail": detail,
+                "reply_text": reply_text,
+                "stop_actions": stop_actions,
                 "acked_at": now_bj().isoformat(),
             }
             backend_command_progress[cmd_id] = {
@@ -3293,8 +3300,10 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                         logger.info(f"🔔 [Notify] 规则 '{rule.get('name')}' 已通过 Telegram Bot 通知: {notify_target}")
 
                 elif stype == "backend_unlock":
-                    await execute_backend_unlock_step(step, rule, source_event, source_text)
+                    backend_result = await execute_backend_unlock_step(step, rule, source_event, source_text, target_client=target_client)
                     backend_actions += 1
+                    if backend_result and backend_result.get("stop_actions"):
+                        break
 
                 else:
                     content = step.get("text", "")
@@ -3650,8 +3659,10 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                     logger.info(f"🔔 [Notify] 规则 '{rule.get('name')}' 已通过 Telegram Bot 通知: {notify_target}")
 
                             elif stype == "backend_unlock":
-                                await execute_backend_unlock_step(step, rule, event, event.text or "")
+                                backend_result = await execute_backend_unlock_step(step, rule, event, event.text or "", target_client=target_client)
                                 backend_actions += 1
+                                if backend_result and backend_result.get("stop_actions"):
+                                    break
 
                             else: # text
                                 content = step.get("text", "")
