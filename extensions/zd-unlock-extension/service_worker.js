@@ -111,6 +111,23 @@ function authMatches(auth, targetHost, targetSite, targetHosts = [targetHost]) {
     || String(headers['x-api-site'] || '') === targetSite;
 }
 
+function isAllowedMerchantEndpoint(key, url) {
+  const allowed = new Set([
+    'merchantStatisticsUrl',
+    'merchantTicketListUrl',
+    'merchantNoticeUrl',
+    'merchantSettlementListUrl',
+    'merchantSettlementStatisticsUrl'
+  ]);
+  if (!allowed.has(String(key || ''))) return false;
+  try {
+    const parsed = new URL(String(url || ''));
+    return parsed.protocol === 'https:' && parsed.hostname.endsWith('dbsportxxxwo8.com');
+  } catch {
+    return false;
+  }
+}
+
 async function getConfig() {
   const stored = await chrome.storage.local.get(['config', 'pageAuth', 'pageAuthByHost']);
   return {
@@ -432,13 +449,18 @@ function merchantHeaders(config, cmd = {}) {
 }
 
 async function postJson(url, headers, body) {
-  const res = await fetch(url, {
-    method: 'POST',
-    mode: 'cors',
-    credentials: 'include',
-    headers,
-    body: JSON.stringify(body)
-  });
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      mode: 'cors',
+      credentials: 'include',
+      headers,
+      body: JSON.stringify(body)
+    });
+  } catch (err) {
+    throw new Error(`请求失败 ${url}: ${err && err.message ? err.message : String(err || 'unknown')}。请确认扩展已重新加载，并刷新对应后台页面。`);
+  }
   const text = await res.text();
   return { res, text, data: parseJsonText(text) };
 }
@@ -448,16 +470,21 @@ async function postForm(url, headers, body) {
   for (const [key, value] of Object.entries(body || {})) {
     if (value !== undefined && value !== null) params.set(key, String(value));
   }
-  const res = await fetch(url, {
-    method: 'POST',
-    mode: 'cors',
-    credentials: 'include',
-    headers: {
-      ...headers,
-      'content-type': 'application/x-www-form-urlencoded; charset=UTF-8'
-    },
-    body: params.toString()
-  });
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      mode: 'cors',
+      credentials: 'include',
+      headers: {
+        ...headers,
+        'content-type': 'application/x-www-form-urlencoded; charset=UTF-8'
+      },
+      body: params.toString()
+    });
+  } catch (err) {
+    throw new Error(`请求失败 ${url}: ${err && err.message ? err.message : String(err || 'unknown')}。请确认扩展已重新加载，并刷新对应后台页面。`);
+  }
   const text = await res.text();
   return { res, text, data: parseJsonText(text) };
 }
@@ -1100,6 +1127,25 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         const config = {
           ...(stored.config || DEFAULT_CONFIG),
           value
+        };
+        return chrome.storage.local.set({ config });
+      })
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+  if (message && message.type === 'merchantEndpoint') {
+    const key = String(message.key || '');
+    const url = String(message.url || '').trim();
+    if (!isAllowedMerchantEndpoint(key, url)) {
+      sendResponse({ ok: false, error: 'invalid merchant endpoint' });
+      return true;
+    }
+    chrome.storage.local.get(['config'])
+      .then((stored) => {
+        const config = {
+          ...(stored.config || DEFAULT_CONFIG),
+          [key]: url
         };
         return chrome.storage.local.set({ config });
       })

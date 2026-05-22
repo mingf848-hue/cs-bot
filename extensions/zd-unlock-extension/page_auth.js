@@ -186,6 +186,26 @@
         if (!value) return;
         window.postMessage({ source: 'csbot-zd-page', type: 'unlockValue', value }, '*');
       }
+      function postMerchantEndpoint(url) {
+        let parsed = null;
+        try { parsed = new URL(String(url || ''), location.href); } catch (_) { return; }
+        if (!parsed.hostname.endsWith('dbsportxxxwo8.com')) return;
+        const endpointMap = [
+          ['/admin/userReport/getStatistics', 'merchantStatisticsUrl'],
+          ['/admin/userReport/queryTicketList', 'merchantTicketListUrl'],
+          ['/admin/noticeNew/notice', 'merchantNoticeUrl'],
+          ['/admin/settlement/queryNoSettleTicketList', 'merchantSettlementListUrl'],
+          ['/admin/settlement/getStatistics', 'merchantSettlementStatisticsUrl']
+        ];
+        const matched = endpointMap.find(([path]) => parsed.pathname.endsWith(path));
+        if (!matched) return;
+        window.postMessage({
+          source: 'csbot-zd-page',
+          type: 'merchantEndpoint',
+          key: matched[1],
+          url: parsed.origin + parsed.pathname
+        }, '*');
+      }
       function postHeaders(rawHeaders) {
         const normalized = normalizeHeaders(rawHeaders);
         const captured = {};
@@ -222,6 +242,7 @@
           const started = Date.now();
           try { postHeaders(info.headers); } catch (_) {}
           try { postUnlockValue(info.url, info.body); } catch (_) {}
+          try { postMerchantEndpoint(info.url); } catch (_) {}
           return originalFetch.apply(this, arguments).then((res) => {
             if (recorderEnabled) {
               try {
@@ -323,6 +344,7 @@
           try { this.addEventListener('error', () => finish('xhr_error'), { once: true }); } catch (_) {}
           try { postHeaders(this.__csbotHeaders); } catch (_) {}
           try { postUnlockValue(this.__csbotUrl, requestBody); } catch (_) {}
+          try { postMerchantEndpoint(this.__csbotUrl); } catch (_) {}
           return originalSend.apply(this, arguments);
         };
       }
@@ -339,6 +361,9 @@
     if (data.type === 'apiHeaders') captureHeaders(data.headers);
     if (data.type === 'unlockValue') {
       chrome.runtime.sendMessage({ type: 'unlockValue', value: data.value }).catch(() => {});
+    }
+    if (data.type === 'merchantEndpoint') {
+      chrome.runtime.sendMessage({ type: 'merchantEndpoint', key: data.key, url: data.url }).catch(() => {});
     }
     if (data.type === 'installed') sendAuth();
     if (data.type === 'apiRecord') {

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "CS Bot Unlock",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "description": "Poll CS Bot commands, call backend endpoints, and record backend API flows.",
   "permissions": ["alarms", "storage"],
   "host_permissions": [
@@ -9,20 +9,21 @@
     "https://9sitebg.mvj4e7.com/*",
     "https://6sitebg.oj61i4.com/*",
     "https://merchant-own-backstage.dbsportxxxwo8.com/*",
-    "https://api-merchant-backstage.dbsportxxxwo8.com/*"
+    "https://api-merchant-backstage.dbsportxxxwo8.com/*",
+    "https://*.dbsportxxxwo8.com/*"
   ],
   "background": {
     "service_worker": "service_worker.js"
   },
   "content_scripts": [
     {
-      "matches": ["https://9sitebg.mvj4e7.com/*", "https://6sitebg.oj61i4.com/*", "https://merchant-own-backstage.dbsportxxxwo8.com/*"],
+      "matches": ["https://9sitebg.mvj4e7.com/*", "https://6sitebg.oj61i4.com/*", "https://merchant-own-backstage.dbsportxxxwo8.com/*", "https://*.dbsportxxxwo8.com/*"],
       "js": ["page_recorder_main.js"],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
-      "matches": ["https://9sitebg.mvj4e7.com/*", "https://6sitebg.oj61i4.com/*", "https://merchant-own-backstage.dbsportxxxwo8.com/*"],
+      "matches": ["https://9sitebg.mvj4e7.com/*", "https://6sitebg.oj61i4.com/*", "https://merchant-own-backstage.dbsportxxxwo8.com/*", "https://*.dbsportxxxwo8.com/*"],
       "js": ["page_auth.js"],
       "run_at": "document_start"
     }
