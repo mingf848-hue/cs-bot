@@ -12,7 +12,12 @@
     'x-api-version',
     'x-api-xsn',
     'x-api-xts',
-    'use-new-api'
+    'use-new-api',
+    'authorization',
+    'language',
+    'merchantname',
+    'request-id',
+    'user-id'
   ];
   let recorderEnabled = false;
   let recorderStartedAt = '';

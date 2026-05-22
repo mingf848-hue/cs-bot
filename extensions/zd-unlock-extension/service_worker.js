@@ -9,6 +9,7 @@ const DEFAULT_CONFIG = {
   siteInnerMsgAddUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/operation/cmCfg/siteInnerMsg/add',
   migrationRecordsUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/pilgrimage/recordsV2',
   migrateMilanUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/pilgrimage/migration',
+  merchantStatisticsUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/userReport/getStatistics',
   value: '',
   headers: {
     accept: '*/*',
@@ -25,17 +26,28 @@ const RECORDER_RESPONSE_LIMIT = 20000;
 const SITE_PROFILES = {
   '9001': {
     host: '9sitebg.mvj4e7.com',
+    authHosts: ['9sitebg.mvj4e7.com'],
     label: '9站',
+    requiredAuthHeaders: ['x-api-token', 'x-api-user'],
     siteInnerMsgTemplateUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/operation/cmCfg/template/info/list',
     siteInnerMsgAddUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/operation/cmCfg/siteInnerMsg/add',
     siteInnerMsgClients: '0,1,2,3,8,9'
   },
   '6001': {
     host: '6sitebg.oj61i4.com',
+    authHosts: ['6sitebg.oj61i4.com'],
     label: '6站',
+    requiredAuthHeaders: ['x-api-token', 'x-api-user'],
     siteInnerMsgTemplateUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/operation/cmCfg/template/info/list',
     siteInnerMsgAddUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/operation/cmCfg/siteInnerMsg/add',
     siteInnerMsgClients: '0,1,2,3,8'
+  },
+  'merchant': {
+    host: 'api-merchant-backstage.dbsportxxxwo8.com',
+    authHosts: ['merchant-own-backstage.dbsportxxxwo8.com', 'api-merchant-backstage.dbsportxxxwo8.com'],
+    label: '场馆后台',
+    requiredAuthHeaders: ['authorization', 'user-id'],
+    merchantStatisticsUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/userReport/getStatistics'
   }
 };
 
@@ -53,6 +65,18 @@ function authHost(auth = {}) {
 
 function siteFromCommand(action, cmd = {}) {
   const hint = String(cmd.backend_site || cmd.site || cmd.site_id || cmd.siteId || '').trim().toLowerCase();
+  if (
+    action === 'merchant_order_statistics'
+    || action === 'venue_order_statistics'
+    || action === 'merchant_order_query'
+    || action === 'venue_order_query'
+    || hint === '3'
+    || hint === 'merchant'
+    || hint === 'venue'
+    || hint === 'stadium'
+    || hint === 'changguan'
+    || hint === '场馆'
+  ) return 'merchant';
   if (action === 'migrate_milan' || hint === '6' || hint === '6001' || hint === '6zc') return '6001';
   return '9001';
 }
@@ -69,19 +93,19 @@ function actionSite(action, cmd = {}) {
   return siteFromCommand(action, cmd);
 }
 
-function authMatches(auth, targetHost, targetSite) {
+function authMatches(auth, targetHost, targetSite, targetHosts = [targetHost]) {
   const headers = (auth && auth.headers) || {};
   const host = authHost(auth);
   const href = String((auth && auth.href) || '');
-  return host === targetHost
-    || href.includes(targetHost)
+  return targetHosts.includes(host)
+    || targetHosts.some((item) => href.includes(item))
     || String(headers['x-api-site'] || '') === targetSite;
 }
 
 async function getConfig() {
-  const stored = await chrome.storage.local.get(['config', 'enabled', 'pageAuth', 'pageAuthByHost']);
+  const stored = await chrome.storage.local.get(['config', 'pageAuth', 'pageAuthByHost']);
   return {
-    enabled: stored.enabled !== false,
+    enabled: true,
     config: {
       ...DEFAULT_CONFIG,
       ...(stored.config || {}),
@@ -99,20 +123,24 @@ function configForAction(config, action, cmd = {}) {
   const targetSite = actionSite(action, cmd);
   const profile = profileForSite(targetSite);
   const targetHost = profile.host;
+  const targetHosts = profile.authHosts || [targetHost];
+  const requiredAuthHeaders = profile.requiredAuthHeaders || ['x-api-token', 'x-api-user'];
   const byHost = config.pageAuthByHost || {};
   const currentAuth = config.pageAuth || null;
   const candidates = [
     byHost[targetHost],
+    ...targetHosts.map((host) => byHost[host]),
     byHost[targetSite],
     currentAuth,
     ...Object.values(byHost)
   ].filter(Boolean);
   const matchedAuth = candidates.find((auth) => {
     const headers = (auth && auth.headers) || {};
-    return authMatches(auth, targetHost, targetSite) && headers['x-api-token'] && headers['x-api-user'];
+    return authMatches(auth, targetHost, targetSite, targetHosts)
+      && requiredAuthHeaders.every((key) => headers[key]);
   });
   const authHeaders = (matchedAuth && matchedAuth.headers) || {};
-  if (!matchedAuth || !authHeaders['x-api-token'] || !authHeaders['x-api-user']) {
+  if (!matchedAuth || !requiredAuthHeaders.every((key) => authHeaders[key])) {
     throw new Error(`${profile.label}未登录`);
   }
   return {
@@ -255,7 +283,50 @@ function commandLabel(action) {
   if (action === 'clear_login_error') return '登录限制解锁';
   if (action === 'migrate_milan') return '迁移米兰';
   if (action === 'send_site_inner_msg') return '发送站内信';
+  if (action === 'merchant_order_statistics') return '场馆注单查询';
   return '短信/验证码解锁';
+}
+
+function hasMerchantCommandHint(cmd = {}) {
+  const hint = String(cmd.backend_site || cmd.site || cmd.site_id || cmd.siteId || '').trim().toLowerCase();
+  return !!(cmd.orderNo || cmd.order_no)
+    || ['3', 'merchant', 'venue', 'stadium', 'changguan', '场馆'].includes(hint);
+}
+
+function normalizeCommandAction(action, cmd = {}) {
+  const raw = String(action || 'unlock_sms').trim();
+  const aliases = {
+    venue_order_statistics: 'merchant_order_statistics',
+    venue_order_query: 'merchant_order_statistics',
+    merchant_order_query: 'merchant_order_statistics',
+    query_venue_order: 'merchant_order_statistics',
+    query_merchant_order: 'merchant_order_statistics'
+  };
+  if (hasMerchantCommandHint(cmd) && !['clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg'].includes(raw)) {
+    return 'merchant_order_statistics';
+  }
+  const normalized = aliases[raw] || raw;
+  return ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg', 'merchant_order_statistics'].includes(normalized)
+    ? normalized
+    : 'unlock_sms';
+}
+
+function isSupportedCommandAction(action, cmd = {}) {
+  const raw = String(action || 'unlock_sms').trim();
+  return hasMerchantCommandHint(cmd) || [
+    '',
+    'unlock_sms',
+    'clear_login_error',
+    'add_proxy_whitelist',
+    'migrate_milan',
+    'send_site_inner_msg',
+    'merchant_order_statistics',
+    'venue_order_statistics',
+    'venue_order_query',
+    'merchant_order_query',
+    'query_venue_order',
+    'query_merchant_order'
+  ].includes(raw);
 }
 
 function sleep(ms) {
@@ -311,6 +382,34 @@ function parseJsonText(text) {
   } catch {
     return {};
   }
+}
+
+function pad2(value) {
+  return String(value).padStart(2, '0');
+}
+
+function formatDateTime(date) {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
+}
+
+function merchantDateRange(cmd = {}) {
+  const end = new Date();
+  const start = new Date(end.getTime() - (90 * 24 * 60 * 60 * 1000));
+  return {
+    startTime: String(cmd.startTime || cmd.start_time || formatDateTime(start)),
+    endTime: String(cmd.endTime || cmd.end_time || formatDateTime(end))
+  };
+}
+
+function merchantHeaders(config, cmd = {}) {
+  const stamp = Date.now();
+  return {
+    ...config.headers,
+    accept: 'application/json, text/plain, */*',
+    'content-type': 'application/json',
+    language: String(cmd.language || config.headers.language || 'zs'),
+    'request-id': String(cmd.request_id || cmd.requestId || `${Math.random().toString(16).slice(2)}-${stamp}`)
+  };
 }
 
 async function postJson(url, headers, body) {
@@ -567,10 +666,44 @@ async function loadSiteInnerMessageTemplate(config, cmd) {
   };
 }
 
+async function runMerchantOrderStatisticsCommand(config, cmd, targetValue) {
+  if (!config.merchantStatisticsUrl) throw new Error('场馆注单查询接口未配置');
+  const { startTime, endTime } = merchantDateRange(cmd);
+  const stamp = Date.now();
+  const url = `${config.merchantStatisticsUrl}?rnd_str_st=${stamp}`;
+  const body = {
+    filter: String(cmd.filter || '1'),
+    orderNo: targetValue,
+    databaseSwitch: Number(cmd.databaseSwitch ?? cmd.database_switch ?? 1),
+    userIdList: Array.isArray(cmd.userIdList) ? cmd.userIdList : [],
+    startTime,
+    endTime,
+    pageNum: Number(cmd.pageNum || cmd.page_num || 1),
+    fromAppointment: Number(cmd.fromAppointment ?? cmd.from_appointment ?? 0),
+    pageSize: Number(cmd.pageSize || cmd.page_size || 20),
+    accountTag: Number(cmd.accountTag ?? cmd.account_tag ?? 0)
+  };
+
+  await setStatus({ state: 'running', message: `查询场馆注单 ${targetValue}` });
+  const query = await postJson(url, merchantHeaders(config, cmd), body);
+  const ok = query.res.ok;
+  const detail = ok
+    ? `场馆注单查询成功：${targetValue}`
+    : `场馆注单查询失败：${targetValue} HTTP ${query.res.status}`;
+  await setStatus({
+    state: ok ? 'success' : 'error',
+    message: detail,
+    detail: query.text.slice(0, 300)
+  });
+  await ack(config, cmd, ok ? 'success' : `http_${query.res.status}`, query.text.slice(0, 500));
+}
+
 async function runBackendCommand(config, cmd) {
-  const action = ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg'].includes(cmd.action) ? cmd.action : 'unlock_sms';
-  const rawValue = cmd.target_value || cmd.member_name || '';
-  const targetValue = action === 'add_proxy_whitelist'
+  const action = normalizeCommandAction(cmd.action, cmd);
+  const rawValue = action === 'merchant_order_statistics'
+    ? (cmd.orderNo || cmd.order_no || cmd.target_value || cmd.member_name || '')
+    : (cmd.target_value || cmd.member_name || '');
+  const targetValue = action === 'add_proxy_whitelist' || action === 'merchant_order_statistics'
     ? String(rawValue).trim()
     : String(rawValue).trim().toLowerCase();
   if (!targetValue) return;
@@ -584,6 +717,10 @@ async function runBackendCommand(config, cmd) {
     }
     if (action === 'send_site_inner_msg') {
       await runSiteInnerMessageCommand(config, cmd);
+      return;
+    }
+    if (action === 'merchant_order_statistics') {
+      await runMerchantOrderStatisticsCommand(config, cmd, targetValue);
       return;
     }
     if (action === 'unlock_sms' || action === 'clear_login_error') {
@@ -618,18 +755,14 @@ async function pollOnce() {
   if (polling) return;
   polling = true;
   try {
-    const { enabled, config } = await getConfig();
-    if (!enabled) {
-      await setStatus({ state: 'paused', message: '扩展已暂停' });
-      return;
-    }
+    const { config } = await getConfig();
     await setStatus({ state: 'polling', message: '正在轮询命令' });
     const res = await fetch(`${config.botBase}/api/cmd/poll?wait=25&secret=${encodeURIComponent(config.cmdSecret)}`, {
       cache: 'no-store'
     });
     const data = await res.json();
-    if (data && data.ok && data.cmd && ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg'].includes(data.cmd.action)) {
-      await setStatus({ state: 'received', message: `收到命令 ${data.cmd.target_value || data.cmd.member_name || ''}` });
+    if (data && data.ok && data.cmd && isSupportedCommandAction(data.cmd.action, data.cmd)) {
+      await setStatus({ state: 'received', message: `收到命令 ${data.cmd.orderNo || data.cmd.order_no || data.cmd.target_value || data.cmd.member_name || ''}` });
       await runBackendCommand(config, data.cmd);
     } else {
       await setStatus({ state: 'idle', message: '暂无命令' });
@@ -668,7 +801,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
   if (message && message.type === 'saveConfig') {
-    chrome.storage.local.set({ config: message.config, enabled: message.enabled !== false })
+    chrome.storage.local.set({ config: message.config, enabled: true })
       .then(() => {
         chrome.alarms.create('poll', { periodInMinutes: 0.5 });
         pollOnce();
@@ -678,14 +811,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
   if (message && message.type === 'setEnabled') {
-    chrome.storage.local.set({ enabled: message.enabled !== false })
+    chrome.storage.local.set({ enabled: true })
       .then(() => {
         chrome.alarms.create('poll', { periodInMinutes: 0.5 });
-        if (message.enabled !== false) {
-          pollOnce();
-        } else {
-          setStatus({ state: 'paused', message: '扩展已暂停' });
-        }
+        pollOnce();
         sendResponse({ ok: true });
       })
       .catch((err) => sendResponse({ ok: false, error: err.message }));
@@ -693,7 +822,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
   if (message && message.type === 'pageAuth') {
     const host = authHost(message.auth || {});
-    const site = String((((message.auth || {}).headers || {})['x-api-site']) || '');
+    const headers = ((message.auth || {}).headers || {});
+    const site = String(headers['x-api-site'] || (headers.authorization && headers['user-id'] ? 'merchant' : '') || '');
     chrome.storage.local.get(['pageAuthByHost'])
       .then((stored) => {
         const pageAuthByHost = stored.pageAuthByHost || {};

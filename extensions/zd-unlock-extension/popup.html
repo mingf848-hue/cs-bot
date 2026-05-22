@@ -20,7 +20,7 @@
     .switch-label { font-weight: 800; }
     .pill { display: inline-flex; align-items: center; gap: 6px; min-height: 22px; border-radius: 999px; padding: 0 8px; background: #f1f5f9; color: #475569; font-size: 12px; font-weight: 800; }
     .pill.on { background: #dcfce7; color: #166534; }
-    .auth-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+    .auth-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 8px; }
     .site-light { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; border: 1px solid #e5e7eb; border-radius: 7px; padding: 0 9px; color: #475569; background: #f8fafc; font-size: 12px; font-weight: 800; }
     .site-light .dot { width: 8px; height: 8px; border-radius: 999px; background: #ef4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, .12); }
     .site-light.on { border-color: #bbf7d0; color: #166534; background: #f0fdf4; }
@@ -34,16 +34,10 @@
     <div class="auth-grid">
       <div class="site-light" id="auth9"><span>1</span><span class="dot"></span></div>
       <div class="site-light" id="auth6"><span>2</span><span class="dot"></span></div>
+      <div class="site-light" id="authMerchant"><span>3</span><span class="dot"></span></div>
     </div>
     <div class="muted" id="detail"></div>
   </div>
-  <div class="card">
-    <label class="row">
-      <span class="switch-label">启用轮询</span>
-      <input class="toggle" type="checkbox" id="enabled">
-    </label>
-  </div>
-  <button id="poll">立即轮询</button>
   <div class="card" style="margin-top:10px;">
     <div class="row">
       <span class="switch-label">接口录制器</span>

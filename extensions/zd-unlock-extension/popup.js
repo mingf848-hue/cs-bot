@@ -1,9 +1,8 @@
-const enabled = document.getElementById('enabled');
 const status = document.getElementById('status');
 const detail = document.getElementById('detail');
 const auth9 = document.getElementById('auth9');
 const auth6 = document.getElementById('auth6');
-const poll = document.getElementById('poll');
+const authMerchant = document.getElementById('authMerchant');
 const recStart = document.getElementById('recStart');
 const recStop = document.getElementById('recStop');
 const recExport = document.getElementById('recExport');
@@ -19,24 +18,25 @@ function authHost(auth = {}) {
   }
 }
 
-function siteAuth(pageAuth = null, pageAuthByHost = {}, host, site) {
+function siteAuth(pageAuth = null, pageAuthByHost = {}, hosts, site, requiredHeaders = ['x-api-token', 'x-api-user']) {
+  const hostList = Array.isArray(hosts) ? hosts : [hosts];
   const matches = (auth) => {
     const headers = (auth && auth.headers) || {};
     const href = String((auth && auth.href) || '');
-    return authHost(auth) === host || href.includes(host) || String(headers['x-api-site'] || '') === site;
+    return hostList.includes(authHost(auth)) || hostList.some((host) => href.includes(host)) || String(headers['x-api-site'] || '') === site;
   };
   const candidates = [
-    pageAuthByHost[host],
+    ...hostList.map((host) => pageAuthByHost[host]),
     pageAuthByHost[site],
     pageAuth,
     ...Object.values(pageAuthByHost || {})
   ].filter(Boolean);
   const auth = candidates.find((item) => {
     const headers = (item && item.headers) || {};
-    return matches(item) && (headers['x-api-token'] || headers['x-api-user']);
+    return matches(item) && requiredHeaders.every((key) => headers[key]);
   });
   const headers = (auth && auth.headers) || {};
-  return !!(auth && auth.capturedAt && (headers['x-api-token'] || headers['x-api-user']));
+  return !!(auth && auth.capturedAt && requiredHeaders.every((key) => headers[key]));
 }
 
 function renderSiteLight(el, on) {
@@ -53,29 +53,20 @@ function renderStatus(s = {}, pageAuth = null, pageAuthByHost = {}) {
   detail.textContent = lines.join('\n');
   renderSiteLight(auth9, siteAuth(pageAuth, pageAuthByHost, '9sitebg.mvj4e7.com', '9001'));
   renderSiteLight(auth6, siteAuth(pageAuth, pageAuthByHost, '6sitebg.oj61i4.com', '6001'));
+  renderSiteLight(authMerchant, siteAuth(
+    pageAuth,
+    pageAuthByHost,
+    ['merchant-own-backstage.dbsportxxxwo8.com', 'api-merchant-backstage.dbsportxxxwo8.com'],
+    'merchant',
+    ['authorization', 'user-id']
+  ));
 }
 
 async function load() {
-  const data = await chrome.storage.local.get(['enabled', 'status', 'pageAuth', 'pageAuthByHost', 'recorderState', 'recorderRecords']);
-  enabled.checked = data.enabled !== false;
+  const data = await chrome.storage.local.get(['status', 'pageAuth', 'pageAuthByHost', 'recorderState', 'recorderRecords']);
   renderStatus(data.status || { message: '尚未轮询' }, data.pageAuth, data.pageAuthByHost || {});
   renderRecorder(data.recorderState || {}, data.recorderRecords || []);
 }
-
-function setEnabled() {
-  chrome.runtime.sendMessage({ type: 'setEnabled', enabled: enabled.checked }, (resp) => {
-    if (!resp || !resp.ok) {
-      renderStatus({ message: '切换失败', detail: (resp && resp.error) || '' });
-    } else {
-      load();
-    }
-  });
-}
-
-enabled.addEventListener('change', setEnabled);
-poll.addEventListener('click', () => {
-  chrome.runtime.sendMessage({ type: 'pollNow' }, () => load());
-});
 
 function renderRecorder(state = {}, records = []) {
   const count = records.length || Number(state.count || 0);

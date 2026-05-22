@@ -9,8 +9,14 @@
     'x-api-version',
     'x-api-xsn',
     'x-api-xts',
-    'use-new-api'
+    'use-new-api',
+    'authorization',
+    'language',
+    'merchantname',
+    'request-id',
+    'user-id'
   ];
+  let rememberedApiHeaders = {};
 
   function cookieValue(name) {
     const prefix = `${name}=`;
@@ -71,7 +77,8 @@
   }
 
   function sendAuth(extraHeaders = {}) {
-    const auth = collectPageAuth(extraHeaders);
+    rememberedApiHeaders = { ...rememberedApiHeaders, ...extraHeaders };
+    const auth = collectPageAuth(rememberedApiHeaders);
     chrome.runtime.sendMessage({ type: 'pageAuth', auth }).catch(() => {});
   }
 
