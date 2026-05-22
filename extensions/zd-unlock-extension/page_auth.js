@@ -111,6 +111,33 @@
     if (Object.keys(captured).length) sendAuth(captured);
   }
 
+  function showToast(text, ok = true) {
+    try {
+      const old = document.getElementById('csbot-zd-toast');
+      if (old) old.remove();
+      const box = document.createElement('div');
+      box.id = 'csbot-zd-toast';
+      box.textContent = text;
+      box.style.cssText = [
+        'position:fixed',
+        'top:18px',
+        'right:18px',
+        'z-index:2147483647',
+        'padding:10px 14px',
+        'border-radius:8px',
+        'font:600 13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+        `color:${ok ? '#14532d' : '#7f1d1d'}`,
+        `background:${ok ? '#dcfce7' : '#fee2e2'}`,
+        `border:1px solid ${ok ? '#86efac' : '#fecaca'}`,
+        'box-shadow:0 12px 30px rgba(15,23,42,.16)'
+      ].join(';');
+      document.documentElement.appendChild(box);
+      setTimeout(() => box.remove(), 4500);
+    } catch {
+      // best effort
+    }
+  }
+
   function injectMainWorldCapture() {
     const script = document.createElement('script');
     script.textContent = `(() => {
@@ -361,7 +388,9 @@
     if (data.source !== 'csbot-zd-page') return;
     if (data.type === 'apiHeaders') captureHeaders(data.headers);
     if (data.type === 'unlockValue') {
-      chrome.runtime.sendMessage({ type: 'unlockValue', value: data.value }).catch(() => {});
+      chrome.runtime.sendMessage({ type: 'unlockValue', value: data.value })
+        .then((resp) => showToast(resp && resp.ok ? '短信参数已保存' : '短信参数保存失败', !!(resp && resp.ok)))
+        .catch(() => showToast('短信参数保存失败', false));
     }
     if (data.type === 'merchantEndpoint') {
       chrome.runtime.sendMessage({ type: 'merchantEndpoint', key: data.key, url: data.url }).catch(() => {});

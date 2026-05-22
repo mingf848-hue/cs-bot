@@ -9,6 +9,8 @@ const recExport = document.getElementById('recExport');
 const recClear = document.getElementById('recClear');
 const recorderBadge = document.getElementById('recorderBadge');
 const recorderDetail = document.getElementById('recorderDetail');
+const smsValueBadge = document.getElementById('smsValueBadge');
+const smsValueDetail = document.getElementById('smsValueDetail');
 
 function authHost(auth = {}) {
   try {
@@ -63,9 +65,19 @@ function renderStatus(s = {}, pageAuth = null, pageAuthByHost = {}) {
 }
 
 async function load() {
-  const data = await chrome.storage.local.get(['status', 'pageAuth', 'pageAuthByHost', 'recorderState', 'recorderRecords']);
+  const data = await chrome.storage.local.get(['status', 'config', 'pageAuth', 'pageAuthByHost', 'recorderState', 'recorderRecords']);
   renderStatus(data.status || { message: '尚未轮询' }, data.pageAuth, data.pageAuthByHost || {});
+  renderSmsValue(data.config || {});
   renderRecorder(data.recorderState || {}, data.recorderRecords || []);
+}
+
+function renderSmsValue(config = {}) {
+  const saved = !!String(config.value || '').trim();
+  smsValueBadge.textContent = saved ? '已保存' : '未保存';
+  smsValueBadge.classList.toggle('on', saved);
+  smsValueDetail.textContent = saved
+    ? `保存时间：${formatTime(config.unlockValueSavedAt)}`
+    : '在 1 后台手动短信解锁一次后自动保存。';
 }
 
 function renderRecorder(state = {}, records = []) {

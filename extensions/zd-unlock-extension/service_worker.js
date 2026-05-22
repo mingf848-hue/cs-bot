@@ -65,6 +65,27 @@ function nowText() {
   return new Date().toLocaleString('zh-CN', { hour12: false });
 }
 
+function notify(title, message) {
+  try {
+    chrome.action.setBadgeBackgroundColor({ color: '#16a34a' });
+    chrome.action.setBadgeText({ text: 'OK' });
+    setTimeout(() => chrome.action.setBadgeText({ text: '' }), 6000);
+  } catch {
+    // badge is best effort
+  }
+  try {
+    if (!chrome.notifications || !chrome.notifications.create) return;
+    chrome.notifications.create({
+      type: 'basic',
+      iconUrl: chrome.runtime.getURL('icon.svg'),
+      title,
+      message
+    });
+  } catch {
+    // notification is best effort
+  }
+}
+
 function authHost(auth = {}) {
   try {
     return new URL(auth.href || '').host;
@@ -1291,10 +1312,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .then((stored) => {
         const config = {
           ...(stored.config || DEFAULT_CONFIG),
-          value
+          value,
+          unlockValueSavedAt: new Date().toISOString()
         };
         return chrome.storage.local.set({ config });
       })
+      .then(() => setStatus({
+        state: 'sms_value_saved',
+        message: '短信参数已保存',
+        detail: '可以测试自动短信解锁'
+      }))
+      .then(() => notify('CS Bot Unlock', '短信解锁参数已保存'))
       .then(() => sendResponse({ ok: true }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
