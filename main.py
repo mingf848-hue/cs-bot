@@ -3889,7 +3889,6 @@ async def get_context_users(chat_id, msg_id):
             parent_user_id = await get_traceable_sender(chat_id, msg.reply_to_msg_id)
             if parent_user_id:
                 users.add(parent_user_id)
-                log_tree(1, f" ┣━━ 🔗 三角关联探测: Msg({msg_id}) -> ParentUser({parent_user_id})")
                 
     except Exception as e:
         log_tree(9, f"上下文获取失败: {e}")
@@ -4211,7 +4210,7 @@ async def handler(event):
                 elif real_customer_id: source_info = "API实时查询"
                 else: source_info = "追踪失败" 
                 
-                log_tree(1, f"⚡️ 客服操作捕获 | Msg: {reply_to_msg_id} [T={msg_time_str}] | 客服: {sender_name} | 内容: [已隐藏] | 归属: {real_customer_id} | 流: {current_thread_id} | 状态: {source_info}")
+                pass
 
             cancel_types = None 
             if is_wait_cmd or is_keep_cmd:

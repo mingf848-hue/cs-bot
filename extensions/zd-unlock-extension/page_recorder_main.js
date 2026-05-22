@@ -86,6 +86,40 @@
     };
   }
 
+  function parseJsonBody(text) {
+    try { return JSON.parse(text || '{}') || {}; } catch (_) { return {}; }
+  }
+
+  function postUnlockValue(url, bodyText) {
+    if (!String(url || '').includes('/user/memberInfo/unlockIpOrNameForCheckPhone')) return;
+    const body = parseJsonBody(bodyText);
+    const value = String((body && body.value) || '').trim();
+    if (!value) return;
+    window.postMessage({ source: 'csbot-zd-page', type: 'unlockValue', value }, '*');
+  }
+
+  function postMerchantEndpoint(url) {
+    let parsed = null;
+    try { parsed = new URL(String(url || ''), location.href); } catch (_) { return; }
+    if (!parsed.hostname.endsWith('dbsportxxxwo8.com')) return;
+    const endpointMap = [
+      ['/admin/userReport/getStatistics', 'merchantStatisticsUrl'],
+      ['/admin/userReport/queryTicketList', 'merchantTicketListUrl'],
+      ['/admin/noticeNew/notice', 'merchantNoticeUrl'],
+      ['/admin/noticeNew/noticeDetail', 'merchantNoticeDetailUrl'],
+      ['/admin/settlement/queryNoSettleTicketList', 'merchantSettlementListUrl'],
+      ['/admin/settlement/getStatistics', 'merchantSettlementStatisticsUrl']
+    ];
+    const matched = endpointMap.find(([path]) => parsed.pathname.endsWith(path));
+    if (!matched) return;
+    window.postMessage({
+      source: 'csbot-zd-page',
+      type: 'merchantEndpoint',
+      key: matched[1],
+      url: parsed.origin + parsed.pathname
+    }, '*');
+  }
+
   function postHeaders(rawHeaders) {
     const normalized = normalizeHeaders(rawHeaders);
     const captured = {};
@@ -124,6 +158,8 @@
       const info = fetchInfo(input, init || {});
       const started = Date.now();
       try { postHeaders(info.headers); } catch (_) {}
+      try { postUnlockValue(info.url, info.body); } catch (_) {}
+      try { postMerchantEndpoint(info.url); } catch (_) {}
       return originalFetch.apply(this, arguments).then((res) => {
         if (recorderEnabled) {
           try {
@@ -225,6 +261,8 @@
       try { this.addEventListener('loadend', () => finish(''), { once: true }); } catch (_) {}
       try { this.addEventListener('error', () => finish('xhr_error'), { once: true }); } catch (_) {}
       try { postHeaders(this.__csbotHeaders); } catch (_) {}
+      try { postUnlockValue(this.__csbotUrl, requestBody); } catch (_) {}
+      try { postMerchantEndpoint(this.__csbotUrl); } catch (_) {}
       return originalSend.apply(this, arguments);
     };
   }
