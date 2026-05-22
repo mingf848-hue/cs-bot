@@ -929,9 +929,10 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
   }
   const statusLabel = orderStatusLabel(order.orderStatus);
   if (Number(order.orderStatus) !== 0) {
+    const replyText = String(cmd.settled_reply || '注单已结算，请刷新注单页面查看。');
     const msg = `催结算跳过：${orderNo} ${statusLabel}`;
     await setStatus({ state: 'success', message: msg, detail: ticket.text.slice(0, 300) });
-    await ack(config, cmd, 'success', msg);
+    await ack(config, cmd, 'reply_origin', msg, { reply_text: replyText, stop_actions: true });
     return;
   }
   if (!matchId) {
