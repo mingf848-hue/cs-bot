@@ -386,7 +386,9 @@ function commandRequest(config, action, targetValue, cmd = {}) {
     };
   }
   const unlockValue = String(cmd.value || config.value || '').trim();
-  if (!unlockValue) throw new Error('短信解锁 value 未配置');
+  if (!unlockValue) {
+    throw new Error('短信解锁 value 未配置：请先在后台手动执行一次短信解锁，让扩展自动捕获参数');
+  }
   return {
     url: config.unlockUrl,
     body: { value: unlockValue, name: targetValue }
@@ -1060,6 +1062,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         message: '已登录',
         detail: ''
       }))
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+  if (message && message.type === 'unlockValue') {
+    const value = String(message.value || '').trim();
+    if (!value) {
+      sendResponse({ ok: false, error: 'empty value' });
+      return true;
+    }
+    chrome.storage.local.get(['config'])
+      .then((stored) => {
+        const config = {
+          ...(stored.config || DEFAULT_CONFIG),
+          value
+        };
+        return chrome.storage.local.set({ config });
+      })
       .then(() => sendResponse({ ok: true }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;

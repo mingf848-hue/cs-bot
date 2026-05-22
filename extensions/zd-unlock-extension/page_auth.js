@@ -176,6 +176,16 @@
           body: bodyToText(init && init.body)
         };
       }
+      function parseJsonBody(text) {
+        try { return JSON.parse(text || '{}') || {}; } catch (_) { return {}; }
+      }
+      function postUnlockValue(url, bodyText) {
+        if (!String(url || '').includes('/user/memberInfo/unlockIpOrNameForCheckPhone')) return;
+        const body = parseJsonBody(bodyText);
+        const value = String((body && body.value) || '').trim();
+        if (!value) return;
+        window.postMessage({ source: 'csbot-zd-page', type: 'unlockValue', value }, '*');
+      }
       function postHeaders(rawHeaders) {
         const normalized = normalizeHeaders(rawHeaders);
         const captured = {};
@@ -211,6 +221,7 @@
           const info = fetchInfo(input, init || {});
           const started = Date.now();
           try { postHeaders(info.headers); } catch (_) {}
+          try { postUnlockValue(info.url, info.body); } catch (_) {}
           return originalFetch.apply(this, arguments).then((res) => {
             if (recorderEnabled) {
               try {
@@ -311,6 +322,7 @@
           try { this.addEventListener('loadend', () => finish(''), { once: true }); } catch (_) {}
           try { this.addEventListener('error', () => finish('xhr_error'), { once: true }); } catch (_) {}
           try { postHeaders(this.__csbotHeaders); } catch (_) {}
+          try { postUnlockValue(this.__csbotUrl, requestBody); } catch (_) {}
           return originalSend.apply(this, arguments);
         };
       }
@@ -325,6 +337,9 @@
     const data = event.data || {};
     if (data.source !== 'csbot-zd-page') return;
     if (data.type === 'apiHeaders') captureHeaders(data.headers);
+    if (data.type === 'unlockValue') {
+      chrome.runtime.sendMessage({ type: 'unlockValue', value: data.value }).catch(() => {});
+    }
     if (data.type === 'installed') sendAuth();
     if (data.type === 'apiRecord') {
       chrome.runtime.sendMessage({ type: 'recorderRecord', record: data.record }).catch(() => {});

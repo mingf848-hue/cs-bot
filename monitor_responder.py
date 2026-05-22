@@ -1321,6 +1321,10 @@ def queue_backend_unlock_command(target_value, rule, event, action="unlock_sms",
             "telegram_account": str((step or {}).get("telegram_account", "") or "").strip(),
             "telegram_template": str((step or {}).get("text", "") or "").strip(),
         })
+    if action == "unlock_sms":
+        unlock_value = os.environ.get("ZD_SMS_UNLOCK_VALUE", "").strip()
+        if unlock_value:
+            command["value"] = unlock_value
     pending_commands.append(command)
     return cmd_id
 
