@@ -1022,6 +1022,21 @@ async function replyInvalidTicketNotice(config, cmd, headers, orderNo, order, de
   await replyOrigin(config, cmd, `注单失效已回复公告：${orderNo}`, context, ticketText);
 }
 
+async function noticeReplyText(config, headers, noticeItem = {}) {
+  const noticeId = noticeItem.noticeId || noticeItem.id;
+  if (config.merchantNoticeDetailUrl && noticeId) {
+    const noticeDetail = await postForm(merchantUrl(config.merchantNoticeDetailUrl), headers, { id: noticeId });
+    if (merchantApiOk(noticeDetail)) {
+      const context = bestChineseNoticeContext(noticeDetail.data.data || {});
+      if (context) return context;
+    }
+  }
+  return htmlText([
+    noticeItem.title || noticeItem.zhTitle || noticeItem.enTitle || '',
+    noticeItem.context || noticeItem.zhContext || noticeItem.enContext || ''
+  ].filter(Boolean).join('\n'));
+}
+
 async function runUrgeSettlementCommand(config, cmd, orderNo) {
   if (!config.merchantTicketListUrl) throw new Error('场馆注单列表接口未配置');
   if (!config.merchantNoticeUrl) throw new Error('场馆公告接口未配置');
@@ -1083,13 +1098,8 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
   const notices = merchantList(notice.data);
   if (notices.length) {
     const first = notices[0] || {};
-    const noticeText = [
-      htmlText(first.title || first.zhTitle || first.enTitle || ''),
-      htmlText(first.context || first.zhContext || first.enContext || '')
-    ].filter(Boolean).join('\n');
-    const msg = `催结算跳过：赛事 ${matchId} 已有公告${noticeText ? `\n${noticeText}` : ''}`;
-    await setStatus({ state: 'success', message: `赛事 ${matchId} 已有公告`, detail: noticeText.slice(0, 300) });
-    await ack(config, cmd, 'success', msg.slice(0, 500));
+    const noticeText = await noticeReplyText(config, headers, first);
+    await replyOrigin(config, cmd, `赛事 ${matchId} 已有公告`, noticeText || '赛果核实中，请耐心等待。', notice.text);
     return;
   }
 
