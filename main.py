@@ -595,13 +595,14 @@ except ImportError as e:
     init_stats_blueprint = None
 
 try:
-    from monitor_responder import init_monitor, queue_site_inner_message_command, wait_backend_command_result
+    from monitor_responder import init_monitor, queue_site_inner_message_command, wait_backend_command_result, get_backend_command_progress
     logger.info("✅ 自动回复模块 (monitor_responder) 导入成功")
 except ImportError as e:
     logger.error(f"❌ 自动回复模块导入失败: {e}")
     init_monitor = None
     queue_site_inner_message_command = None
     wait_backend_command_result = None
+    get_backend_command_progress = None
 
 # ==========================================
 # 模块 1: 基础函数 (强力清洗版)
@@ -2835,6 +2836,29 @@ def _bot_delete_message(chat_id, message_id):
         log_tree(9, f"Bot 删除账号消息异常: {e}")
     return False
 
+def _bot_edit_message_text(chat_id, message_id, text, reply_markup=None):
+    if not BOT_TOKEN or chat_id is None or message_id is None:
+        return False
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+        "disable_web_page_preview": True,
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    try:
+        resp = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText", json=payload, timeout=20)
+        data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+        if resp.status_code == 200 and data.get("ok"):
+            return True
+        description = str(data.get("description") or "")
+        if "message is not modified" not in description.lower():
+            log_tree(9, f"Bot 编辑消息失败: HTTP {resp.status_code} {str(data)[:200]}")
+    except Exception as e:
+        log_tree(9, f"Bot 编辑消息异常: {e}")
+    return False
+
 def _bot_answer_callback_query(callback_query_id, text=""):
     if not BOT_TOKEN or not callback_query_id:
         return False
@@ -2911,6 +2935,44 @@ def format_zc_summary(counts):
         "（ML站/  人）",
     ])
 
+def progress_bar(percent, width=18):
+    value = max(0, min(100, int(percent or 0)))
+    filled = int(round(width * value / 100))
+    return "▰" * filled + "▱" * (width - filled)
+
+def site_message_type_label(strategy):
+    return {
+        "sb": "存款温馨提示",
+        "9zc": "9站新注册连续6条",
+        "6zc": "6站新注册连续3条",
+    }.get(strategy, strategy)
+
+def site_message_step_total(strategy):
+    return {
+        "9zc": 6,
+        "6zc": 3,
+        "sb": 1,
+    }.get(strategy, 1)
+
+def format_site_message_progress(strategy, member_count, progress=None, force_percent=None):
+    progress = progress or {}
+    percent = force_percent if force_percent is not None else progress.get("percent", 0)
+    step = int(progress.get("step") or 0)
+    total = int(progress.get("total") or site_message_step_total(strategy))
+    message = str(progress.get("message") or "等待扩展接收任务")
+    title = str(progress.get("title") or "")
+    lines = [
+        "站内信发送中",
+        f"类型：{site_message_type_label(strategy)}",
+        f"人数：{member_count}",
+        f"进度：{progress_bar(percent)} {max(0, min(100, int(percent or 0)))}%",
+        f"步骤：{step}/{total}",
+        f"状态：{message}",
+    ]
+    if title:
+        lines.append(f"当前：{title}")
+    return "\n".join(lines)
+
 def cleanup_zc_state(chat_id):
     key = str(chat_id)
     state = ZC_BATCH_STATE.get(key)
@@ -2921,6 +2983,43 @@ def cleanup_zc_state(chat_id):
         return None
     return state
 
+async def wait_backend_result_with_progress(cmd_id, chat_id, strategy, member_count):
+    loop = asyncio.get_event_loop()
+    progress_message_id = await loop.run_in_executor(
+        None,
+        lambda: _bot_send_reply(chat_id, format_site_message_progress(strategy, member_count, {"percent": 0}))
+    )
+    wait_task = asyncio.create_task(wait_backend_command_result(cmd_id, timeout=180.0))
+    last_text = ""
+    last_edit = 0.0
+    while not wait_task.done():
+        progress = get_backend_command_progress(cmd_id) if get_backend_command_progress else {}
+        text = format_site_message_progress(strategy, member_count, progress)
+        now_ts = time.time()
+        if progress_message_id and text != last_text and now_ts - last_edit >= 0.8:
+            await loop.run_in_executor(
+                None,
+                lambda cid=chat_id, mid=progress_message_id, txt=text: _bot_edit_message_text(cid, mid, txt)
+            )
+            last_text = text
+            last_edit = now_ts
+        await asyncio.sleep(0.7)
+    result = await wait_task
+    final_progress = get_backend_command_progress(cmd_id) if get_backend_command_progress else {}
+    if str((result or {}).get("status") or "") == "success":
+        final_progress = {**final_progress, "percent": 100, "status": "success", "message": "发送完成"}
+    elif result:
+        final_progress = {**final_progress, "status": result.get("status") or "failed", "message": result.get("detail") or "发送失败"}
+    final_text = format_site_message_progress(strategy, member_count, final_progress)
+    if progress_message_id:
+        await loop.run_in_executor(
+            None,
+            lambda cid=chat_id, mid=progress_message_id, txt=final_text: _bot_edit_message_text(cid, mid, txt)
+        )
+        if str((result or {}).get("status") or "") == "success":
+            await asyncio.sleep(0.8)
+    return result, progress_message_id
+
 async def handle_site_message_bot_request(message):
     if not queue_site_inner_message_command or not wait_backend_command_result:
         return "站内信模块未加载，无法执行。"
@@ -2928,11 +3027,11 @@ async def handle_site_message_bot_request(message):
     if not members:
         return None
     cmd_id, clean_members = queue_site_inner_message_command(members, source=f"telegram_bot_{strategy}", strategy=strategy)
-    result = await wait_backend_command_result(cmd_id, timeout=180.0)
+    chat_id = ((message.get("chat") or {}).get("id"))
+    result, progress_message_id = await wait_backend_result_with_progress(cmd_id, chat_id, strategy, len(clean_members))
     status = str((result or {}).get("status") or "timeout")
     detail = str((result or {}).get("detail") or "无回执")
     ok = status == "success"
-    chat_id = ((message.get("chat") or {}).get("id"))
     message_id = message.get("message_id")
     if strategy in {"6zc", "9zc"} and ok:
         site_key = "jn" if strategy == "6zc" else "ml"
@@ -2949,23 +3048,24 @@ async def handle_site_message_bot_request(message):
                 "text": final_text,
                 "delete_source": False,
                 "reply_to_source": False,
+                "skip_send": True,
+                "sent_message_id": progress_message_id,
+                "edit_message_id": progress_message_id,
                 "delete_after_send_ids": cleanup_ids,
             }
         return {
             "text": "1",
             "delete_source": True,
             "reply_to_source": False,
+            "skip_send": True,
+            "sent_message_id": progress_message_id,
+            "edit_message_id": progress_message_id,
             "remember_zc_marker": True,
             "zc_chat_id": chat_id,
         }
-    type_labels = {
-        "sb": "存款温馨提示",
-        "9zc": "9站新注册连续6条",
-        "6zc": "6站新注册连续3条",
-    }
     reply_text = "\n".join([
         "站内信发送结果",
-        f"类型：{type_labels.get(strategy, strategy)}",
+        f"类型：{site_message_type_label(strategy)}",
         f"人数：{len(clean_members)}",
         f"状态：{'成功' if ok else '失败'}",
         f"详情：{detail}",
@@ -2974,6 +3074,9 @@ async def handle_site_message_bot_request(message):
         "text": reply_text,
         "delete_source": ok,
         "reply_to_source": not ok,
+        "skip_send": True,
+        "sent_message_id": progress_message_id,
+        "edit_message_id": progress_message_id,
     }
 
 async def bot_command_polling_task():
@@ -3011,6 +3114,8 @@ async def bot_command_polling_task():
                 remember_zc_marker = False
                 zc_chat_id = None
                 delete_after_send_ids = []
+                skip_send = False
+                edit_message_id = None
                 if is_bot_command(text, "start"):
                     reply_text = format_start_command_reply(message)
                 elif is_bot_command(text, "id"):
@@ -3029,6 +3134,9 @@ async def bot_command_polling_task():
                         remember_zc_marker = bool(reply_result.get("remember_zc_marker"))
                         zc_chat_id = reply_result.get("zc_chat_id")
                         delete_after_send_ids = list(reply_result.get("delete_after_send_ids") or [])
+                        skip_send = bool(reply_result.get("skip_send"))
+                        edit_message_id = reply_result.get("edit_message_id")
+                        sent_message_id = reply_result.get("sent_message_id")
                     else:
                         reply_text = str(reply_result)
                         delete_source = False
@@ -3039,10 +3147,16 @@ async def bot_command_polling_task():
                 if chat_id is None:
                     continue
 
-                sent_message_id = await loop.run_in_executor(
-                    None,
-                    lambda cid=chat_id, txt=reply_text, mid=(message.get("message_id") if reply_to_source else None), thread=message.get("message_thread_id"): _bot_send_reply(cid, txt, mid, thread)
-                )
+                if skip_send and edit_message_id:
+                    await loop.run_in_executor(
+                        None,
+                        lambda cid=chat_id, mid=edit_message_id, txt=reply_text: _bot_edit_message_text(cid, mid, txt)
+                    )
+                else:
+                    sent_message_id = await loop.run_in_executor(
+                        None,
+                        lambda cid=chat_id, txt=reply_text, mid=(message.get("message_id") if reply_to_source else None), thread=message.get("message_thread_id"): _bot_send_reply(cid, txt, mid, thread)
+                    )
                 if remember_zc_marker and sent_message_id:
                     state = ZC_BATCH_STATE.get(str(zc_chat_id))
                     if state is not None:

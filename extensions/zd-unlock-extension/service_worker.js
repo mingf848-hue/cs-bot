@@ -233,6 +233,23 @@ async function ack(config, cmd, status, detail = '') {
   }
 }
 
+async function reportProgress(config, cmd, payload = {}) {
+  if (!cmd || !cmd.id) return;
+  try {
+    await fetch(`${config.botBase}/api/cmd/progress?secret=${encodeURIComponent(config.cmdSecret)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: cmd.id,
+        member_name: cmd.member_name,
+        ...payload
+      })
+    });
+  } catch (err) {
+    console.warn('[CS Bot ZD Unlock] progress failed', err);
+  }
+}
+
 function commandLabel(action) {
   if (action === 'add_proxy_whitelist') return '代理IP加白';
   if (action === 'clear_login_error') return '登录限制解锁';
@@ -392,6 +409,14 @@ async function runSiteInnerMessageCommand(config, cmd) {
   const strategyName = String(cmd.site_message_strategy_name || (steps.length > 1 ? '站内信策略' : '站内信'));
   const sentTitles = [];
   let totalSuccess = 0;
+  await reportProgress(config, cmd, {
+    status: 'running',
+    message: `${strategyName}开始发送`,
+    step: 0,
+    total: steps.length,
+    success: 0,
+    percent: 0
+  });
 
   for (let index = 0; index < steps.length; index += 1) {
     const step = { ...cmd, ...(steps[index] || {}) };
@@ -399,13 +424,40 @@ async function runSiteInnerMessageCommand(config, cmd) {
     sentTitles.push(result.title);
     totalSuccess += result.success;
     if (!result.ok) {
+      await reportProgress(config, cmd, {
+        status: 'failed',
+        message: result.detail,
+        title: result.title,
+        step: index + 1,
+        total: steps.length,
+        success: totalSuccess,
+        percent: Math.floor(((index + 1) / steps.length) * 100)
+      });
       await ack(config, cmd, 'failed', result.detail);
       return;
     }
+    await reportProgress(config, cmd, {
+      status: 'running',
+      message: `${strategyName}已发送 ${index + 1}/${steps.length}`,
+      title: result.title,
+      step: index + 1,
+      total: steps.length,
+      success: totalSuccess,
+      percent: Math.floor(((index + 1) / steps.length) * 100)
+    });
     if (index < steps.length - 1) {
       const waitSeconds = randomDelaySeconds(cmd.step_delay_min, cmd.step_delay_max);
       if (waitSeconds > 0) {
         await setStatus({ state: 'running', message: `${strategyName}等待 ${waitSeconds.toFixed(1)}秒` });
+        await reportProgress(config, cmd, {
+          status: 'waiting',
+          message: `等待 ${waitSeconds.toFixed(1)}秒后发送下一条`,
+          title: result.title,
+          step: index + 1,
+          total: steps.length,
+          success: totalSuccess,
+          percent: Math.floor(((index + 1) / steps.length) * 100)
+        });
         await sleep(waitSeconds * 1000);
       }
     }
@@ -415,6 +467,14 @@ async function runSiteInnerMessageCommand(config, cmd) {
     ? `${strategyName}发送成功：${steps.length}/${steps.length}条，提交${uniqueMembers.length}人，成功${totalSuccess}次`
     : `站内信发送成功：${sentTitles[0] || ''}，提交${uniqueMembers.length}人，成功${totalSuccess}人`;
   await setStatus({ state: 'success', message: detail });
+  await reportProgress(config, cmd, {
+    status: 'success',
+    message: detail,
+    step: steps.length,
+    total: steps.length,
+    success: totalSuccess,
+    percent: 100
+  });
   await ack(config, cmd, 'success', detail);
 }
 

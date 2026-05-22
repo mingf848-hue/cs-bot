@@ -1170,6 +1170,7 @@ CMD_SECRET = "J7kN3mQxR9vTsW2pYzBf"
 pending_commands = deque(maxlen=200)
 pending_command_leases = {}
 backend_command_results = {}
+backend_command_progress = {}
 
 SITE_MESSAGE_PROFILES = {
     "9zc": {
@@ -1314,6 +1315,9 @@ async def wait_backend_command_result(cmd_id, timeout=90.0):
         await asyncio.sleep(0.5)
     pending_command_leases.pop(cmd_id, None)
     return {"status": "timeout", "detail": "等待后台回执超时"}
+
+def get_backend_command_progress(cmd_id):
+    return dict(backend_command_progress.get(str(cmd_id or ""), {}) or {})
 
 def backend_result_ok(result):
     return str((result or {}).get("status") or "") == "success"
@@ -2802,12 +2806,43 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                 "detail": detail,
                 "acked_at": now_bj().isoformat(),
             }
+            backend_command_progress[cmd_id] = {
+                **backend_command_progress.get(cmd_id, {}),
+                "status": status,
+                "detail": detail,
+                "percent": 100 if status == "success" else backend_command_progress.get(cmd_id, {}).get("percent", 0),
+                "updated_at": now_bj().isoformat(),
+            }
             while len(backend_command_results) > 500:
                 backend_command_results.pop(next(iter(backend_command_results)), None)
+            while len(backend_command_progress) > 500:
+                backend_command_progress.pop(next(iter(backend_command_progress)), None)
         logger.info(
             f"🔓 [BackendUnlock] 扩展回执: id={cmd_id or '-'} "
             f"member={member_name or '-'} status={status or '-'} detail={detail[:500] or '-'}"
         )
+        return jsonify({"ok": True})
+
+    @app.route('/api/cmd/progress', methods=['POST'])
+    def cmd_progress():
+        if request.args.get("secret") != CMD_SECRET:
+            return jsonify({"ok": False}), 403
+        data = request.get_json(silent=True) or {}
+        cmd_id = str(data.get("id") or "")
+        if cmd_id:
+            progress = {
+                "status": str(data.get("status") or "running"),
+                "message": str(data.get("message") or ""),
+                "title": str(data.get("title") or ""),
+                "step": int(data.get("step") or 0),
+                "total": int(data.get("total") or 0),
+                "success": int(data.get("success") or 0),
+                "percent": max(0, min(100, int(data.get("percent") or 0))),
+                "updated_at": now_bj().isoformat(),
+            }
+            backend_command_progress[cmd_id] = progress
+            while len(backend_command_progress) > 500:
+                backend_command_progress.pop(next(iter(backend_command_progress)), None)
         return jsonify({"ok": True})
 
     @app.route('/tool/zd_unlock_extension.zip')
