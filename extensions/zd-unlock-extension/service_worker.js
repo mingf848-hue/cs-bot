@@ -2,6 +2,7 @@ const DEFAULT_CONFIG = {
   botBase: 'https://arcshelp.zeabur.app',
   cmdSecret: 'J7kN3mQxR9vTsW2pYzBf',
   memberListUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/list',
+  dataDecryptionUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/component/dataDecryption',
   unlockUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/unlockIpOrNameForCheckPhone',
   loginErrorUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/clearLoginErrorRedisKey',
   proxyWhitelistUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/system/siteAccessManage/add',
@@ -39,6 +40,7 @@ const SITE_PROFILES = {
     label: '9站',
     requiredAuthHeaders: ['x-api-token', 'x-api-user'],
     memberListUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/list',
+    dataDecryptionUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/component/dataDecryption',
     siteInnerMsgTemplateUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/operation/cmCfg/template/info/list',
     siteInnerMsgAddUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/operation/cmCfg/siteInnerMsg/add',
     siteInnerMsgClients: '0,1,2,3,8,9',
@@ -51,6 +53,7 @@ const SITE_PROFILES = {
     label: '6站',
     requiredAuthHeaders: ['x-api-token', 'x-api-user'],
     memberListUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/user/memberInfo/list',
+    dataDecryptionUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/component/dataDecryption',
     siteInnerMsgTemplateUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/operation/cmCfg/template/info/list',
     siteInnerMsgAddUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/operation/cmCfg/siteInnerMsg/add',
     siteInnerMsgClients: '0,1,2,3,8',
@@ -846,6 +849,35 @@ function memberDataOverviewBodyText(memberId, startAt, endAt) {
   return `{"memberId":${id},"startAt":${JSON.stringify(String(startAt || ''))},"endAt":${JSON.stringify(String(endAt || ''))}}`;
 }
 
+function expectedAgentCodeFromText(cmd = {}, targetValue = '') {
+  const text = String(cmd.source_text || cmd.sourceText || cmd.original_text || cmd.originalText || cmd.message || cmd.text || '');
+  if (!text) return '';
+  const escapedTarget = escapeRegExp(String(targetValue || '').trim());
+  const afterTarget = escapedTarget
+    ? (text.match(new RegExp(`${escapedTarget}([\\s\\S]{0,80})`, 'i')) || [])[1] || text
+    : text;
+  const matched = afterTarget.match(/\b(\d{5,12})\b/);
+  return matched ? matched[1] : '';
+}
+
+async function decryptedTopInviteCode(config, member = {}) {
+  if (member.topInviteCode) return String(member.topInviteCode).trim();
+  const signature = String(member.xsS34Sign || '').trim();
+  const encryptedString = String(member.topInviteCodeDesensitization || '').trim();
+  const fingerprint = String(member.topInviteCodeCipher || '').trim();
+  if (!signature || !encryptedString || !fingerprint) return '';
+  if (!config.dataDecryptionUrl) throw new Error('数据解密接口未配置');
+  const decrypted = await postJson(config.dataDecryptionUrl, config.headers, [{
+    signature,
+    encryptedString,
+    fingerprint
+  }]);
+  if (!apiOk(decrypted.res, decrypted.data)) {
+    throw new Error(`解密上级代理编号失败 HTTP ${decrypted.res.status}: ${decrypted.text.slice(0, 300)}`);
+  }
+  return String((((decrypted.data || {}).data || {})[signature]) || '').replace(/\*/g, '').trim();
+}
+
 function requestedDataOverviewFields(cmd = {}) {
   const rawText = [
     cmd.source_text,
@@ -1085,6 +1117,18 @@ async function runMemberDataOverviewCommand(config, cmd, targetValue) {
   const member = await findExactMember(config, targetValue);
   const memberId = member.exactId || member.id;
   if (!memberId) throw new Error(`会员缺少ID：${targetValue}`);
+  const expectedAgentCode = expectedAgentCodeFromText(cmd, targetValue);
+  if (expectedAgentCode) {
+    await setStatus({ state: 'running', message: `核实上级代理编号 ${targetValue}` });
+    const actualAgentCode = await decryptedTopInviteCode(config, member);
+    if (String(actualAgentCode || '') !== String(expectedAgentCode)) {
+      const replyText = '代理编码不正确，请核实';
+      const msg = `查数据跳过：${targetValue} 上级代理编号不匹配`;
+      await setStatus({ state: 'error', message: msg, detail: `提供:${expectedAgentCode} 实际:${actualAgentCode || '-'}` });
+      await ack(config, cmd, 'reply_origin', msg, { reply_text: replyText, stop_actions: true });
+      return;
+    }
+  }
 
   const fields = requestedDataOverviewFields(cmd);
   const startAt = String(cmd.startAt || cmd.start_at || '2020-01-01');

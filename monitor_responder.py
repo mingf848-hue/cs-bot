@@ -1406,7 +1406,14 @@ async def execute_backend_unlock_step(step, rule, event, source_text, target_cli
     reply_text = str((result or {}).get("reply_text") or "").strip()
     if reply_text and target_client:
         await asyncio.sleep(random_delay_from_step(step or {}, "result_reply_min", "result_reply_max", 1.8, 3.8))
-        await target_client.send_message(event.chat_id, reply_text, reply_to=event.id)
+        if backend_action == "member_data_overview" and member_data_private_requested(source_text) and not reply_text.startswith("代理编码不正确"):
+            sender_id = getattr(event, "sender_id", None)
+            if not sender_id:
+                raise RuntimeError("无法识别原消息发送者，不能私发查数据结果")
+            await target_client.send_message(sender_id, reply_text)
+            await target_client.send_message(event.chat_id, "已发", reply_to=event.id)
+        else:
+            await target_client.send_message(event.chat_id, reply_text, reply_to=event.id)
     logger.info(f"✅ [BackendUnlock] 规则 '{rule.get('name')}' 后台动作成功: {backend_action} {target_value} | id={cmd_id}")
     return {"id": cmd_id, "stop_actions": bool((result or {}).get("stop_actions"))}
 
@@ -1422,6 +1429,9 @@ def command_action_label(action):
     if action == "urge_settlement":
         return "催结算"
     return "短信/验证码限制"
+
+def member_data_private_requested(text):
+    return "私发" in str(text or "").replace(" ", "")
 
 def ensure_scheduled_message_id(item):
     if not item.get("id"):
