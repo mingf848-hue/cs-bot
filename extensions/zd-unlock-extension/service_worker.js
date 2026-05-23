@@ -7,6 +7,8 @@ const DEFAULT_CONFIG = {
   proxyWhitelistUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/system/siteAccessManage/add',
   siteInnerMsgTemplateUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/operation/cmCfg/template/info/list',
   siteInnerMsgAddUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/operation/cmCfg/siteInnerMsg/add',
+  memberGameTotalInfoUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/game/totalInfo2',
+  memberFinanceTotalAmountUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/finance/totalAmount2',
   migrationRecordsUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/pilgrimage/recordsV2',
   migrateMilanUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/pilgrimage/migration',
   merchantStatisticsUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/userReport/getStatistics',
@@ -36,18 +38,24 @@ const SITE_PROFILES = {
     authHosts: ['9sitebg.mvj4e7.com'],
     label: '9站',
     requiredAuthHeaders: ['x-api-token', 'x-api-user'],
+    memberListUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/list',
     siteInnerMsgTemplateUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/operation/cmCfg/template/info/list',
     siteInnerMsgAddUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/operation/cmCfg/siteInnerMsg/add',
-    siteInnerMsgClients: '0,1,2,3,8,9'
+    siteInnerMsgClients: '0,1,2,3,8,9',
+    memberGameTotalInfoUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/game/totalInfo2',
+    memberFinanceTotalAmountUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/finance/totalAmount2'
   },
   '6001': {
     host: '6sitebg.oj61i4.com',
     authHosts: ['6sitebg.oj61i4.com'],
     label: '6站',
     requiredAuthHeaders: ['x-api-token', 'x-api-user'],
+    memberListUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/user/memberInfo/list',
     siteInnerMsgTemplateUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/operation/cmCfg/template/info/list',
     siteInnerMsgAddUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/operation/cmCfg/siteInnerMsg/add',
-    siteInnerMsgClients: '0,1,2,3,8'
+    siteInnerMsgClients: '0,1,2,3,8',
+    memberGameTotalInfoUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/user/game/totalInfo2',
+    memberFinanceTotalAmountUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/user/finance/totalAmount2'
   },
   'merchant': {
     host: 'api-merchant-backstage.dbsportxxxwo8.com',
@@ -524,6 +532,7 @@ function commandLabel(action) {
   if (action === 'clear_login_error') return '登录限制解锁';
   if (action === 'migrate_milan') return '迁移米兰';
   if (action === 'send_site_inner_msg') return '发送站内信';
+  if (action === 'member_data_overview') return '查数据';
   if (action === 'merchant_order_statistics') return '场馆注单查询';
   if (action === 'urge_settlement') return '催结算';
   return '短信/验证码解锁';
@@ -546,11 +555,16 @@ function normalizeCommandAction(action, cmd = {}) {
     settlement_urge: 'urge_settlement',
     urge_settle: 'urge_settlement',
     urge_settlement_order: 'urge_settlement',
+    data_overview: 'member_data_overview',
+    query_member_data: 'member_data_overview',
+    member_data_query: 'member_data_overview',
+    '查数据': 'member_data_overview',
+    '数据概览': 'member_data_overview',
     '催结算': 'urge_settlement'
   };
   const normalized = aliases[raw] || raw;
   if (hasMerchantCommandHint(cmd) && (raw === '' || raw === 'unlock_sms')) return 'merchant_order_statistics';
-  return ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg', 'merchant_order_statistics', 'urge_settlement'].includes(normalized)
+  return ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg', 'member_data_overview', 'merchant_order_statistics', 'urge_settlement'].includes(normalized)
     ? normalized
     : 'unlock_sms';
 }
@@ -564,6 +578,7 @@ function isSupportedCommandAction(action, cmd = {}) {
     'add_proxy_whitelist',
     'migrate_milan',
     'send_site_inner_msg',
+    'member_data_overview',
     'merchant_order_statistics',
     'urge_settlement',
     'venue_order_statistics',
@@ -571,6 +586,11 @@ function isSupportedCommandAction(action, cmd = {}) {
     'merchant_order_query',
     'query_venue_order',
     'query_merchant_order',
+    'data_overview',
+    'query_member_data',
+    'member_data_query',
+    '查数据',
+    '数据概览',
     'settlement_urge',
     'urge_settle',
     'urge_settlement_order',
@@ -641,6 +661,10 @@ function pad2(value) {
 
 function formatDateTime(date) {
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
+}
+
+function formatDate(date) {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
 }
 
 function merchantDateRange(cmd = {}) {
@@ -779,6 +803,41 @@ function orderDetails(order = {}) {
 function numericValue(value) {
   const num = Number(value);
   return Number.isFinite(num) ? num : null;
+}
+
+const DATA_OVERVIEW_FIELDS = [
+  { key: 'net', label: '总输赢', source: 'finance', aliases: ['总输赢', '输赢', '总盈亏', '盈亏'] },
+  { key: 'validBet', label: '总流水', source: 'finance', aliases: ['总流水', '流水', '有效流水', '有效投注'] },
+  { key: 'deposit', label: '总存款', source: 'game', aliases: ['总存款', '存款', '总充值', '充值'] },
+  { key: 'withdraw', label: '总提款', source: 'game', aliases: ['总提款', '提款', '总取款', '取款'] },
+  { key: 'bonus', label: '总红利', source: 'game', aliases: ['总红利', '红利', '优惠'] },
+  { key: 'rebate', label: '总返水', source: 'game', aliases: ['总返水', '总反水', '返水', '反水'] }
+];
+
+function formatMoney(value) {
+  const num = Number(value || 0);
+  return (Number.isFinite(num) ? num : 0).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  });
+}
+
+function requestedDataOverviewFields(cmd = {}) {
+  const rawText = [
+    cmd.source_text,
+    cmd.sourceText,
+    cmd.original_text,
+    cmd.originalText,
+    cmd.message,
+    cmd.text,
+    cmd.data_fields,
+    cmd.dataFields
+  ].filter(Boolean).join(' ');
+  const text = normalizeText(rawText);
+  const selected = DATA_OVERVIEW_FIELDS.filter((field) => (
+    field.aliases || []
+  ).some((alias) => text.includes(normalizeText(alias))));
+  return selected.length ? selected : DATA_OVERVIEW_FIELDS;
 }
 
 function detailIsSettled(detail = {}) {
@@ -993,6 +1052,56 @@ async function findExactMember(config, targetValue) {
     throw new Error(`未找到会员：${targetValue}`);
   }
   return member;
+}
+
+async function runMemberDataOverviewCommand(config, cmd, targetValue) {
+  if (!config.memberGameTotalInfoUrl) throw new Error('会员游戏数据概览接口未配置');
+  if (!config.memberFinanceTotalAmountUrl) throw new Error('会员流水输赢接口未配置');
+  const member = await findExactMember(config, targetValue);
+  const memberId = member.id;
+  if (!memberId) throw new Error(`会员缺少ID：${targetValue}`);
+
+  const fields = requestedDataOverviewFields(cmd);
+  const startAt = String(cmd.startAt || cmd.start_at || '2020-01-01');
+  const endAt = String(cmd.endAt || cmd.end_at || formatDate(new Date()));
+  const body = { memberId, startAt, endAt };
+  let gameTotal = {};
+  let financeTotal = {};
+
+  if (fields.some((field) => field.source === 'game')) {
+    await setStatus({ state: 'running', message: `查询会员数据概览 ${targetValue}` });
+    const game = await postJson(config.memberGameTotalInfoUrl, config.headers, body);
+    if (!apiOk(game.res, game.data)) {
+      throw new Error(`查询会员数据概览失败 HTTP ${game.res.status}: ${game.text.slice(0, 300)}`);
+    }
+    gameTotal = (((game.data || {}).data || {}).totalStat || {});
+  }
+
+  if (fields.some((field) => field.source === 'finance')) {
+    await setStatus({ state: 'running', message: `查询会员输赢流水 ${targetValue}` });
+    const finance = await postJson(config.memberFinanceTotalAmountUrl, config.headers, body);
+    if (!apiOk(finance.res, finance.data)) {
+      throw new Error(`查询会员输赢流水失败 HTTP ${finance.res.status}: ${finance.text.slice(0, 300)}`);
+    }
+    financeTotal = ((finance.data || {}).data || {});
+  }
+
+  const values = {
+    net: financeTotal.sumNetAmount,
+    validBet: financeTotal.sumValidBetAmount,
+    deposit: gameTotal.totalPayAmount,
+    withdraw: gameTotal.totalWithdrawAmount,
+    bonus: gameTotal.sumDividendMoney,
+    rebate: gameTotal.sumFsMoney
+  };
+  const memberName = String(member.name || targetValue);
+  const replyText = [
+    memberName,
+    ...fields.map((field) => `${field.label}：${formatMoney(values[field.key])}`)
+  ].join('\n');
+  const msg = `查数据成功：${memberName} ${fields.map((field) => field.label).join('、')}`;
+  await setStatus({ state: 'success', message: msg, detail: replyText });
+  await ack(config, cmd, 'reply_origin', msg, { reply_text: replyText, stop_actions: true });
 }
 
 function requireSixSiteAuth(config) {
@@ -1489,6 +1598,10 @@ async function runBackendCommand(config, cmd) {
     }
     if (action === 'send_site_inner_msg') {
       await runSiteInnerMessageCommand(config, cmd);
+      return;
+    }
+    if (action === 'member_data_overview') {
+      await runMemberDataOverviewCommand(config, cmd, targetValue);
       return;
     }
     if (action === 'merchant_order_statistics') {

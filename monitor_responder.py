@@ -1185,7 +1185,7 @@ current_config = DEFAULT_CONFIG.copy()
 rule_timers = {}
 scheduled_message_runs = {}
 VALID_REPLY_TYPES = {"text", "edit_prev", "forward", "copy_file", "amount_logic", "preempt_check", "notify_user", "backend_unlock"}
-BACKEND_UNLOCK_ACTIONS = {"unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan", "send_site_inner_msg", "urge_settlement"}
+BACKEND_UNLOCK_ACTIONS = {"unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan", "send_site_inner_msg", "member_data_overview", "urge_settlement"}
 
 # 后台操作指令队列（Chrome 扩展轮询取指令）
 CMD_SECRET = "J7kN3mQxR9vTsW2pYzBf"
@@ -1220,6 +1220,14 @@ SITE_MESSAGE_PROFILES = {
 
 def normalize_backend_action(action):
     action = str(action or "unlock_sms").strip()
+    aliases = {
+        "data_overview": "member_data_overview",
+        "query_member_data": "member_data_overview",
+        "member_data_query": "member_data_overview",
+        "查数据": "member_data_overview",
+        "数据概览": "member_data_overview",
+    }
+    action = aliases.get(action, action)
     return action if action in BACKEND_UNLOCK_ACTIONS else "unlock_sms"
 
 def queue_site_inner_message_command(members, title=None, content=None, source="bot_private", strategy="sb"):
@@ -1311,6 +1319,7 @@ def queue_backend_unlock_command(target_value, rule, event, action="unlock_sms",
         "rule": rule.get("name") or rule.get("id") or "",
         "chat_id": event.chat_id,
         "message_id": event.id,
+        "source_text": getattr(event, "text", None) or getattr(event, "raw_text", "") or "",
         "queued_at": now_bj().isoformat(),
     }
     if action == "urge_settlement":
@@ -1408,6 +1417,8 @@ def command_action_label(action):
         return "登录密码试错限制"
     if action == "migrate_milan":
         return "迁移米兰"
+    if action == "member_data_overview":
+        return "查数据"
     if action == "urge_settlement":
         return "催结算"
     return "短信/验证码限制"
@@ -2159,6 +2170,7 @@ SETTINGS_HTML = """
                                                     <option value="unlock_sms">短信/验证码限制</option>
                                                     <option value="clear_login_error">登录密码试错限制</option>
                                                     <option value="add_proxy_whitelist">代理 IP 加白</option>
+                                                    <option value="member_data_overview">查数据</option>
                                                     <option value="urge_settlement">催结算</option>
                                                 </select>
                                             </div>
