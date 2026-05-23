@@ -379,6 +379,48 @@ async function appendRecorderRecord(record) {
   return { ok: true, count: records.length };
 }
 
+function queryTabs(query) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.query(query, (tabs) => {
+      const err = chrome.runtime.lastError;
+      if (err) reject(new Error(err.message));
+      else resolve(tabs || []);
+    });
+  });
+}
+
+function reloadTab(tabId) {
+  return new Promise((resolve) => {
+    chrome.tabs.reload(tabId, {}, () => {
+      const err = chrome.runtime.lastError;
+      resolve({ ok: !err, error: err ? err.message : '' });
+    });
+  });
+}
+
+async function refreshBackstageTabs() {
+  const tabs = await queryTabs({
+    url: [
+      'https://9sitebg.mvj4e7.com/*',
+      'https://6sitebg.oj61i4.com/*',
+      'https://merchant-own-backstage.dbsportxxxwo8.com/*',
+      'https://*.dbsportxxxwo8.com/*'
+    ]
+  });
+  const uniqueTabs = [...new Map(tabs.filter((tab) => tab && tab.id != null).map((tab) => [tab.id, tab])).values()];
+  const results = await Promise.all(uniqueTabs.map((tab) => reloadTab(tab.id)));
+  const failed = results.filter((item) => !item.ok);
+  const detail = failed.length
+    ? `部分页面刷新失败：${failed.map((item) => item.error).filter(Boolean).join('；')}`
+    : '页面加载后会自动同步登录状态。';
+  await setStatus({
+    state: 'auth_refresh',
+    message: `已刷新 ${uniqueTabs.length} 个后台页面`,
+    detail
+  });
+  return { ok: true, count: uniqueTabs.length, failed: failed.length, detail };
+}
+
 async function ack(config, cmd, status, detail = '', extra = {}) {
   if (!cmd || !cmd.id) return;
   try {
@@ -1508,6 +1550,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         pollOnce();
         sendResponse({ ok: true });
       })
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+  if (message && message.type === 'refreshBackstageTabs') {
+    refreshBackstageTabs()
+      .then((resp) => sendResponse(resp))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
   }

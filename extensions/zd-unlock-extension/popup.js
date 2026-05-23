@@ -7,6 +7,7 @@ const recStart = document.getElementById('recStart');
 const recStop = document.getElementById('recStop');
 const recExport = document.getElementById('recExport');
 const recClear = document.getElementById('recClear');
+const refreshBackstage = document.getElementById('refreshBackstage');
 const recorderBadge = document.getElementById('recorderBadge');
 const recorderDetail = document.getElementById('recorderDetail');
 const smsValueBadge = document.getElementById('smsValueBadge');
@@ -20,7 +21,7 @@ function authHost(auth = {}) {
   }
 }
 
-function siteAuth(pageAuth = null, pageAuthByHost = {}, hosts, site, requiredHeaders = ['x-api-token', 'x-api-user']) {
+function siteAuth(pageAuth = null, pageAuthByHost = {}, hosts, site, requiredHeaders = ['x-api-token', 'x-api-user'], extraAuths = []) {
   const hostList = Array.isArray(hosts) ? hosts : [hosts];
   const matches = (auth) => {
     const headers = (auth && auth.headers) || {};
@@ -30,6 +31,7 @@ function siteAuth(pageAuth = null, pageAuthByHost = {}, hosts, site, requiredHea
   const candidates = [
     ...hostList.map((host) => pageAuthByHost[host]),
     pageAuthByHost[site],
+    ...extraAuths,
     pageAuth,
     ...Object.values(pageAuthByHost || {})
   ].filter(Boolean);
@@ -41,13 +43,13 @@ function siteAuth(pageAuth = null, pageAuthByHost = {}, hosts, site, requiredHea
   return !!(auth && auth.capturedAt && requiredHeaders.every((key) => headers[key]));
 }
 
-function renderSiteLight(el, on) {
+function renderSiteLight(el, on, title = '') {
   if (!el) return;
   el.classList.toggle('on', on);
-  el.title = on ? '已登录' : '未登录';
+  el.title = title || (on ? '已登录' : '未登录');
 }
 
-function renderStatus(s = {}, pageAuth = null, pageAuthByHost = {}) {
+function renderStatus(s = {}, pageAuth = null, pageAuthByHost = {}, pageAuthByMerchant = {}) {
   status.textContent = `${s.message || '暂无状态'} (${s.time || '-'})`;
   const lines = [];
   if (s.detail && s.state !== 'auth') lines.push(s.detail);
@@ -55,18 +57,21 @@ function renderStatus(s = {}, pageAuth = null, pageAuthByHost = {}) {
   detail.textContent = lines.join('\n');
   renderSiteLight(auth9, siteAuth(pageAuth, pageAuthByHost, '9sitebg.mvj4e7.com', '9001'));
   renderSiteLight(auth6, siteAuth(pageAuth, pageAuthByHost, '6sitebg.oj61i4.com', '6001'));
-  renderSiteLight(authMerchant, siteAuth(
+  const merchantAuths = Object.values(pageAuthByMerchant || {});
+  const merchantLoggedIn = siteAuth(
     pageAuth,
     pageAuthByHost,
     ['merchant-own-backstage.dbsportxxxwo8.com', 'api-merchant-backstage.dbsportxxxwo8.com'],
     'merchant',
-    ['authorization', 'user-id']
-  ));
+    ['authorization', 'user-id'],
+    merchantAuths
+  );
+  renderSiteLight(authMerchant, merchantLoggedIn, merchantLoggedIn ? `已同步 ${Math.max(merchantAuths.length, 1)} 个场馆账号` : '未登录');
 }
 
 async function load() {
-  const data = await chrome.storage.local.get(['status', 'config', 'pageAuth', 'pageAuthByHost', 'recorderState', 'recorderRecords']);
-  renderStatus(data.status || { message: '尚未轮询' }, data.pageAuth, data.pageAuthByHost || {});
+  const data = await chrome.storage.local.get(['status', 'config', 'pageAuth', 'pageAuthByHost', 'pageAuthByMerchant', 'recorderState', 'recorderRecords']);
+  renderStatus(data.status || { message: '尚未轮询' }, data.pageAuth, data.pageAuthByHost || {}, data.pageAuthByMerchant || {});
   renderSmsValue(data.config || {});
   renderRecorder(data.recorderState || {}, data.recorderRecords || []);
 }
@@ -104,6 +109,28 @@ function send(type) {
     chrome.runtime.sendMessage({ type }, (resp) => resolve(resp || { ok: false, error: 'no response' }));
   });
 }
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+refreshBackstage.addEventListener('click', async () => {
+  refreshBackstage.disabled = true;
+  status.textContent = '正在刷新后台页面并等待同步...';
+  detail.textContent = '';
+  const resp = await send('refreshBackstageTabs');
+  if (!resp.ok) {
+    status.textContent = '刷新失败';
+    detail.textContent = resp.error || '';
+    refreshBackstage.disabled = false;
+    return;
+  }
+  status.textContent = `已刷新 ${resp.count || 0} 个后台页面`;
+  detail.textContent = resp.count ? '页面加载后会自动同步登录状态。' : '没有找到已打开的后台页面。';
+  await sleep(3500);
+  await load();
+  refreshBackstage.disabled = false;
+});
 
 recStart.addEventListener('click', async () => {
   const resp = await send('recorderStart');
