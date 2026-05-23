@@ -110,13 +110,9 @@ function send(type) {
   });
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 refreshBackstage.addEventListener('click', async () => {
   refreshBackstage.disabled = true;
-  status.textContent = '正在刷新后台页面并等待同步...';
+  status.textContent = '正在刷新后台页面并同步登录态...';
   detail.textContent = '';
   const resp = await send('refreshBackstageTabs');
   if (!resp.ok) {
@@ -125,9 +121,8 @@ refreshBackstage.addEventListener('click', async () => {
     refreshBackstage.disabled = false;
     return;
   }
-  status.textContent = `已刷新 ${resp.count || 0} 个后台页面`;
-  detail.textContent = resp.count ? '页面加载后会自动同步登录状态。' : '没有找到已打开的后台页面。';
-  await sleep(3500);
+  status.textContent = `已刷新并同步 ${resp.count || 0} 个后台页面`;
+  detail.textContent = resp.detail || (resp.count ? '登录状态已等待同步。' : '没有找到已打开的后台页面。');
   await load();
   refreshBackstage.disabled = false;
 });

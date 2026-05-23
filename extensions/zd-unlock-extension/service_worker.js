@@ -28,6 +28,8 @@ let polling = false;
 const RECORDER_LIMIT = 400;
 const RECORDER_BODY_LIMIT = 8000;
 const RECORDER_RESPONSE_LIMIT = 20000;
+const AUTH_SYNC_WAIT_MS = 12000;
+const FETCH_RETRY_DELAYS_MS = [800, 1800, 3200];
 const SITE_PROFILES = {
   '9001': {
     host: '9sitebg.mvj4e7.com',
@@ -338,6 +340,24 @@ function normalizeRecord(record = {}) {
   };
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms || 0))));
+}
+
+async function fetchWithRetry(url, options = {}, retryDelays = FETCH_RETRY_DELAYS_MS) {
+  let lastErr = null;
+  for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+    try {
+      return await fetch(url, options);
+    } catch (err) {
+      lastErr = err;
+      if (attempt >= retryDelays.length) break;
+      await sleep(retryDelays[attempt]);
+    }
+  }
+  throw lastErr;
+}
+
 async function startRecorder() {
   await chrome.storage.local.set({
     recorderState: { enabled: true, startedAt: new Date().toISOString(), stoppedAt: '', count: 0 },
@@ -379,6 +399,26 @@ async function appendRecorderRecord(record) {
   return { ok: true, count: records.length };
 }
 
+async function authSyncRemainingMs() {
+  const stored = await chrome.storage.local.get(['authSync']);
+  const sync = stored.authSync || {};
+  const remaining = Math.max(0, Number(sync.until || 0) - Date.now());
+  if (!sync.active || !remaining) return 0;
+  return Math.min(remaining, AUTH_SYNC_WAIT_MS);
+}
+
+async function waitForAuthSyncReady() {
+  const remaining = await authSyncRemainingMs();
+  if (!remaining) return false;
+  await setStatus({
+    state: 'auth_refresh',
+    message: '等待后台登录态同步',
+    detail: `约 ${Math.ceil(remaining / 1000)} 秒后继续执行命令。`
+  });
+  await sleep(remaining);
+  return true;
+}
+
 function queryTabs(query) {
   return new Promise((resolve, reject) => {
     chrome.tabs.query(query, (tabs) => {
@@ -408,17 +448,39 @@ async function refreshBackstageTabs() {
     ]
   });
   const uniqueTabs = [...new Map(tabs.filter((tab) => tab && tab.id != null).map((tab) => [tab.id, tab])).values()];
+  const startedAt = new Date();
+  const waitMs = uniqueTabs.length ? AUTH_SYNC_WAIT_MS : 0;
+  await chrome.storage.local.set({
+    authSync: {
+      active: waitMs > 0,
+      startedAt: startedAt.toISOString(),
+      until: Date.now() + waitMs,
+      tabCount: uniqueTabs.length,
+      authMessages: 0
+    }
+  });
   const results = await Promise.all(uniqueTabs.map((tab) => reloadTab(tab.id)));
   const failed = results.filter((item) => !item.ok);
+  if (waitMs) await sleep(waitMs);
+  const stored = await chrome.storage.local.get(['authSync']);
+  await chrome.storage.local.set({
+    authSync: {
+      ...(stored.authSync || {}),
+      active: false,
+      completedAt: new Date().toISOString(),
+      until: 0
+    }
+  });
   const detail = failed.length
     ? `部分页面刷新失败：${failed.map((item) => item.error).filter(Boolean).join('；')}`
-    : '页面加载后会自动同步登录状态。';
+    : '后台页面已刷新，登录状态已等待同步。';
   await setStatus({
     state: 'auth_refresh',
-    message: `已刷新 ${uniqueTabs.length} 个后台页面`,
+    message: `已刷新并同步 ${uniqueTabs.length} 个后台页面`,
     detail
   });
-  return { ok: true, count: uniqueTabs.length, failed: failed.length, detail };
+  pollOnce();
+  return { ok: true, count: uniqueTabs.length, failed: failed.length, detail, waitedMs: waitMs };
 }
 
 async function ack(config, cmd, status, detail = '', extra = {}) {
@@ -604,7 +666,7 @@ function merchantHeaders(config, cmd = {}) {
 async function postJson(url, headers, body) {
   let res;
   try {
-    res = await fetch(url, {
+    res = await fetchWithRetry(url, {
       method: 'POST',
       mode: 'cors',
       credentials: 'include',
@@ -625,7 +687,7 @@ async function postForm(url, headers, body) {
   }
   let res;
   try {
-    res = await fetch(url, {
+    res = await fetchWithRetry(url, {
       method: 'POST',
       mode: 'cors',
       credentials: 'include',
@@ -1437,7 +1499,7 @@ async function runBackendCommand(config, cmd) {
       await findExactMember(config, targetValue);
     }
     const request = commandRequest(config, action, targetValue, cmd);
-    const res = await fetch(request.url, {
+    const res = await fetchWithRetry(request.url, {
       method: 'POST',
       mode: 'cors',
       credentials: 'include',
@@ -1465,6 +1527,15 @@ async function pollOnce() {
   if (polling) return;
   polling = true;
   try {
+    const remaining = await authSyncRemainingMs();
+    if (remaining) {
+      await setStatus({
+        state: 'auth_refresh',
+        message: '后台登录态同步中，暂停轮询',
+        detail: `约 ${Math.ceil(remaining / 1000)} 秒后恢复。`
+      });
+      return;
+    }
     const { config } = await getConfig();
     await setStatus({ state: 'polling', message: '正在轮询命令' });
     const res = await fetch(`${config.botBase}/api/cmd/poll?wait=25&secret=${encodeURIComponent(config.cmdSecret)}`, {
@@ -1473,7 +1544,9 @@ async function pollOnce() {
     const data = await res.json();
     if (data && data.ok && data.cmd && isSupportedCommandAction(data.cmd.action, data.cmd)) {
       await setStatus({ state: 'received', message: `收到命令 ${data.cmd.orderNo || data.cmd.order_no || data.cmd.target_value || data.cmd.member_name || ''}` });
-      await runBackendCommand(config, data.cmd);
+      const waited = await waitForAuthSyncReady();
+      const nextConfig = waited ? (await getConfig()).config : config;
+      await runBackendCommand(nextConfig, data.cmd);
     } else {
       await setStatus({ state: 'idle', message: '暂无命令' });
     }
@@ -1564,17 +1637,26 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const headers = ((message.auth || {}).headers || {});
     const site = String(headers['x-api-site'] || (headers.authorization && headers['user-id'] ? 'merchant' : '') || '');
     const merchantKey = site === 'merchant' ? merchantAuthKey(message.auth || {}) : '';
-    chrome.storage.local.get(['pageAuthByHost', 'pageAuthByMerchant'])
+    chrome.storage.local.get(['pageAuthByHost', 'pageAuthByMerchant', 'authSync'])
       .then((stored) => {
         const pageAuthByHost = stored.pageAuthByHost || {};
         const pageAuthByMerchant = stored.pageAuthByMerchant || {};
+        const authSync = stored.authSync || {};
         if (host) pageAuthByHost[host] = message.auth;
         if (site) pageAuthByHost[site] = message.auth;
         if (merchantKey) pageAuthByMerchant[merchantKey] = message.auth;
+        const nextAuthSync = authSync.active
+          ? {
+              ...authSync,
+              authMessages: Number(authSync.authMessages || 0) + 1,
+              lastAuthAt: new Date().toISOString()
+            }
+          : authSync;
         return chrome.storage.local.set({
           pageAuth: message.auth,
           pageAuthByHost,
-          pageAuthByMerchant: limitedMerchantAuthStore(pageAuthByMerchant)
+          pageAuthByMerchant: limitedMerchantAuthStore(pageAuthByMerchant),
+          authSync: nextAuthSync
         });
       })
       .then(() => setStatus({

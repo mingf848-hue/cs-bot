@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "CS Bot Unlock",
-  "version": "1.2.12",
+  "version": "1.2.13",
   "description": "Poll CS Bot commands, call backend endpoints, and record backend API flows.",
   "permissions": ["alarms", "storage", "notifications", "tabs"],
   "host_permissions": [
