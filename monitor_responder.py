@@ -361,6 +361,7 @@ ZD_AI_PARSE_ENABLED = os.environ.get("ZD_AI_PARSE_ENABLED", "1").strip().lower()
 ZD_AI_PARSE_RETRIES = int_env("ZD_AI_PARSE_RETRIES", 2, 0, 5)
 ZD_AI_PARSE_TIMEOUT = float_env("ZD_AI_PARSE_TIMEOUT", 20, 3.0, 60.0)
 ZD_AI_PARSE_MODEL = os.environ.get("ZD_AI_PARSE_MODEL") or os.environ.get("AI_MODEL_NAME") or "gemini-3.1-flash-lite-preview"
+ZD_RULE_MAX_CONCURRENT = int_env("ZD_RULE_MAX_CONCURRENT", 12, 1, 100)
 
 def zd_ai_parse_url():
     explicit = os.environ.get("ZD_AI_PARSE_URL", "").strip()
@@ -567,6 +568,36 @@ def resolve_client_name(name):
         if str(item).lower() == wanted_lower:
             return item
     return ""
+
+def get_rule_task_semaphore():
+    global rule_task_semaphore
+    if rule_task_semaphore is None:
+        rule_task_semaphore = asyncio.Semaphore(ZD_RULE_MAX_CONCURRENT)
+    return rule_task_semaphore
+
+def schedule_zd_rule_task(coro, label="规则任务"):
+    semaphore = get_rule_task_semaphore()
+
+    async def runner():
+        async with semaphore:
+            await coro
+
+    task = asyncio.create_task(runner())
+    active_rule_tasks.add(task)
+    logger.info(f"🧵 [ZD-Concurrency] 已投递 {label} | active={len(active_rule_tasks)} limit={ZD_RULE_MAX_CONCURRENT}")
+
+    def done_callback(done_task):
+        active_rule_tasks.discard(done_task)
+        try:
+            exc = done_task.exception()
+        except asyncio.CancelledError:
+            logger.warning(f"⚠️ [ZD-Concurrency] {label} 已取消 | active={len(active_rule_tasks)}")
+            return
+        if exc:
+            logger.error(f"❌ [ZD-Concurrency] {label} 异常: {exc}")
+
+    task.add_done_callback(done_callback)
+    return task
 
 def rule_has_backend_unlock(rule):
     return any(
@@ -1416,6 +1447,8 @@ DEFAULT_CONFIG = {
 current_config = DEFAULT_CONFIG.copy()
 rule_timers = {}
 scheduled_message_runs = {}
+active_rule_tasks = set()
+rule_task_semaphore = None
 VALID_REPLY_TYPES = {"text", "edit_prev", "forward", "copy_file", "amount_logic", "preempt_check", "notify_user", "backend_unlock"}
 BACKEND_UNLOCK_ACTIONS = {"unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan", "send_site_inner_msg", "member_data_overview", "urge_settlement"}
 
@@ -3621,6 +3654,134 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             "action_count": max(0, len(sent_msgs) - initial_sent_count) + (1 if notify_sent else 0) + backend_actions,
         }
 
+    async def run_monitor_rule_actions(target_client, target_name, rule, event, sender_name, match_started):
+        rule_id = ensure_rule_id(rule)
+        result = await execute_rule_steps(target_client, rule, event, event.message, sender_name)
+        action_count = result["action_count"]
+        if result["action_failed"]:
+            if action_count:
+                rule_timers[rule_id] = time.time()
+                logger.warning(f"⚠️ [Monitor] 规则 '{rule.get('name')}' 已部分执行，已进入冷却")
+            else:
+                rule_timers.pop(rule_id, None)
+            record_runtime_event(
+                "monitor",
+                "failed",
+                "执行动作失败",
+                rule=rule,
+                event=event,
+                sender_name=sender_name,
+                target_account=target_name,
+                action_count=action_count,
+                duration_ms=(time.time() - match_started) * 1000
+            )
+            return
+
+        if result["preempted"]:
+            rule_timers.pop(rule_id, None)
+            record_runtime_event(
+                "monitor",
+                "skipped",
+                "抢答检测命中，已删除本规则已发送消息",
+                rule=rule,
+                event=event,
+                sender_name=sender_name,
+                target_account=target_name,
+                action_count=action_count,
+                duration_ms=(time.time() - match_started) * 1000
+            )
+            return
+
+        if action_count:
+            rule_timers[rule_id] = time.time()
+            record_runtime_event(
+                "monitor",
+                "success",
+                "规则动作执行完成",
+                rule=rule,
+                event=event,
+                sender_name=sender_name,
+                target_account=target_name,
+                action_count=action_count,
+                duration_ms=(time.time() - match_started) * 1000
+            )
+        else:
+            rule_timers.pop(rule_id, None)
+            logger.warning(f"⚠️ [Monitor] 规则 '{rule.get('name')}' 未完成任何发送动作，不进入冷却")
+            record_runtime_event(
+                "monitor",
+                "skipped",
+                "规则触发但没有完成任何发送动作",
+                rule=rule,
+                event=event,
+                sender_name=sender_name,
+                target_account=target_name,
+                action_count=0,
+                duration_ms=(time.time() - match_started) * 1000
+            )
+
+    async def run_approval_rule_actions(replier_client, target_name, rule, event, original_msg, approver, orig_sender, approval_started):
+        approval_actions = 0
+        approval_errors = []
+        action = rule.get("approval_action", {})
+        approval_sent_msgs = []
+        try:
+            await asyncio.sleep(random.uniform(float(action.get("delay_1_min", 1.0)), float(action.get("delay_1_max", 2.0))))
+            if action.get("reply_admin"):
+                sent_admin_reply = await replier_client.send_message(event.chat_id, format_caption(action["reply_admin"]), reply_to=event.id)
+                remember_sent_message(approval_sent_msgs, event.chat_id, sent_admin_reply)
+                approval_actions += 1
+        except Exception as e:
+            approval_errors.append(f"回复领导失败：{e}")
+            logger.error(f"❌ [Approval] 回复领导失败: {e}")
+
+        approval_steps = normalize_reply_steps(action.get("replies", []))
+        if not approval_steps:
+            legacy_forward = str(action.get("forward_to") or "").strip()
+            legacy_reply = str(action.get("reply_origin") or "").strip()
+            if legacy_forward:
+                approval_steps.append({
+                    "type": "forward",
+                    "forward_to": legacy_forward,
+                    "min": action.get("delay_2_min", 1.0),
+                    "max": action.get("delay_2_max", 3.0),
+                })
+            if legacy_reply:
+                approval_steps.append({
+                    "type": "text",
+                    "text": legacy_reply,
+                    "min": action.get("delay_3_min", 1.0),
+                    "max": action.get("delay_3_max", 2.0),
+                })
+
+        step_result = await execute_rule_steps(
+            replier_client,
+            rule,
+            MessageEventView(original_msg),
+            original_msg,
+            get_sender_name(orig_sender),
+            steps=approval_steps,
+            initial_sent_msgs=approval_sent_msgs,
+            preempt_after_id=event.id,
+            preempt_target_ids=[event.id],
+        )
+        approval_actions += step_result["action_count"]
+        if step_result["action_failed"]:
+            approval_errors.append("同意后动作流执行失败")
+        if step_result["preempted"]:
+            approval_errors.append("抢答检测命中，已删除同意后动作流消息")
+        record_runtime_event(
+            "approval",
+            "skipped" if step_result["preempted"] else ("failed" if approval_errors else "success"),
+            "；".join(approval_errors) if approval_errors else "审批动作流执行完成",
+            rule=rule,
+            event=event,
+            sender_name=get_sender_name(approver),
+            target_account=target_name,
+            action_count=approval_actions,
+            duration_ms=(time.time() - approval_started) * 1000
+        )
+
     @client.on(events.NewMessage())
     async def multi_rule_handler(event):
         if event.text == "/debug": await event.reply("Monitor Debug: Alive v78 (Full Source)"); return
@@ -3701,6 +3862,21 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                         duration_ms=(time.time() - approval_started) * 1000
                                     )
                                     return
+
+                                schedule_zd_rule_task(
+                                    run_approval_rule_actions(
+                                        replier_client,
+                                        target_name,
+                                        rule,
+                                        event,
+                                        original_msg,
+                                        approver,
+                                        orig_sender,
+                                        approval_started,
+                                    ),
+                                    f"审批:{rule.get('name')} Msg={event.id}"
+                                )
+                                return
 
                                 approval_sent_msgs = []
                                 try:
@@ -3818,6 +3994,14 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                         )
                         break
                     if target_name != MAIN_NAME: logger.info(f"🔀 [Routing] 使用指定账号回复: {target_name}")
+
+                    if not rule_has_backend_unlock(rule):
+                        rule_timers[rule_id] = time.time()
+                    schedule_zd_rule_task(
+                        run_monitor_rule_actions(target_client, target_name, rule, event, sender_name, match_started),
+                        f"规则:{rule.get('name')} Msg={event.id}"
+                    )
+                    break
 
                     sent_msgs = []
                     notify_sent = False
