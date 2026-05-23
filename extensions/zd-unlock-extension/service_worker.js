@@ -134,6 +134,55 @@ function authMatches(auth, targetHost, targetSite, targetHosts = [targetHost]) {
     || String(headers['x-api-site'] || '') === targetSite;
 }
 
+function safeDecodeText(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
+function pageAuthHeaders(auth = {}) {
+  return (auth && auth.headers) || {};
+}
+
+function merchantAuthKey(auth = {}) {
+  const headers = pageAuthHeaders(auth);
+  const merchantName = safeDecodeText(headers.merchantname || headers.merchantName || '');
+  const userId = String(headers['user-id'] || headers.userId || '').trim();
+  if (!merchantName && !userId) return '';
+  return `${merchantName || 'unknown'}|${userId || 'unknown'}`;
+}
+
+function merchantAuthLabel(authOrConfig = {}) {
+  const headers = pageAuthHeaders(authOrConfig);
+  const merchantName = safeDecodeText(headers.merchantname || headers.merchantName || '');
+  const userId = String(headers['user-id'] || headers.userId || '').trim();
+  if (merchantName && userId) return `${merchantName}(${userId})`;
+  if (merchantName) return merchantName;
+  if (userId) return `user-id ${userId}`;
+  return '场馆账号';
+}
+
+function merchantAuthPriority(auth, cmd = {}, index = 0) {
+  const label = merchantAuthLabel(auth).toLowerCase();
+  const preferred = String(cmd.merchant_name || cmd.merchantName || cmd.venue_name || cmd.venueName || cmd.merchant || cmd.venue || '').trim().toLowerCase();
+  if (preferred && label.includes(preferred)) return -100 + index / 1000;
+  if (label.includes('冠名')) return index / 1000;
+  if (label.includes('熊猫') || label.includes('panda')) return 1 + index / 1000;
+  return 2 + index / 1000;
+}
+
+function limitedMerchantAuthStore(pageAuthByMerchant = {}, limit = 8) {
+  return Object.fromEntries(
+    Object.entries(pageAuthByMerchant)
+      .sort((a, b) => String(b[1]?.capturedAt || '').localeCompare(String(a[1]?.capturedAt || '')))
+      .slice(0, limit)
+  );
+}
+
 function isAllowedMerchantEndpoint(key, url) {
   const allowed = new Set([
     'merchantStatisticsUrl',
@@ -153,7 +202,7 @@ function isAllowedMerchantEndpoint(key, url) {
 }
 
 async function getConfig() {
-  const stored = await chrome.storage.local.get(['config', 'pageAuth', 'pageAuthByHost']);
+  const stored = await chrome.storage.local.get(['config', 'pageAuth', 'pageAuthByHost', 'pageAuthByMerchant']);
   return {
     enabled: true,
     config: {
@@ -164,44 +213,81 @@ async function getConfig() {
         ...((stored.config && stored.config.headers) || {})
       },
       pageAuth: stored.pageAuth || null,
-      pageAuthByHost: stored.pageAuthByHost || {}
+      pageAuthByHost: stored.pageAuthByHost || {},
+      pageAuthByMerchant: stored.pageAuthByMerchant || {}
     }
   };
 }
 
-function configForAction(config, action, cmd = {}) {
+function uniqueAuthCandidates(candidates = []) {
+  const seen = new Set();
+  const out = [];
+  for (const auth of candidates) {
+    if (!auth) continue;
+    const headers = pageAuthHeaders(auth);
+    const key = merchantAuthKey(auth)
+      || `${authHost(auth)}|${auth.href || ''}|${headers['x-api-site'] || ''}|${headers['x-api-user'] || ''}|${headers.authorization || ''}|${headers['user-id'] || ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(auth);
+  }
+  return out;
+}
+
+function authConfigsForAction(config, action, cmd = {}) {
   const targetSite = actionSite(action, cmd);
   const profile = profileForSite(targetSite);
   const targetHost = profile.host;
   const targetHosts = profile.authHosts || [targetHost];
   const requiredAuthHeaders = profile.requiredAuthHeaders || ['x-api-token', 'x-api-user'];
   const byHost = config.pageAuthByHost || {};
+  const byMerchant = config.pageAuthByMerchant || {};
   const currentAuth = config.pageAuth || null;
-  const candidates = [
-    byHost[targetHost],
-    ...targetHosts.map((host) => byHost[host]),
-    byHost[targetSite],
-    currentAuth,
-    ...Object.values(byHost)
-  ].filter(Boolean);
-  const matchedAuth = candidates.find((auth) => {
-    const headers = (auth && auth.headers) || {};
+  const merchantAuths = Object.values(byMerchant);
+  const candidates = targetSite === 'merchant'
+    ? [
+        ...merchantAuths,
+        byHost[targetSite],
+        byHost[targetHost],
+        ...targetHosts.map((host) => byHost[host]),
+        currentAuth,
+        ...Object.values(byHost)
+      ]
+    : [
+        byHost[targetHost],
+        ...targetHosts.map((host) => byHost[host]),
+        byHost[targetSite],
+        currentAuth,
+        ...Object.values(byHost)
+      ];
+  let matchedAuths = uniqueAuthCandidates(candidates).filter((auth) => {
+    const headers = pageAuthHeaders(auth);
     return authMatches(auth, targetHost, targetSite, targetHosts)
       && requiredAuthHeaders.every((key) => headers[key]);
   });
-  const authHeaders = (matchedAuth && matchedAuth.headers) || {};
-  if (!matchedAuth || !requiredAuthHeaders.every((key) => authHeaders[key])) {
+  if (targetSite === 'merchant') {
+    matchedAuths = matchedAuths
+      .map((auth, index) => ({ auth, priority: merchantAuthPriority(auth, cmd, index) }))
+      .sort((a, b) => a.priority - b.priority)
+      .map((item) => item.auth);
+  }
+  if (!matchedAuths.length) {
     throw new Error(`${profile.label}未登录`);
   }
-  return {
+  return matchedAuths.map((matchedAuth) => ({
     ...config,
     ...profile,
     headers: {
       ...config.headers,
       ...(matchedAuth.headers || {})
     },
-    pageAuth: matchedAuth
-  };
+    pageAuth: matchedAuth,
+    pageAuthLabel: targetSite === 'merchant' ? merchantAuthLabel(matchedAuth) : ''
+  }));
+}
+
+function configForAction(config, action, cmd = {}) {
+  return authConfigsForAction(config, action, cmd)[0];
 }
 
 async function setStatus(status) {
@@ -1099,14 +1185,18 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
   if (!config.merchantSettlementListUrl) throw new Error('场馆结算状态接口未配置');
 
   const headers = merchantHeaders(config, cmd);
-  await setStatus({ state: 'running', message: `催结算查询注单 ${orderNo}` });
+  const venueLabel = config.pageAuthLabel || merchantAuthLabel(config);
+  await setStatus({ state: 'running', message: `催结算查询注单 ${orderNo} (${venueLabel})` });
   const ticket = await postJson(merchantUrl(config.merchantTicketListUrl), headers, merchantTicketBody(cmd, orderNo));
   if (!merchantApiOk(ticket)) {
     throw new Error(`查询注单失败 HTTP ${ticket.res.status}: ${ticket.text.slice(0, 300)}`);
   }
   const order = merchantList(ticket.data)[0];
   if (!order) {
-    throw new Error(`未找到注单：${orderNo}`);
+    const err = new Error(`未找到注单：${orderNo}`);
+    err.code = 'merchant_order_not_found';
+    err.venueLabel = venueLabel;
+    throw err;
   }
 
   const allDetails = orderDetails(order);
@@ -1229,6 +1319,24 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
   await ack(config, cmd, 'reply_origin', msg, { reply_text: replyText });
 }
 
+async function runUrgeSettlementCommandWithFallback(configs, cmd, orderNo) {
+  const tried = [];
+  for (const candidate of configs) {
+    try {
+      await runUrgeSettlementCommand(candidate, cmd, orderNo);
+      return;
+    } catch (err) {
+      if (err && err.code === 'merchant_order_not_found') {
+        tried.push(err.venueLabel || candidate.pageAuthLabel || merchantAuthLabel(candidate));
+        continue;
+      }
+      throw err;
+    }
+  }
+  const suffix = tried.length ? `（已查询：${[...new Set(tried)].join('、')}）` : '';
+  throw new Error(`所有场馆账号均未找到注单：${orderNo}${suffix}`);
+}
+
 async function runBackendCommand(config, cmd) {
   const action = normalizeCommandAction(cmd.action, cmd);
   const rawValue = action === 'merchant_order_statistics' || action === 'urge_settlement'
@@ -1241,6 +1349,11 @@ async function runBackendCommand(config, cmd) {
   const label = commandLabel(action);
   await setStatus({ state: 'running', message: `执行${label} ${targetValue}` });
   try {
+    if (action === 'urge_settlement') {
+      const configs = authConfigsForAction(config, action, cmd);
+      await runUrgeSettlementCommandWithFallback(configs, cmd, targetValue);
+      return;
+    }
     config = configForAction(config, action, cmd);
     if (action === 'migrate_milan') {
       await runMigrateMilanCommand(config, cmd, targetValue);
@@ -1252,10 +1365,6 @@ async function runBackendCommand(config, cmd) {
     }
     if (action === 'merchant_order_statistics') {
       await runMerchantOrderStatisticsCommand(config, cmd, targetValue);
-      return;
-    }
-    if (action === 'urge_settlement') {
-      await runUrgeSettlementCommand(config, cmd, targetValue);
       return;
     }
     if (action === 'unlock_sms' || action === 'clear_login_error') {
@@ -1382,12 +1491,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const host = authHost(message.auth || {});
     const headers = ((message.auth || {}).headers || {});
     const site = String(headers['x-api-site'] || (headers.authorization && headers['user-id'] ? 'merchant' : '') || '');
-    chrome.storage.local.get(['pageAuthByHost'])
+    const merchantKey = site === 'merchant' ? merchantAuthKey(message.auth || {}) : '';
+    chrome.storage.local.get(['pageAuthByHost', 'pageAuthByMerchant'])
       .then((stored) => {
         const pageAuthByHost = stored.pageAuthByHost || {};
+        const pageAuthByMerchant = stored.pageAuthByMerchant || {};
         if (host) pageAuthByHost[host] = message.auth;
         if (site) pageAuthByHost[site] = message.auth;
-        return chrome.storage.local.set({ pageAuth: message.auth, pageAuthByHost });
+        if (merchantKey) pageAuthByMerchant[merchantKey] = message.auth;
+        return chrome.storage.local.set({
+          pageAuth: message.auth,
+          pageAuthByHost,
+          pageAuthByMerchant: limitedMerchantAuthStore(pageAuthByMerchant)
+        });
       })
       .then(() => setStatus({
         state: 'auth',
