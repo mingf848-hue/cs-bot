@@ -994,6 +994,8 @@ function memberDataOverviewBodyText(memberId, startAt, endAt) {
 
 function expectedAgentCodeFromText(cmd = {}, targetValue = '', explicitCode = '') {
   if (explicitCode) return String(explicitCode).trim();
+  const directCode = String(cmd.agent_code || cmd.agentCode || cmd.expected_agent_code || cmd.expectedAgentCode || '').trim();
+  if (directCode) return directCode;
   const text = commandSourceText(cmd);
   if (!text) return '';
   const escapedTarget = escapeRegExp(String(targetValue || '').trim());

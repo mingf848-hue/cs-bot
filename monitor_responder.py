@@ -335,6 +335,238 @@ def event_text_preview(event, limit=120):
 BACKEND_UNLOCK_ACCOUNT_PATTERN = r"([A-Za-z0-9][A-Za-z0-9._-]{1,63})"
 BACKEND_ORDER_NO_PATTERN = r"(?<!\d)(\d{12,24})(?!\d)"
 BACKEND_PROXY_IP_PATTERN = r"\b((?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d))\b"
+def int_env(name, default, min_value=None, max_value=None):
+    try:
+        value = int(os.environ.get(name, default) or default)
+    except Exception:
+        value = int(default)
+    if min_value is not None:
+        value = max(min_value, value)
+    if max_value is not None:
+        value = min(max_value, value)
+    return value
+
+def float_env(name, default, min_value=None, max_value=None):
+    try:
+        value = float(os.environ.get(name, default) or default)
+    except Exception:
+        value = float(default)
+    if min_value is not None:
+        value = max(min_value, value)
+    if max_value is not None:
+        value = min(max_value, value)
+    return value
+
+ZD_AI_PARSE_ENABLED = os.environ.get("ZD_AI_PARSE_ENABLED", "1").strip().lower() not in ("0", "false", "off", "no")
+ZD_AI_PARSE_RETRIES = int_env("ZD_AI_PARSE_RETRIES", 2, 0, 5)
+ZD_AI_PARSE_TIMEOUT = float_env("ZD_AI_PARSE_TIMEOUT", 20, 3.0, 60.0)
+ZD_AI_PARSE_MODEL = os.environ.get("ZD_AI_PARSE_MODEL") or os.environ.get("AI_MODEL_NAME") or "gemini-3.1-flash-lite-preview"
+
+def zd_ai_parse_url():
+    explicit = os.environ.get("ZD_AI_PARSE_URL", "").strip()
+    if explicit:
+        return explicit
+    proxy_url = os.environ.get("AI_PROXY_URL", "").strip()
+    if not proxy_url:
+        return ""
+    return f"{proxy_url.rstrip('/')}/v1beta/models/{ZD_AI_PARSE_MODEL}:generateContent"
+
+def zd_ai_parse_available():
+    return bool(ZD_AI_PARSE_ENABLED and zd_ai_parse_url())
+
+def extract_json_object(text):
+    raw = str(text or "").strip()
+    if not raw:
+        raise ValueError("AI返回为空")
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw, flags=re.IGNORECASE)
+    if fenced:
+        try:
+            return json.loads(fenced.group(1).strip())
+        except Exception:
+            pass
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start >= 0 and end > start:
+        return json.loads(raw[start:end + 1])
+    raise ValueError("AI返回不是JSON对象")
+
+def ai_backend_action_schema(action):
+    if action == "urge_settlement":
+        return "target/order_no 必须是12到24位注单号。"
+    if action == "add_proxy_whitelist":
+        return "target/ip 必须是IPv4地址。"
+    if action == "member_data_overview":
+        return "target/member 是会员账号；data_fields 只能从 总输赢、总流水、总存款、总提款、总红利、总返水 中选择；如出现时间范围，startAt/endAt 用 YYYY-MM-DD。"
+    return "target/member 是会员账号。"
+
+def build_ai_backend_parse_prompt(text, action, rule_name="", previous_error=""):
+    today = now_bj().strftime("%Y-%m-%d")
+    return f"""
+你是 ZD 后台动作消息解析器，只能输出一个 JSON 对象，不要解释。
+
+当前日期：{today}
+规则名称：{rule_name or "-"}
+固定动作：{action}
+动作字段要求：{ai_backend_action_schema(action)}
+
+原始消息：
+{str(text or "")[:3000]}
+
+请从原始消息中提取后台动作参数。不要发明不存在的信息。
+输出 JSON schema：
+{{
+  "ok": true,
+  "target": "",
+  "member": "",
+  "order_no": "",
+  "ip": "",
+  "data_fields": [],
+  "startAt": "",
+  "endAt": "",
+  "private_reply": false,
+  "telegram_account": "",
+  "agent_code": "",
+  "reason": ""
+}}
+
+字段规则：
+- target 是该动作最终目标；催结算填注单号，代理加白填IP，其它账号类填会员账号。
+- member 仅账号类填写；order_no 仅催结算填写；ip 仅代理加白填写。
+- data_fields 只在查数据时填写，例如 ["总输赢","总红利","总返水"]；没明确要求字段时返回空数组。
+- private_reply 只有明确要求私发/私聊/发我时才是 true。
+- telegram_account 只有明确指定发送账号时填写账号名，否则空。
+- agent_code 只有消息里明确提供上级代理编号时填写，通常是账号后面的5到12位数字。
+- 解析失败时 ok=false，并在 reason 写明原因。
+{f"上次解析失败原因：{previous_error}" if previous_error else ""}
+""".strip()
+
+def call_zd_ai_parse_once(text, action, rule_name="", previous_error=""):
+    url = zd_ai_parse_url()
+    if not url:
+        raise RuntimeError("AI解析接口未配置")
+    prompt = build_ai_backend_parse_prompt(text, action, rule_name=rule_name, previous_error=previous_error)
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "response_mime_type": "application/json",
+            "temperature": 0.0
+        }
+    }
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=ZD_AI_PARSE_TIMEOUT) as resp:
+        status = getattr(resp, "status", resp.getcode())
+        resp_text = resp.read().decode("utf-8", errors="replace")
+    if status < 200 or status >= 300:
+        raise RuntimeError(f"AI HTTP {status}: {resp_text[:200]}")
+    data = json.loads(resp_text)
+    raw_content = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [{}])[0].get("text", "")
+    return extract_json_object(raw_content)
+
+def clean_ai_data_fields(fields):
+    allowed = {"总输赢", "总流水", "总存款", "总提款", "总红利", "总返水"}
+    aliases = {"总反水": "总返水", "反水": "总返水", "返水": "总返水", "输赢": "总输赢", "红利": "总红利", "流水": "总流水"}
+    out = []
+    for item in fields if isinstance(fields, list) else []:
+        label = aliases.get(str(item or "").strip(), str(item or "").strip())
+        if label in allowed and label not in out:
+            out.append(label)
+    return out
+
+def valid_iso_date(value):
+    text = str(value or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return ""
+    try:
+        datetime.strptime(text, "%Y-%m-%d")
+        return text
+    except Exception:
+        return ""
+
+def validate_ai_backend_parse(raw, action):
+    if not isinstance(raw, dict):
+        raise ValueError("AI返回不是对象")
+    if raw.get("ok") is False:
+        raise ValueError(str(raw.get("reason") or "AI表示无法解析"))
+    target = str(raw.get("target") or "").strip()
+    member = str(raw.get("member") or "").strip().lower()
+    order_no = str(raw.get("order_no") or "").strip()
+    ip = str(raw.get("ip") or "").strip()
+
+    if action == "urge_settlement":
+        target = order_no or target
+        if not re.fullmatch(r"\d{12,24}", target):
+            raise ValueError("AI未提取到有效注单号")
+    elif action == "add_proxy_whitelist":
+        target = ip or target
+        if not re.fullmatch(BACKEND_PROXY_IP_PATTERN, target):
+            raise ValueError("AI未提取到有效IPv4")
+    else:
+        target = member or target.lower()
+        if not re.fullmatch(BACKEND_UNLOCK_ACCOUNT_PATTERN, target):
+            raise ValueError("AI未提取到有效会员账号")
+
+    parsed = {
+        "target": target,
+        "member": member,
+        "order_no": order_no,
+        "ip": ip,
+        "data_fields": clean_ai_data_fields(raw.get("data_fields")),
+        "startAt": valid_iso_date(raw.get("startAt")),
+        "endAt": valid_iso_date(raw.get("endAt")),
+        "private_reply": bool(raw.get("private_reply")),
+        "telegram_account": str(raw.get("telegram_account") or "").strip(),
+        "agent_code": str(raw.get("agent_code") or "").strip(),
+        "reason": str(raw.get("reason") or "").strip(),
+    }
+    if parsed["agent_code"] and not re.fullmatch(r"\d{5,12}", parsed["agent_code"]):
+        parsed["agent_code"] = ""
+    return parsed
+
+def parse_backend_message_with_ai_sync(text, action, rule_name=""):
+    if not zd_ai_parse_available():
+        return {}
+    last_error = ""
+    for attempt in range(ZD_AI_PARSE_RETRIES + 1):
+        try:
+            raw = call_zd_ai_parse_once(text, action, rule_name=rule_name, previous_error=last_error)
+            parsed = validate_ai_backend_parse(raw, action)
+            logger.info(f"🤖 [ZD-AI] 解析成功 action={action} target={parsed.get('target')} attempt={attempt + 1}")
+            return parsed
+        except Exception as e:
+            last_error = str(e)
+            logger.warning(f"⚠️ [ZD-AI] 解析失败 action={action} attempt={attempt + 1}/{ZD_AI_PARSE_RETRIES + 1}: {last_error}")
+            if attempt < ZD_AI_PARSE_RETRIES:
+                time.sleep(min(2.0, 0.4 * (attempt + 1)))
+    logger.warning(f"⚠️ [ZD-AI] 多次解析失败，回退正则 action={action}: {last_error}")
+    return {}
+
+async def parse_backend_message_with_ai(text, action, rule_name=""):
+    if not zd_ai_parse_available():
+        return {}
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: parse_backend_message_with_ai_sync(text, action, rule_name))
+
+def resolve_client_name(name):
+    wanted = str(name or "").strip()
+    if not wanted:
+        return ""
+    if wanted in global_clients:
+        return wanted
+    wanted_lower = wanted.lower()
+    for item in global_clients.keys():
+        if str(item).lower() == wanted_lower:
+            return item
+    return ""
 
 def rule_has_backend_unlock(rule):
     return any(
@@ -1308,9 +1540,10 @@ def normalize_reply_steps(raw_replies):
         clean_replies.append(r)
     return clean_replies
 
-def queue_backend_unlock_command(target_value, rule, event, action="unlock_sms", step=None):
+def queue_backend_unlock_command(target_value, rule, event, action="unlock_sms", step=None, ai_parse=None):
     cmd_id = f"unlock_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
     action = normalize_backend_action(action)
+    ai_parse = ai_parse if isinstance(ai_parse, dict) else {}
     command = {
         "id": cmd_id,
         "action": action,
@@ -1323,12 +1556,32 @@ def queue_backend_unlock_command(target_value, rule, event, action="unlock_sms",
         "source_text": getattr(event, "text", None) or getattr(event, "raw_text", "") or "",
         "queued_at": now_bj().isoformat(),
     }
+    if ai_parse:
+        command["ai_parse"] = {
+            key: ai_parse.get(key)
+            for key in ("target", "data_fields", "startAt", "endAt", "private_reply", "telegram_account", "agent_code")
+            if ai_parse.get(key) not in (None, "", [])
+        }
+    if action == "member_data_overview":
+        if ai_parse.get("data_fields"):
+            command["data_fields"] = ai_parse["data_fields"]
+        if ai_parse.get("startAt"):
+            command["startAt"] = ai_parse["startAt"]
+        if ai_parse.get("endAt"):
+            command["endAt"] = ai_parse["endAt"]
+        if ai_parse.get("agent_code"):
+            command["agent_code"] = ai_parse["agent_code"]
     if action == "urge_settlement":
+        telegram_account = str((step or {}).get("telegram_account", "") or "").strip()
+        parsed_account = str(ai_parse.get("telegram_account") or "").strip()
+        resolved_account = resolve_client_name(parsed_account)
+        if resolved_account:
+            telegram_account = resolved_account
         command.update({
             "backend_site": "merchant",
             "orderNo": target_value,
             "telegram_target": str((step or {}).get("forward_to", "") or "").strip(),
-            "telegram_account": str((step or {}).get("telegram_account", "") or "").strip(),
+            "telegram_account": telegram_account,
             "telegram_template": str((step or {}).get("text", "") or "").strip(),
         })
     if action == "unlock_sms":
@@ -1426,13 +1679,14 @@ async def notify_backend_failure(step, rule, event, target_value, action, result
 
 async def execute_backend_unlock_step(step, rule, event, source_text, target_client=None):
     backend_action = normalize_backend_action((step or {}).get("backend_action", "unlock_sms"))
-    target_value = extract_backend_target(source_text or "", step)
+    ai_parse = await parse_backend_message_with_ai(source_text or "", backend_action, str((rule or {}).get("name") or ""))
+    target_value = str((ai_parse or {}).get("target") or "").strip() or extract_backend_target(source_text or "", step)
     if not target_value:
         result = {"status": "no_target", "detail": "未提取到目标值"}
         await notify_backend_failure(step, rule, event, "", backend_action, result)
         raise RuntimeError(f"后台动作未提取到目标值：{command_action_label(backend_action)}")
 
-    cmd_id = queue_backend_unlock_command(target_value, rule, event, backend_action, step=step)
+    cmd_id = queue_backend_unlock_command(target_value, rule, event, backend_action, step=step, ai_parse=ai_parse)
     logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 已下发后台指令: {backend_action} {target_value} | id={cmd_id}")
     result = await wait_backend_command_result(cmd_id, timeout=90.0)
     if not backend_result_ok(result):
@@ -1442,7 +1696,8 @@ async def execute_backend_unlock_step(step, rule, event, source_text, target_cli
     reply_text = str((result or {}).get("reply_text") or "").strip()
     if reply_text and target_client:
         await asyncio.sleep(random_delay_from_step(step or {}, "result_reply_min", "result_reply_max", 1.8, 3.8))
-        if backend_action == "member_data_overview" and member_data_private_requested(source_text) and not reply_text.startswith("代理编码不正确"):
+        private_reply = member_data_private_requested(source_text) or bool((ai_parse or {}).get("private_reply"))
+        if backend_action == "member_data_overview" and private_reply and not reply_text.startswith("代理编码不正确"):
             sender_id = getattr(event, "sender_id", None)
             if not sender_id:
                 raise RuntimeError("无法识别原消息发送者，不能私发查数据结果")
