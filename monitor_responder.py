@@ -1921,7 +1921,7 @@ SETTINGS_HTML = """
         </div>
 
         <div class="flex items-center gap-3">
-            <a href="/tool/zd_unlock_extension.crx" class="script-link"><i class="fa-solid fa-puzzle-piece"></i>Chrome扩展CRX</a>
+            <a href="/tool/zd_unlock_extension.zip" class="script-link"><i class="fa-solid fa-puzzle-piece"></i>Chrome扩展ZIP</a>
             <label class="flex items-center gap-1.5 cursor-pointer select-none bg-slate-50 px-2 py-1 rounded border border-slate-200 hover:border-slate-300 transition-colors" title="手动总开关">
                 <div class="w-2 h-2 rounded-full" :class="config.enabled ? 'bg-green-500' : 'bg-red-500'"></div>
                 <input type="checkbox" v-model="config.enabled" @change="saveConfig" class="hidden">
@@ -2976,19 +2976,6 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             buf.getvalue(),
             mimetype="application/zip",
             headers={"Content-Disposition": "attachment; filename=zd-unlock-extension.zip"}
-        )
-
-    @app.route('/tool/zd_unlock_extension.crx')
-    def zd_unlock_extension_crx():
-        crx_path = os.path.join(os.path.dirname(__file__), "extensions", "zd-unlock-extension.crx")
-        if not os.path.exists(crx_path):
-            return Response("CRX 文件不存在，请先打包扩展。", status=404, mimetype="text/plain; charset=utf-8")
-        with open(crx_path, "rb") as f:
-            data = f.read()
-        return Response(
-            data,
-            mimetype="application/x-chrome-extension",
-            headers={"Content-Disposition": "attachment; filename=zd-unlock-extension.crx"}
         )
 
     @app.route('/tool/9site_storage_scan.js')
