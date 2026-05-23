@@ -1364,7 +1364,7 @@ async def notify_backend_failure(step, rule, event, target_value, action, result
         return False
     status = str((result or {}).get("status") or "failed")
     detail = str((result or {}).get("detail") or "")
-    default_text = "后台自动处理失败，请人工核查。\n规则：{rule}\n动作：{action}\n目标：{target}\n状态：{status}"
+    default_text = "后台自动处理失败，请人工核查。\n规则：{rule}\n动作：{action}\n目标：{target}\n状态：{status}\n原因：{detail}"
     tpl = (step or {}).get("fail_notify_text") or default_text
     text = format_bot_notice(tpl, event, rule, "")
     replacements = {
@@ -1372,6 +1372,7 @@ async def notify_backend_failure(step, rule, event, target_value, action, result
         "{action}": command_action_label(action),
         "{status}": status,
         "{detail}": detail[:500],
+        "{reason}": detail[:500],
     }
     for key, value in replacements.items():
         text = text.replace(key, value)

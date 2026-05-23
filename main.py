@@ -2787,6 +2787,35 @@ def format_start_command_reply(message):
 
     return "\n".join(lines)
 
+def parse_withdrawal_table_text(text):
+    raw_lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    if len(raw_lines) < 5:
+        return None
+
+    member = raw_lines[0]
+    real_name = raw_lines[1]
+    detail_line = next((line for line in raw_lines[2:] if re.search(r"\bHWD\d{12,}\b", line)), "")
+    card_no = next((line for line in reversed(raw_lines) if re.fullmatch(r"\d{12,25}", line)), "")
+    if not detail_line or not card_no:
+        return None
+
+    parts = re.split(r"\s+", detail_line.strip())
+    hwd_index = next((idx for idx, part in enumerate(parts) if re.fullmatch(r"HWD\d{12,}", part)), -1)
+    if hwd_index < 6:
+        return None
+
+    site = parts[0]
+    vip = parts[1]
+    account = parts[2]
+    order_no = parts[hwd_index]
+    amount = parts[hwd_index + 1] if hwd_index + 1 < len(parts) else ""
+    if not all([member, real_name, site, vip, account, order_no, amount]):
+        return None
+
+    today = datetime.now(BEIJING_TZ)
+    date_text = f"{today.year}-{today.month}-{today.day}"
+    return f"{date_text}  {account}    银行卡提款  {member}  {real_name}  {vip}  {order_no}  {amount}  {card_no}  {card_no}"
+
 def _bot_get_updates(offset=None, timeout=50):
     if not BOT_TOKEN:
         return None
@@ -3180,7 +3209,8 @@ async def bot_command_polling_task():
                     chat = message.get("chat", {})
                     if chat.get("type") != "private":
                         continue
-                    reply_result = await handle_site_message_bot_request(message)
+                    withdrawal_text = parse_withdrawal_table_text(text)
+                    reply_result = withdrawal_text if withdrawal_text else await handle_site_message_bot_request(message)
                     if not reply_result:
                         continue
                     if isinstance(reply_result, dict):
