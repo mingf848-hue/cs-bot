@@ -575,6 +575,64 @@ function firstOrderDetail(order = {}) {
   return details[0] || {};
 }
 
+function orderDetails(order = {}) {
+  return Array.isArray(order.orderDetailList) ? order.orderDetailList.filter(Boolean) : [];
+}
+
+function numericValue(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function detailIsSettled(detail = {}) {
+  const settleTimes = numericValue(detail.settleTimes);
+  if (settleTimes !== null) return settleTimes > 0;
+  const betStatus = numericValue(detail.betStatus);
+  const betResult = numericValue(detail.betResult);
+  return betStatus === 1 && betResult !== 0;
+}
+
+function detailIsUnsettled(detail = {}) {
+  const settleTimes = numericValue(detail.settleTimes);
+  if (settleTimes !== null) return settleTimes <= 0;
+  const betStatus = numericValue(detail.betStatus);
+  if (betStatus === 0 || betStatus === 6) return true;
+  const betResult = numericValue(detail.betResult);
+  return betResult === 0 && betStatus !== 1;
+}
+
+function unresolvedOrderDetails(order = {}) {
+  const details = orderDetails(order);
+  if (!details.length) return [];
+  return details.filter((detail) => detailIsUnsettled(detail));
+}
+
+function detailMatchId(order = {}, detail = {}) {
+  return String(detail.matchId || order.standardMatchId || detail.standardMatchId || '').trim();
+}
+
+function detailsMatchIds(order = {}, details = []) {
+  return [...new Set(details.map((detail) => detailMatchId(order, detail)).filter(Boolean))];
+}
+
+function detailsText(order = {}, details = []) {
+  return details.map((detail) => {
+    const matchId = detailMatchId(order, detail);
+    const match = ticketMatchText(detail);
+    return [matchId ? `赛事ID ${matchId}` : '', match].filter(Boolean).join(' ');
+  }).filter(Boolean).join('；');
+}
+
+function settlementReasonText(detail = {}) {
+  return htmlText([
+    detail.noSettlementRemark,
+    detail.noSettlementLog,
+    detail.noSettlementMarket,
+    detail.noSettlementMatch,
+    detail.noSettlementStatus
+  ].filter(Boolean).join(' '));
+}
+
 function parseBeijingTime(value) {
   if (value === undefined || value === null || value === '') return null;
   const rawText = String(value).trim();
@@ -1051,17 +1109,9 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
     throw new Error(`未找到注单：${orderNo}`);
   }
 
-  const detail = firstOrderDetail(order);
-  const matchId = String(detail.matchId || order.standardMatchId || detail.standardMatchId || '').trim();
-  const matchManageId = String(detail.matchManageId || '').trim();
-  const beginMs = orderBeginTimeMillis(order, detail);
-  if (beginMs && Date.now() < beginMs) {
-    const replyText = String(cmd.not_started_reply || '当前注单暂未开赛，请耐心等待。');
-    const beginText = String(detail.beginTimeStr || detail.beginTime || order.beginTimeStr || order.beginTime || '');
-    const msg = `催结算跳过：${orderNo} 未到开赛时间${beginText ? ` ${beginText}` : ''}`;
-    await replyOrigin(config, cmd, msg, replyText, ticket.text);
-    return;
-  }
+  const allDetails = orderDetails(order);
+  const pendingDetails = unresolvedOrderDetails(order);
+  const detail = pendingDetails[0] || firstOrderDetail(order);
   const statusLabel = orderStatusLabel(order.orderStatus);
   if (Number(order.orderStatus) === 4 || Number(detail.betStatus) === 5) {
     const replyText = betFailureReply(order, detail);
@@ -1079,26 +1129,52 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
     await replyOrigin(config, cmd, msg, replyText, ticket.text);
     return;
   }
-  if (!matchId) {
-    throw new Error(`注单未找到赛事ID：${orderNo}`);
+
+  if (allDetails.length && !pendingDetails.length) {
+    const replyText = String(cmd.settled_reply || '注单已结算，请刷新注单页面查看。');
+    const msg = `催结算跳过：${orderNo} 串关明细均已结算`;
+    await replyOrigin(config, cmd, msg, replyText, ticket.text);
+    return;
   }
 
-  await setStatus({ state: 'running', message: `查询赛事公告 ${matchId}` });
-  const notice = await postForm(merchantUrl(config.merchantNoticeUrl), headers, {
-    mid: matchId,
-    status: 1,
-    pgNum: 1,
-    pgSize: 20
+  const detailsToCheck = pendingDetails.length ? pendingDetails : [detail].filter(Boolean);
+  const futureDetail = detailsToCheck.find((item) => {
+    const beginMs = orderBeginTimeMillis(order, item);
+    return beginMs && Date.now() < beginMs;
   });
-  if (!merchantApiOk(notice)) {
-    throw new Error(`查询公告失败 HTTP ${notice.res.status}: ${notice.text.slice(0, 300)}`);
-  }
-  const notices = merchantList(notice.data);
-  if (notices.length) {
-    const first = notices[0] || {};
-    const noticeText = await noticeReplyText(config, headers, first);
-    await replyOrigin(config, cmd, `赛事 ${matchId} 已有公告`, noticeText || '赛果核实中，请耐心等待。', notice.text);
+  if (futureDetail) {
+    const replyText = String(cmd.not_started_reply || '当前注单暂未开赛，请耐心等待。');
+    const beginText = String(futureDetail.beginTimeStr || futureDetail.beginTime || order.beginTimeStr || order.beginTime || '');
+    const msg = `催结算跳过：${orderNo} 未到开赛时间${beginText ? ` ${beginText}` : ''}`;
+    await replyOrigin(config, cmd, msg, replyText, ticket.text);
     return;
+  }
+
+  const matchIds = detailsMatchIds(order, detailsToCheck);
+  if (!matchIds.length) {
+    throw new Error(`注单未找到未结算赛事ID：${orderNo}`);
+  }
+
+  for (const item of detailsToCheck) {
+    const matchId = detailMatchId(order, item);
+    if (!matchId) continue;
+    await setStatus({ state: 'running', message: `查询赛事公告 ${matchId}` });
+    const notice = await postForm(merchantUrl(config.merchantNoticeUrl), headers, {
+      mid: matchId,
+      status: 1,
+      pgNum: 1,
+      pgSize: 20
+    });
+    if (!merchantApiOk(notice)) {
+      throw new Error(`查询公告失败 HTTP ${notice.res.status}: ${notice.text.slice(0, 300)}`);
+    }
+    const notices = merchantList(notice.data);
+    if (notices.length) {
+      const first = notices[0] || {};
+      const noticeText = await noticeReplyText(config, headers, first);
+      await replyOrigin(config, cmd, `赛事 ${matchId} 已有公告`, noticeText || '赛果核实中，请耐心等待。', notice.text);
+      return;
+    }
   }
 
   await setStatus({ state: 'running', message: `查询结算状态 ${orderNo}` });
@@ -1112,12 +1188,23 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
   }
   const settlementTotal = Number((((settlement.data || {}).data || {}).total) || 0);
   if (settlementTotal > 0 || merchantList(settlement.data).length > 0) {
+    const settlementOrder = merchantList(settlement.data)[0] || {};
+    const settlementDetails = unresolvedOrderDetails(settlementOrder).length
+      ? unresolvedOrderDetails(settlementOrder)
+      : detailsToCheck;
+    const reason = settlementDetails.map(settlementReasonText).find(Boolean);
+    const matchText = detailsText(settlementOrder.orderNo ? settlementOrder : order, settlementDetails) || detailsText(order, detailsToCheck);
+    const replyText = reason
+      ? `当前注单仍有未结算场次：${matchText}，原因：${reason}，请耐心等待。`
+      : `当前注单仍有未结算场次：${matchText || matchIds.join('，')}，请耐心等待。`;
     const msg = `催结算跳过：${orderNo} 结算状态仍可查询到未结算记录`;
-    await setStatus({ state: 'success', message: msg, detail: settlement.text.slice(0, 300) });
-    await ack(config, cmd, 'success', msg);
+    await replyOrigin(config, cmd, msg, replyText, settlement.text);
     return;
   }
 
+  const matchId = matchIds.join('，');
+  const matchManageId = [...new Set(detailsToCheck.map((item) => String(item.matchManageId || '').trim()).filter(Boolean))].join('，');
+  const matchInfo = detailsText(order, detailsToCheck);
   const context = {
     order_no: orderNo,
     orderNo,
@@ -1127,8 +1214,8 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
     matchManageId,
     sport: detail.sportName || '',
     sport_name: detail.sportName || '',
-    match_info: detail.matchInfo || '',
-    matchInfo: detail.matchInfo || '',
+    match_info: matchInfo,
+    matchInfo,
     begin_time: detail.beginTimeStr || '',
     beginTime: detail.beginTimeStr || '',
     user_name: order.userName || '',
