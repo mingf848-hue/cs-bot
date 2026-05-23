@@ -5,62 +5,421 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CS Bot Unlock</title>
   <style>
-    body { width: 360px; margin: 0; padding: 14px; font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #111827; background: #f8fafc; }
-    h1 { margin: 0 0 10px; font-size: 16px; }
-    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; margin-bottom: 10px; }
-    .status { font-weight: 700; }
-    .muted { color: #64748b; font-size: 12px; margin-top: 4px; word-break: break-all; white-space: pre-line; }
-    .row { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
-    .button-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    button { width: 100%; border: 0; border-radius: 7px; padding: 9px 10px; font-weight: 800; cursor: pointer; background: #2563eb; color: #fff; }
-    button.secondary { background: #eef2ff; color: #3730a3; }
-    button.danger { background: #fee2e2; color: #991b1b; }
-    button:disabled { opacity: .5; cursor: not-allowed; }
-    .toggle { width: 18px; height: 18px; margin: 0; }
-    .switch-label { font-weight: 800; }
-    .pill { display: inline-flex; align-items: center; gap: 6px; min-height: 22px; border-radius: 999px; padding: 0 8px; background: #f1f5f9; color: #475569; font-size: 12px; font-weight: 800; }
-    .pill.on { background: #dcfce7; color: #166534; }
-    .auth-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 8px; }
-    .site-light { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; border: 1px solid #e5e7eb; border-radius: 7px; padding: 0 9px; color: #475569; background: #f8fafc; font-size: 12px; font-weight: 800; }
-    .site-light .dot { width: 8px; height: 8px; border-radius: 999px; background: #ef4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, .12); }
-    .site-light.on { border-color: #bbf7d0; color: #166534; background: #f0fdf4; }
-    .site-light.on .dot { background: #22c55e; box-shadow: 0 0 0 3px rgba(34, 197, 94, .14); }
+    :root {
+      --bg: #eef2f7;
+      --panel: #ffffff;
+      --panel-soft: #f8fafc;
+      --text: #111827;
+      --muted: #64748b;
+      --line: #dbe3ee;
+      --blue: #1d4ed8;
+      --green: #15803d;
+      --red: #b91c1c;
+      --amber: #b45309;
+      --shadow: 0 10px 24px rgba(15, 23, 42, .12);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      width: 420px;
+      margin: 0;
+      padding: 0;
+      font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      letter-spacing: 0;
+    }
+
+    .shell {
+      min-height: 100vh;
+      padding: 14px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 2px 2px 0;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-width: 0;
+    }
+
+    .mark {
+      width: 30px;
+      height: 30px;
+      display: grid;
+      place-items: center;
+      border: 1px solid #bfdbfe;
+      border-radius: 8px;
+      background: #eff6ff;
+      color: var(--blue);
+      font-weight: 900;
+      flex: 0 0 auto;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.2;
+      font-weight: 900;
+    }
+
+    .subtitle {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .version {
+      flex: 0 0 auto;
+      min-width: 52px;
+      height: 26px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+      color: #334155;
+      font-size: 11px;
+      font-weight: 900;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .status-panel {
+      padding: 12px;
+    }
+
+    .status-head {
+      display: grid;
+      grid-template-columns: 10px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 9px;
+    }
+
+    .state-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: #94a3b8;
+      box-shadow: 0 0 0 3px rgba(148, 163, 184, .18);
+    }
+
+    .state-dot[data-state="success"] { background: #22c55e; box-shadow: 0 0 0 3px rgba(34, 197, 94, .18); }
+    .state-dot[data-state="running"],
+    .state-dot[data-state="auth_refresh"] { background: #3b82f6; box-shadow: 0 0 0 3px rgba(59, 130, 246, .18); }
+    .state-dot[data-state="error"] { background: #ef4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, .16); }
+
+    .status-title {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 14px;
+      font-weight: 900;
+    }
+
+    .status-time {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .state-pill,
+    .section-count,
+    .pill {
+      min-height: 24px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 0 8px;
+      background: var(--panel-soft);
+      color: #475569;
+      font-size: 11px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .state-pill[data-state="success"],
+    .pill.on {
+      border-color: #bbf7d0;
+      background: #f0fdf4;
+      color: var(--green);
+    }
+
+    .state-pill[data-state="running"],
+    .state-pill[data-state="auth_refresh"] {
+      border-color: #bfdbfe;
+      background: #eff6ff;
+      color: var(--blue);
+    }
+
+    .state-pill[data-state="error"] {
+      border-color: #fecaca;
+      background: #fef2f2;
+      color: var(--red);
+    }
+
+    .detail {
+      margin-top: 10px;
+      max-height: 74px;
+      overflow: auto;
+      color: #475569;
+      font-size: 12px;
+      word-break: break-word;
+      white-space: pre-line;
+    }
+
+    .section-head {
+      min-height: 38px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--line);
+      background: #f8fafc;
+      font-weight: 900;
+    }
+
+    .auth-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      padding: 10px;
+    }
+
+    .site-light {
+      min-width: 0;
+      min-height: 72px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 9px;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 4px;
+    }
+
+    .site-light.on {
+      border-color: #86efac;
+      background: #f0fdf4;
+    }
+
+    .site-code {
+      width: 24px;
+      height: 24px;
+      display: grid;
+      place-items: center;
+      border-radius: 7px;
+      background: #e2e8f0;
+      color: #334155;
+      font-weight: 900;
+    }
+
+    .site-light.on .site-code {
+      background: #dcfce7;
+      color: var(--green);
+    }
+
+    .site-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #0f172a;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .site-status {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .site-light.on .site-status { color: var(--green); }
+
+    .action-row {
+      display: grid;
+      grid-template-columns: 1fr;
+      padding: 0 10px 10px;
+    }
+
+    button {
+      min-height: 36px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      padding: 0 11px;
+      font: inherit;
+      font-weight: 900;
+      cursor: pointer;
+      background: #e2e8f0;
+      color: #1e293b;
+    }
+
+    button.primary {
+      background: var(--blue);
+      color: #fff;
+    }
+
+    button.secondary {
+      border-color: #cbd5e1;
+      background: #fff;
+      color: #334155;
+    }
+
+    button.danger {
+      border-color: #fecaca;
+      background: #fef2f2;
+      color: var(--red);
+    }
+
+    button:disabled {
+      opacity: .48;
+      cursor: not-allowed;
+    }
+
+    .ops {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .metric {
+      min-height: 88px;
+      padding: 11px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      display: grid;
+      gap: 8px;
+    }
+
+    .metric-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-weight: 900;
+    }
+
+    .metric-detail {
+      min-height: 34px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      white-space: pre-line;
+      word-break: break-word;
+    }
+
+    .recorder-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr 1fr;
+      gap: 8px;
+      padding: 10px;
+    }
   </style>
 </head>
 <body>
-  <h1>CS Bot Unlock</h1>
-  <div class="card">
-    <div class="status" id="status">加载中</div>
-    <div class="auth-grid">
-      <div class="site-light" id="auth9"><span>1</span><span class="dot"></span></div>
-      <div class="site-light" id="auth6"><span>2</span><span class="dot"></span></div>
-      <div class="site-light" id="authMerchant"><span>3</span><span class="dot"></span></div>
-    </div>
-    <div style="margin-top:10px;">
-      <button id="refreshBackstage" class="secondary">刷新后台并同步</button>
-    </div>
-    <div class="muted" id="detail"></div>
-  </div>
-  <div class="card">
-    <div class="row">
-      <span class="switch-label">短信解锁参数</span>
-      <span class="pill" id="smsValueBadge">未保存</span>
-    </div>
-    <div class="muted" id="smsValueDetail">在 1 后台手动短信解锁一次后自动保存。</div>
-  </div>
-  <div class="card" style="margin-top:10px;">
-    <div class="row">
-      <span class="switch-label">接口录制器</span>
-      <span class="pill" id="recorderBadge">未录制</span>
-    </div>
-    <div class="muted" id="recorderDetail">打开后台页面后开始录制，手动操作一遍，再导出 JSON。</div>
-    <div class="button-grid" style="margin-top:10px;">
-      <button id="recStart">开始录制</button>
-      <button id="recStop" class="secondary">停止录制</button>
-      <button id="recExport" class="secondary">导出 JSON</button>
-      <button id="recClear" class="danger">清空记录</button>
-    </div>
-  </div>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark">CS</div>
+        <div>
+          <h1>后台控制台</h1>
+          <div class="subtitle">轮询开启 · 登录态同步</div>
+        </div>
+      </div>
+      <span class="version" id="versionBadge">v-</span>
+    </header>
+
+    <section class="panel status-panel">
+      <div class="status-head">
+        <span class="state-dot" id="stateDot"></span>
+        <div>
+          <div class="status-title" id="status">加载中</div>
+          <div class="status-time" id="statusTime">-</div>
+        </div>
+        <span class="state-pill" id="statusState">待机</span>
+      </div>
+      <div class="detail" id="detail"></div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head">
+        <span>后台登录</span>
+        <span class="section-count" id="authSummary">0/3</span>
+      </div>
+      <div class="auth-grid">
+        <div class="site-light" id="auth9">
+          <span class="site-code">1</span>
+          <span class="site-name">9站</span>
+          <span class="site-status" data-role="status">未同步</span>
+        </div>
+        <div class="site-light" id="auth6">
+          <span class="site-code">2</span>
+          <span class="site-name">6站</span>
+          <span class="site-status" data-role="status">未同步</span>
+        </div>
+        <div class="site-light" id="authMerchant">
+          <span class="site-code">3</span>
+          <span class="site-name">场馆</span>
+          <span class="site-status" data-role="status">未同步</span>
+        </div>
+      </div>
+      <div class="action-row">
+        <button id="refreshBackstage" class="primary">刷新并同步</button>
+      </div>
+    </section>
+
+    <section class="ops">
+      <div class="metric">
+        <div class="metric-head">
+          <span>短信参数</span>
+          <span class="pill" id="smsValueBadge">未保存</span>
+        </div>
+        <div class="metric-detail" id="smsValueDetail">-</div>
+      </div>
+      <div class="metric">
+        <div class="metric-head">
+          <span>接口录制</span>
+          <span class="pill" id="recorderBadge">已停止</span>
+        </div>
+        <div class="metric-detail" id="recorderDetail">-</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="recorder-actions">
+        <button id="recStart">开始</button>
+        <button id="recStop" class="secondary">停止</button>
+        <button id="recExport" class="secondary">导出</button>
+        <button id="recClear" class="danger">清空</button>
+      </div>
+    </section>
+  </main>
   <script src="popup.js"></script>
 </body>
 </html>

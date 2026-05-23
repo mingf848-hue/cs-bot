@@ -541,6 +541,34 @@ function commandLabel(action) {
   return '短信/验证码解锁';
 }
 
+function rawErrorText(err) {
+  if (!err) return '';
+  return String(err.message || err.stack || err || '').trim();
+}
+
+function friendlyErrorReason(err, action = '', label = '') {
+  const raw = rawErrorText(err);
+  const text = raw.replace(/\s+/g, ' ');
+  if (!text) return '后台处理失败';
+  if (/代理编码不正确|代理编号不正确|上级代理编号不匹配|上级代理.*不匹配/.test(text)) return '代理编码不正确，请核实';
+  if (/未提取到会员账号|会员账号为空/.test(text)) return '未提取到会员账号';
+  if (/未找到会员|未找到迁移会员|会员不存在/.test(text)) return '会员不存在';
+  if (/所有场馆账号均未找到注单|未找到注单|merchant_order_not_found/.test(text)) return '未找到注单';
+  if (/未到开赛时间|注单未开赛/.test(text)) return '注单未开赛';
+  if (/所有场馆账号登录失效|场馆后台未登录|场馆.*未登录|登录失效/.test(text)) return '场馆登录失效';
+  if (/9站未登录|9001未登录/.test(text)) return '9站未登录';
+  if (/6站未登录|6001未登录/.test(text)) return '6站未登录';
+  if (/未登录/.test(text)) {
+    if (action === 'urge_settlement' || action === 'merchant_order_statistics') return '场馆登录失效';
+    return `${label || '后台'}未登录`;
+  }
+  if (/扩展已重新加载|拓展已重新加载|刷新对应后台页面|登录态同步|后台页面已刷新/.test(text)) return '拓展未同步登录态';
+  if (/Failed to fetch|Load failed|请求失败|HTTP\s*[45]\d\d|接口.*失败|查询.*失败/.test(text)) return '后台接口请求失败';
+  if (/未配置催结算TG群|TG发送失败|telegram|send_telegram/i.test(text)) return 'TG发送失败';
+  if (/等待后台回执超时|超时|timeout/i.test(text)) return '后台处理超时';
+  return text.split('\n')[0].slice(0, 120);
+}
+
 function hasMerchantCommandHint(cmd = {}) {
   const hint = String(cmd.backend_site || cmd.site || cmd.site_id || cmd.siteId || '').trim().toLowerCase();
   return !!(cmd.orderNo || cmd.order_no)
@@ -668,6 +696,121 @@ function formatDateTime(date) {
 
 function formatDate(date) {
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+}
+
+function dateOnly(date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function addDays(date, days) {
+  const next = dateOnly(date);
+  next.setDate(next.getDate() + Number(days || 0));
+  return next;
+}
+
+function parseDateToken(value) {
+  const match = String(value || '').trim().match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
+  if (!match) return null;
+  const [, y, m, d] = match;
+  const date = new Date(Number(y), Number(m) - 1, Number(d));
+  if (
+    date.getFullYear() !== Number(y)
+    || date.getMonth() !== Number(m) - 1
+    || date.getDate() !== Number(d)
+  ) return null;
+  return date;
+}
+
+function chineseNumberToInt(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  if (/^\d+$/.test(text)) return Number(text);
+  const digits = { 零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+  if (text === '十') return 10;
+  const tenIndex = text.indexOf('十');
+  if (tenIndex >= 0) {
+    const before = text.slice(0, tenIndex);
+    const after = text.slice(tenIndex + 1);
+    const tens = before ? digits[before] : 1;
+    const ones = after ? digits[after] : 0;
+    if (tens === undefined || ones === undefined) return null;
+    return tens * 10 + ones;
+  }
+  if (text.length === 1 && digits[text] !== undefined) return digits[text];
+  return null;
+}
+
+function orderedDateRange(start, end) {
+  const startDate = dateOnly(start);
+  const endDate = dateOnly(end);
+  if (startDate.getTime() <= endDate.getTime()) {
+    return { startAt: formatDate(startDate), endAt: formatDate(endDate) };
+  }
+  return { startAt: formatDate(endDate), endAt: formatDate(startDate) };
+}
+
+function commandSourceText(cmd = {}) {
+  return [
+    cmd.source_text,
+    cmd.sourceText,
+    cmd.original_text,
+    cmd.originalText,
+    cmd.message,
+    cmd.text
+  ].filter(Boolean).join('\n');
+}
+
+function memberDataOverviewDateRange(cmd = {}) {
+  const today = dateOnly(new Date());
+  const directStart = String(cmd.startAt || cmd.start_at || cmd.start_date || cmd.startDate || '').trim();
+  const directEnd = String(cmd.endAt || cmd.end_at || cmd.end_date || cmd.endDate || '').trim();
+  if (directStart || directEnd) {
+    return {
+      startAt: directStart || '2020-01-01',
+      endAt: directEnd || formatDate(today)
+    };
+  }
+
+  const text = commandSourceText(cmd).replace(/\s+/g, '');
+  const explicitRange = text.match(/(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})(?:到|至|~|～|--|－|—)(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})/);
+  if (explicitRange) {
+    const start = parseDateToken(explicitRange[1]);
+    const end = parseDateToken(explicitRange[2]);
+    if (start && end) return orderedDateRange(start, end);
+  }
+  const spacedRange = text.match(/(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})-(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})/);
+  if (spacedRange) {
+    const start = parseDateToken(spacedRange[1]);
+    const end = parseDateToken(spacedRange[2]);
+    if (start && end) return orderedDateRange(start, end);
+  }
+  const singleDate = text.match(/(?:日期|时间|当天|查)(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})/);
+  if (singleDate) {
+    const date = parseDateToken(singleDate[1]);
+    if (date) return orderedDateRange(date, date);
+  }
+  const recent = text.match(/(?:近|最近)([\d一二两三四五六七八九十]+)天/) || text.match(/([\d一二两三四五六七八九十]+)天内/);
+  if (recent) {
+    const days = Math.max(1, chineseNumberToInt(recent[1]) || 1);
+    return orderedDateRange(addDays(today, 1 - days), today);
+  }
+  if (text.includes('今天') || text.includes('今日')) return orderedDateRange(today, today);
+  if (text.includes('昨天') || text.includes('昨日')) {
+    const yesterday = addDays(today, -1);
+    return orderedDateRange(yesterday, yesterday);
+  }
+  if (text.includes('本月') || text.includes('这个月')) {
+    return orderedDateRange(new Date(today.getFullYear(), today.getMonth(), 1), today);
+  }
+  if (text.includes('上月') || text.includes('上个月')) {
+    const start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    const end = new Date(today.getFullYear(), today.getMonth(), 0);
+    return orderedDateRange(start, end);
+  }
+  if (text.includes('今年') || text.includes('本年')) {
+    return orderedDateRange(new Date(today.getFullYear(), 0, 1), today);
+  }
+  return { startAt: '2020-01-01', endAt: formatDate(today) };
 }
 
 function merchantDateRange(cmd = {}) {
@@ -849,8 +992,9 @@ function memberDataOverviewBodyText(memberId, startAt, endAt) {
   return `{"memberId":${id},"startAt":${JSON.stringify(String(startAt || ''))},"endAt":${JSON.stringify(String(endAt || ''))}}`;
 }
 
-function expectedAgentCodeFromText(cmd = {}, targetValue = '') {
-  const text = String(cmd.source_text || cmd.sourceText || cmd.original_text || cmd.originalText || cmd.message || cmd.text || '');
+function expectedAgentCodeFromText(cmd = {}, targetValue = '', explicitCode = '') {
+  if (explicitCode) return String(explicitCode).trim();
+  const text = commandSourceText(cmd);
   if (!text) return '';
   const escapedTarget = escapeRegExp(String(targetValue || '').trim());
   const afterTarget = escapedTarget
@@ -858,6 +1002,67 @@ function expectedAgentCodeFromText(cmd = {}, targetValue = '') {
     : text;
   const matched = afterTarget.match(/\b(\d{5,12})\b/);
   return matched ? matched[1] : '';
+}
+
+function cleanDataOverviewLine(line) {
+  return String(line || '')
+    .replace(/\[[^\]]+\]\s*[^:：]{0,120}[:：]/g, ' ')
+    .replace(/https?:\/\/\S+/gi, ' ')
+    .replace(/[，,。；;|]+/g, ' ')
+    .trim();
+}
+
+function isLikelyDataOverviewAccount(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (!/^[a-z][a-z0-9]{2,31}$/.test(text)) return false;
+  if (!/\d/.test(text)) return false;
+  if (/^(vip\d*|hwd\d*|tg\d*|bot\d*|http|https|www|admin|user|member|query|data|total|sum|win|loss|null|none|true|false)$/i.test(text)) return false;
+  return true;
+}
+
+function isFallbackDataOverviewAccount(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9._-]{1,63}$/.test(text)) return false;
+  return /[a-z]/i.test(text);
+}
+
+function addDataOverviewTarget(targets, seen, name, agentCode = '') {
+  const memberName = String(name || '').trim().toLowerCase();
+  if (!memberName || seen.has(memberName)) return;
+  if (!isLikelyDataOverviewAccount(memberName)) return;
+  seen.add(memberName);
+  targets.push({ name: memberName, agentCode: String(agentCode || '').trim() });
+}
+
+function dataOverviewTargetsFromText(cmd = {}, fallbackTarget = '') {
+  const targets = [];
+  const seen = new Set();
+  const text = commandSourceText(cmd);
+  const lines = String(text || '').split(/\r?\n/).map(cleanDataOverviewLine).filter(Boolean);
+
+  for (const line of lines) {
+    const accountMatch = line.match(/\b([a-z][a-z0-9]{2,31})\b/i);
+    if (!accountMatch || !isLikelyDataOverviewAccount(accountMatch[1])) continue;
+    const afterAccount = line.slice((accountMatch.index || 0) + accountMatch[1].length);
+    const codeMatch = afterAccount.match(/\b(\d{5,12})\b/);
+    addDataOverviewTarget(targets, seen, accountMatch[1], codeMatch ? codeMatch[1] : '');
+  }
+
+  const compactText = cleanDataOverviewLine(text);
+  const pairPattern = /\b([a-z][a-z0-9]{2,31})\b(?:\s+(\d{5,12}))?/ig;
+  let match;
+  while ((match = pairPattern.exec(compactText))) {
+    addDataOverviewTarget(targets, seen, match[1], match[2] || '');
+  }
+
+  const fallback = String(fallbackTarget || cmd.target_value || cmd.member_name || '').trim().toLowerCase();
+  if (fallback && !seen.has(fallback) && isFallbackDataOverviewAccount(fallback)) {
+    targets.unshift({ name: fallback, agentCode: expectedAgentCodeFromText(cmd, fallback) });
+  }
+  if (targets.length) return targets;
+  return fallback && isFallbackDataOverviewAccount(fallback)
+    ? [{ name: fallback, agentCode: expectedAgentCodeFromText(cmd, fallback) }]
+    : [];
 }
 
 async function decryptedTopInviteCode(config, member = {}) {
@@ -1111,29 +1316,28 @@ async function findExactMember(config, targetValue) {
   return member;
 }
 
-async function runMemberDataOverviewCommand(config, cmd, targetValue) {
-  if (!config.memberGameTotalInfoUrl) throw new Error('会员游戏数据概览接口未配置');
-  if (!config.memberFinanceTotalAmountUrl) throw new Error('会员流水输赢接口未配置');
+async function queryOneMemberDataOverview(config, cmd, target, fields, range, multiple) {
+  const targetValue = String((target && target.name) || '').trim().toLowerCase();
+  if (!targetValue) throw new Error('会员账号为空');
   const member = await findExactMember(config, targetValue);
   const memberId = member.exactId || member.id;
   if (!memberId) throw new Error(`会员缺少ID：${targetValue}`);
-  const expectedAgentCode = expectedAgentCodeFromText(cmd, targetValue);
+  const expectedAgentCode = expectedAgentCodeFromText(cmd, targetValue, target.agentCode);
   if (expectedAgentCode) {
     await setStatus({ state: 'running', message: `核实上级代理编号 ${targetValue}` });
     const actualAgentCode = await decryptedTopInviteCode(config, member);
     if (String(actualAgentCode || '') !== String(expectedAgentCode)) {
-      const replyText = '代理编码不正确，请核实';
-      const msg = `查数据跳过：${targetValue} 上级代理编号不匹配`;
-      await setStatus({ state: 'error', message: msg, detail: `提供:${expectedAgentCode} 实际:${actualAgentCode || '-'}` });
-      await ack(config, cmd, 'reply_origin', msg, { reply_text: replyText, stop_actions: true });
-      return;
+      const reason = '代理编码不正确，请核实';
+      return {
+        ok: false,
+        memberName: targetValue,
+        reason,
+        replyText: multiple ? `${targetValue}：${reason}` : reason
+      };
     }
   }
 
-  const fields = requestedDataOverviewFields(cmd);
-  const startAt = String(cmd.startAt || cmd.start_at || '2020-01-01');
-  const endAt = String(cmd.endAt || cmd.end_at || formatDate(new Date()));
-  const bodyText = memberDataOverviewBodyText(memberId, startAt, endAt);
+  const bodyText = memberDataOverviewBodyText(memberId, range.startAt, range.endAt);
   let gameTotal = {};
   let financeTotal = {};
 
@@ -1164,12 +1368,46 @@ async function runMemberDataOverviewCommand(config, cmd, targetValue) {
     rebate: gameTotal.sumFsMoney
   };
   const memberName = String(member.name || targetValue);
-  const replyText = [
+  return {
+    ok: true,
     memberName,
-    ...fields.map((field) => `${field.label}：${formatMoney(values[field.key])}`)
-  ].join('\n');
-  const msg = `查数据成功：${memberName} ${fields.map((field) => field.label).join('、')}`;
-  await setStatus({ state: 'success', message: msg, detail: replyText });
+    replyText: [
+      memberName,
+      ...fields.map((field) => `${field.label}：${formatMoney(values[field.key])}`)
+    ].join('\n')
+  };
+}
+
+async function runMemberDataOverviewCommand(config, cmd, targetValue) {
+  if (!config.memberGameTotalInfoUrl) throw new Error('会员游戏数据概览接口未配置');
+  if (!config.memberFinanceTotalAmountUrl) throw new Error('会员流水输赢接口未配置');
+  const fields = requestedDataOverviewFields(cmd);
+  const range = memberDataOverviewDateRange(cmd);
+  const targets = dataOverviewTargetsFromText(cmd, targetValue);
+  if (!targets.length) throw new Error('未提取到会员账号');
+  const multiple = targets.length > 1;
+  const blocks = [];
+  let successCount = 0;
+
+  for (const target of targets) {
+    try {
+      const result = await queryOneMemberDataOverview(config, cmd, target, fields, range, multiple);
+      if (result.ok) successCount += 1;
+      blocks.push(result.replyText);
+    } catch (err) {
+      if (!multiple) throw err;
+      const reason = friendlyErrorReason(err, 'member_data_overview', '查数据');
+      blocks.push(`${target.name}：${reason}`);
+    }
+  }
+
+  const replyText = blocks.join('\n\n');
+  const msg = multiple
+    ? `查数据完成：${successCount}/${targets.length} ${range.startAt}~${range.endAt}`
+    : (successCount > 0
+      ? `查数据成功：${targets[0].name} ${fields.map((field) => field.label).join('、')} ${range.startAt}~${range.endAt}`
+      : `查数据跳过：${targets[0].name}`);
+  await setStatus({ state: successCount > 0 ? 'success' : 'error', message: msg, detail: replyText });
   await ack(config, cmd, 'reply_origin', msg, { reply_text: replyText, stop_actions: true });
 }
 
@@ -1607,7 +1845,7 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
   };
   const text = settlementTemplate(cmd.telegram_template, context);
   await sendTelegramFromCommand(config, cmd, text);
-  const msg = `已发送TG催结算：${orderNo} 赛事ID ${matchId}`;
+  const msg = `催结算已提交：${orderNo} 赛事ID ${matchId}`;
   const replyText = String(cmd.urge_sent_reply || '赛果核实中，已催促，核实完毕后会进行结算，请耐心等待。');
   await setStatus({ state: 'success', message: msg, detail: text.slice(0, 300) });
   await ack(config, cmd, 'reply_origin', msg, { reply_text: replyText });
@@ -1699,7 +1937,8 @@ async function runBackendCommand(config, cmd) {
     });
     await ack(config, cmd, ok ? 'success' : `http_${res.status}`, reason);
   } catch (err) {
-    const detail = `${label}失败 ${targetValue}: ${err && err.stack ? err.stack : (err && err.message ? err.message : String(err || 'unknown'))}`;
+    const reason = friendlyErrorReason(err, action, label);
+    const detail = `${label}失败 ${targetValue}: ${reason}`;
     await setStatus({ state: 'error', message: `${label}失败 ${targetValue}`, detail: detail.slice(0, 500) });
     await ack(config, cmd, 'fetch_failed', detail);
   }

@@ -1,8 +1,12 @@
 const status = document.getElementById('status');
+const statusTime = document.getElementById('statusTime');
+const statusState = document.getElementById('statusState');
+const stateDot = document.getElementById('stateDot');
 const detail = document.getElementById('detail');
 const auth9 = document.getElementById('auth9');
 const auth6 = document.getElementById('auth6');
 const authMerchant = document.getElementById('authMerchant');
+const authSummary = document.getElementById('authSummary');
 const recStart = document.getElementById('recStart');
 const recStop = document.getElementById('recStop');
 const recExport = document.getElementById('recExport');
@@ -12,6 +16,22 @@ const recorderBadge = document.getElementById('recorderBadge');
 const recorderDetail = document.getElementById('recorderDetail');
 const smsValueBadge = document.getElementById('smsValueBadge');
 const smsValueDetail = document.getElementById('smsValueDetail');
+const versionBadge = document.getElementById('versionBadge');
+
+const STATE_LABELS = {
+  success: '正常',
+  running: '执行中',
+  error: '失败',
+  auth: '登录',
+  auth_refresh: '同步中',
+  idle: '待机'
+};
+
+try {
+  versionBadge.textContent = `v${chrome.runtime.getManifest().version}`;
+} catch {
+  versionBadge.textContent = 'v-';
+}
 
 function authHost(auth = {}) {
   try {
@@ -43,22 +63,34 @@ function siteAuth(pageAuth = null, pageAuthByHost = {}, hosts, site, requiredHea
   return !!(auth && auth.capturedAt && requiredHeaders.every((key) => headers[key]));
 }
 
-function renderSiteLight(el, on, title = '') {
+function renderSiteLight(el, on, text = '') {
   if (!el) return;
   el.classList.toggle('on', on);
-  el.title = title || (on ? '已登录' : '未登录');
+  el.title = text || (on ? '已同步' : '未同步');
+  const statusEl = el.querySelector('[data-role="status"]');
+  if (statusEl) statusEl.textContent = text || (on ? '已同步' : '未同步');
+}
+
+function setState(state) {
+  const normalized = state || 'idle';
+  statusState.dataset.state = normalized;
+  stateDot.dataset.state = normalized;
+  statusState.textContent = STATE_LABELS[normalized] || normalized;
 }
 
 function renderStatus(s = {}, pageAuth = null, pageAuthByHost = {}, pageAuthByMerchant = {}) {
-  status.textContent = `${s.message || '暂无状态'} (${s.time || '-'})`;
+  status.textContent = s.message || '暂无状态';
+  statusTime.textContent = s.time || '-';
+  setState(s.state || 'idle');
   const lines = [];
   if (s.detail && s.state !== 'auth') lines.push(s.detail);
   else if (s.state && s.state !== 'auth') lines.push(s.state);
   detail.textContent = lines.join('\n');
-  renderSiteLight(auth9, siteAuth(pageAuth, pageAuthByHost, '9sitebg.mvj4e7.com', '9001'));
-  renderSiteLight(auth6, siteAuth(pageAuth, pageAuthByHost, '6sitebg.oj61i4.com', '6001'));
+
+  const site9On = siteAuth(pageAuth, pageAuthByHost, '9sitebg.mvj4e7.com', '9001');
+  const site6On = siteAuth(pageAuth, pageAuthByHost, '6sitebg.oj61i4.com', '6001');
   const merchantAuths = Object.values(pageAuthByMerchant || {});
-  const merchantLoggedIn = siteAuth(
+  const merchantOn = siteAuth(
     pageAuth,
     pageAuthByHost,
     ['merchant-own-backstage.dbsportxxxwo8.com', 'api-merchant-backstage.dbsportxxxwo8.com'],
@@ -66,7 +98,10 @@ function renderStatus(s = {}, pageAuth = null, pageAuthByHost = {}, pageAuthByMe
     ['authorization', 'user-id'],
     merchantAuths
   );
-  renderSiteLight(authMerchant, merchantLoggedIn, merchantLoggedIn ? `已同步 ${Math.max(merchantAuths.length, 1)} 个场馆账号` : '未登录');
+  renderSiteLight(auth9, site9On);
+  renderSiteLight(auth6, site6On);
+  renderSiteLight(authMerchant, merchantOn, merchantOn ? `已同步 ${Math.max(merchantAuths.length, 1)}` : '未同步');
+  authSummary.textContent = `${[site9On, site6On, merchantOn].filter(Boolean).length}/3`;
 }
 
 async function load() {
@@ -80,21 +115,19 @@ function renderSmsValue(config = {}) {
   const saved = !!String(config.value || '').trim();
   smsValueBadge.textContent = saved ? '已保存' : '未保存';
   smsValueBadge.classList.toggle('on', saved);
-  smsValueDetail.textContent = saved
-    ? `保存时间：${formatTime(config.unlockValueSavedAt)}`
-    : '在 1 后台手动短信解锁一次后自动保存。';
+  smsValueDetail.textContent = saved ? `保存：${formatTime(config.unlockValueSavedAt)}` : '未捕获';
 }
 
 function renderRecorder(state = {}, records = []) {
   const count = records.length || Number(state.count || 0);
-  recorderBadge.textContent = state.enabled ? `录制中 · ${count}` : `已停止 · ${count}`;
+  recorderBadge.textContent = state.enabled ? `录制中 ${count}` : `已停止 ${count}`;
   recorderBadge.classList.toggle('on', !!state.enabled);
   recStart.disabled = !!state.enabled;
   recStop.disabled = !state.enabled;
   recExport.disabled = count === 0;
   recorderDetail.textContent = state.enabled
-    ? `开始时间：${formatTime(state.startedAt)}\n操作完后点“停止录制”，再导出 JSON。`
-    : `记录数：${count}${state.stoppedAt ? `\n停止时间：${formatTime(state.stoppedAt)}` : ''}`;
+    ? `开始：${formatTime(state.startedAt)}\n记录：${count}`
+    : `记录：${count}${state.stoppedAt ? `\n停止：${formatTime(state.stoppedAt)}` : ''}`;
 }
 
 function formatTime(value) {
@@ -111,37 +144,44 @@ function send(type) {
 }
 
 refreshBackstage.addEventListener('click', async () => {
+  const originalText = refreshBackstage.textContent;
   refreshBackstage.disabled = true;
-  status.textContent = '正在刷新后台页面并同步登录态...';
+  refreshBackstage.textContent = '同步中';
+  status.textContent = '正在刷新后台页面';
+  statusTime.textContent = formatTime(new Date().toISOString());
+  setState('auth_refresh');
   detail.textContent = '';
   const resp = await send('refreshBackstageTabs');
   if (!resp.ok) {
     status.textContent = '刷新失败';
+    setState('error');
     detail.textContent = resp.error || '';
     refreshBackstage.disabled = false;
+    refreshBackstage.textContent = originalText;
     return;
   }
   status.textContent = `已刷新并同步 ${resp.count || 0} 个后台页面`;
-  detail.textContent = resp.detail || (resp.count ? '登录状态已等待同步。' : '没有找到已打开的后台页面。');
+  detail.textContent = resp.detail || (resp.count ? '同步完成' : '未找到后台页面');
   await load();
   refreshBackstage.disabled = false;
+  refreshBackstage.textContent = originalText;
 });
 
 recStart.addEventListener('click', async () => {
   const resp = await send('recorderStart');
-  if (!resp.ok) renderStatus({ message: '开始录制失败', detail: resp.error || '' });
+  if (!resp.ok) renderStatus({ message: '开始录制失败', state: 'error', detail: resp.error || '' });
   await load();
 });
 
 recStop.addEventListener('click', async () => {
   const resp = await send('recorderStop');
-  if (!resp.ok) renderStatus({ message: '停止录制失败', detail: resp.error || '' });
+  if (!resp.ok) renderStatus({ message: '停止录制失败', state: 'error', detail: resp.error || '' });
   await load();
 });
 
 recClear.addEventListener('click', async () => {
   const resp = await send('recorderClear');
-  if (!resp.ok) renderStatus({ message: '清空失败', detail: resp.error || '' });
+  if (!resp.ok) renderStatus({ message: '清空失败', state: 'error', detail: resp.error || '' });
   await load();
 });
 

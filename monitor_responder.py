@@ -1367,12 +1367,47 @@ def get_backend_command_progress(cmd_id):
 def backend_result_ok(result):
     return str((result or {}).get("status") or "") in {"success", "reply_origin"}
 
+def humanize_backend_failure_detail(detail, action=""):
+    text = str(detail or "").strip()
+    compact = re.sub(r"\s+", " ", text)
+    if not compact:
+        return "后台处理失败"
+    if "代理编码不正确" in compact or "上级代理编号不匹配" in compact:
+        return "代理编码不正确，请核实"
+    if "未提取到会员账号" in compact or "会员账号为空" in compact:
+        return "未提取到会员账号"
+    if "未找到会员" in compact or "会员不存在" in compact:
+        return "会员不存在"
+    if "所有场馆账号均未找到注单" in compact or "未找到注单" in compact:
+        return "未找到注单"
+    if "未到开赛时间" in compact or "注单未开赛" in compact:
+        return "注单未开赛"
+    if "所有场馆账号登录失效" in compact or "场馆登录失效" in compact:
+        return "场馆登录失效"
+    if "9站未登录" in compact:
+        return "9站未登录"
+    if "6站未登录" in compact:
+        return "6站未登录"
+    if "未登录" in compact:
+        if action in {"urge_settlement", "merchant_order_statistics"}:
+            return "场馆登录失效"
+        return "后台未登录"
+    if "扩展已重新加载" in compact or "拓展已重新加载" in compact or "刷新对应后台页面" in compact or "登录态同步" in compact:
+        return "拓展未同步登录态"
+    if "Failed to fetch" in compact or "Load failed" in compact or "请求失败" in compact or re.search(r"HTTP\s*[45]\d\d", compact):
+        return "后台接口请求失败"
+    if "TG发送失败" in compact or "send_telegram" in compact or "未配置催结算TG群" in compact:
+        return "TG发送失败"
+    if "超时" in compact or "timeout" in compact.lower():
+        return "后台处理超时"
+    return compact.splitlines()[0][:120]
+
 async def notify_backend_failure(step, rule, event, target_value, action, result):
     notify_target = parse_peer_target((step or {}).get("fail_notify_to"))
     if not notify_target:
         return False
     status = str((result or {}).get("status") or "failed")
-    detail = str((result or {}).get("detail") or "")
+    detail = humanize_backend_failure_detail((result or {}).get("detail") or "", action)
     default_text = "后台自动处理失败，请人工核查。\n规则：{rule}\n动作：{action}\n目标：{target}\n状态：{status}\n原因：{detail}"
     tpl = (step or {}).get("fail_notify_text") or default_text
     text = format_bot_notice(tpl, event, rule, "")
