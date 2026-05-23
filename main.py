@@ -920,6 +920,10 @@ wait_check_all_last_request_ts = 0.0
 BEIJING_TZ = timezone(timedelta(hours=8))
 ZC_BATCH_STATE = {}
 ZC_BATCH_TTL_SECONDS = 6 * 60 * 60
+SITE_MESSAGE_CHUNK_STATE = {}
+SITE_MESSAGE_CHUNK_TTL_SECONDS = 5 * 60
+SITE_MESSAGE_STRATEGIES = {"sb", "9zc", "6zc"}
+SITE_MESSAGE_MEMBER_RE = re.compile(r"[a-z0-9_@.\-]{3,32}", re.IGNORECASE)
 SB_REPORT_WINDOWS = [
     (0, 0, "00:00-00:59"),
     (1, 1, "01:00-01:59"),
@@ -2937,25 +2941,76 @@ def _handle_bot_callback_query(callback):
 def is_bot_command(text, command):
     return bool(re.match(rf"^/{re.escape(command)}(?:@[A-Za-z0-9_]+)?(?:\s|$)", str(text or "").strip(), re.IGNORECASE))
 
+def parse_site_message_members(raw):
+    members = []
+    seen = set()
+    for item in re.split(r"[,;\s]+", str(raw or "").replace("，", ",")):
+        name = item.strip().lower()
+        if not name or name in seen:
+            continue
+        if not SITE_MESSAGE_MEMBER_RE.fullmatch(name):
+            continue
+        seen.add(name)
+        members.append(name)
+    return members
+
+def cleanup_site_message_chunks(chat_id):
+    key = str(chat_id)
+    state = SITE_MESSAGE_CHUNK_STATE.get(key)
+    if not state:
+        return None
+    if time.time() - float(state.get("updated_at", 0)) > SITE_MESSAGE_CHUNK_TTL_SECONDS:
+        SITE_MESSAGE_CHUNK_STATE.pop(key, None)
+        return None
+    return state
+
+def cache_site_message_chunk(message, text):
+    chat_id = ((message.get("chat") or {}).get("id"))
+    if chat_id is None:
+        return False
+    members = parse_site_message_members(text)
+    if len(members) < 10:
+        return False
+    key = str(chat_id)
+    state = cleanup_site_message_chunks(chat_id) or {"chunks": [], "updated_at": time.time()}
+    message_id = message.get("message_id")
+    if not any(item.get("message_id") == message_id for item in state.get("chunks", [])):
+        state.setdefault("chunks", []).append({
+            "message_id": message_id,
+            "text": str(text or ""),
+            "member_count": len(members),
+            "created_at": time.time(),
+        })
+    state["updated_at"] = time.time()
+    SITE_MESSAGE_CHUNK_STATE[key] = state
+    return True
+
+def collect_site_message_text(message):
+    text = str(message.get("text") or "")
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    strategy = lines[-1].lower() if lines else ""
+    chat_id = ((message.get("chat") or {}).get("id"))
+    if strategy in SITE_MESSAGE_STRATEGIES:
+        state = cleanup_site_message_chunks(chat_id) if chat_id is not None else None
+        chunks = list((state or {}).get("chunks") or [])
+        if chat_id is not None:
+            SITE_MESSAGE_CHUNK_STATE.pop(str(chat_id), None)
+        previous = [item for item in chunks if item.get("message_id") != message.get("message_id")]
+        previous_text = "\n".join(str(item.get("text") or "") for item in previous if item.get("text"))
+        previous_ids = [item.get("message_id") for item in previous if item.get("message_id")]
+        return "\n".join([part for part in [previous_text, text] if part]).strip(), previous_ids, False
+    cached = cache_site_message_chunk(message, text)
+    return text, [], cached
+
 def parse_site_message_request(text):
     lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
     if len(lines) < 2:
         return [], ""
     strategy = lines[-1].lower()
-    if strategy not in {"sb", "9zc", "6zc"}:
+    if strategy not in SITE_MESSAGE_STRATEGIES:
         return [], ""
     raw = "\n".join(lines[:-1]).replace("，", ",")
-    members = []
-    seen = set()
-    for item in re.split(r"[,;\s]+", raw):
-        name = item.strip().lower()
-        if not name or name in seen:
-            continue
-        if not re.fullmatch(r"[a-z0-9_@.\-]{3,32}", name):
-            continue
-        seen.add(name)
-        members.append(name)
-    return members, strategy
+    return parse_site_message_members(raw), strategy
 
 def zc_time_window_text(now=None):
     now = now or datetime.now(BEIJING_TZ)
@@ -3094,7 +3149,10 @@ async def wait_backend_result_with_progress(cmd_id, chat_id, strategy, member_co
 async def handle_site_message_bot_request(message):
     if not queue_site_inner_message_command or not wait_backend_command_result:
         return "站内信模块未加载，无法执行。"
-    members, strategy = parse_site_message_request(message.get("text") or "")
+    combined_text, split_source_ids, waiting_for_tail = collect_site_message_text(message)
+    if waiting_for_tail:
+        return None
+    members, strategy = parse_site_message_request(combined_text)
     if not members:
         return None
     cmd_id, clean_members = queue_site_inner_message_command(members, source=f"telegram_bot_{strategy}", strategy=strategy)
@@ -3113,12 +3171,13 @@ async def handle_site_message_bot_request(message):
             "sent_message_id": progress_message_id,
             "edit_message_id": progress_message_id,
             "auto_delete_after": 30,
+            "delete_after_send_ids": split_source_ids,
         }
     if strategy in {"6zc", "9zc"} and ok:
         site_key = "jn" if strategy == "6zc" else "ml"
         state = cleanup_zc_state(chat_id) or {"counts": {}, "marker_ids": [], "source_ids": [], "updated_at": time.time()}
         state["counts"][site_key] = len(clean_members)
-        state.setdefault("source_ids", []).append(message_id)
+        state.setdefault("source_ids", []).extend([*split_source_ids, message_id])
         state["updated_at"] = time.time()
         ZC_BATCH_STATE[str(chat_id)] = state
         if "jn" in state.get("counts", {}) and "ml" in state.get("counts", {}):
