@@ -566,7 +566,7 @@ def build_monitor_runtime_stats(limit=160):
     for rule in current_config.get("rules", []):
         if not rule.get("groups"):
             draft_rules += 1
-        elif not rule.get("enabled", True) or (rule.get("reply_account") and not current_config.get("extra_enabled", True)):
+        elif not rule.get("enabled", True):
             disabled_rules += 1
         else:
             running_rules += 1
@@ -1148,7 +1148,7 @@ def approval_amount_gate_passes(rule, message):
 # --- 默认配置 ---
 DEFAULT_CONFIG = {
     "enabled": True, 
-    "extra_enabled": True, # v71: 副账号总开关
+    "extra_enabled": True, # retained for old configs;副账号发送不再受总开关限制
     "approval_keywords": ["同意", "批准", "ok"],
     "schedule": {
         "active": False,
@@ -1518,8 +1518,7 @@ def load_config(system_cs_prefixes):
 
     if "enabled" not in current_config:
         current_config["enabled"] = True
-    if "extra_enabled" not in current_config:
-        current_config["extra_enabled"] = True 
+    current_config["extra_enabled"] = True
 
     if "approval_keywords" not in current_config:
         current_config["approval_keywords"] = ["同意", "批准", "ok"]
@@ -1598,8 +1597,7 @@ def save_config(new_config):
             normalize_scheduled_messages(new_config.get("scheduled_messages", []))
         )
 
-        if "extra_enabled" in new_config:
-            current_config["extra_enabled"] = bool(new_config["extra_enabled"])
+        new_config["extra_enabled"] = True
 
         raw_app_kws = new_config.get("approval_keywords", [])
         new_config["approval_keywords"] = split_config_items(raw_app_kws, split_commas=True)
@@ -1690,8 +1688,6 @@ def save_config(new_config):
 
 async def send_command_telegram_message(account_name, target, text, cmd=None):
     target_name = str(account_name or "").strip() or MAIN_NAME
-    if target_name != MAIN_NAME and not current_config.get("extra_enabled", True):
-        raise RuntimeError(f"副账号分身模式已关闭：{target_name}")
     if target_name not in global_clients:
         raise RuntimeError(f"发送账号不存在或未注册：{target_name}")
     target_client = global_clients[target_name]
@@ -1900,11 +1896,6 @@ SETTINGS_HTML = """
         </div>
         
         <div class="flex items-center gap-3">
-            <div class="hidden md:flex items-center gap-1.5 px-2 py-1 bg-slate-50 rounded border border-slate-200">
-                <span class="text-[10px] font-bold text-slate-500 uppercase">分身模式:</span>
-                <span class="text-[10px] font-bold" :class="config.extra_enabled ? 'text-green-500' : 'text-slate-400'">{{ config.extra_enabled ? '启用' : '停用' }}</span>
-            </div>
-
             <div class="flex items-center gap-3 bg-slate-50 px-2 py-1 rounded border border-slate-200 mx-2 hidden md:flex">
                 <label class="flex items-center gap-1.5 cursor-pointer select-none text-[10px] font-bold text-slate-500 uppercase">
                     <input type="checkbox" v-model="config.schedule.active" class="w-3 h-3 text-primary border-slate-300 rounded focus:ring-0">
@@ -1950,12 +1941,7 @@ SETTINGS_HTML = """
         <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             <div v-for="(rule, index) in config.rules" :key="index" 
                  class="bento-card flex flex-col overflow-hidden relative group transition-all duration-300"
-                 :class="{'opacity-60 grayscale': (!rule.enabled) || (rule.reply_account && rule.reply_account !== '' && !config.extra_enabled)}">
-                
-                <div v-if="rule.enabled && rule.reply_account && rule.reply_account !== '' && !config.extra_enabled" 
-                     class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-slate-800 text-white px-3 py-1 rounded shadow-lg z-20 text-xs font-bold pointer-events-none whitespace-nowrap">
-                    已停用
-                </div>
+                 :class="{'opacity-60 grayscale': !rule.enabled}">
 
                 <div class="px-3 py-2 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
                     <div class="flex items-center gap-2 flex-1">
@@ -1963,19 +1949,17 @@ SETTINGS_HTML = """
                         <input v-model="rule.name" class="bg-transparent border-none p-0 text-xs font-bold text-slate-700 focus:ring-0 placeholder-slate-300 w-full font-sans" placeholder="未命名规则">
                     </div>
                     
-                    <label class="relative inline-flex items-center cursor-pointer mr-2" 
-                           :title="(rule.reply_account && !config.extra_enabled) ? '分身模式已关闭，此开关被强制锁定' : '切换规则状态'">
-                        <input type="checkbox" 
-                               :checked="rule.enabled && (!rule.reply_account || rule.reply_account === '' || config.extra_enabled)" 
-                               @change="if(!rule.reply_account || rule.reply_account === '' || config.extra_enabled) { rule.enabled = $event.target.checked; saveConfig(); }"
-                               :disabled="!!rule.reply_account && rule.reply_account !== '' && !config.extra_enabled"
+                    <label class="relative inline-flex items-center cursor-pointer mr-2" title="切换规则状态">
+                        <input type="checkbox"
+                               :checked="rule.enabled"
+                               @change="rule.enabled = $event.target.checked; saveConfig();"
                                class="sr-only peer">
                         <div class="w-7 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-green-500"></div>
                     </label>
 
                     <button @click="removeRule(index)" class="text-slate-300 hover:text-red-500 transition-colors px-1" title="删除"><i class="fa-solid fa-trash text-[10px]"></i></button>
                 </div>
-                <div class="p-3 flex flex-col gap-3" :class="{'pointer-events-none': !rule.enabled || (rule.reply_account && rule.reply_account !== '' && !config.extra_enabled)}">
+                <div class="p-3 flex flex-col gap-3" :class="{'pointer-events-none': !rule.enabled}">
                     <div class="space-y-1.5">
                         <div class="flex items-center justify-between"><span class="section-label"><i class="fa-solid fa-eye mr-1"></i>监听来源</span><label class="flex items-center gap-1 cursor-pointer select-none"><input type="checkbox" v-model="rule.check_file" class="w-3 h-3 text-primary border-slate-300 rounded focus:ring-0"><span class="text-[10px] text-slate-500 font-medium" :class="{'text-primary': rule.check_file}">文件模式</span></label></div>
                         <div class="relative"><textarea :value="listToString(rule.groups)" @input="stringToIntList($event, rule, 'groups')" rows="3" class="bento-input w-full px-2 py-1.5 resize-y min-h-16 leading-tight font-mono text-[11px]" placeholder="群ID (换行分隔)"></textarea></div>
@@ -2250,7 +2234,7 @@ SETTINGS_HTML = """
     const { createApp, reactive } = Vue;
     createApp({
         setup() {
-            const config = reactive({ enabled: false, extra_enabled: true, approval_keywords: [], schedule: {active: false, start: '09:00', end: '21:00'}, scheduled_messages: [], rules: [] });
+            const config = reactive({ enabled: false, approval_keywords: [], schedule: {active: false, start: '09:00', end: '21:00'}, scheduled_messages: [], rules: [] });
             const toast = reactive({ show: false, msg: '', type: 'success' });
             const recovery = reactive({ search: '', reply: '', hours: 5, min: 2, max: 5, image: '', imageName: '' });
             const available_accounts = reactive([]);
@@ -2357,7 +2341,6 @@ SETTINGS_HTML = """
                     .then(data => { 
                         // Only update switches to avoid UI glitches during typing
                         if(data.enabled !== undefined) config.enabled = data.enabled;
-                        if(data.extra_enabled !== undefined) config.extra_enabled = data.extra_enabled;
                         syncAvailableAccounts(data.available_accounts);
                     })
                     .catch(e => console.log('Heartbeat skipped'));
@@ -2365,7 +2348,6 @@ SETTINGS_HTML = """
 
             const applyConfigData = (data = {}) => {
                     config.enabled = data.enabled; 
-                    if(data.extra_enabled !== undefined) config.extra_enabled = data.extra_enabled;
                     syncAvailableAccounts(data.available_accounts);
                     
                     if(data.approval_keywords) config.approval_keywords = data.approval_keywords;
@@ -2692,8 +2674,6 @@ async def send_scheduled_message_job(item):
     target_name = item.get("account") or MAIN_NAME
     started = time.time()
 
-    if target_name != MAIN_NAME and not current_config.get("extra_enabled", True):
-        raise RuntimeError(f"副账号分身模式已关闭：{target_name}")
     if target_name not in global_clients:
         raise RuntimeError(f"发送账号不存在或未注册：{target_name}")
 
@@ -3376,23 +3356,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                 
                                 target_name = rule.get("reply_account")
                                 
-                                # v72: Strict Pause Logic
-                                extra_on = current_config.get("extra_enabled", True)
                                 if not target_name: target_name = MAIN_NAME 
-                                
-                                if target_name != MAIN_NAME and not extra_on:
-                                    logger.info(f"⏸️ [Approval] 副号开关已关，规则已暂停")
-                                    record_runtime_event(
-                                        "approval",
-                                        "skipped",
-                                        "副号总开关已关闭，审批动作暂停",
-                                        rule=rule,
-                                        event=event,
-                                        sender_name=get_sender_name(approver),
-                                        target_account=target_name,
-                                        duration_ms=(time.time() - approval_started) * 1000
-                                    )
-                                    return
 
                                 if target_name not in global_clients:
                                     logger.error(f"❌ [Approval] 指定回复账号不存在或未注册: {target_name}，已取消执行")
@@ -3508,27 +3472,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     
                     # v72: Strict Routing (No Fallback)
                     target_name = rule.get("reply_account")
-                    extra_on = current_config.get("extra_enabled", True)
-
-                    # 1. Determine Target
                     if not target_name: target_name = MAIN_NAME
 
-                    # 2. Check Permission (Strict Pause)
-                    if target_name != MAIN_NAME and not extra_on:
-                        logger.info(f"⏸️ [Routing] 副号开关已关，规则 '{rule.get('name')}' 已暂停 (不转交给主号)")
-                        record_runtime_event(
-                            "monitor",
-                            "skipped",
-                            "副号总开关已关闭，规则暂停执行",
-                            rule=rule,
-                            event=event,
-                            sender_name=sender_name,
-                            target_account=target_name,
-                            duration_ms=(time.time() - match_started) * 1000
-                        )
-                        break # Stop checking other rules
-
-                    # 3. Assign Client
                     if target_name not in global_clients:
                         logger.error(f"❌ [Routing] 指定回复账号不存在或未注册: {target_name}，规则 '{rule.get('name')}' 已取消")
                         record_runtime_event(

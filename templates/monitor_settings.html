@@ -1347,7 +1347,6 @@
                                         <option v-for="acc in available_accounts" :key="acc" :value="acc">{{ acc }}</option>
                                     </select>
                                 </div>
-                                <label class="inline-check"><input class="checkbox" type="checkbox" v-model="config.extra_enabled">分身模式启用</label>
                                 <div class="field">
                                     <label>过滤方式</label>
                                     <select class="select" v-model="currentRule.sender_mode">
@@ -1697,7 +1696,6 @@
                         <section class="section">
                             <div class="section-title">监听开关</div>
                             <label class="inline-check"><input class="checkbox" type="checkbox" v-model="config.enabled">主监听启用</label>
-                            <label class="inline-check"><input class="checkbox" type="checkbox" v-model="config.extra_enabled">副账号分身模式启用</label>
                         </section>
                         <section class="section">
                             <div class="section-title">自动排班</div>
@@ -1784,7 +1782,6 @@ createApp({
     setup() {
         const config = reactive({
             enabled: false,
-            extra_enabled: true,
             approval_keywords: [],
             schedule: { active: false, start: "09:00", end: "21:00" },
             resources: { groups: [], sender_prefixes: [] },
@@ -2070,7 +2067,6 @@ createApp({
             suppressAutoSave = true;
             try {
                 config.enabled = data.enabled ?? true;
-                config.extra_enabled = data.extra_enabled ?? true;
                 config.approval_keywords = Array.isArray(data.approval_keywords) ? data.approval_keywords : ["同意", "批准", "ok"];
                 config.schedule = data.schedule || { active: false, start: "09:00", end: "21:00" };
                 config.resources = hydrateResources(data.resources || {});
@@ -2148,7 +2144,6 @@ createApp({
                 const res = await fetch("/tool/monitor_settings_json");
                 const data = await res.json();
                 if (data.enabled !== undefined) config.enabled = data.enabled;
-                if (data.extra_enabled !== undefined) config.extra_enabled = data.extra_enabled;
                 if (data.main_account) identity.mainAccount = data.main_account;
                 available_accounts.splice(0, available_accounts.length, ...((data.available_accounts || [])));
                 if (Array.isArray(data.accounts) && data.accounts.length) {
@@ -2163,7 +2158,7 @@ createApp({
 
         const ruleStatus = (rule) => {
             if (!rule.groups?.length) return { kind: "draft", text: "草稿" };
-            if (!rule.enabled || (rule.reply_account && !config.extra_enabled)) return { kind: "disabled", text: "已停用" };
+            if (!rule.enabled) return { kind: "disabled", text: "已停用" };
             return { kind: "", text: "运行中" };
         };
 

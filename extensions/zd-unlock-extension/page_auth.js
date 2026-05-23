@@ -35,6 +35,97 @@
     }
   }
 
+  function parseJsonValue(value) {
+    try {
+      return JSON.parse(String(value || ''));
+    } catch {
+      return null;
+    }
+  }
+
+  function storageRows() {
+    const rows = [];
+    for (const store of [localStorage, sessionStorage]) {
+      try {
+        for (let i = 0; i < store.length; i += 1) {
+          const key = store.key(i);
+          rows.push({ key, value: store.getItem(key) || '' });
+        }
+      } catch {
+        // ignore inaccessible storage
+      }
+    }
+    return rows;
+  }
+
+  function findNestedValue(input, keys, depth = 0) {
+    if (!input || typeof input !== 'object' || depth > 6) return '';
+    const wanted = keys.map((key) => String(key).toLowerCase());
+    for (const [key, value] of Object.entries(input)) {
+      if (wanted.includes(String(key).toLowerCase()) && value != null && typeof value !== 'object') {
+        return String(value);
+      }
+    }
+    for (const value of Object.values(input)) {
+      const found = findNestedValue(value, keys, depth + 1);
+      if (found) return found;
+    }
+    return '';
+  }
+
+  function base64UrlDecode(value) {
+    try {
+      const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+      const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+      return decodeURIComponent(Array.from(atob(padded), (char) => `%${char.charCodeAt(0).toString(16).padStart(2, '0')}`).join(''));
+    } catch {
+      return '';
+    }
+  }
+
+  function parseJwtPayload(token) {
+    const parts = String(token || '').split('.');
+    if (parts.length < 2) return {};
+    return parseJsonValue(base64UrlDecode(parts[1])) || {};
+  }
+
+  function findJwtToken(rows) {
+    const tokenPattern = /eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/;
+    for (const row of rows) {
+      const direct = String(row.value || '').match(tokenPattern);
+      if (direct) return direct[0];
+      const parsed = parseJsonValue(row.value);
+      if (parsed && typeof parsed === 'object') {
+        const candidate = findNestedValue(parsed, ['authorization', 'accessToken', 'access_token', 'token', 'jwt']);
+        const matched = String(candidate || '').match(tokenPattern);
+        if (matched) return matched[0];
+      }
+    }
+    return '';
+  }
+
+  function merchantHeadersFromStorage() {
+    try {
+      const host = location.hostname || '';
+      if (!host.endsWith('dbsportxxxwo8.com')) return {};
+      const rows = storageRows();
+      const token = findJwtToken(rows);
+      if (!token) return {};
+      const payload = parseJwtPayload(token);
+      const merchantId = String(payload.merchantId || payload.userId || payload.id || '').trim();
+      const merchantName = String(payload.merchantName || payload.merchantname || '').trim();
+      const headers = {
+        authorization: token,
+        language: 'zs'
+      };
+      if (merchantId) headers['user-id'] = merchantId;
+      if (merchantName) headers.merchantname = encodeURIComponent(merchantName);
+      return headers;
+    } catch {
+      return {};
+    }
+  }
+
   function normalizeHeaders(input) {
     const out = {};
     if (!input) return out;
@@ -64,6 +155,7 @@
       'x-api-token': userInfo.token || cookieValue('tb-token') || '',
       'x-api-user': userInfo.username || cookieValue('user-name') || cookieValue('user-email') || '',
       'x-api-uuid': localStorage.getItem('_uuid') || '',
+      ...merchantHeadersFromStorage(),
       ...extraHeaders
     };
     for (const key of Object.keys(headers)) {

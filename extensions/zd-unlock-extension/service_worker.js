@@ -609,6 +609,13 @@ function merchantApiOk(result) {
   return !!(result && result.res && result.res.ok && (data.code === undefined || data.code === '0000000') && data.status !== false);
 }
 
+function merchantAuthFailed(result) {
+  const status = Number((result && result.res && result.res.status) || 0);
+  if (status === 401 || status === 403) return true;
+  const text = String((result && result.text) || '');
+  return /token|未登录|登录已失效|登录过期|授权|unauthori[sz]ed/i.test(text);
+}
+
 function merchantTicketBody(cmd = {}, orderNo, overrides = {}) {
   const { startTime, endTime } = merchantDateRange(cmd);
   return {
@@ -1189,7 +1196,12 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
   await setStatus({ state: 'running', message: `催结算查询注单 ${orderNo} (${venueLabel})` });
   const ticket = await postJson(merchantUrl(config.merchantTicketListUrl), headers, merchantTicketBody(cmd, orderNo));
   if (!merchantApiOk(ticket)) {
-    throw new Error(`查询注单失败 HTTP ${ticket.res.status}: ${ticket.text.slice(0, 300)}`);
+    const err = new Error(`查询注单失败 HTTP ${ticket.res.status}: ${ticket.text.slice(0, 300)}`);
+    if (merchantAuthFailed(ticket)) {
+      err.code = 'merchant_auth_failed';
+      err.venueLabel = venueLabel;
+    }
+    throw err;
   }
   const order = merchantList(ticket.data)[0];
   if (!order) {
@@ -1321,19 +1333,31 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
 
 async function runUrgeSettlementCommandWithFallback(configs, cmd, orderNo) {
   const tried = [];
+  const authFailed = [];
   for (const candidate of configs) {
     try {
       await runUrgeSettlementCommand(candidate, cmd, orderNo);
       return;
     } catch (err) {
+      const label = err.venueLabel || candidate.pageAuthLabel || merchantAuthLabel(candidate);
       if (err && err.code === 'merchant_order_not_found') {
-        tried.push(err.venueLabel || candidate.pageAuthLabel || merchantAuthLabel(candidate));
+        tried.push(label);
+        continue;
+      }
+      if (err && err.code === 'merchant_auth_failed') {
+        authFailed.push(label);
         continue;
       }
       throw err;
     }
   }
-  const suffix = tried.length ? `（已查询：${[...new Set(tried)].join('、')}）` : '';
+  const parts = [];
+  if (tried.length) parts.push(`未找到：${[...new Set(tried)].join('、')}`);
+  if (authFailed.length) parts.push(`登录失效：${[...new Set(authFailed)].join('、')}`);
+  const suffix = parts.length ? `（${parts.join('；')}）` : '';
+  if (!tried.length && authFailed.length) {
+    throw new Error(`所有场馆账号登录失效，未能查询注单：${orderNo}${suffix}`);
+  }
   throw new Error(`所有场馆账号均未找到注单：${orderNo}${suffix}`);
 }
 
