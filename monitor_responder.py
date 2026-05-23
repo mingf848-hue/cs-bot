@@ -1193,6 +1193,7 @@ pending_commands = deque(maxlen=200)
 pending_command_leases = {}
 backend_command_results = {}
 backend_command_progress = {}
+BACKEND_COMMAND_LEASE_SECONDS = 300
 
 SITE_MESSAGE_PROFILES = {
     "9zc": {
@@ -1340,7 +1341,7 @@ def queue_backend_unlock_command(target_value, rule, event, action="unlock_sms",
 def lease_next_pending_command():
     now = time.time()
     for cmd_id, leased in list(pending_command_leases.items()):
-        if now - float(leased.get("leased_at", 0)) > 30:
+        if now - float(leased.get("leased_at", 0)) > BACKEND_COMMAND_LEASE_SECONDS:
             pending_command_leases.pop(cmd_id, None)
             pending_commands.appendleft(leased["cmd"])
     if not pending_commands:
@@ -2975,6 +2976,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                 "updated_at": now_bj().isoformat(),
             }
             backend_command_progress[cmd_id] = progress
+            if cmd_id in pending_command_leases:
+                pending_command_leases[cmd_id]["leased_at"] = time.time()
             while len(backend_command_progress) > 500:
                 backend_command_progress.pop(next(iter(backend_command_progress)), None)
         return jsonify({"ok": True})
