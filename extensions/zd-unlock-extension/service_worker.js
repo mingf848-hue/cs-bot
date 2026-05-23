@@ -688,6 +688,10 @@ function merchantHeaders(config, cmd = {}) {
 }
 
 async function postJson(url, headers, body) {
+  return postJsonText(url, headers, JSON.stringify(body));
+}
+
+async function postJsonText(url, headers, bodyText) {
   let res;
   try {
     res = await fetchWithRetry(url, {
@@ -695,7 +699,7 @@ async function postJson(url, headers, body) {
       mode: 'cors',
       credentials: 'include',
       headers,
-      body: JSON.stringify(body)
+      body: String(bodyText || '{}')
     });
   } catch (err) {
     throw new Error(`请求失败 ${url}: ${err && err.message ? err.message : String(err || 'unknown')}。请确认扩展已重新加载，并刷新对应后台页面。`);
@@ -820,6 +824,26 @@ function formatMoney(value) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
   });
+}
+
+function escapeRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function exactMemberIdFromListText(text, targetValue) {
+  const jsonName = JSON.stringify(String(targetValue || '').toLowerCase()).slice(1, -1);
+  if (!jsonName) return '';
+  const matcher = new RegExp(`"id"\\s*:\\s*"?([0-9]{12,24})"?[\\s\\S]{0,6000}?"name"\\s*:\\s*"${escapeRegExp(jsonName)}"`, 'i');
+  const matched = String(text || '').match(matcher);
+  return matched ? matched[1] : '';
+}
+
+function memberDataOverviewBodyText(memberId, startAt, endAt) {
+  const id = String(memberId || '').trim();
+  if (!/^\d{12,24}$/.test(id)) {
+    throw new Error(`会员ID无效：${id || '-'}`);
+  }
+  return `{"memberId":${id},"startAt":${JSON.stringify(String(startAt || ''))},"endAt":${JSON.stringify(String(endAt || ''))}}`;
 }
 
 function requestedDataOverviewFields(cmd = {}) {
@@ -1051,6 +1075,7 @@ async function findExactMember(config, targetValue) {
   if (!member) {
     throw new Error(`未找到会员：${targetValue}`);
   }
+  member.exactId = exactMemberIdFromListText(query.text, targetValue) || String(member.id || '');
   return member;
 }
 
@@ -1058,19 +1083,19 @@ async function runMemberDataOverviewCommand(config, cmd, targetValue) {
   if (!config.memberGameTotalInfoUrl) throw new Error('会员游戏数据概览接口未配置');
   if (!config.memberFinanceTotalAmountUrl) throw new Error('会员流水输赢接口未配置');
   const member = await findExactMember(config, targetValue);
-  const memberId = member.id;
+  const memberId = member.exactId || member.id;
   if (!memberId) throw new Error(`会员缺少ID：${targetValue}`);
 
   const fields = requestedDataOverviewFields(cmd);
   const startAt = String(cmd.startAt || cmd.start_at || '2020-01-01');
   const endAt = String(cmd.endAt || cmd.end_at || formatDate(new Date()));
-  const body = { memberId, startAt, endAt };
+  const bodyText = memberDataOverviewBodyText(memberId, startAt, endAt);
   let gameTotal = {};
   let financeTotal = {};
 
   if (fields.some((field) => field.source === 'game')) {
     await setStatus({ state: 'running', message: `查询会员数据概览 ${targetValue}` });
-    const game = await postJson(config.memberGameTotalInfoUrl, config.headers, body);
+    const game = await postJsonText(config.memberGameTotalInfoUrl, config.headers, bodyText);
     if (!apiOk(game.res, game.data)) {
       throw new Error(`查询会员数据概览失败 HTTP ${game.res.status}: ${game.text.slice(0, 300)}`);
     }
@@ -1079,7 +1104,7 @@ async function runMemberDataOverviewCommand(config, cmd, targetValue) {
 
   if (fields.some((field) => field.source === 'finance')) {
     await setStatus({ state: 'running', message: `查询会员输赢流水 ${targetValue}` });
-    const finance = await postJson(config.memberFinanceTotalAmountUrl, config.headers, body);
+    const finance = await postJsonText(config.memberFinanceTotalAmountUrl, config.headers, bodyText);
     if (!apiOk(finance.res, finance.data)) {
       throw new Error(`查询会员输赢流水失败 HTTP ${finance.res.status}: ${finance.text.slice(0, 300)}`);
     }
