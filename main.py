@@ -9,6 +9,7 @@ import json
 import queue
 import sqlite3
 import copy
+import secrets
 from collections import deque, defaultdict
 from datetime import datetime, timedelta, timezone
 from threading import Thread, Lock
@@ -1241,6 +1242,159 @@ async def maintenance_task():
 # ==========================================
 app = Flask(__name__)
 
+COPY_PAGE_TTL_SECONDS = 8 * 60 * 60
+COPY_PAGE_REDIS_PREFIX = "bot_copy_page:"
+copy_page_cache = {}
+copy_page_cache_lock = Lock()
+
+COPY_PAGE_HTML = """
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <style>
+        *{box-sizing:border-box}
+        body{margin:0;background:#f6f7f9;color:#111827;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:18px}
+        main{max-width:860px;margin:0 auto}
+        h1{font-size:18px;margin:0 0 6px;font-weight:700}
+        .sub{font-size:12px;color:#6b7280;margin-bottom:16px}
+        .section{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:14px;margin-bottom:12px}
+        .section-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+        h2{font-size:14px;margin:0;font-weight:700}
+        button{border:0;background:#111827;color:#fff;border-radius:6px;padding:8px 12px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap}
+        button.done{background:#16a34a}
+        textarea{width:100%;min-height:130px;border:1px solid #d1d5db;border-radius:6px;padding:10px;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre;overflow:auto;resize:vertical;background:#fafafa;color:#111827}
+        .hint{font-size:12px;color:#6b7280;margin-top:8px}
+    </style>
+</head>
+<body>
+<main>
+    <h1>{{ title }}</h1>
+    <div class="sub">有效期 8 小时。表格格式请点这里复制，浏览器会保留制表符。</div>
+    {% for section in sections %}
+    <div class="section">
+        <div class="section-head">
+            <h2>{{ section.title }}</h2>
+            <button type="button" onclick="copyArea('copy-{{ loop.index0 }}', this)">复制</button>
+        </div>
+        <textarea id="copy-{{ loop.index0 }}" readonly>{{ section.text }}</textarea>
+        <div class="hint">也可以点进文本框后全选复制。</div>
+    </div>
+    {% endfor %}
+</main>
+<script>
+async function copyArea(id, btn){
+    const el = document.getElementById(id);
+    const text = el.value;
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+        } else {
+            el.focus();
+            el.select();
+            document.execCommand('copy');
+            window.getSelection().removeAllRanges();
+        }
+        const oldText = btn.textContent;
+        btn.textContent = '已复制';
+        btn.classList.add('done');
+        setTimeout(() => {
+            btn.textContent = oldText;
+            btn.classList.remove('done');
+        }, 1200);
+    } catch (e) {
+        el.focus();
+        el.select();
+    }
+}
+</script>
+</body>
+</html>
+"""
+
+def get_public_base_url():
+    raw_url = (
+        os.environ.get("BOT_MENU_URL")
+        or os.environ.get("WEBAPP_URL")
+        or os.environ.get("WEB_APP_URL")
+        or os.environ.get("PUBLIC_URL")
+        or os.environ.get("ZEABUR_WEB_URL")
+    )
+    if not raw_url:
+        return None
+    raw_url = raw_url.strip()
+    if not raw_url.startswith("https://"):
+        return None
+    return raw_url.rstrip("/")
+
+def store_copy_page(title, sections):
+    clean_sections = []
+    for section in sections or []:
+        section_title = str(section.get("title") or "复制内容").strip()[:60]
+        section_text = str(section.get("text") or "")
+        if section_text:
+            clean_sections.append({"title": section_title, "text": section_text})
+    if not clean_sections:
+        return None
+
+    base_url = get_public_base_url()
+    if not base_url:
+        log_tree(9, "网页复制链接未生成：缺少 BOT_MENU_URL/WEBAPP_URL/PUBLIC_URL 等 https 公网地址")
+        return None
+
+    token = secrets.token_urlsafe(16)
+    payload = {
+        "title": str(title or "复制内容").strip()[:80],
+        "sections": clean_sections,
+        "created_at": time.time(),
+    }
+    redis_key = COPY_PAGE_REDIS_PREFIX + token
+    client = get_wait_alert_redis_client()
+    if client:
+        try:
+            client.setex(redis_key, COPY_PAGE_TTL_SECONDS, json.dumps(payload, ensure_ascii=False))
+        except Exception as e:
+            logger.warning(f"⚠️ [CopyPage] Redis 写入失败，回退内存: {e}")
+            client = None
+
+    if not client:
+        now_ts = time.time()
+        with copy_page_cache_lock:
+            for key, item in list(copy_page_cache.items())[:200]:
+                if not isinstance(item, dict) or item.get("expires_at", 0) <= now_ts:
+                    copy_page_cache.pop(key, None)
+            copy_page_cache[token] = {
+                "payload": payload,
+                "expires_at": now_ts + COPY_PAGE_TTL_SECONDS,
+            }
+
+    return f"{base_url}/copy/{token}"
+
+def load_copy_page(token):
+    token = str(token or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{12,64}", token):
+        return None
+
+    client = get_wait_alert_redis_client()
+    if client:
+        try:
+            raw = client.get(COPY_PAGE_REDIS_PREFIX + token)
+            if raw:
+                return json.loads(raw)
+        except Exception as e:
+            logger.warning(f"⚠️ [CopyPage] Redis 读取失败，尝试内存: {e}")
+
+    with copy_page_cache_lock:
+        item = copy_page_cache.get(token)
+        if not item:
+            return None
+        if item.get("expires_at", 0) <= time.time():
+            copy_page_cache.pop(token, None)
+            return None
+        return item.get("payload")
+
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -1877,6 +2031,17 @@ WAIT_ALERTS_HTML = """
 def status_page():
     now = datetime.now(timezone(timedelta(hours=8))).strftime('%H:%M:%S')
     return render_template_string(DASHBOARD_HTML, working=IS_WORKING, w=wait_timers, f=followup_timers, r=reply_timers, s=self_reply_timers, current_time=now)
+
+@app.route('/copy/<token>')
+def copy_page(token):
+    payload = load_copy_page(token)
+    if not payload:
+        return Response("复制链接已过期或不存在。请重新发送原始内容给 bot 生成。", status=404, mimetype='text/plain')
+    return render_template_string(
+        COPY_PAGE_HTML,
+        title=payload.get("title") or "复制内容",
+        sections=payload.get("sections") or [],
+    )
 
 @app.route('/log')
 def log_ui():
@@ -2608,6 +2773,15 @@ def build_single_copy_text_markup(text, label="复制整理结果"):
         return None
     return {"inline_keyboard": [[{"text": label, "copy_text": {"text": raw}}]]}
 
+def build_conversion_reply_markup(text, copy_label="复制整理结果", copy_page_url=None):
+    rows = []
+    raw = str(text or "")
+    if raw and len(raw) <= 256:
+        rows.append([{"text": copy_label, "copy_text": {"text": raw}}])
+    if copy_page_url:
+        rows.append([{"text": "网页复制（保留制表符）", "url": copy_page_url}])
+    return {"inline_keyboard": rows} if rows else None
+
 def format_copy_link(link, index=None):
     if not link:
         return "🔗 消息链接：无"
@@ -3045,13 +3219,17 @@ def parse_large_timeout_text(text):
 
     output1 = "\n\n".join(format_large_timeout_template(record) for record in records)
     output2 = "\n".join(format_large_timeout_sheet_row(record, fixed_now) for record in records)
+    copy_page_url = store_copy_page("大额提款超时转换结果", [
+        {"title": "格式1：标准模板", "text": output1},
+        {"title": "格式2：表格分列", "text": output2},
+    ])
     return {
         "text": output1,
-        "reply_markup": build_single_copy_text_markup(output1, "复制格式1"),
+        "reply_markup": build_conversion_reply_markup(output1, "复制格式1", copy_page_url),
         "extra_replies": [
             {
                 "text": output2,
-                "reply_markup": build_single_copy_text_markup(output2, "复制格式2"),
+                "reply_markup": build_conversion_reply_markup(output2, "复制格式2", copy_page_url),
             }
         ],
     }
@@ -3508,7 +3686,13 @@ async def bot_command_polling_task():
                         continue
                     withdrawal_text = parse_withdrawal_table_text(text)
                     if withdrawal_text:
-                        reply_result = {"text": withdrawal_text, "reply_markup": build_copy_text_markup(withdrawal_text)}
+                        copy_page_url = store_copy_page("存款/提款表格转换结果", [
+                            {"title": "表格分列结果", "text": withdrawal_text}
+                        ])
+                        reply_result = {
+                            "text": withdrawal_text,
+                            "reply_markup": build_conversion_reply_markup(withdrawal_text, "复制整理结果", copy_page_url)
+                        }
                     else:
                         reply_result = parse_large_timeout_text(text)
                         if not reply_result:
