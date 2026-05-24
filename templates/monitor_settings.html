@@ -1292,6 +1292,7 @@
                                                     <option value="migrate_milan">迁移米兰</option>
                                                     <option value="member_data_overview">查数据</option>
                                                     <option value="urge_settlement">催结算</option>
+                                                    <option value="agent_existing">Agent编排（现有能力）</option>
                                                 </select>
                                             </div>
                                             <div class="field" v-if="step.backend_action === 'urge_settlement'">
@@ -1306,7 +1307,7 @@
                                                 <label>提取 IP 的正则</label>
                                                 <input class="input font-mono" v-model="step.ip_pattern" placeholder="留空：从已匹配消息里提取 IPv4">
                                             </div>
-                                            <template v-if="step.backend_action === 'urge_settlement'">
+                                            <template v-if="['urge_settlement', 'agent_existing'].includes(step.backend_action)">
                                                 <div class="field">
                                                     <label>TG 催结算群</label>
                                                     <input class="input" v-model="step.forward_to" placeholder="-1001234567890 或 @username">
@@ -1468,6 +1469,7 @@
                                                         <option value="migrate_milan">迁移米兰</option>
                                                         <option value="member_data_overview">查数据</option>
                                                         <option value="urge_settlement">催结算</option>
+                                                        <option value="agent_existing">Agent编排（现有能力）</option>
                                                     </select>
                                                 </div>
                                                 <div class="field" v-if="step.backend_action === 'urge_settlement'">
@@ -1482,7 +1484,7 @@
                                                     <label>提取 IP 的正则</label>
                                                     <input class="input font-mono" v-model="step.ip_pattern" placeholder="留空：从原始报备里提取 IPv4">
                                                 </div>
-                                                <template v-if="step.backend_action === 'urge_settlement'">
+                                                <template v-if="['urge_settlement', 'agent_existing'].includes(step.backend_action)">
                                                     <div class="field">
                                                         <label>TG 催结算群</label>
                                                         <input class="input" v-model="step.forward_to" placeholder="-1001234567890 或 @username">
@@ -2632,7 +2634,8 @@ createApp({
             send_site_inner_msg: "站内信",
             member_data_overview: "查数据",
             merchant_order_statistics: "查注单",
-            urge_settlement: "催结算"
+            urge_settlement: "催结算",
+            agent_existing: "Agent编排"
         }[action] || "后台操作");
         const ruleActionSummary = (rule) => {
             const steps = Array.isArray(rule.replies) ? rule.replies : [];

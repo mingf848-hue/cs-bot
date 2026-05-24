@@ -1492,7 +1492,22 @@ scheduled_message_runs = {}
 active_rule_tasks = set()
 rule_task_semaphore = None
 VALID_REPLY_TYPES = {"text", "edit_prev", "forward", "copy_file", "amount_logic", "preempt_check", "notify_user", "backend_unlock"}
-BACKEND_UNLOCK_ACTIONS = {"unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan", "send_site_inner_msg", "member_data_overview", "urge_settlement"}
+BACKEND_UNLOCK_ACTIONS = {"unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan", "send_site_inner_msg", "member_data_overview", "urge_settlement", "agent_existing"}
+AGENT_EXECUTABLE_ACTIONS = {"unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan", "member_data_overview", "urge_settlement"}
+AGENT_CAPABILITIES = [
+    {
+        "action": "member_data_overview",
+        "name": "查数据",
+        "input": "会员账号",
+        "fields": ["总输赢", "总流水", "总存款", "总提款", "总红利", "总返水"],
+        "notes": "可识别私发和上级代理编号校验",
+    },
+    {"action": "urge_settlement", "name": "催结算", "input": "533开头16位注单号，可多个"},
+    {"action": "unlock_sms", "name": "短信/验证码限制", "input": "会员账号"},
+    {"action": "clear_login_error", "name": "登录密码试错限制", "input": "会员账号"},
+    {"action": "add_proxy_whitelist", "name": "代理 IP 加白", "input": "IPv4地址"},
+    {"action": "migrate_milan", "name": "迁移米兰", "input": "会员账号"},
+]
 
 # 后台操作指令队列（Chrome 扩展轮询取指令）
 CMD_SECRET = "J7kN3mQxR9vTsW2pYzBf"
@@ -1529,6 +1544,11 @@ SITE_MESSAGE_PROFILES = {
 def normalize_backend_action(action):
     action = str(action or "unlock_sms").strip()
     aliases = {
+        "agent": "agent_existing",
+        "agent_existing_capabilities": "agent_existing",
+        "existing_agent": "agent_existing",
+        "智能体": "agent_existing",
+        "Agent编排": "agent_existing",
         "data_overview": "member_data_overview",
         "query_member_data": "member_data_overview",
         "member_data_query": "member_data_overview",
@@ -1789,6 +1809,8 @@ async def notify_backend_failure(step, rule, event, target_value, action, result
 
 async def execute_backend_unlock_step(step, rule, event, source_text, target_client=None):
     backend_action = normalize_backend_action((step or {}).get("backend_action", "unlock_sms"))
+    if backend_action == "agent_existing":
+        return await execute_agent_existing_step(step, rule, event, source_text, target_client=target_client)
     ai_parse = {}
     if backend_action == "urge_settlement":
         target_values = extract_backend_order_nos(source_text or "", (step or {}).get("member_pattern", ""))
@@ -1868,6 +1890,8 @@ async def execute_backend_unlock_step(step, rule, event, source_text, target_cli
     }
 
 def command_action_label(action):
+    if action == "agent_existing":
+        return "Agent 编排"
     if action == "add_proxy_whitelist":
         return "代理 IP 加白"
     if action == "clear_login_error":
@@ -1882,6 +1906,346 @@ def command_action_label(action):
 
 def member_data_private_requested(text):
     return "私发" in str(text or "").replace(" ", "")
+
+def agent_capabilities_prompt():
+    return json.dumps(AGENT_CAPABILITIES, ensure_ascii=False, indent=2)
+
+def build_ai_agent_plan_prompt(text, rule_name="", previous_error=""):
+    today = now_bj().strftime("%Y-%m-%d")
+    return f"""
+你是 ZD 回群 Agent 的任务规划器，只能输出一个 JSON 对象，不要解释。
+
+当前日期：{today}
+规则名称：{rule_name or "-"}
+
+你只能使用下面已注册能力，不能创造新能力：
+{agent_capabilities_prompt()}
+
+原始群消息：
+{str(text or "")[:3000]}
+
+输出 JSON schema：
+{{
+  "ok": true,
+  "tasks": [
+    {{
+      "action": "member_data_overview",
+      "target": "",
+      "member": "",
+      "order_no": "",
+      "ip": "",
+      "data_fields": [],
+      "startAt": "",
+      "endAt": "",
+      "private_reply": false,
+      "telegram_account": "",
+      "agent_code": "",
+      "reason": ""
+    }}
+  ],
+  "unsupported": [
+    {{"label": "", "member": "", "reason": ""}}
+  ],
+  "private_reply": false,
+  "reason": ""
+}}
+
+规则：
+- tasks 只能放已注册能力的 action。
+- 用户一句话有多个诉求时，拆成多个 task。
+- 用户要求的事项没有对应能力时，放到 unsupported，不能放进 tasks。
+- 不要因为讨好用户而把不支持事项说成已处理。
+- 查数据 data_fields 只能从 总输赢、总流水、总存款、总提款、总红利、总返水 中选择；没明确字段时返回空数组。
+- 催结算 order_no/target 必须是12到24位注单号；代理加白 ip/target 必须是IPv4；账号类 member/target 填会员账号。
+- private_reply 只有明确要求私发/私聊/发我时才为 true。
+- agent_code 只有消息里明确提供上级代理编号时填写。
+{f"上次规划失败原因：{previous_error}" if previous_error else ""}
+""".strip()
+
+def call_zd_agent_plan_once(text, rule_name="", previous_error=""):
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY 未配置")
+    prompt = build_ai_agent_plan_prompt(text, rule_name=rule_name, previous_error=previous_error)
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"response_mime_type": "application/json"}
+    }
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        gemini_generate_content_url(),
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY,
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=ZD_AI_PARSE_TIMEOUT) as resp:
+        status = getattr(resp, "status", resp.getcode())
+        resp_text = resp.read().decode("utf-8", errors="replace")
+    if status < 200 or status >= 300:
+        raise RuntimeError(f"AI HTTP {status}: {resp_text[:200]}")
+    data = json.loads(resp_text)
+    raw_content = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [{}])[0].get("text", "")
+    return extract_json_object(raw_content)
+
+def normalize_agent_task_action(action):
+    raw = str(action or "").strip()
+    aliases = {
+        "data_overview": "member_data_overview",
+        "query_member_data": "member_data_overview",
+        "member_data_query": "member_data_overview",
+        "查数据": "member_data_overview",
+        "数据概览": "member_data_overview",
+        "settlement_urge": "urge_settlement",
+        "urge_settle": "urge_settlement",
+        "urge_settlement_order": "urge_settlement",
+        "催结算": "urge_settlement",
+        "代理加白": "add_proxy_whitelist",
+        "代理IP加白": "add_proxy_whitelist",
+        "短信解锁": "unlock_sms",
+        "验证码解锁": "unlock_sms",
+        "登录限制": "clear_login_error",
+        "迁移米兰": "migrate_milan",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in AGENT_EXECUTABLE_ACTIONS else ""
+
+def sanitize_agent_task(raw_task):
+    if not isinstance(raw_task, dict):
+        return None
+    action = normalize_agent_task_action(raw_task.get("action") or "")
+    if not action:
+        return None
+    member = str(raw_task.get("member") or "").strip().lower()
+    target = str(raw_task.get("target") or "").strip()
+    order_no = str(raw_task.get("order_no") or "").strip()
+    ip = str(raw_task.get("ip") or "").strip()
+    if action == "urge_settlement":
+        target = order_no or target
+        if not re.fullmatch(r"\d{12,24}", target):
+            return None
+    elif action == "add_proxy_whitelist":
+        target = ip or target
+        if not re.fullmatch(BACKEND_PROXY_IP_PATTERN, target):
+            return None
+    else:
+        target = (member or target).lower()
+        if not re.fullmatch(BACKEND_UNLOCK_ACCOUNT_PATTERN, target):
+            return None
+    return {
+        "action": action,
+        "target": target,
+        "member": member,
+        "order_no": order_no,
+        "ip": ip,
+        "data_fields": clean_ai_data_fields(raw_task.get("data_fields")),
+        "startAt": valid_iso_date(raw_task.get("startAt")),
+        "endAt": valid_iso_date(raw_task.get("endAt")),
+        "private_reply": bool(raw_task.get("private_reply")),
+        "telegram_account": str(raw_task.get("telegram_account") or "").strip(),
+        "agent_code": str(raw_task.get("agent_code") or "").strip() if re.fullmatch(r"\d{5,12}", str(raw_task.get("agent_code") or "").strip()) else "",
+        "reason": str(raw_task.get("reason") or "").strip(),
+    }
+
+def agent_plan_fallback(text):
+    source_text = str(text or "")
+    tasks = []
+    seen = set()
+    def add_task(task):
+        if not task:
+            return
+        key = (task["action"], task["target"], tuple(task.get("data_fields") or []))
+        if key in seen:
+            return
+        seen.add(key)
+        tasks.append(task)
+
+    for order_no in extract_backend_order_nos(source_text, ""):
+        if looks_like_short_urge_settlement(source_text):
+            add_task(sanitize_agent_task({"action": "urge_settlement", "order_no": order_no, "target": order_no}))
+
+    if re.search(r"加白|白名单|代理IP|代理\s*IP", source_text, flags=re.IGNORECASE):
+        ip = extract_backend_proxy_ip(source_text, "")
+        add_task(sanitize_agent_task({"action": "add_proxy_whitelist", "ip": ip, "target": ip}))
+
+    fields = clean_ai_data_fields([
+        label for label in ["总输赢", "总流水", "总存款", "总提款", "总红利", "总返水", "总反水", "输赢", "流水", "红利", "返水", "反水"]
+        if label in source_text
+    ])
+    if fields:
+        member = extract_backend_unlock_member(source_text, "")
+        add_task(sanitize_agent_task({"action": "member_data_overview", "member": member, "target": member, "data_fields": fields}))
+
+    return {"ok": bool(tasks), "tasks": tasks, "unsupported": [], "private_reply": member_data_private_requested(source_text), "reason": ""}
+
+def sanitize_agent_plan(raw, source_text=""):
+    if not isinstance(raw, dict):
+        raise ValueError("AI返回不是对象")
+    if raw.get("ok") is False:
+        raise ValueError(str(raw.get("reason") or "AI表示无法规划"))
+    tasks = []
+    seen = set()
+    for item in raw.get("tasks") if isinstance(raw.get("tasks"), list) else []:
+        task = sanitize_agent_task(item)
+        if not task:
+            continue
+        key = (task["action"], task["target"], tuple(task.get("data_fields") or []), task.get("startAt"), task.get("endAt"))
+        if key in seen:
+            continue
+        seen.add(key)
+        tasks.append(task)
+        if len(tasks) >= 8:
+            break
+
+    unsupported = []
+    for item in raw.get("unsupported") if isinstance(raw.get("unsupported"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "").strip()[:40]
+        reason = str(item.get("reason") or "").strip()[:120]
+        member = str(item.get("member") or "").strip().lower()
+        if label or reason:
+            unsupported.append({"label": label or "该项", "member": member, "reason": reason})
+        if len(unsupported) >= 4:
+            break
+
+    if not tasks and not unsupported:
+        fallback = agent_plan_fallback(source_text)
+        tasks = fallback["tasks"]
+    return {
+        "ok": bool(tasks or unsupported),
+        "tasks": tasks,
+        "unsupported": unsupported,
+        "private_reply": bool(raw.get("private_reply")) or member_data_private_requested(source_text),
+        "reason": str(raw.get("reason") or "").strip(),
+    }
+
+def parse_agent_plan_sync(text, rule_name=""):
+    if not zd_ai_parse_available():
+        return agent_plan_fallback(text)
+    last_error = ""
+    for attempt in range(ZD_AI_PARSE_RETRIES + 1):
+        try:
+            raw = call_zd_agent_plan_once(text, rule_name=rule_name, previous_error=last_error)
+            plan = sanitize_agent_plan(raw, text)
+            logger.info(f"🤖 [ZD-Agent] 规划成功 tasks={len(plan.get('tasks') or [])} unsupported={len(plan.get('unsupported') or [])} attempt={attempt + 1}")
+            return plan
+        except Exception as e:
+            last_error = str(e)
+            logger.warning(f"⚠️ [ZD-Agent] 规划失败 attempt={attempt + 1}/{ZD_AI_PARSE_RETRIES + 1}: {last_error}")
+            if attempt < ZD_AI_PARSE_RETRIES:
+                time.sleep(min(2.0, 0.4 * (attempt + 1)))
+    logger.warning(f"⚠️ [ZD-Agent] 多次规划失败，回退规则: {last_error}")
+    return agent_plan_fallback(text)
+
+async def parse_agent_plan(text, rule_name=""):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: parse_agent_plan_sync(text, rule_name))
+
+def agent_success_reply(action, target):
+    if action == "add_proxy_whitelist":
+        return f"{target} 已加白。"
+    if action == "migrate_milan":
+        return f"{target} 已提交迁移。"
+    if action in {"unlock_sms", "clear_login_error"}:
+        return f"{target} 已处理。"
+    return ""
+
+def agent_unsupported_reply_items(unsupported, primary_member=""):
+    items = []
+    for item in unsupported or []:
+        label = str((item or {}).get("label") or "该项").strip()
+        member = str((item or {}).get("member") or primary_member or "").strip()
+        if "严查" in label:
+            text = f"{label}这边暂不支持。"
+        else:
+            text = f"{label}这边我再核实下。"
+        if member:
+            items.append(f"{member}\n{text}")
+        else:
+            items.append(text)
+    return items
+
+def merge_agent_reply_blocks(blocks):
+    clean = [str(block or "").strip() for block in blocks if str(block or "").strip()]
+    if not clean:
+        return ""
+    if len(clean) == 1:
+        return clean[0]
+    merged = []
+    used = [False] * len(clean)
+    for idx, block in enumerate(clean):
+        if used[idx]:
+            continue
+        lines = block.splitlines()
+        if len(lines) >= 1 and re.fullmatch(BACKEND_UNLOCK_ACCOUNT_PATTERN, lines[0].strip(), flags=re.IGNORECASE):
+            member = lines[0].strip().lower()
+            extra_lines = []
+            for jdx in range(idx + 1, len(clean)):
+                other_lines = clean[jdx].splitlines()
+                if other_lines and other_lines[0].strip().lower() == member:
+                    extra_lines.extend(other_lines[1:] or other_lines)
+                    used[jdx] = True
+            merged.append("\n".join([*lines, *extra_lines]).strip())
+        else:
+            merged.append(block)
+        used[idx] = True
+    return "\n\n".join(merged)
+
+async def execute_agent_existing_step(step, rule, event, source_text, target_client=None):
+    plan = await parse_agent_plan(source_text or "", str((rule or {}).get("name") or ""))
+    tasks = list((plan or {}).get("tasks") or [])
+    unsupported = list((plan or {}).get("unsupported") or [])
+    if not tasks and not unsupported:
+        result = {"status": "no_target", "detail": "Agent未识别到现有能力"}
+        await notify_backend_failure(step, rule, event, "", "agent_existing", result)
+        raise RuntimeError("Agent未识别到现有能力")
+
+    async def run_one_agent_task(task):
+        action = task["action"]
+        target = task["target"]
+        cmd_id = queue_backend_unlock_command(target, rule, event, action, step=step, ai_parse=task)
+        logger.info(f"🤖 [ZD-Agent] 下发能力: {action} {target} | id={cmd_id}")
+        result = await wait_backend_command_result(cmd_id, timeout=BACKEND_COMMAND_TIMEOUT)
+        if not backend_result_ok(result):
+            await notify_backend_failure(step, rule, event, target, action, result)
+            return {"ok": False, "action": action, "target": target, "result": result}
+        reply_text = str((result or {}).get("reply_text") or "").strip()
+        if action == "urge_settlement":
+            reply_text = normalize_urge_settlement_reply(reply_text)
+        if not reply_text:
+            reply_text = agent_success_reply(action, target)
+        return {"ok": True, "action": action, "target": target, "cmd_id": cmd_id, "result": result, "reply_text": reply_text}
+
+    results = await asyncio.gather(*(run_one_agent_task(task) for task in tasks)) if tasks else []
+    successes = [item for item in results if item.get("ok")]
+    failures = [item for item in results if not item.get("ok")]
+    if not successes and tasks:
+        status = ((failures[0] or {}).get("result") or {}).get("status") if failures else "failed"
+        raise RuntimeError(f"Agent能力执行失败 status={status}")
+
+    blocks = [item.get("reply_text") for item in successes if item.get("reply_text")]
+    primary_member = next((task.get("target") for task in tasks if task.get("action") != "add_proxy_whitelist"), "")
+    blocks.extend(agent_unsupported_reply_items(unsupported, primary_member=primary_member))
+    reply_text = merge_agent_reply_blocks(blocks)
+
+    if reply_text and target_client:
+        await asyncio.sleep(random_delay_from_step(step or {}, "result_reply_min", "result_reply_max", 1.8, 3.8))
+        if (plan or {}).get("private_reply") and getattr(event, "sender_id", None):
+            await target_client.send_message(event.sender_id, reply_text)
+            sent = await target_client.send_message(event.chat_id, "已发", reply_to=event.id)
+        else:
+            sent = await target_client.send_message(event.chat_id, reply_text, reply_to=event.id)
+        if global_main_handler:
+            asyncio.create_task(global_main_handler(events.NewMessage.Event(sent)))
+
+    if failures:
+        logger.warning(f"⚠️ [ZD-Agent] 部分能力失败: success={len(successes)} failed={len(failures)}")
+    return {
+        "id": successes[-1]["cmd_id"] if successes else f"agent_{int(time.time() * 1000)}",
+        "stop_actions": any(bool((item.get("result") or {}).get("stop_actions")) for item in successes)
+    }
 
 def ensure_scheduled_message_id(item):
     if not item.get("id"):
@@ -2632,6 +2996,7 @@ SETTINGS_HTML = """
                                                     <option value="add_proxy_whitelist">代理 IP 加白</option>
                                                     <option value="member_data_overview">查数据</option>
                                                     <option value="urge_settlement">催结算</option>
+                                                    <option value="agent_existing">Agent编排（现有能力）</option>
                                                 </select>
                                             </div>
                                             <div class="visual-field" v-if="reply.backend_action === 'urge_settlement'">
@@ -2648,7 +3013,7 @@ SETTINGS_HTML = """
                                                 <input v-model="reply.ip_pattern" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] font-mono text-orange-700 bg-orange-50 border-orange-200" placeholder="留空：从已匹配消息里提取 IPv4">
                                                 <div class="text-[9px] text-slate-400 mt-0.5">触发词在监听关键词里维护；这里仅负责提取 IPv4。</div>
                                             </div>
-                                            <template v-if="reply.backend_action === 'urge_settlement'">
+                                            <template v-if="['urge_settlement', 'agent_existing'].includes(reply.backend_action)">
                                                 <div class="visual-field">
                                                     <div class="visual-label"><i class="fa-brands fa-telegram"></i>TG 催结算群</div>
                                                     <input v-model="reply.forward_to" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] text-blue-700 bg-blue-50 border-blue-100" placeholder="-1001234567890 或 @username">
