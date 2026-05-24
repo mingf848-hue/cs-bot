@@ -36,6 +36,8 @@ const RECORDER_RESPONSE_LIMIT = 20000;
 const AUTH_SYNC_WAIT_MS = 12000;
 const FETCH_RETRY_DELAYS_MS = [800, 1800, 3200];
 const MAX_ACTIVE_BACKEND_COMMANDS = 4;
+const COMMAND_POLL_WAIT_SECONDS = 5;
+const COMMAND_POLL_ALARM_MINUTES = 0.25;
 const MERCHANT_URGE_MATCH_STATS_KEY = 'merchantUrgeMatchStatsV1';
 const MERCHANT_URGE_MATCH_LIMIT = 2;
 const MERCHANT_URGE_MATCH_TTL_MS = 24 * 60 * 60 * 1000;
@@ -2070,7 +2072,7 @@ async function pollOnce() {
     }
     const { config } = await getConfig();
     await setStatus({ state: 'polling', message: '正在轮询命令' });
-    const waitSeconds = activeBackendCommands > 0 ? 0 : 5;
+    const waitSeconds = activeBackendCommands > 0 ? 0 : COMMAND_POLL_WAIT_SECONDS;
     const res = await fetch(`${config.botBase}/api/cmd/poll?wait=${waitSeconds}&secret=${encodeURIComponent(config.cmdSecret)}`, {
       cache: 'no-store'
     });
@@ -2115,12 +2117,12 @@ chrome.runtime.onInstalled.addListener(async () => {
     recorderState: stored.recorderState || { enabled: false, startedAt: '', stoppedAt: '', count: 0 },
     recorderRecords: stored.recorderRecords || []
   });
-  chrome.alarms.create('poll', { periodInMinutes: 0.25 });
+  chrome.alarms.create('poll', { periodInMinutes: COMMAND_POLL_ALARM_MINUTES });
   pollOnce();
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  chrome.alarms.create('poll', { periodInMinutes: 0.25 });
+  chrome.alarms.create('poll', { periodInMinutes: COMMAND_POLL_ALARM_MINUTES });
   pollOnce();
 });
 
@@ -2152,7 +2154,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return chrome.storage.local.set({ config, enabled: true });
       })
       .then(() => {
-        chrome.alarms.create('poll', { periodInMinutes: 0.25 });
+        chrome.alarms.create('poll', { periodInMinutes: COMMAND_POLL_ALARM_MINUTES });
         pollOnce();
         sendResponse({ ok: true });
       })
@@ -2162,7 +2164,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message && message.type === 'setEnabled') {
     chrome.storage.local.set({ enabled: true })
       .then(() => {
-        chrome.alarms.create('poll', { periodInMinutes: 0.25 });
+        chrome.alarms.create('poll', { periodInMinutes: COMMAND_POLL_ALARM_MINUTES });
         pollOnce();
         sendResponse({ ok: true });
       })
@@ -2282,5 +2284,5 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return false;
 });
 
-chrome.alarms.create('poll', { periodInMinutes: 0.25 });
+chrome.alarms.create('poll', { periodInMinutes: COMMAND_POLL_ALARM_MINUTES });
 pollOnce();

@@ -1539,7 +1539,8 @@ pending_commands = deque(maxlen=200)
 pending_command_leases = {}
 backend_command_results = {}
 backend_command_progress = {}
-pending_command_event = threading.Event()
+backend_command_lock = threading.RLock()
+pending_command_condition = threading.Condition(backend_command_lock)
 BACKEND_COMMAND_LEASE_SECONDS = 300
 
 SITE_MESSAGE_PROFILES = {
@@ -1566,8 +1567,19 @@ SITE_MESSAGE_PROFILES = {
     },
 }
 
-def _signal_new_command():
-    pending_command_event.set()
+def _prune_backend_command_maps_locked():
+    while len(backend_command_results) > 500:
+        backend_command_results.pop(next(iter(backend_command_results)), None)
+    while len(backend_command_progress) > 500:
+        backend_command_progress.pop(next(iter(backend_command_progress)), None)
+
+def enqueue_pending_command(command, left=False):
+    with pending_command_condition:
+        if left:
+            pending_commands.appendleft(command)
+        else:
+            pending_commands.append(command)
+        pending_command_condition.notify()
 
 def normalize_backend_action(action):
     action = str(action or "unlock_sms").strip()
@@ -1622,8 +1634,7 @@ def queue_site_inner_message_command(members, title=None, content=None, source="
             "step_delay_min": 5,
             "step_delay_max": 8,
         })
-    pending_commands.append(command)
-    _signal_new_command()
+    enqueue_pending_command(command)
     return cmd_id, clean_members
 
 def normalize_reply_steps(raw_replies):
@@ -1714,11 +1725,10 @@ def queue_backend_unlock_command(target_value, rule, event, action="unlock_sms",
         unlock_value = os.environ.get("ZD_SMS_UNLOCK_VALUE", "").strip()
         if unlock_value:
             command["value"] = unlock_value
-    pending_commands.append(command)
-    _signal_new_command()
+    enqueue_pending_command(command)
     return cmd_id
 
-def lease_next_pending_command():
+def _lease_next_pending_command_locked():
     now = time.time()
     for cmd_id, leased in list(pending_command_leases.items()):
         if now - float(leased.get("leased_at", 0)) > BACKEND_COMMAND_LEASE_SECONDS:
@@ -1732,18 +1742,37 @@ def lease_next_pending_command():
     pending_command_leases[cmd_id] = {"cmd": cmd, "leased_at": now}
     return cmd
 
+def lease_next_pending_command():
+    with pending_command_condition:
+        return _lease_next_pending_command_locked()
+
+def wait_for_pending_command(wait_seconds=0.0):
+    deadline = time.monotonic() + max(0.0, float(wait_seconds or 0.0))
+    with pending_command_condition:
+        while True:
+            cmd = _lease_next_pending_command_locked()
+            if cmd:
+                return cmd
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            pending_command_condition.wait(remaining)
+
 async def wait_backend_command_result(cmd_id, timeout=90.0):
     deadline = time.time() + max(1.0, float(timeout or 90.0))
     while time.time() < deadline:
-        result = backend_command_results.pop(cmd_id, None)
+        with backend_command_lock:
+            result = backend_command_results.pop(cmd_id, None)
         if result:
             return result
-        await asyncio.sleep(0.5)
-    pending_command_leases.pop(cmd_id, None)
+        await asyncio.sleep(0.2)
+    with backend_command_lock:
+        pending_command_leases.pop(cmd_id, None)
     return {"status": "timeout", "detail": "等待后台回执超时"}
 
 def get_backend_command_progress(cmd_id):
-    return dict(backend_command_progress.get(str(cmd_id or ""), {}) or {})
+    with backend_command_lock:
+        return dict(backend_command_progress.get(str(cmd_id or ""), {}) or {})
 
 def backend_result_ok(result):
     return str((result or {}).get("status") or "") in {"success", "reply_origin"}
@@ -3843,17 +3872,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             wait_seconds = max(0.0, min(5.0, float(request.args.get("wait", 0) or 0)))
         except Exception:
             wait_seconds = 0.0
-        deadline = time.time() + wait_seconds
-        while True:
-            cmd = lease_next_pending_command()
-            if cmd:
-                return jsonify({"ok": True, "cmd": cmd})
-            remaining = deadline - time.time()
-            if remaining <= 0:
-                break
-            pending_command_event.wait(min(remaining, 5.0))
-            pending_command_event.clear()
-        return jsonify({"ok": True, "cmd": None})
+        cmd = wait_for_pending_command(wait_seconds)
+        return jsonify({"ok": True, "cmd": cmd})
 
     @app.route('/api/cmd/ack', methods=['POST'])
     def cmd_ack():
@@ -3867,26 +3887,25 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         reply_text = str(data.get("reply_text") or "")
         stop_actions = bool(data.get("stop_actions"))
         if cmd_id:
-            pending_command_leases.pop(cmd_id, None)
-            backend_command_results[cmd_id] = {
-                "status": status,
-                "member_name": member_name,
-                "detail": detail,
-                "reply_text": reply_text,
-                "stop_actions": stop_actions,
-                "acked_at": now_bj().isoformat(),
-            }
-            backend_command_progress[cmd_id] = {
-                **backend_command_progress.get(cmd_id, {}),
-                "status": status,
-                "detail": detail,
-                "percent": 100 if status == "success" else backend_command_progress.get(cmd_id, {}).get("percent", 0),
-                "updated_at": now_bj().isoformat(),
-            }
-            while len(backend_command_results) > 500:
-                backend_command_results.pop(next(iter(backend_command_results)), None)
-            while len(backend_command_progress) > 500:
-                backend_command_progress.pop(next(iter(backend_command_progress)), None)
+            with backend_command_lock:
+                pending_command_leases.pop(cmd_id, None)
+                previous_progress = backend_command_progress.get(cmd_id, {})
+                backend_command_results[cmd_id] = {
+                    "status": status,
+                    "member_name": member_name,
+                    "detail": detail,
+                    "reply_text": reply_text,
+                    "stop_actions": stop_actions,
+                    "acked_at": now_bj().isoformat(),
+                }
+                backend_command_progress[cmd_id] = {
+                    **previous_progress,
+                    "status": status,
+                    "detail": detail,
+                    "percent": 100 if status == "success" else previous_progress.get("percent", 0),
+                    "updated_at": now_bj().isoformat(),
+                }
+                _prune_backend_command_maps_locked()
         logger.info(
             f"🔓 [BackendUnlock] 扩展回执: id={cmd_id or '-'} "
             f"member={member_name or '-'} status={status or '-'} detail={detail[:500] or '-'}"
@@ -3910,11 +3929,11 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                 "percent": max(0, min(100, int(data.get("percent") or 0))),
                 "updated_at": now_bj().isoformat(),
             }
-            backend_command_progress[cmd_id] = progress
-            if cmd_id in pending_command_leases:
-                pending_command_leases[cmd_id]["leased_at"] = time.time()
-            while len(backend_command_progress) > 500:
-                backend_command_progress.pop(next(iter(backend_command_progress)), None)
+            with backend_command_lock:
+                backend_command_progress[cmd_id] = progress
+                if cmd_id in pending_command_leases:
+                    pending_command_leases[cmd_id]["leased_at"] = time.time()
+                _prune_backend_command_maps_locked()
         return jsonify({"ok": True})
 
     @app.route('/api/cmd/send_telegram', methods=['POST'])
