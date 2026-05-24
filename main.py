@@ -2591,9 +2591,15 @@ def build_copy_text_markup(text, label="复制整理结果"):
     if len(raw) <= 256:
         rows.append([{"text": label, "copy_text": {"text": raw}}])
     else:
-        for index, line in enumerate([item for item in raw.splitlines() if item.strip()][:8], start=1):
-            if len(line) <= 256:
-                rows.append([{"text": f"复制第{index}行", "copy_text": {"text": line}}])
+        blocks = [item.strip() for item in re.split(r"\n\s*\n+", raw) if item.strip()]
+        if len(blocks) > 1:
+            for index, block in enumerate(blocks[:8], start=1):
+                if len(block) <= 256:
+                    rows.append([{"text": f"复制第{index}段", "copy_text": {"text": block}}])
+        if not rows:
+            for index, line in enumerate([item for item in raw.splitlines() if item.strip()][:8], start=1):
+                if len(line) <= 256:
+                    rows.append([{"text": f"复制第{index}行", "copy_text": {"text": line}}])
     return {"inline_keyboard": rows} if rows else None
 
 def format_copy_link(link, index=None):
@@ -2850,6 +2856,199 @@ def parse_order_table_text(text):
 
 def parse_withdrawal_table_text(text):
     return parse_order_table_text(text)
+
+LARGE_WITHDRAW_TIMEOUT_CACHE_TTL = 8 * 60 * 60
+large_withdraw_timeout_cache = {}
+large_withdraw_timeout_cache_lock = Lock()
+
+def parse_large_timeout_datetime(raw_time):
+    value = str(raw_time or "").strip().replace("/", "-")
+    if re.fullmatch(r"\d{4}-\d{1,2}-\d{1,2}\s+\d{1,2}:\d{1,2}", value):
+        value += ":00"
+    for fmt in ("%Y-%m-%d %H:%M:%S",):
+        try:
+            return datetime.strptime(value, fmt).replace(tzinfo=BEIJING_TZ)
+        except Exception:
+            pass
+    return None
+
+def format_large_timeout_time(raw_time):
+    value = str(raw_time or "").strip().replace("/", "-")
+    if re.fullmatch(r"\d{4}-\d{1,2}-\d{1,2}\s+\d{1,2}:\d{1,2}", value):
+        value += ":00"
+    return value
+
+def format_large_timeout_duration(completion_time, now):
+    completion_dt = parse_large_timeout_datetime(completion_time)
+    if not completion_dt:
+        return None
+    diff_seconds = int((now - completion_dt).total_seconds())
+    if diff_seconds <= 0:
+        return "0:00:00"
+    hours = diff_seconds // 3600
+    minutes = (diff_seconds % 3600) // 60
+    seconds = diff_seconds % 60
+    if hours >= 24:
+        hours -= 24
+    return f"{hours}:{minutes:02d}:{seconds:02d}"
+
+def chinese_number(num):
+    numbers = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十"]
+    try:
+        value = int(num)
+    except Exception:
+        return str(num)
+    if 0 <= value <= 10:
+        return numbers[value]
+    if 10 < value < 20:
+        return "十" + ("" if value % 10 == 0 else numbers[value % 10])
+    if 20 <= value < 100:
+        return numbers[value // 10] + "十" + ("" if value % 10 == 0 else numbers[value % 10])
+    return str(value)
+
+def next_large_timeout_order_count(order_no):
+    order_no = str(order_no or "").strip()
+    if not order_no:
+        return 1
+
+    redis_key = f"large_withdraw_timeout_count:{order_no}"
+    client = get_wait_alert_redis_client()
+    if client:
+        try:
+            count = int(client.get(redis_key) or 0) + 1
+            client.setex(redis_key, LARGE_WITHDRAW_TIMEOUT_CACHE_TTL, count)
+            return count
+        except Exception as e:
+            logger.warning(f"⚠️ [LargeTimeout] Redis 催促次数缓存失败，回退内存: {e}")
+
+    now_ts = time.time()
+    with large_withdraw_timeout_cache_lock:
+        expired_keys = [
+            key for key, item in large_withdraw_timeout_cache.items()
+            if not isinstance(item, dict) or item.get("expires_at", 0) <= now_ts
+        ]
+        for key in expired_keys[:100]:
+            large_withdraw_timeout_cache.pop(key, None)
+
+        item = large_withdraw_timeout_cache.get(order_no) or {}
+        count = int(item.get("count") or 0) + 1 if item.get("expires_at", 0) > now_ts else 1
+        large_withdraw_timeout_cache[order_no] = {
+            "count": count,
+            "expires_at": now_ts + LARGE_WITHDRAW_TIMEOUT_CACHE_TTL,
+        }
+        return count
+
+def parse_large_timeout_line(line, fixed_now):
+    raw = str(line or "").strip()
+    if not raw:
+        return None
+
+    account = None
+    for item in re.findall(r"[A-Za-z0-9_]+", raw):
+        if (
+            not re.fullmatch(r"\d+", item)
+            and not re.fullmatch(r"(WD|MW|HWD)[A-Za-z0-9]+", item)
+            and not re.fullmatch(r"VIP\d+", item, flags=re.I)
+            and not re.fullmatch(r"\d", item)
+            and not re.fullmatch(r"[\d,]+\.\d+", item)
+            and not re.fullmatch(r"\d{5,6}", item)
+            and not re.fullmatch(r"区间段\d+", item)
+            and len(item) >= 3
+        ):
+            account = item
+            break
+
+    order_match = re.search(r"\b(?:WD|MW|HWD)[A-Za-z0-9]+\b", raw)
+    vip_match = re.search(r"\bVIP(\d+)\b", raw, flags=re.I)
+    single_level_match = re.search(r"\b(\d)\b", raw)
+    amount_match = re.search(r"\b[\d,]+\.\d{3}\b", raw) or re.search(r"\b\d{5,6}\b", raw)
+    times = re.findall(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{1,2}:\d{1,2}", raw)
+    if not times:
+        times = [
+            item + ":00"
+            for item in re.findall(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{1,2}(?!:\d)", raw)
+        ]
+
+    order = order_match.group(0) if order_match else None
+    level = vip_match.group(1) if vip_match else (single_level_match.group(1) if single_level_match else None)
+    amount = amount_match.group(0).replace(",", "").split(".")[0] if amount_match else None
+    first_time = times[0] if len(times) >= 1 else None
+    completion_time = times[1] if len(times) >= 2 else None
+    duration = format_large_timeout_duration(completion_time, fixed_now) if completion_time else None
+
+    if not all([account, order, level, amount, first_time, completion_time, duration]):
+        return None
+    return {
+        "account": account,
+        "order": order,
+        "level": level,
+        "amount": amount,
+        "time": format_large_timeout_time(first_time),
+        "duration": duration,
+    }
+
+def format_large_timeout_template(record):
+    count = next_large_timeout_order_count(record.get("order"))
+    return "\n".join([
+        "站点 ：ML",
+        f"等级：VIP{record.get('level')}",
+        f"会员账号：{record.get('account')}",
+        f"提款订单：{record.get('order')}",
+        f"提款金额 : {record.get('amount')}",
+        f"提款时间：{record.get('time')}",
+        f"问题反馈：大额提款超时{record.get('duration')}",
+        f"订单催促次数：第{chinese_number(count)}次",
+    ])
+
+def format_large_timeout_sheet_row(record, fixed_now):
+    system_time = fixed_now.strftime("%H:%M")
+    return "\t".join([
+        system_time,
+        "提款超时",
+        "PTYY1B",
+        "ARATAKITO",
+        "ML",
+        f"VIP{record.get('level')}",
+        record.get("account") or "",
+        record.get("order") or "",
+        record.get("time") or "",
+        record.get("amount") or "",
+        record.get("duration") or "",
+    ])
+
+def parse_large_timeout_text(text):
+    raw_text = str(text or "").strip()
+    if not raw_text:
+        return None
+
+    fixed_now = datetime.now(BEIJING_TZ)
+    records = []
+    for line in raw_text.splitlines():
+        record = parse_large_timeout_line(line, fixed_now)
+        if record:
+            records.append(record)
+
+    if not records:
+        compact = " ".join(line.strip() for line in raw_text.splitlines() if line.strip())
+        record = parse_large_timeout_line(compact, fixed_now)
+        if record:
+            records.append(record)
+
+    if not records:
+        return None
+
+    output1 = "\n\n".join(format_large_timeout_template(record) for record in records)
+    output2 = "\n".join(format_large_timeout_sheet_row(record, fixed_now) for record in records)
+    return {
+        "text": output1,
+        "reply_markup": build_copy_text_markup(output1, "复制格式1"),
+        "extra_replies": [
+            {
+                "text": output2,
+                "reply_markup": build_copy_text_markup(output2, "复制格式2"),
+            }
+        ],
+    }
 
 def _bot_get_updates(offset=None, timeout=50):
     if not BOT_TOKEN:
@@ -3292,6 +3491,7 @@ async def bot_command_polling_task():
                 edit_message_id = None
                 auto_delete_after = None
                 reply_markup = None
+                extra_replies = []
                 if is_bot_command(text, "start"):
                     reply_text = format_start_command_reply(message)
                 elif is_bot_command(text, "id"):
@@ -3301,10 +3501,12 @@ async def bot_command_polling_task():
                     if chat.get("type") != "private":
                         continue
                     withdrawal_text = parse_withdrawal_table_text(text)
-                    reply_result = (
-                        {"text": withdrawal_text, "reply_markup": build_copy_text_markup(withdrawal_text)}
-                        if withdrawal_text else await handle_site_message_bot_request(message)
-                    )
+                    if withdrawal_text:
+                        reply_result = {"text": withdrawal_text, "reply_markup": build_copy_text_markup(withdrawal_text)}
+                    else:
+                        reply_result = parse_large_timeout_text(text)
+                        if not reply_result:
+                            reply_result = await handle_site_message_bot_request(message)
                     if not reply_result:
                         continue
                     if isinstance(reply_result, dict):
@@ -3319,6 +3521,7 @@ async def bot_command_polling_task():
                         sent_message_id = reply_result.get("sent_message_id")
                         auto_delete_after = reply_result.get("auto_delete_after")
                         reply_markup = reply_result.get("reply_markup")
+                        extra_replies = list(reply_result.get("extra_replies") or [])
                     else:
                         reply_text = str(reply_result)
                         delete_source = False
@@ -3339,6 +3542,19 @@ async def bot_command_polling_task():
                         None,
                         lambda cid=chat_id, txt=reply_text, mid=(message.get("message_id") if reply_to_source else None), thread=message.get("message_thread_id"), markup=reply_markup: _bot_send_reply(cid, txt, mid, thread, markup)
                     )
+                    for extra_reply in extra_replies:
+                        if isinstance(extra_reply, dict):
+                            extra_text = extra_reply.get("text") or ""
+                            extra_markup = extra_reply.get("reply_markup")
+                        else:
+                            extra_text = str(extra_reply or "")
+                            extra_markup = None
+                        if not extra_text:
+                            continue
+                        await loop.run_in_executor(
+                            None,
+                            lambda cid=chat_id, txt=extra_text, mid=(message.get("message_id") if reply_to_source else None), thread=message.get("message_thread_id"), markup=extra_markup: _bot_send_reply(cid, txt, mid, thread, markup)
+                        )
                 if auto_delete_after and sent_message_id:
                     asyncio.create_task(delete_bot_message_later(chat_id, sent_message_id, auto_delete_after))
                 if remember_zc_marker and sent_message_id:
