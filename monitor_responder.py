@@ -377,8 +377,11 @@ def float_env(name, default, min_value=None, max_value=None):
     return value
 
 ZD_AI_PARSE_ENABLED = os.environ.get("ZD_AI_PARSE_ENABLED", "1").strip().lower() not in ("0", "false", "off", "no")
-ZD_AI_PARSE_RETRIES = int_env("ZD_AI_PARSE_RETRIES", 2, 0, 5)
+ZD_AI_PARSE_RETRIES = int_env("ZD_AI_PARSE_RETRIES", 1, 0, 2)
 ZD_AI_PARSE_TIMEOUT = float_env("ZD_AI_PARSE_TIMEOUT", 20, 3.0, 60.0)
+ZD_AI_INPUT_MAX_CHARS = int_env("ZD_AI_INPUT_MAX_CHARS", 1600, 300, 5000)
+ZD_AI_MAX_OUTPUT_TOKENS = int_env("ZD_AI_MAX_OUTPUT_TOKENS", 384, 128, 2048)
+ZD_AGENT_MAX_OUTPUT_TOKENS = int_env("ZD_AGENT_MAX_OUTPUT_TOKENS", 768, 256, 4096)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = (os.environ.get("GEMINI_MODEL") or "gemini-3.5-flash").strip() or "gemini-3.5-flash"
 ZD_RULE_MAX_CONCURRENT = int_env("ZD_RULE_MAX_CONCURRENT", 12, 1, 100)
@@ -391,6 +394,12 @@ def gemini_generate_content_url():
 
 def zd_ai_parse_available():
     return bool(ZD_AI_PARSE_ENABLED and GEMINI_API_KEY)
+
+def trim_zd_ai_text(text):
+    raw = str(text or "")
+    if len(raw) <= ZD_AI_INPUT_MAX_CHARS:
+        return raw
+    return raw[:ZD_AI_INPUT_MAX_CHARS] + "\n...[已截断]"
 
 def extract_json_object(text):
     raw = str(text or "").strip()
@@ -432,7 +441,7 @@ def build_ai_backend_parse_prompt(text, action, rule_name="", previous_error="")
 动作字段要求：{ai_backend_action_schema(action)}
 
 原始消息：
-{str(text or "")[:3000]}
+{trim_zd_ai_text(text)}
 
 请从原始消息中提取后台动作参数。不要发明不存在的信息。
 输出 JSON schema：
@@ -469,7 +478,9 @@ def call_zd_ai_parse_once(text, action, rule_name="", previous_error=""):
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
-            "response_mime_type": "application/json"
+            "response_mime_type": "application/json",
+            "maxOutputTokens": ZD_AI_MAX_OUTPUT_TOKENS,
+            "temperature": 0
         }
     }
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -1937,7 +1948,7 @@ def build_ai_agent_plan_prompt(text, rule_name="", previous_error=""):
 {agent_capabilities_prompt()}
 
 原始群消息：
-{str(text or "")[:3000]}
+{trim_zd_ai_text(text)}
 
 输出 JSON schema：
 {{
@@ -1983,7 +1994,11 @@ def call_zd_agent_plan_once(text, rule_name="", previous_error=""):
     prompt = build_ai_agent_plan_prompt(text, rule_name=rule_name, previous_error=previous_error)
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"response_mime_type": "application/json"}
+        "generationConfig": {
+            "response_mime_type": "application/json",
+            "maxOutputTokens": ZD_AGENT_MAX_OUTPUT_TOKENS,
+            "temperature": 0
+        }
     }
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
