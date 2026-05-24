@@ -861,8 +861,8 @@ try:
     
     CS_NAME_PREFIXES = ["YY_6/9_值班号", "Y_YY"]
 
-    AI_PROXY_URL = os.environ.get("AI_PROXY_URL")
-    AI_MODEL_NAME = "gemini-3.1-flash-lite-preview"
+    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+    GEMINI_MODEL = (os.environ.get("GEMINI_MODEL") or "gemini-3.5-flash").strip() or "gemini-3.5-flash"
 
 except Exception as e:
     logger.error(f"❌ 配置错误: {e}")
@@ -2088,25 +2088,40 @@ def run_web():
 # 模块 4.5: AI 分析模块 (Ver 45.22)
 # ==========================================
 
-def _ai_check_reply_needed(text):
-    # 彻底移除本地暴力兜底，完全依靠 AI 研判
-    proxy_url = AI_PROXY_URL.rstrip('/')
-    url = f"{proxy_url}/v1beta/models/{AI_MODEL_NAME}:generateContent"
-    headers = {'Content-Type': 'application/json'}
-    prompt = f"判断客户消息是否需要回复。消息: '{text}'\n如果是礼貌结束语(如：好、好的、谢谢、收到、ok等)或无意义，返回false。如果是问题或业务请求，返回true。\nJSON: {{'reason': '...', 'need_reply': true/false}}"
-    data = {
+GEMINI_API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
+
+def _gemini_generate_json(prompt, timeout=60):
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY 未配置")
+
+    url = f"{GEMINI_API_ROOT}/models/{GEMINI_MODEL}:generateContent"
+    payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
-            "response_mime_type": "application/json",
-            "temperature": 0.0
+            "response_mime_type": "application/json"
         }
     }
-    
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY,
+    }
+
+    resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Gemini HTTP {resp.status_code}: {resp.text[:200]}")
+
+    res_json = resp.json()
+    raw_content = (((res_json.get('candidates') or [{}])[0].get('content') or {}).get('parts') or [{}])[0].get('text', '')
+    if not raw_content:
+        raise RuntimeError("Gemini返回为空")
+    return json.loads(raw_content)
+
+def _ai_check_reply_needed(text):
+    # 彻底移除本地暴力兜底，完全依靠 AI 研判
+    prompt = f"判断客户消息是否需要回复。消息: '{text}'\n如果是礼貌结束语(如：好、好的、谢谢、收到、ok等)或无意义，返回false。如果是问题或业务请求，返回true。\nJSON: {{'reason': '...', 'need_reply': true/false}}"
     try:
-        resp = requests.post(url, json=data, headers=headers, timeout=60)
-        if resp.status_code == 200:
-            decision = json.loads(resp.json()['candidates'][0]['content']['parts'][0]['text'])
-            return (decision.get("need_reply", True), decision.get("reason", "AI Decision"))
+        decision = _gemini_generate_json(prompt, timeout=60)
+        return (decision.get("need_reply", True), decision.get("reason", "AI Decision"))
     except: pass
     return (True, "⚠️ AI出错，请人工核查")
 
@@ -2119,11 +2134,7 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
     
     context_str = "\n".join(context_text_list)
     log_prefix = f"🤖 [AI-Orphan] Text='{target_text[:15]}...' | "
-    
-    proxy_url = AI_PROXY_URL.rstrip('/')
-    url = f"{proxy_url}/v1beta/models/{AI_MODEL_NAME}:generateContent"
-    headers = {'Content-Type': 'application/json'}
-    
+
     # 修复了逻辑反转导致的判断BUG，变量名修改为 is_exempt (是否豁免)
     prompt = f"""
     你是一名经验丰富的客服质检员。
@@ -2148,28 +2159,13 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
 
     请输出 JSON 格式: {{“reason”: “用中文简短说明原因...”, “is_exempt”: true/false}}
     """
-    
-    data = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "response_mime_type": "application/json",
-            "temperature": 0.0
-        }
-    }
-    
+
     try:
-        resp = requests.post(url, json=data, headers=headers, timeout=60)
-        if resp.status_code == 200:
-            res_json = resp.json()
-            raw_content = res_json.get('candidates', [])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
-            decision = json.loads(raw_content)
-            is_exempt = decision.get("is_exempt", False)
-            reason = decision.get("reason", "AI Decision")
-            log_tree(2, log_prefix + f"✅ AI判定: 豁免={is_exempt} | {reason}")
-            return (is_exempt, reason)
-        else:
-            log_tree(9, log_prefix + f"❌ AI HTTP Error {resp.status_code}，标记人工核查")
-            return (False, f"⚠️ AI出错(HTTP {resp.status_code})，请人工核查")
+        decision = _gemini_generate_json(prompt, timeout=60)
+        is_exempt = decision.get("is_exempt", False)
+        reason = decision.get("reason", "AI Decision")
+        log_tree(2, log_prefix + f"✅ AI判定: 豁免={is_exempt} | {reason}")
+        return (is_exempt, reason)
     except Exception as e:
         log_tree(9, log_prefix + f"❌ AI Check Failed: {e}，标记人工核查")
         return (False, f"⚠️ AI出错，请人工核查")
@@ -2178,9 +2174,6 @@ def _ai_check_reply_continuation(anchor_text, followup_texts):
     if not followup_texts:
         return True, "无补充消息"
 
-    proxy_url = AI_PROXY_URL.rstrip('/')
-    url = f"{proxy_url}/v1beta/models/{AI_MODEL_NAME}:generateContent"
-    headers = {'Content-Type': 'application/json'}
     followup_str = "\n".join([f"{idx + 1}. {text}" for idx, text in enumerate(followup_texts)])
     prompt = f"""
     你是一名客服聊天质检员。
@@ -2197,22 +2190,10 @@ def _ai_check_reply_continuation(anchor_text, followup_texts):
 
     请输出 JSON 格式: {{"reason": "用中文简短说明原因...", "is_continuation": true/false}}
     """
-    data = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "response_mime_type": "application/json",
-            "temperature": 0.0
-        }
-    }
 
     try:
-        resp = requests.post(url, json=data, headers=headers, timeout=30)
-        if resp.status_code == 200:
-            res_json = resp.json()
-            raw_content = res_json.get('candidates', [])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
-            decision = json.loads(raw_content)
-            return decision.get("is_continuation", False), decision.get("reason", "AI Decision")
-        log_tree(9, f"❌ AI补充判定 HTTP Error {resp.status_code}，按新问题处理")
+        decision = _gemini_generate_json(prompt, timeout=30)
+        return decision.get("is_continuation", False), decision.get("reason", "AI Decision")
     except Exception as e:
         log_tree(9, f"❌ AI补充判定失败: {e}，按新问题处理")
     return False, "AI补充判定失败，按新问题处理"

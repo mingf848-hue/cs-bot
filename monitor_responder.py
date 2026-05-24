@@ -360,20 +360,17 @@ def float_env(name, default, min_value=None, max_value=None):
 ZD_AI_PARSE_ENABLED = os.environ.get("ZD_AI_PARSE_ENABLED", "1").strip().lower() not in ("0", "false", "off", "no")
 ZD_AI_PARSE_RETRIES = int_env("ZD_AI_PARSE_RETRIES", 2, 0, 5)
 ZD_AI_PARSE_TIMEOUT = float_env("ZD_AI_PARSE_TIMEOUT", 20, 3.0, 60.0)
-ZD_AI_PARSE_MODEL = os.environ.get("ZD_AI_PARSE_MODEL") or os.environ.get("AI_MODEL_NAME") or "gemini-3.1-flash-lite-preview"
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = (os.environ.get("GEMINI_MODEL") or "gemini-3.5-flash").strip() or "gemini-3.5-flash"
 ZD_RULE_MAX_CONCURRENT = int_env("ZD_RULE_MAX_CONCURRENT", 12, 1, 100)
 
-def zd_ai_parse_url():
-    explicit = os.environ.get("ZD_AI_PARSE_URL", "").strip()
-    if explicit:
-        return explicit
-    proxy_url = os.environ.get("AI_PROXY_URL", "").strip()
-    if not proxy_url:
-        return ""
-    return f"{proxy_url.rstrip('/')}/v1beta/models/{ZD_AI_PARSE_MODEL}:generateContent"
+GEMINI_API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
+
+def gemini_generate_content_url():
+    return f"{GEMINI_API_ROOT}/models/{GEMINI_MODEL}:generateContent"
 
 def zd_ai_parse_available():
-    return bool(ZD_AI_PARSE_ENABLED and zd_ai_parse_url())
+    return bool(ZD_AI_PARSE_ENABLED and GEMINI_API_KEY)
 
 def extract_json_object(text):
     raw = str(text or "").strip()
@@ -446,22 +443,23 @@ def build_ai_backend_parse_prompt(text, action, rule_name="", previous_error="")
 """.strip()
 
 def call_zd_ai_parse_once(text, action, rule_name="", previous_error=""):
-    url = zd_ai_parse_url()
-    if not url:
-        raise RuntimeError("AI解析接口未配置")
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY 未配置")
     prompt = build_ai_backend_parse_prompt(text, action, rule_name=rule_name, previous_error=previous_error)
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
-            "response_mime_type": "application/json",
-            "temperature": 0.0
+            "response_mime_type": "application/json"
         }
     }
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
-        url,
+        gemini_generate_content_url(),
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY,
+        },
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=ZD_AI_PARSE_TIMEOUT) as resp:
