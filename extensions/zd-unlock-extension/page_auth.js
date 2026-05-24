@@ -315,7 +315,8 @@
           ['/admin/noticeNew/notice', 'merchantNoticeUrl'],
           ['/admin/noticeNew/noticeDetail', 'merchantNoticeDetailUrl'],
           ['/admin/settlement/queryNoSettleTicketList', 'merchantSettlementListUrl'],
-          ['/admin/settlement/getStatistics', 'merchantSettlementStatisticsUrl']
+          ['/admin/settlement/getStatistics', 'merchantSettlementStatisticsUrl'],
+          ['/admin/settlement/sendMqSaveSettleInfo', 'merchantSettlementApplyUrl']
         ];
         const matched = endpointMap.find(([path]) => parsed.pathname.endsWith(path));
         if (!matched) return;

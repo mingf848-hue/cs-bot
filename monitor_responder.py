@@ -1676,6 +1676,14 @@ def get_backend_command_progress(cmd_id):
 def backend_result_ok(result):
     return str((result or {}).get("status") or "") in {"success", "reply_origin"}
 
+def normalize_urge_settlement_reply(text):
+    raw = str(text or "").strip()
+    if not raw:
+        return raw
+    if "当前注单仍有未结算场次" in raw or "仍有未结算场次" in raw:
+        return "赛果核实中，已催促，核实完毕后会进行结算，请耐心等待。"
+    return raw
+
 def humanize_backend_failure_detail(detail, action=""):
     text = str(detail or "").strip()
     compact = re.sub(r"\s+", " ", text)
@@ -1772,6 +1780,8 @@ async def execute_backend_unlock_step(step, rule, event, source_text, target_cli
         raise RuntimeError(f"后台动作失败：{command_action_label(backend_action)} {target_text} status={status}{suffix}")
 
     reply_items = [(target, str((result or {}).get("reply_text") or "").strip()) for target, _cmd_id, result in successes]
+    if backend_action == "urge_settlement":
+        reply_items = [(target, normalize_urge_settlement_reply(text)) for target, text in reply_items]
     reply_items = [(target, text) for target, text in reply_items if text]
     if reply_items and target_client:
         await asyncio.sleep(random_delay_from_step(step or {}, "result_reply_min", "result_reply_max", 1.8, 3.8))

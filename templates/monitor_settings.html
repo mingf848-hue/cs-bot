@@ -192,12 +192,11 @@
 
         .content.rules-page {
             padding: 12px 16px 20px 14px;
-            grid-template-columns: minmax(248px, 310px) minmax(0, 1fr);
+            grid-template-columns: minmax(450px, 520px) minmax(440px, 1fr) minmax(300px, 360px);
             gap: 12px;
         }
 
-        .content.rules-page .stats-row,
-        .content.rules-page .preview-panel {
+        .content.rules-page .stats-row {
             display: none;
         }
 
@@ -378,16 +377,17 @@
         .content.rules-page .rule-list {
             padding: 8px;
             gap: 6px;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
             max-height: calc(100vh - 244px);
         }
         .content.rules-page .rule-card {
-            min-height: 60px;
+            min-height: 76px;
             padding: 8px 8px;
-            grid-template-columns: 6px minmax(0, 1fr) auto;
-            gap: 8px;
-            align-items: center;
+            grid-template-columns: minmax(0, 1fr);
+            gap: 6px;
+            align-items: start;
         }
-        .content.rules-page .drag-dots { gap: 2px; }
+        .content.rules-page .drag-dots { display: none; }
         .content.rules-page .drag-dots span { width: 3px; height: 3px; }
         .content.rules-page .rule-name { font-size: 13px; margin-bottom: 2px; }
         .content.rules-page .rule-meta { font-size: 11px; gap: 4px; flex-wrap: nowrap; overflow: hidden; white-space: nowrap; }
@@ -395,7 +395,7 @@
         .content.rules-page .tag-row { margin-top: 4px; gap: 4px; flex-wrap: nowrap; overflow: hidden; }
         .content.rules-page .tag { min-height: 18px; padding: 1px 5px; font-size: 10px; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .content.rules-page .tag svg { width: 11px; height: 11px; flex-basis: 11px; }
-        .content.rules-page .rule-actions { gap: 5px; }
+        .content.rules-page .rule-actions { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 5px; }
         .content.rules-page .rule-buttons { gap: 3px; }
         .content.rules-page .rule-list-panel .step-menu { width: 26px; height: 26px; }
         .content.rules-page .status-badge { height: 21px; padding: 0 6px; font-size: 11px; }
@@ -667,6 +667,50 @@
         .content.rules-page .flow-item .input,
         .content.rules-page .flow-item .select { min-height: 32px; }
         .content.rules-page .flow-item .textarea { min-height: 46px; }
+        .content.rules-page .preview-panel {
+            min-height: calc(100vh - 102px);
+        }
+        .content.rules-page .preview-body {
+            padding: 10px;
+            gap: 10px;
+        }
+        .content.rules-page .preview-card {
+            padding: 10px;
+        }
+        .content.rules-page .preview-title {
+            margin-bottom: 8px;
+            font-size: 13px;
+        }
+        .content.rules-page .timeline-row {
+            grid-template-columns: 24px minmax(0, 1fr);
+            gap: 8px;
+            padding-bottom: 10px;
+        }
+        .content.rules-page .timeline-row:not(:last-child)::before {
+            left: 11px;
+            top: 24px;
+        }
+        .content.rules-page .timeline-dot {
+            width: 24px;
+            height: 24px;
+            font-size: 11px;
+        }
+        .content.rules-page .timeline-delay {
+            grid-column: 2;
+            font-size: 11px;
+        }
+        .content.rules-page .timeline-name {
+            font-size: 13px;
+        }
+        .content.rules-page .timeline-desc {
+            font-size: 12px;
+        }
+        .content.rules-page .metrics-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .content.rules-page .chart {
+            height: 70px;
+        }
 
         .preview-panel { min-height: calc(100vh - 188px); }
         .preview-body { padding: 14px; display: grid; gap: 14px; }
@@ -829,6 +873,15 @@
 
         [v-cloak] { display: none !important; }
 
+        @media (max-width: 1500px) {
+            .content.rules-page {
+                grid-template-columns: minmax(430px, 500px) minmax(0, 1fr);
+            }
+            .content.rules-page .preview-panel {
+                grid-column: 1 / -1;
+            }
+        }
+
         @media (max-width: 1280px) {
             .content { grid-template-columns: minmax(300px, 360px) minmax(0, 1fr); }
             .preview-panel { grid-column: 1 / -1; }
@@ -847,6 +900,8 @@
             .top-actions { width: 100%; justify-content: space-between; flex-wrap: wrap; }
             .search-box { width: 100%; }
             .content { padding: 14px; grid-template-columns: 1fr; }
+            .content.rules-page { grid-template-columns: 1fr; }
+            .content.rules-page .rule-list { grid-template-columns: 1fr; }
             .mobile-nav { display: flex; }
             .stats-row { grid-template-columns: 1fr; }
             .form-grid, .form-grid.three, .flow-top, .backend-grid { grid-template-columns: 1fr; }
@@ -974,6 +1029,7 @@
                         <div class="panel-title">规则列表</div>
                         <div class="toolbar">
                             <span v-if="ui.autoSaving" class="save-hint">自动保存中</span>
+                            <button class="tiny-btn" @click="ui.showOps = !ui.showOps"><i data-lucide="triangle-alert"></i>报错规则</button>
                             <button class="tiny-btn" @click="loadConfig"><i data-lucide="refresh-cw"></i>刷新</button>
                         </div>
                     </div>

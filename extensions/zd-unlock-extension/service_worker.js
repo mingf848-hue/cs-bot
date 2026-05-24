@@ -208,7 +208,8 @@ function isAllowedMerchantEndpoint(key, url) {
     'merchantNoticeUrl',
     'merchantNoticeDetailUrl',
     'merchantSettlementListUrl',
-    'merchantSettlementStatisticsUrl'
+    'merchantSettlementStatisticsUrl',
+    'merchantSettlementApplyUrl'
   ]);
   if (!allowed.has(String(key || ''))) return false;
   try {
@@ -1947,7 +1948,7 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
     : `催结算已提交：${orderNo} 赛事ID ${limitedMatchId}`;
   const replyText = String(cmd.urge_sent_reply || '赛果核实中，已催促，核实完毕后会进行结算，请耐心等待。');
   await setStatus({ state: 'success', message: msg, detail: text.slice(0, 300) });
-  await ack(config, cmd, 'reply_origin', msg, { reply_text: replyText });
+  await ack(config, cmd, 'reply_origin', msg, { reply_text: replyText, stop_actions: true });
 }
 
 async function runUrgeSettlementCommandWithFallback(configs, cmd, orderNo) {
