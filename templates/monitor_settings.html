@@ -1097,7 +1097,6 @@
                             <span class="status-badge" :class="ruleStatus(currentRule).kind">{{ ruleStatus(currentRule).text }}</span>
                         </div>
                         <div class="editor-actions">
-                            <button class="primary-btn" @click="saveConfig" :disabled="ui.saving"><i data-lucide="check"></i>{{ ui.saving ? '保存中' : '保存规则' }}</button>
                             <button class="tiny-btn" @click="duplicateRule(currentRule)"><i data-lucide="copy"></i>复制规则</button>
                             <div class="rule-id"><span>规则ID: {{ currentRule.id }}</span></div>
                         </div>
@@ -1576,6 +1575,7 @@
                 <section class="panel preview-panel" v-if="ui.page === 'rules' && currentRule">
                     <div class="panel-head">
                         <div class="panel-title"><i data-lucide="chevron-down"></i>执行预览 <span class="live-badge"><span class="status-dot"></span>实时预览</span></div>
+                        <button class="primary-btn" @click="saveConfig" :disabled="ui.saving"><i data-lucide="check"></i>{{ ui.saving ? '保存中' : '保存规则' }}</button>
                     </div>
                     <div class="preview-body">
                         <div class="preview-card">
