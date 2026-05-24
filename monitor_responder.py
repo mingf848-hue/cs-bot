@@ -1539,6 +1539,7 @@ pending_commands = deque(maxlen=200)
 pending_command_leases = {}
 backend_command_results = {}
 backend_command_progress = {}
+pending_command_event = threading.Event()
 BACKEND_COMMAND_LEASE_SECONDS = 300
 
 SITE_MESSAGE_PROFILES = {
@@ -1564,6 +1565,9 @@ SITE_MESSAGE_PROFILES = {
         ],
     },
 }
+
+def _signal_new_command():
+    pending_command_event.set()
 
 def normalize_backend_action(action):
     action = str(action or "unlock_sms").strip()
@@ -1619,6 +1623,7 @@ def queue_site_inner_message_command(members, title=None, content=None, source="
             "step_delay_max": 8,
         })
     pending_commands.append(command)
+    _signal_new_command()
     return cmd_id, clean_members
 
 def normalize_reply_steps(raw_replies):
@@ -1710,6 +1715,7 @@ def queue_backend_unlock_command(target_value, rule, event, action="unlock_sms",
         if unlock_value:
             command["value"] = unlock_value
     pending_commands.append(command)
+    _signal_new_command()
     return cmd_id
 
 def lease_next_pending_command():
@@ -3834,7 +3840,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         if request.args.get("secret") != CMD_SECRET:
             return jsonify({"ok": False}), 403
         try:
-            wait_seconds = max(0.0, min(25.0, float(request.args.get("wait", 0) or 0)))
+            wait_seconds = max(0.0, min(5.0, float(request.args.get("wait", 0) or 0)))
         except Exception:
             wait_seconds = 0.0
         deadline = time.time() + wait_seconds
@@ -3842,9 +3848,11 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             cmd = lease_next_pending_command()
             if cmd:
                 return jsonify({"ok": True, "cmd": cmd})
-            if time.time() >= deadline:
+            remaining = deadline - time.time()
+            if remaining <= 0:
                 break
-            time.sleep(0.4)
+            pending_command_event.wait(min(remaining, 5.0))
+            pending_command_event.clear()
         return jsonify({"ok": True, "cmd": None})
 
     @app.route('/api/cmd/ack', methods=['POST'])

@@ -2070,7 +2070,7 @@ async function pollOnce() {
     }
     const { config } = await getConfig();
     await setStatus({ state: 'polling', message: '正在轮询命令' });
-    const waitSeconds = activeBackendCommands > 0 ? 0 : 25;
+    const waitSeconds = activeBackendCommands > 0 ? 0 : 5;
     const res = await fetch(`${config.botBase}/api/cmd/poll?wait=${waitSeconds}&secret=${encodeURIComponent(config.cmdSecret)}`, {
       cache: 'no-store'
     });
@@ -2115,12 +2115,12 @@ chrome.runtime.onInstalled.addListener(async () => {
     recorderState: stored.recorderState || { enabled: false, startedAt: '', stoppedAt: '', count: 0 },
     recorderRecords: stored.recorderRecords || []
   });
-  chrome.alarms.create('poll', { periodInMinutes: 0.5 });
+  chrome.alarms.create('poll', { periodInMinutes: 0.25 });
   pollOnce();
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  chrome.alarms.create('poll', { periodInMinutes: 0.5 });
+  chrome.alarms.create('poll', { periodInMinutes: 0.25 });
   pollOnce();
 });
 
@@ -2152,7 +2152,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return chrome.storage.local.set({ config, enabled: true });
       })
       .then(() => {
-        chrome.alarms.create('poll', { periodInMinutes: 0.5 });
+        chrome.alarms.create('poll', { periodInMinutes: 0.25 });
         pollOnce();
         sendResponse({ ok: true });
       })
@@ -2162,7 +2162,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message && message.type === 'setEnabled') {
     chrome.storage.local.set({ enabled: true })
       .then(() => {
-        chrome.alarms.create('poll', { periodInMinutes: 0.5 });
+        chrome.alarms.create('poll', { periodInMinutes: 0.25 });
         pollOnce();
         sendResponse({ ok: true });
       })
@@ -2282,5 +2282,5 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return false;
 });
 
-chrome.alarms.create('poll', { periodInMinutes: 0.5 });
+chrome.alarms.create('poll', { periodInMinutes: 0.25 });
 pollOnce();
