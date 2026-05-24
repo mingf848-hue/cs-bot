@@ -34,6 +34,9 @@ const RECORDER_BODY_LIMIT = 8000;
 const RECORDER_RESPONSE_LIMIT = 20000;
 const AUTH_SYNC_WAIT_MS = 12000;
 const FETCH_RETRY_DELAYS_MS = [800, 1800, 3200];
+const MERCHANT_URGE_MATCH_STATS_KEY = 'merchantUrgeMatchStatsV1';
+const MERCHANT_URGE_MATCH_LIMIT = 2;
+const MERCHANT_URGE_MATCH_TTL_MS = 24 * 60 * 60 * 1000;
 const SITE_PROFILES = {
   '9001': {
     host: '9sitebg.mvj4e7.com',
@@ -1286,6 +1289,57 @@ function settlementTemplate(template, context = {}) {
   return text.replace(/\{([a-zA-Z0-9_]+)\}/g, (_all, key) => String(context[key] ?? ''));
 }
 
+function cleanMatchIdList(matchIds = []) {
+  const seen = new Set();
+  const result = [];
+  for (const item of matchIds || []) {
+    const matchId = String(item || '').trim();
+    if (!matchId || seen.has(matchId)) continue;
+    seen.add(matchId);
+    result.push(matchId);
+  }
+  return result;
+}
+
+async function loadMerchantUrgeMatchStats() {
+  const stored = await chrome.storage.local.get([MERCHANT_URGE_MATCH_STATS_KEY]);
+  const raw = stored[MERCHANT_URGE_MATCH_STATS_KEY] || {};
+  const now = Date.now();
+  const stats = {};
+  for (const [matchId, item] of Object.entries(raw)) {
+    const count = Number((item || {}).count || 0);
+    const updatedAt = Number((item || {}).updatedAt || 0);
+    if (!matchId || !count || !updatedAt || now - updatedAt > MERCHANT_URGE_MATCH_TTL_MS) continue;
+    stats[matchId] = { count, updatedAt };
+  }
+  return stats;
+}
+
+async function splitTelegramUrgeMatchIds(matchIds = []) {
+  const cleanIds = cleanMatchIdList(matchIds);
+  const stats = await loadMerchantUrgeMatchStats();
+  const allowed = [];
+  const blocked = [];
+  for (const matchId of cleanIds) {
+    const count = Number((stats[matchId] || {}).count || 0);
+    if (count >= MERCHANT_URGE_MATCH_LIMIT) blocked.push(matchId);
+    else allowed.push(matchId);
+  }
+  return { allowed, blocked };
+}
+
+async function recordTelegramUrgeMatchIds(matchIds = []) {
+  const cleanIds = cleanMatchIdList(matchIds);
+  if (!cleanIds.length) return;
+  const stats = await loadMerchantUrgeMatchStats();
+  const now = Date.now();
+  for (const matchId of cleanIds) {
+    const current = Number((stats[matchId] || {}).count || 0);
+    stats[matchId] = { count: current + 1, updatedAt: now };
+  }
+  await chrome.storage.local.set({ [MERCHANT_URGE_MATCH_STATS_KEY]: stats });
+}
+
 async function sendTelegramFromCommand(config, cmd, text) {
   const target = String(cmd.telegram_target || cmd.forward_to || '').trim();
   if (!target) throw new Error('未配置催结算TG群');
@@ -1855,6 +1909,14 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
   }
 
   const matchId = matchIds.join('，');
+  const urgeMatchSplit = await splitTelegramUrgeMatchIds(matchIds);
+  if (!urgeMatchSplit.allowed.length) {
+    const replyText = String(cmd.urge_sent_reply || '赛果核实中，已催促，核实完毕后会进行结算，请耐心等待。');
+    const msg = `催结算跳过TG重复赛事：${orderNo} 赛事ID ${matchId}`;
+    await replyOrigin(config, cmd, msg, replyText, ticket.text);
+    return;
+  }
+  const limitedMatchId = urgeMatchSplit.allowed.join('，');
   const matchManageId = [...new Set(detailsToCheck.map((item) => String(item.matchManageId || '').trim()).filter(Boolean))].join('，');
   const matchInfo = detailsText(order, detailsToCheck);
   const context = {
@@ -1862,8 +1924,8 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
     order_id: orderNo,
     orderNo,
     orderId: orderNo,
-    match_id: matchId,
-    matchId,
+    match_id: limitedMatchId,
+    matchId: limitedMatchId,
     match_manage_id: matchManageId,
     matchManageId,
     sport: detail.sportName || '',
@@ -1877,7 +1939,10 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
   };
   const text = settlementTemplate(cmd.telegram_template, context);
   await sendTelegramFromCommand(config, cmd, text);
-  const msg = `催结算已提交：${orderNo} 赛事ID ${matchId}`;
+  await recordTelegramUrgeMatchIds(urgeMatchSplit.allowed);
+  const msg = urgeMatchSplit.blocked.length
+    ? `催结算已提交：${orderNo} 赛事ID ${limitedMatchId}（跳过重复：${urgeMatchSplit.blocked.join('，')}）`
+    : `催结算已提交：${orderNo} 赛事ID ${limitedMatchId}`;
   const replyText = String(cmd.urge_sent_reply || '赛果核实中，已催促，核实完毕后会进行结算，请耐心等待。');
   await setStatus({ state: 'success', message: msg, detail: text.slice(0, 300) });
   await ack(config, cmd, 'reply_origin', msg, { reply_text: replyText });
