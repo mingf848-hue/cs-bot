@@ -1182,6 +1182,7 @@
                                                     <option value="preempt_check">抢答检测（自删）</option>
                                                     <option value="notify_user">Bot私聊通知</option>
                                                     <option value="backend_unlock">触发后台解锁</option>
+                                                    <option value="agent_orchestrator">Agent编排</option>
                                                 </select>
                                             </div>
                                             <div class="field" v-if="step.type !== 'amount_logic'">
@@ -1292,7 +1293,6 @@
                                                     <option value="migrate_milan">迁移米兰</option>
                                                     <option value="member_data_overview">查数据</option>
                                                     <option value="urge_settlement">催结算</option>
-                                                    <option value="agent_existing">Agent编排（现有能力）</option>
                                                 </select>
                                             </div>
                                             <div class="field" v-if="step.backend_action === 'urge_settlement'">
@@ -1307,7 +1307,7 @@
                                                 <label>提取 IP 的正则</label>
                                                 <input class="input font-mono" v-model="step.ip_pattern" placeholder="留空：从已匹配消息里提取 IPv4">
                                             </div>
-                                            <template v-if="['urge_settlement', 'agent_existing'].includes(step.backend_action)">
+                                            <template v-if="step.backend_action === 'urge_settlement'">
                                                 <div class="field">
                                                     <label>TG 催结算群</label>
                                                     <input class="input" v-model="step.forward_to" placeholder="-1001234567890 或 @username">
@@ -1340,6 +1340,43 @@
                                                     <span class="hint">留空也会使用默认模板。{reason} 会自动压成短原因：会员不存在、代理编码不正确、9站未登录、后台接口请求失败、拓展未同步登录态等。</span>
                                                 </div>
                                             <span class="hint">触发词在监听关键词里维护；这里仅负责提取目标值。账号类取账号，代理加白取 IPv4，催结算取注单号。催结算发送账号只影响 TG 催促消息。</span>
+                                        </div>
+
+                                        <div class="field-card backend-grid" v-if="step.type === 'agent_orchestrator'">
+                                            <div class="field full">
+                                                <label>Agent 流程</label>
+                                                <span class="hint">自动拆解消息，只允许调用现有能力：查数据、催结算、短信/验证码限制、登录密码试错限制、代理 IP 加白、迁移米兰。不支持的诉求不会编结果。</span>
+                                            </div>
+                                            <div class="field">
+                                                <label>TG 催结算群</label>
+                                                <input class="input" v-model="step.forward_to" placeholder="-1001234567890 或 @username">
+                                            </div>
+                                            <div class="field">
+                                                <label>催结算发送账号</label>
+                                                <select class="select" v-model="step.telegram_account">
+                                                    <option value="">主账号（默认）</option>
+                                                    <option v-for="acc in available_accounts" :key="acc" :value="acc">{{ acc }}</option>
+                                                </select>
+                                            </div>
+                                            <div class="field full">
+                                                <label>TG 消息模板</label>
+                                                <textarea class="textarea" v-model="step.text" placeholder="留空默认：{order_no}注单催结算&#10;赛事ID：{match_id}"></textarea>
+                                            </div>
+                                            <div class="field">
+                                                <label>失败通知对象</label>
+                                                <input class="input" v-model="step.fail_notify_to" placeholder="用户ID 或 @username">
+                                            </div>
+                                            <div class="field failure-template">
+                                                <div class="failure-toolbar">
+                                                    <label>失败通知内容</label>
+                                                    <div class="failure-toolbar-actions">
+                                                        <button type="button" class="mini-link" @click="setDefaultFailureNotify(step)">填入默认模板</button>
+                                                        <button type="button" class="mini-link" @click="step.fail_notify_text = ''">清空用默认</button>
+                                                    </div>
+                                                </div>
+                                                <textarea class="textarea" v-model="step.fail_notify_text" :placeholder="defaultFailureNotifyText"></textarea>
+                                                <span class="hint">Agent 规划失败、后台能力失败时使用。{reason} 会自动压成短原因。</span>
+                                            </div>
                                         </div>
                                     </div>
                                     <div class="step-actions">
@@ -1410,6 +1447,7 @@
                                                         <option value="preempt_check">抢答检测（自删）</option>
                                                         <option value="notify_user">Bot私聊通知</option>
                                                         <option value="backend_unlock">触发后台解锁</option>
+                                                        <option value="agent_orchestrator">Agent编排</option>
                                                     </select>
                                                 </div>
                                                 <div class="field">
@@ -1469,7 +1507,6 @@
                                                         <option value="migrate_milan">迁移米兰</option>
                                                         <option value="member_data_overview">查数据</option>
                                                         <option value="urge_settlement">催结算</option>
-                                                        <option value="agent_existing">Agent编排（现有能力）</option>
                                                     </select>
                                                 </div>
                                                 <div class="field" v-if="step.backend_action === 'urge_settlement'">
@@ -1484,7 +1521,7 @@
                                                     <label>提取 IP 的正则</label>
                                                     <input class="input font-mono" v-model="step.ip_pattern" placeholder="留空：从原始报备里提取 IPv4">
                                                 </div>
-                                                <template v-if="['urge_settlement', 'agent_existing'].includes(step.backend_action)">
+                                                <template v-if="step.backend_action === 'urge_settlement'">
                                                     <div class="field">
                                                         <label>TG 催结算群</label>
                                                         <input class="input" v-model="step.forward_to" placeholder="-1001234567890 或 @username">
@@ -1516,6 +1553,42 @@
                                                 <textarea class="textarea" v-model="step.fail_notify_text" :placeholder="defaultFailureNotifyText"></textarea>
                                                 <span class="hint">留空也会使用默认模板。{reason} 会自动压成短原因：会员不存在、代理编码不正确、9站未登录、后台接口请求失败、拓展未同步登录态等。</span>
                                             </div>
+                                            </div>
+                                            <div class="field-card backend-grid" v-if="step.type === 'agent_orchestrator'">
+                                                <div class="field full">
+                                                    <label>Agent 流程</label>
+                                                    <span class="hint">同意后自动拆解原始报备，只调用现有能力；不支持事项不会编结果。</span>
+                                                </div>
+                                                <div class="field">
+                                                    <label>TG 催结算群</label>
+                                                    <input class="input" v-model="step.forward_to" placeholder="-1001234567890 或 @username">
+                                                </div>
+                                                <div class="field">
+                                                    <label>催结算发送账号</label>
+                                                    <select class="select" v-model="step.telegram_account">
+                                                        <option value="">主账号（默认）</option>
+                                                        <option v-for="acc in available_accounts" :key="acc" :value="acc">{{ acc }}</option>
+                                                    </select>
+                                                </div>
+                                                <div class="field full">
+                                                    <label>TG 消息模板</label>
+                                                    <textarea class="textarea" v-model="step.text" placeholder="留空默认：{order_no}注单催结算&#10;赛事ID：{match_id}"></textarea>
+                                                </div>
+                                                <div class="field">
+                                                    <label>失败通知对象</label>
+                                                    <input class="input" v-model="step.fail_notify_to" placeholder="用户ID 或 @username">
+                                                </div>
+                                                <div class="field failure-template">
+                                                    <div class="failure-toolbar">
+                                                        <label>失败通知内容</label>
+                                                        <div class="failure-toolbar-actions">
+                                                            <button type="button" class="mini-link" @click="setDefaultFailureNotify(step)">填入默认模板</button>
+                                                            <button type="button" class="mini-link" @click="step.fail_notify_text = ''">清空用默认</button>
+                                                        </div>
+                                                    </div>
+                                                    <textarea class="textarea" v-model="step.fail_notify_text" :placeholder="defaultFailureNotifyText"></textarea>
+                                                    <span class="hint">Agent 规划失败、后台能力失败时使用。{reason} 会自动压成短原因。</span>
+                                                </div>
                                             </div>
                                         </div>
                                         <div class="step-actions">
@@ -2125,7 +2198,7 @@ createApp({
 
         const hydrateReply = (rep = {}) => ({
             ...rep,
-            type: rep.type || "text",
+            type: (rep.type === "backend_unlock" && rep.backend_action === "agent_existing") ? "agent_orchestrator" : (rep.type || "text"),
             text: rep.text || "",
             forward_to: String(rep.forward_to || ""),
             member_pattern: rep.member_pattern || "",
@@ -2655,7 +2728,8 @@ createApp({
             amount_logic: "金额分流",
             preempt_check: "抢答检测（自删）",
             notify_user: "Bot私聊通知",
-            backend_unlock: "触发后台解锁"
+            backend_unlock: "触发后台解锁",
+            agent_orchestrator: "Agent编排"
         }[step.type] || "发送文本");
         const stepDesc = (step) => {
             if (step.type === "forward") return `目标群：${targetGroupLabel(step.forward_to)}`;
@@ -2669,6 +2743,8 @@ createApp({
             }
             if (step.type === "preempt_check") return "若有人更快，会删除已发消息并停止后续动作";
             if (step.type === "notify_user") return `通知：${step.forward_to || "未配置"}`;
+            if (step.type === "agent_orchestrator") return "自动拆解消息，只调用现有能力，后台查事实后合并回复";
+            if (step.type === "backend_unlock") return backendActionLabel(step.backend_action);
             return step.text || "未配置发送内容";
         };
 
@@ -2824,7 +2900,8 @@ createApp({
             amount_logic: "金额分流",
             preempt_check: "抢答检测",
             notify_user: "Bot通知",
-            backend_unlock: "后台动作"
+            backend_unlock: "后台动作",
+            agent_orchestrator: "Agent编排"
         };
         const resourceCards = computed(() => {
             const groups = unique(config.rules.flatMap(rule => (rule.groups || []).map(groupLabel)));

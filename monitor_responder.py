@@ -623,6 +623,19 @@ def rule_has_backend_unlock(rule):
         for step in (rule or {}).get("replies", [])
     )
 
+def rule_has_agent_orchestrator(rule):
+    return any(
+        isinstance(step, dict)
+        and (
+            step.get("type") == "agent_orchestrator"
+            or (step.get("type") == "backend_unlock" and normalize_backend_action(step.get("backend_action", "")) == "agent_existing")
+        )
+        for step in (rule or {}).get("replies", [])
+    )
+
+def rule_has_backend_or_agent(rule):
+    return rule_has_backend_unlock(rule) or rule_has_agent_orchestrator(rule)
+
 def rule_backend_actions(rule):
     return {
         normalize_backend_action(step.get("backend_action", "unlock_sms"))
@@ -1491,7 +1504,7 @@ rule_timers = {}
 scheduled_message_runs = {}
 active_rule_tasks = set()
 rule_task_semaphore = None
-VALID_REPLY_TYPES = {"text", "edit_prev", "forward", "copy_file", "amount_logic", "preempt_check", "notify_user", "backend_unlock"}
+VALID_REPLY_TYPES = {"text", "edit_prev", "forward", "copy_file", "amount_logic", "preempt_check", "notify_user", "backend_unlock", "agent_orchestrator"}
 BACKEND_UNLOCK_ACTIONS = {"unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan", "send_site_inner_msg", "member_data_overview", "urge_settlement", "agent_existing"}
 AGENT_EXECUTABLE_ACTIONS = {"unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan", "member_data_overview", "urge_settlement"}
 AGENT_CAPABILITIES = [
@@ -1615,6 +1628,8 @@ def normalize_reply_steps(raw_replies):
         r["member_pattern"] = str(r.get("member_pattern", "") or "").strip()
         r["ip_pattern"] = str(r.get("ip_pattern", "") or "").strip()
         r["backend_action"] = normalize_backend_action(r.get("backend_action", "unlock_sms"))
+        if r.get("type") == "backend_unlock" and r["backend_action"] == "agent_existing":
+            r["type"] = "agent_orchestrator"
         r["telegram_account"] = str(r.get("telegram_account", "") or "").strip()
         r["fail_notify_to"] = str(r.get("fail_notify_to", "") or "").strip()
         r["fail_notify_text"] = str(r.get("fail_notify_text", "") or "").strip()
@@ -2894,6 +2909,7 @@ SETTINGS_HTML = """
                                             <option value="preempt_check">抢答检测（自删）</option>
                                             <option value="notify_user">Bot私聊通知</option>
                                             <option value="backend_unlock">触发后台解锁</option>
+                                            <option value="agent_orchestrator">Agent编排</option>
                                         </select>
                                         <button @click="rule.replies.splice(rIndex, 1)" class="ml-auto text-slate-300 hover:text-red-400 w-6 h-6 flex items-center justify-center rounded hover:bg-red-50" title="删除步骤"><i class="fa-solid fa-xmark text-[10px]"></i></button>
                                     </div>
@@ -2996,7 +3012,6 @@ SETTINGS_HTML = """
                                                     <option value="add_proxy_whitelist">代理 IP 加白</option>
                                                     <option value="member_data_overview">查数据</option>
                                                     <option value="urge_settlement">催结算</option>
-                                                    <option value="agent_existing">Agent编排（现有能力）</option>
                                                 </select>
                                             </div>
                                             <div class="visual-field" v-if="reply.backend_action === 'urge_settlement'">
@@ -3013,7 +3028,7 @@ SETTINGS_HTML = """
                                                 <input v-model="reply.ip_pattern" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] font-mono text-orange-700 bg-orange-50 border-orange-200" placeholder="留空：从已匹配消息里提取 IPv4">
                                                 <div class="text-[9px] text-slate-400 mt-0.5">触发词在监听关键词里维护；这里仅负责提取 IPv4。</div>
                                             </div>
-                                            <template v-if="['urge_settlement', 'agent_existing'].includes(reply.backend_action)">
+                                            <template v-if="reply.backend_action === 'urge_settlement'">
                                                 <div class="visual-field">
                                                     <div class="visual-label"><i class="fa-brands fa-telegram"></i>TG 催结算群</div>
                                                     <input v-model="reply.forward_to" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] text-blue-700 bg-blue-50 border-blue-100" placeholder="-1001234567890 或 @username">
@@ -3030,6 +3045,34 @@ SETTINGS_HTML = """
                                                     <textarea v-model="reply.text" rows="2" class="bento-input w-full px-2 py-1.5 text-[11px] resize-none bg-blue-50 border-blue-100" placeholder="留空默认：{order_no}注单催结算&#10;赛事ID：{match_id}"></textarea>
                                                 </div>
                                             </template>
+                                            <div class="visual-field">
+                                                <div class="visual-label"><i class="fa-solid fa-bell"></i>失败通知对象</div>
+                                                <input v-model="reply.fail_notify_to" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] text-red-700 bg-red-50 border-red-100" placeholder="用户ID 或 @username">
+                                            </div>
+                                            <div class="visual-field">
+                                                <div class="visual-label"><i class="fa-solid fa-message"></i>失败通知内容</div>
+                                                <textarea v-model="reply.fail_notify_text" rows="2" class="bento-input w-full px-2 py-1.5 text-[11px] resize-none bg-red-50 border-red-100" placeholder="留空使用默认：后台自动处理失败，请人工核查"></textarea>
+                                            </div>
+                                        </div>
+                                    </template>
+                                    <template v-if="reply.type === 'agent_orchestrator'">
+                                        <div class="grid grid-cols-1 gap-2">
+                                            <div class="step-help"><i class="fa-solid fa-wand-magic-sparkles mr-1"></i>自动拆解消息，只调用现有能力；不支持事项不会编结果。</div>
+                                            <div class="visual-field">
+                                                <div class="visual-label"><i class="fa-brands fa-telegram"></i>TG 催结算群</div>
+                                                <input v-model="reply.forward_to" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] text-blue-700 bg-blue-50 border-blue-100" placeholder="-1001234567890 或 @username">
+                                            </div>
+                                            <div class="visual-field">
+                                                <div class="visual-label"><i class="fa-solid fa-user"></i>催结算发送账号</div>
+                                                <select v-model="reply.telegram_account" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] text-blue-700 bg-blue-50 border-blue-100">
+                                                    <option value="">主账号（默认）</option>
+                                                    <option v-for="acc in available_accounts" :key="acc" :value="acc">{{ acc }}</option>
+                                                </select>
+                                            </div>
+                                            <div class="visual-field">
+                                                <div class="visual-label"><i class="fa-solid fa-message"></i>TG 消息模板</div>
+                                                <textarea v-model="reply.text" rows="2" class="bento-input w-full px-2 py-1.5 text-[11px] resize-none bg-blue-50 border-blue-100" placeholder="留空默认：{order_no}注单催结算&#10;赛事ID：{match_id}"></textarea>
+                                            </div>
                                             <div class="visual-field">
                                                 <div class="visual-label"><i class="fa-solid fa-bell"></i>失败通知对象</div>
                                                 <input v-model="reply.fail_notify_to" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] text-red-700 bg-red-50 border-red-100" placeholder="用户ID 或 @username">
@@ -3106,7 +3149,7 @@ SETTINGS_HTML = """
             };
             const hydrateReply = (rep = {}) => ({
                 ...rep,
-                type: rep.type || 'text',
+                type: (rep.type === 'backend_unlock' && rep.backend_action === 'agent_existing') ? 'agent_orchestrator' : (rep.type || 'text'),
                 text: rep.text || '',
                 forward_to: rep.forward_to || '',
                 member_pattern: rep.member_pattern || '',
@@ -3436,15 +3479,16 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_obj, check_c
 
     if not rule_matches_group(event.chat_id, rule.get("groups", [])): return False, "群组不符", None
     is_backend_unlock_rule = rule_has_backend_unlock(rule)
+    is_backend_or_agent_rule = is_backend_unlock_rule or rule_has_agent_orchestrator(rule)
     text = (event.text or "")
     backend_actions = rule_backend_actions(rule) if is_backend_unlock_rule else set()
     if "clear_login_error" in backend_actions and text_mentions_secondary_password(text):
         return False, "二级密码消息不触发登录密码解锁", None
-    if not is_backend_unlock_rule and await is_monitor_own_account(client, event, other_cs_ids):
+    if not is_backend_or_agent_rule and await is_monitor_own_account(client, event, other_cs_ids):
         return False, "发送者是已登录账号", None
     
     # v69: Pass sender object, not name string
-    if not is_backend_unlock_rule and not check_sender_allowed(sender_obj, rule):
+    if not is_backend_or_agent_rule and not check_sender_allowed(sender_obj, rule):
         return False, "发送者被排除", None
 
     check_file = rule.get("check_file", False)
@@ -3468,12 +3512,12 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_obj, check_c
             if not any(k.lower() in filename_lower for k in fn_kws): return False, "文件名关键词不符", None
     else:
         if not match_text(text, rule):
-            if not (rule_has_backend_action(rule, "urge_settlement") and looks_like_short_urge_settlement(text)):
+            if not ((rule_has_backend_action(rule, "urge_settlement") or rule_has_agent_orchestrator(rule)) and looks_like_short_urge_settlement(text)):
                 return False, "文本关键词不符", None
             logger.info(f"✅ [Monitor] 催结算短句兜底命中 | Msg={event.id}")
     if event.is_reply: return False, "是回复消息", None
-    
-    if check_cooldown and not is_backend_unlock_rule:
+
+    if check_cooldown and not is_backend_or_agent_rule:
         rule_id = ensure_rule_id(rule)
         last_time = rule_timers.get(rule_id, 0)
         now = time.time()
@@ -4128,6 +4172,12 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     if backend_result and backend_result.get("stop_actions"):
                         break
 
+                elif stype == "agent_orchestrator":
+                    agent_result = await execute_agent_existing_step(step, rule, source_event, source_text, target_client=target_client)
+                    backend_actions += 1
+                    if agent_result and agent_result.get("stop_actions"):
+                        break
+
                 else:
                     content = step.get("text", "")
                     if content:
@@ -4488,7 +4538,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                         break
                     if target_name != MAIN_NAME: logger.info(f"🔀 [Routing] 使用指定账号回复: {target_name}")
 
-                    if not rule_has_backend_unlock(rule):
+                    if not rule_has_backend_or_agent(rule):
                         rule_timers[rule_id] = time.time()
                     schedule_zd_rule_task(
                         run_monitor_rule_actions(target_client, target_name, rule, event, sender_name, match_started),
@@ -4601,6 +4651,12 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                 backend_result = await execute_backend_unlock_step(step, rule, event, event.text or "", target_client=target_client)
                                 backend_actions += 1
                                 if backend_result and backend_result.get("stop_actions"):
+                                    break
+
+                            elif stype == "agent_orchestrator":
+                                agent_result = await execute_agent_existing_step(step, rule, event, event.text or "", target_client=target_client)
+                                backend_actions += 1
+                                if agent_result and agent_result.get("stop_actions"):
                                     break
 
                             else: # text
