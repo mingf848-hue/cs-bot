@@ -2602,6 +2602,12 @@ def build_copy_text_markup(text, label="复制整理结果"):
                     rows.append([{"text": f"复制第{index}行", "copy_text": {"text": line}}])
     return {"inline_keyboard": rows} if rows else None
 
+def build_single_copy_text_markup(text, label="复制整理结果"):
+    raw = str(text or "")
+    if not raw:
+        return None
+    return {"inline_keyboard": [[{"text": label, "copy_text": {"text": raw}}]]}
+
 def format_copy_link(link, index=None):
     if not link:
         return "🔗 消息链接：无"
@@ -3041,11 +3047,11 @@ def parse_large_timeout_text(text):
     output2 = "\n".join(format_large_timeout_sheet_row(record, fixed_now) for record in records)
     return {
         "text": output1,
-        "reply_markup": build_copy_text_markup(output1, "复制格式1"),
+        "reply_markup": build_single_copy_text_markup(output1, "复制格式1"),
         "extra_replies": [
             {
                 "text": output2,
-                "reply_markup": build_copy_text_markup(output2, "复制格式2"),
+                "reply_markup": build_single_copy_text_markup(output2, "复制格式2"),
             }
         ],
     }
