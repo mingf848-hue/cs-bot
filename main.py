@@ -1372,6 +1372,30 @@ def store_copy_page(title, sections):
 
     return f"{base_url}/copy/{token}"
 
+def get_copy_page_token_from_url(url):
+    match = re.search(r"/copy/([A-Za-z0-9_-]{12,64})(?:$|[?#])", str(url or ""))
+    return match.group(1) if match else None
+
+def save_copy_page_payload(token, payload):
+    token = str(token or "").strip()
+    if not token or not isinstance(payload, dict):
+        return False
+    redis_key = COPY_PAGE_REDIS_PREFIX + token
+    client = get_wait_alert_redis_client()
+    if client:
+        try:
+            client.setex(redis_key, COPY_PAGE_TTL_SECONDS, json.dumps(payload, ensure_ascii=False))
+            return True
+        except Exception as e:
+            logger.warning(f"⚠️ [CopyPage] Redis 更新失败，回退内存: {e}")
+
+    with copy_page_cache_lock:
+        copy_page_cache[token] = {
+            "payload": payload,
+            "expires_at": time.time() + COPY_PAGE_TTL_SECONDS,
+        }
+    return True
+
 def load_copy_page(token):
     token = str(token or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_-]{12,64}", token):
@@ -1394,6 +1418,46 @@ def load_copy_page(token):
             copy_page_cache.pop(token, None)
             return None
         return item.get("payload")
+
+def attach_copy_page_delete_targets(token, chat_id, message_ids):
+    payload = load_copy_page(token)
+    if not payload:
+        return
+    clean_ids = []
+    seen = set()
+    for raw_id in message_ids or []:
+        try:
+            message_id = int(raw_id)
+        except Exception:
+            continue
+        if message_id > 0 and message_id not in seen:
+            seen.add(message_id)
+            clean_ids.append(message_id)
+    if not clean_ids:
+        return
+    payload["delete_chat_id"] = chat_id
+    payload["delete_message_ids"] = clean_ids
+    save_copy_page_payload(token, payload)
+
+def delete_copy_page_messages(payload):
+    if not BOT_TOKEN or not isinstance(payload, dict):
+        return
+    chat_id = payload.get("delete_chat_id")
+    message_ids = payload.get("delete_message_ids") or []
+    if not chat_id or not message_ids:
+        return
+    for message_id in dict.fromkeys(message_ids):
+        try:
+            resp = requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage",
+                json={"chat_id": chat_id, "message_id": message_id},
+                timeout=10
+            )
+            data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+            if resp.status_code != 200 or not data.get("ok"):
+                log_tree(9, f"网页复制后删除消息失败: chat={chat_id} msg={message_id} HTTP {resp.status_code} {str(data)[:120]}")
+        except Exception as e:
+            log_tree(9, f"网页复制后删除消息异常: chat={chat_id} msg={message_id} {e}")
 
 DASHBOARD_HTML = """
 <!DOCTYPE html>
@@ -2037,6 +2101,8 @@ def copy_page(token):
     payload = load_copy_page(token)
     if not payload:
         return Response("复制链接已过期或不存在。请重新发送原始内容给 bot 生成。", status=404, mimetype='text/plain')
+    if payload.get("delete_chat_id") and payload.get("delete_message_ids"):
+        Thread(target=delete_copy_page_messages, args=(payload,), daemon=True).start()
     return render_template_string(
         COPY_PAGE_HTML,
         title=payload.get("title") or "复制内容",
@@ -2775,11 +2841,8 @@ def build_single_copy_text_markup(text, label="复制整理结果"):
 
 def build_conversion_reply_markup(text, copy_label="复制整理结果", copy_page_url=None):
     rows = []
-    raw = str(text or "")
-    if raw and len(raw) <= 256:
-        rows.append([{"text": copy_label, "copy_text": {"text": raw}}])
     if copy_page_url:
-        rows.append([{"text": "网页复制（保留制表符）", "url": copy_page_url}])
+        rows.append([{"text": "网页复制", "url": copy_page_url}])
     return {"inline_keyboard": rows} if rows else None
 
 def format_copy_link(link, index=None):
@@ -3014,7 +3077,8 @@ def parse_order_table_block(raw_lines):
 
     today = datetime.now(BEIJING_TZ)
     date_text = f"{today.year}-{today.month}-{today.day}"
-    columns = [date_text, account, order_label, member, real_name, vip, order_no, amount, *tail_columns]
+    label_columns = ["", order_label] if order_label in {"银行卡存款", "银行卡提款"} else [order_label]
+    columns = [date_text, account, *label_columns, member, real_name, vip, order_no, amount, *tail_columns]
     return "\t".join(columns)
 
 def parse_order_table_text(text):
@@ -3226,6 +3290,7 @@ def parse_large_timeout_text(text):
     return {
         "text": output1,
         "reply_markup": build_conversion_reply_markup(output1, "复制格式1", copy_page_url),
+        "copy_page_token": get_copy_page_token_from_url(copy_page_url),
         "extra_replies": [
             {
                 "text": output2,
@@ -3676,6 +3741,7 @@ async def bot_command_polling_task():
                 auto_delete_after = None
                 reply_markup = None
                 extra_replies = []
+                copy_page_token = None
                 if is_bot_command(text, "start"):
                     reply_text = format_start_command_reply(message)
                 elif is_bot_command(text, "id"):
@@ -3691,7 +3757,8 @@ async def bot_command_polling_task():
                         ])
                         reply_result = {
                             "text": withdrawal_text,
-                            "reply_markup": build_conversion_reply_markup(withdrawal_text, "复制整理结果", copy_page_url)
+                            "reply_markup": build_conversion_reply_markup(withdrawal_text, "复制整理结果", copy_page_url),
+                            "copy_page_token": get_copy_page_token_from_url(copy_page_url),
                         }
                     else:
                         reply_result = parse_large_timeout_text(text)
@@ -3712,6 +3779,7 @@ async def bot_command_polling_task():
                         auto_delete_after = reply_result.get("auto_delete_after")
                         reply_markup = reply_result.get("reply_markup")
                         extra_replies = list(reply_result.get("extra_replies") or [])
+                        copy_page_token = reply_result.get("copy_page_token")
                     else:
                         reply_text = str(reply_result)
                         delete_source = False
@@ -3732,6 +3800,7 @@ async def bot_command_polling_task():
                         None,
                         lambda cid=chat_id, txt=reply_text, mid=(message.get("message_id") if reply_to_source else None), thread=message.get("message_thread_id"), markup=reply_markup: _bot_send_reply(cid, txt, mid, thread, markup)
                     )
+                    conversion_sent_ids = [sent_message_id] if sent_message_id else []
                     for extra_reply in extra_replies:
                         if isinstance(extra_reply, dict):
                             extra_text = extra_reply.get("text") or ""
@@ -3741,9 +3810,17 @@ async def bot_command_polling_task():
                             extra_markup = None
                         if not extra_text:
                             continue
-                        await loop.run_in_executor(
+                        extra_sent_message_id = await loop.run_in_executor(
                             None,
                             lambda cid=chat_id, txt=extra_text, mid=(message.get("message_id") if reply_to_source else None), thread=message.get("message_thread_id"), markup=extra_markup: _bot_send_reply(cid, txt, mid, thread, markup)
+                        )
+                        if extra_sent_message_id:
+                            conversion_sent_ids.append(extra_sent_message_id)
+                    if copy_page_token:
+                        attach_copy_page_delete_targets(
+                            copy_page_token,
+                            chat_id,
+                            [message.get("message_id"), *conversion_sent_ids]
                         )
                 if auto_delete_after and sent_message_id:
                     asyncio.create_task(delete_bot_message_later(chat_id, sent_message_id, auto_delete_after))
