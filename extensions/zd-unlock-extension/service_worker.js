@@ -29,11 +29,13 @@ const DEFAULT_CONFIG = {
 };
 
 let polling = false;
+let activeBackendCommands = 0;
 const RECORDER_LIMIT = 400;
 const RECORDER_BODY_LIMIT = 8000;
 const RECORDER_RESPONSE_LIMIT = 20000;
 const AUTH_SYNC_WAIT_MS = 12000;
 const FETCH_RETRY_DELAYS_MS = [800, 1800, 3200];
+const MAX_ACTIVE_BACKEND_COMMANDS = 4;
 const MERCHANT_URGE_MATCH_STATS_KEY = 'merchantUrgeMatchStatsV1';
 const MERCHANT_URGE_MATCH_LIMIT = 2;
 const MERCHANT_URGE_MATCH_TTL_MS = 24 * 60 * 60 * 1000;
@@ -2046,7 +2048,16 @@ async function runBackendCommand(config, cmd) {
 
 async function pollOnce() {
   if (polling) return;
+  if (activeBackendCommands >= MAX_ACTIVE_BACKEND_COMMANDS) {
+    await setStatus({
+      state: 'busy',
+      message: `后台处理中 ${activeBackendCommands}/${MAX_ACTIVE_BACKEND_COMMANDS}`,
+      detail: '达到并发上限，稍后继续轮询。'
+    });
+    return;
+  }
   polling = true;
+  let shouldPollAgain = false;
   try {
     const remaining = await authSyncRemainingMs();
     if (remaining) {
@@ -2059,15 +2070,25 @@ async function pollOnce() {
     }
     const { config } = await getConfig();
     await setStatus({ state: 'polling', message: '正在轮询命令' });
-    const res = await fetch(`${config.botBase}/api/cmd/poll?wait=25&secret=${encodeURIComponent(config.cmdSecret)}`, {
+    const waitSeconds = activeBackendCommands > 0 ? 0 : 25;
+    const res = await fetch(`${config.botBase}/api/cmd/poll?wait=${waitSeconds}&secret=${encodeURIComponent(config.cmdSecret)}`, {
       cache: 'no-store'
     });
     const data = await res.json();
     if (data && data.ok && data.cmd && isSupportedCommandAction(data.cmd.action, data.cmd)) {
       await setStatus({ state: 'received', message: `收到命令 ${data.cmd.orderNo || data.cmd.order_no || data.cmd.target_value || data.cmd.member_name || ''}` });
-      const waited = await waitForAuthSyncReady();
-      const nextConfig = waited ? (await getConfig()).config : config;
-      await runBackendCommand(nextConfig, data.cmd);
+      activeBackendCommands += 1;
+      shouldPollAgain = true;
+      (async () => {
+        try {
+          const waited = await waitForAuthSyncReady();
+          const nextConfig = waited ? (await getConfig()).config : config;
+          await runBackendCommand(nextConfig, data.cmd);
+        } finally {
+          activeBackendCommands = Math.max(0, activeBackendCommands - 1);
+          setTimeout(() => pollOnce(), 200);
+        }
+      })();
     } else {
       await setStatus({ state: 'idle', message: '暂无命令' });
     }
@@ -2075,6 +2096,7 @@ async function pollOnce() {
     await setStatus({ state: 'error', message: '轮询失败', detail: err.message });
   } finally {
     polling = false;
+    if (shouldPollAgain) setTimeout(() => pollOnce(), 100);
   }
 }
 

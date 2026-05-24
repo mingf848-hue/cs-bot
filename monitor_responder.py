@@ -363,6 +363,7 @@ ZD_AI_PARSE_TIMEOUT = float_env("ZD_AI_PARSE_TIMEOUT", 20, 3.0, 60.0)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = (os.environ.get("GEMINI_MODEL") or "gemini-3.5-flash").strip() or "gemini-3.5-flash"
 ZD_RULE_MAX_CONCURRENT = int_env("ZD_RULE_MAX_CONCURRENT", 12, 1, 100)
+BACKEND_COMMAND_TIMEOUT = float_env("BACKEND_COMMAND_TIMEOUT", 240, 30.0, 900.0)
 
 GEMINI_API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -1742,16 +1743,26 @@ async def notify_backend_failure(step, rule, event, target_value, action, result
 
 async def execute_backend_unlock_step(step, rule, event, source_text, target_client=None):
     backend_action = normalize_backend_action((step or {}).get("backend_action", "unlock_sms"))
-    ai_parse = await parse_backend_message_with_ai(source_text or "", backend_action, str((rule or {}).get("name") or ""))
-    target_value = str((ai_parse or {}).get("target") or "").strip() or extract_backend_target(source_text or "", step)
-    target_values = [target_value] if target_value else []
+    ai_parse = {}
     if backend_action == "urge_settlement":
-        target_values = []
+        target_values = extract_backend_order_nos(source_text or "", (step or {}).get("member_pattern", ""))
+        target_value = target_values[0] if target_values else ""
+        if not target_values:
+            ai_parse = await parse_backend_message_with_ai(source_text or "", backend_action, str((rule or {}).get("name") or ""))
+            target_value = str((ai_parse or {}).get("target") or "").strip() or extract_backend_target(source_text or "", step)
+            target_values = [target_value] if target_value else []
+    else:
+        ai_parse = await parse_backend_message_with_ai(source_text or "", backend_action, str((rule or {}).get("name") or ""))
+        target_value = str((ai_parse or {}).get("target") or "").strip() or extract_backend_target(source_text or "", step)
+        target_values = [target_value] if target_value else []
+    if backend_action == "urge_settlement":
         seen_targets = set()
-        for value in [str((ai_parse or {}).get("target") or "").strip(), *extract_backend_order_nos(source_text or "", (step or {}).get("member_pattern", ""))]:
+        clean_targets = []
+        for value in [*target_values, str((ai_parse or {}).get("target") or "").strip()]:
             if value and value not in seen_targets:
                 seen_targets.add(value)
-                target_values.append(value)
+                clean_targets.append(value)
+        target_values = clean_targets
         if not target_values and target_value:
             target_values = [target_value]
 
@@ -1765,7 +1776,7 @@ async def execute_backend_unlock_step(step, rule, event, source_text, target_cli
     for target_value in target_values:
         cmd_id = queue_backend_unlock_command(target_value, rule, event, backend_action, step=step, ai_parse=ai_parse)
         logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 已下发后台指令: {backend_action} {target_value} | id={cmd_id}")
-        result = await wait_backend_command_result(cmd_id, timeout=90.0)
+        result = await wait_backend_command_result(cmd_id, timeout=BACKEND_COMMAND_TIMEOUT)
         if not backend_result_ok(result):
             notified = await notify_backend_failure(step, rule, event, target_value, backend_action, result)
             failures.append((target_value, result, notified))
