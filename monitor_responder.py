@@ -126,6 +126,25 @@ def should_skip_album_reply(chat_id, grouped_id):
         album_reply_dedup_keys.discard(old_key)
     return False
 
+def rule_has_backend_action(rule, action):
+    action = normalize_backend_action(action)
+    return any(
+        isinstance(step, dict)
+        and step.get("type") == "backend_unlock"
+        and normalize_backend_action(step.get("backend_action", "")) == action
+        for step in (rule or {}).get("replies", [])
+    )
+
+def looks_like_short_urge_settlement(text):
+    compact = str(text or "").replace(" ", "")
+    if not re.search(r"(?<!\d)533\d{13}(?!\d)", compact):
+        return False
+    if "催" not in compact:
+        return False
+    if re.search(r"催(?:提款|取款|提现|出款)|(?:提款|取款|提现|出款).*催", compact):
+        return False
+    return True
+
 def get_sender_name(sender):
     """统一提取发送者名称"""
     if not sender: return "Unknown"
@@ -1685,6 +1704,33 @@ def normalize_urge_settlement_reply(text):
         return "赛果核实中，已催促，核实完毕后会进行结算，请耐心等待。"
     return raw
 
+def format_backend_reply_items(reply_items, backend_action=""):
+    clean = [(str(target or "").strip(), str(text or "").strip()) for target, text in reply_items]
+    clean = [(target, text) for target, text in clean if text]
+    if not clean:
+        return ""
+    if len(clean) == 1:
+        return clean[0][1]
+    if backend_action != "urge_settlement":
+        return "\n".join(f"{target}：{text}" for target, text in clean)
+
+    groups = []
+    by_text = {}
+    for target, text in clean:
+        if text not in by_text:
+            by_text[text] = []
+            groups.append((text, by_text[text]))
+        if target and target not in by_text[text]:
+            by_text[text].append(target)
+
+    blocks = []
+    for text, targets in groups:
+        if targets:
+            blocks.append(f"{chr(10).join(targets)}\n以上注单{text}")
+        else:
+            blocks.append(text)
+    return "\n\n".join(blocks)
+
 def humanize_backend_failure_detail(detail, action=""):
     text = str(detail or "").strip()
     compact = re.sub(r"\s+", " ", text)
@@ -1804,11 +1850,10 @@ async def execute_backend_unlock_step(step, rule, event, source_text, target_cli
             await target_client.send_message(sender_id, reply_items[0][1])
             await target_client.send_message(event.chat_id, "已发", reply_to=event.id)
         else:
-            if len(reply_items) == 1:
-                reply_text = reply_items[0][1]
-            else:
-                reply_text = "\n".join(f"{target}：{text}" for target, text in reply_items)
-            await target_client.send_message(event.chat_id, reply_text, reply_to=event.id)
+            reply_text = format_backend_reply_items(reply_items, backend_action)
+            sent = await target_client.send_message(event.chat_id, reply_text, reply_to=event.id)
+            if global_main_handler:
+                asyncio.create_task(global_main_handler(events.NewMessage.Event(sent)))
     if failures:
         logger.warning(f"⚠️ [BackendUnlock] 规则 '{rule.get('name')}' 部分后台动作失败: {backend_action} failures={len(failures)} success={len(successes)}")
     logger.info(f"✅ [BackendUnlock] 规则 '{rule.get('name')}' 后台动作成功: {backend_action} targets={','.join(t for t, _id, _r in successes)}")
@@ -3053,7 +3098,9 @@ async def analyze_message(client, rule, event, other_cs_ids, sender_obj, check_c
             if not any(k.lower() in filename_lower for k in fn_kws): return False, "文件名关键词不符", None
     else:
         if not match_text(text, rule):
-            return False, "文本关键词不符", None
+            if not (rule_has_backend_action(rule, "urge_settlement") and looks_like_short_urge_settlement(text)):
+                return False, "文本关键词不符", None
+            logger.info(f"✅ [Monitor] 催结算短句兜底命中 | Msg={event.id}")
     if event.is_reply: return False, "是回复消息", None
     
     if check_cooldown and not is_backend_unlock_rule:
