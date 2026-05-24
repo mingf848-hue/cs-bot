@@ -3787,6 +3787,35 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             data["accounts"] = get_account_summaries()
         return jsonify({"success": success, "msg": msg if not success else "", "config": data})
 
+    @app.route('/api/monitor_settings/export')
+    def export_monitor_settings():
+        exported_at = datetime.now(BJ_TZ)
+        payload = {
+            "type": "cs-bot.monitor_config",
+            "version": 1,
+            "exported_at": exported_at.isoformat(),
+            "config": current_config,
+        }
+        body = json.dumps(payload, ensure_ascii=False, indent=2)
+        filename = f"monitor_config_{exported_at.strftime('%Y%m%d_%H%M%S')}.json"
+        response = Response(body, mimetype='application/json; charset=utf-8')
+        response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
+    @app.route('/api/monitor_settings/import', methods=['POST'])
+    def import_monitor_settings():
+        raw = request.get_json(silent=True) or {}
+        candidate = raw.get("config") if isinstance(raw.get("config"), dict) else raw
+        if not isinstance(candidate, dict) or "rules" not in candidate:
+            return jsonify({"success": False, "msg": "导入文件格式不正确，缺少 rules"})
+        success, msg = save_config(candidate)
+        data = current_config.copy() if success else {}
+        if success:
+            data["available_accounts"] = [k for k in global_clients.keys() if k != MAIN_NAME]
+            data["main_account"] = MAIN_NAME
+            data["accounts"] = get_account_summaries()
+        return jsonify({"success": success, "msg": msg if not success else "", "config": data})
+
     @app.route('/api/monitor_toggle', methods=['POST'])
     def update_monitor_toggle():
         data = request.get_json(silent=True) or {}

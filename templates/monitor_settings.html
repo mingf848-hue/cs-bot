@@ -1038,6 +1038,9 @@
                         </div>
                     </article>
                     <div class="stat-actions">
+                        <input ref="importFileInput" class="sr-file" type="file" accept="application/json,.json" @change="importConfigFile">
+                        <button class="more-btn" @click="exportConfig"><i data-lucide="download"></i>导出配置</button>
+                        <button class="more-btn" @click="triggerImportConfig"><i data-lucide="upload"></i>导入配置</button>
                         <button class="more-btn" @click="ui.showOps = !ui.showOps"><i data-lucide="more-vertical"></i>更多操作</button>
                         <button class="primary-btn" @click="saveConfig" :disabled="ui.saving">
                             <i data-lucide="check"></i>{{ ui.saving ? '保存中' : '保存规则' }}
@@ -2088,6 +2091,7 @@ createApp({
             last_record: null
         });
         const available_accounts = reactive([]);
+        const importFileInput = ref(null);
         const ui = reactive({
             page: "dashboard",
             selectedId: "",
@@ -2951,6 +2955,64 @@ createApp({
             }
         };
 
+        const exportConfig = async () => {
+            try {
+                const res = await fetch("/api/monitor_settings/export");
+                if (!res.ok) throw new Error("导出接口请求失败");
+                const blob = await res.blob();
+                const disposition = res.headers.get("Content-Disposition") || "";
+                const matched = disposition.match(/filename="([^"]+)"/i);
+                const filename = matched?.[1] || `monitor_config_${Date.now()}.json`;
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.href = url;
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                URL.revokeObjectURL(url);
+                showToast("配置已导出");
+            } catch (e) {
+                showToast(`导出失败：${e.message || "网络错误"}`, "error");
+            } finally {
+                refreshIcons();
+            }
+        };
+
+        const triggerImportConfig = () => {
+            importFileInput.value?.click();
+        };
+
+        const importConfigFile = async (event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (!file) return;
+            if (!confirm("导入配置会覆盖当前 ZD 规则，确定继续？")) return;
+            ui.saving = true;
+            try {
+                const parsed = JSON.parse(await file.text());
+                const candidate = parsed?.config && typeof parsed.config === "object" ? parsed.config : parsed;
+                if (!candidate || !Array.isArray(candidate.rules)) {
+                    throw new Error("文件格式不正确，缺少 rules");
+                }
+                const res = await fetch("/api/monitor_settings/import", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(parsed)
+                });
+                const json = await res.json();
+                if (!json.success) throw new Error(json.msg || "导入失败");
+                if (json.config) applyConfigData(json.config);
+                const count = json.config?.rules?.length ?? candidate.rules.length;
+                showToast(`导入成功：${count} 条规则`);
+            } catch (e) {
+                showToast(`导入失败：${e.message || "文件无法读取"}`, "error");
+            } finally {
+                ui.saving = false;
+                refreshIcons();
+            }
+        };
+
         const scheduleAutoSave = () => {
             if (!autoSaveReady || suppressAutoSave || ui.saving) return;
             ui.autoSaving = false;
@@ -3066,11 +3128,12 @@ createApp({
 
         return {
             config, runtime, available_accounts, ui, toast, recovery, tabs, navItems, recordFilters, defaultFailureNotifyText,
+            importFileInput,
             currentRule, filteredRules, stats, previewSteps, estimatedTotal,
             mainAccount, accountFilterOptions, avatarText, lastRefreshText, selectedRuleStats, currentRuleRecords,
             filteredRecords, hourlyBars, compactHourlyBars, topRules, accountRows, resourceCards,
             resourceGroupOptions, senderPrefixOptions, selectedGroupNames, selectedPrefixNames,
-            loadConfig, loadRuntimeStats, loadAll, saveConfig, toggleRuleEnabled, toggleMonitorEnabled, selectRule, setPage, addRule, duplicateRule, removeRule, ruleStatus,
+            loadConfig, loadRuntimeStats, loadAll, saveConfig, exportConfig, triggerImportConfig, importConfigFile, toggleRuleEnabled, toggleMonitorEnabled, selectRule, setPage, addRule, duplicateRule, removeRule, ruleStatus,
             onRuleAccountChange, showFailedRecords, showRuleHelp,
             addGroupResource, removeGroupResource, addPrefixResource, removePrefixResource, isSelected, toggleListValue, toggleStringValue,
             addScheduledMessage, removeScheduledMessage, formatScheduleLastSent,
