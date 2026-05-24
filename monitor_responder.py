@@ -2167,21 +2167,6 @@ def agent_success_reply(action, target):
         return f"{target} 已处理。"
     return ""
 
-def agent_unsupported_reply_items(unsupported, primary_member=""):
-    items = []
-    for item in unsupported or []:
-        label = str((item or {}).get("label") or "该项").strip()
-        member = str((item or {}).get("member") or primary_member or "").strip()
-        if "严查" in label:
-            text = f"{label}这边暂不支持。"
-        else:
-            text = f"{label}这边我再核实下。"
-        if member:
-            items.append(f"{member}\n{text}")
-        else:
-            items.append(text)
-    return items
-
 def merge_agent_reply_blocks(blocks):
     clean = [str(block or "").strip() for block in blocks if str(block or "").strip()]
     if not clean:
@@ -2207,6 +2192,65 @@ def merge_agent_reply_blocks(blocks):
             merged.append(block)
         used[idx] = True
     return "\n\n".join(merged)
+
+def agent_handoff_target(step):
+    return parse_peer_target(
+        (step or {}).get("fail_notify_to")
+        or os.environ.get("AGENT_HANDOFF_TO")
+        or os.environ.get("AGENT_NOTIFY_TO")
+        or os.environ.get("AGENT_REVIEW_TO")
+        or ""
+    )
+
+def format_agent_task_summary(task):
+    action = str((task or {}).get("action") or "")
+    target = str((task or {}).get("target") or "")
+    fields = (task or {}).get("data_fields") or []
+    extra = f" ({'、'.join(fields)})" if fields else ""
+    return f"{command_action_label(action)}：{target}{extra}".strip("：")
+
+def format_agent_unsupported_summary(item):
+    label = str((item or {}).get("label") or "未实现能力").strip()
+    member = str((item or {}).get("member") or "").strip()
+    reason = str((item or {}).get("reason") or "").strip()
+    parts = [label]
+    if member:
+        parts.append(f"会员：{member}")
+    if reason:
+        parts.append(reason)
+    return "，".join(parts)
+
+def format_agent_handoff_notice(rule, event, source_text, tasks, successes, failures, unsupported):
+    lines = [
+        "Agent需要人工接管。",
+        f"规则：{(rule or {}).get('name') or (rule or {}).get('id') or '-'}",
+        f"消息ID：{getattr(event, 'id', '-')}",
+        f"群ID：{getattr(event, 'chat_id', '-')}",
+        "",
+        "原消息：",
+        str(source_text or "").strip()[:1200] or "-",
+    ]
+    if tasks:
+        lines.extend(["", "已识别能力："])
+        lines.extend([f"- {format_agent_task_summary(task)}" for task in tasks])
+    if successes:
+        lines.extend(["", "已查到结果："])
+        for item in successes:
+            reply_text = str((item or {}).get("reply_text") or "").strip()
+            if reply_text:
+                lines.append(reply_text[:1200])
+    if failures:
+        lines.extend(["", "已识别但查询失败："])
+        for item in failures:
+            action = (item or {}).get("action")
+            target = (item or {}).get("target")
+            reason = humanize_backend_failure_detail(((item or {}).get("result") or {}).get("detail") or "", action)
+            lines.append(f"- {command_action_label(action)} {target}：{reason}")
+    if unsupported:
+        lines.extend(["", "未实现能力："])
+        lines.extend([f"- {format_agent_unsupported_summary(item)}" for item in unsupported])
+    lines.extend(["", "处理方式：先人工回群；需要自动化的话，录制对应后台接口后补能力。"])
+    return "\n".join(lines)
 
 async def execute_agent_existing_step(step, rule, event, source_text, target_client=None):
     plan = await parse_agent_plan(source_text or "", str((rule or {}).get("name") or ""))
@@ -2236,13 +2280,26 @@ async def execute_agent_existing_step(step, rule, event, source_text, target_cli
     results = await asyncio.gather(*(run_one_agent_task(task) for task in tasks)) if tasks else []
     successes = [item for item in results if item.get("ok")]
     failures = [item for item in results if not item.get("ok")]
-    if not successes and tasks:
+    if not successes and tasks and not unsupported:
         status = ((failures[0] or {}).get("result") or {}).get("status") if failures else "failed"
         raise RuntimeError(f"Agent能力执行失败 status={status}")
 
     blocks = [item.get("reply_text") for item in successes if item.get("reply_text")]
     primary_member = next((task.get("target") for task in tasks if task.get("action") != "add_proxy_whitelist"), "")
-    blocks.extend(agent_unsupported_reply_items(unsupported, primary_member=primary_member))
+    if unsupported:
+        notify_target = agent_handoff_target(step)
+        if not notify_target:
+            result = {"status": "agent_handoff_missing", "detail": "Agent发现未实现能力，但未配置失败通知对象/AGENT_HANDOFF_TO"}
+            await notify_backend_failure(step, rule, event, primary_member, "agent_existing", result)
+            raise RuntimeError("Agent发现未实现能力，但未配置人工接管通知对象")
+        handoff_text = format_agent_handoff_notice(rule, event, source_text, tasks, successes, failures, unsupported)
+        await send_bot_notice(notify_target, handoff_text)
+        logger.warning(f"🤖 [ZD-Agent] 发现未实现能力，已中断群回复并私发人工接管通知: {notify_target}")
+        return {
+            "id": successes[-1]["cmd_id"] if successes else f"agent_handoff_{int(time.time() * 1000)}",
+            "stop_actions": True,
+            "handoff": True,
+        }
     reply_text = merge_agent_reply_blocks(blocks)
 
     if reply_text and target_client:
@@ -3048,6 +3105,7 @@ SETTINGS_HTML = """
                                             <div class="visual-field">
                                                 <div class="visual-label"><i class="fa-solid fa-bell"></i>失败通知对象</div>
                                                 <input v-model="reply.fail_notify_to" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] text-red-700 bg-red-50 border-red-100" placeholder="用户ID 或 @username">
+                                                <div class="text-[9px] text-slate-400 mt-0.5">未实现能力会中断群回复，并把已查/未查内容私发这里。</div>
                                             </div>
                                             <div class="visual-field">
                                                 <div class="visual-label"><i class="fa-solid fa-message"></i>失败通知内容</div>
