@@ -190,6 +190,17 @@
             align-items: start;
         }
 
+        .content.rules-page {
+            padding: 12px 16px 20px 14px;
+            grid-template-columns: minmax(248px, 310px) minmax(0, 1fr);
+            gap: 12px;
+        }
+
+        .content.rules-page .stats-row,
+        .content.rules-page .preview-panel {
+            display: none;
+        }
+
         .stats-row {
             grid-column: 1 / -1;
             display: grid;
@@ -260,6 +271,10 @@
         .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
         .rule-list-panel { min-height: calc(100vh - 188px); }
+        .content.rules-page .rule-list-panel,
+        .content.rules-page .editor-panel {
+            min-height: calc(100vh - 102px);
+        }
         .list-tools { padding: 14px; border-bottom: 1px solid var(--line); display: grid; gap: 12px; }
         .list-topline { display: grid; grid-template-columns: minmax(0, 1fr) 132px; gap: 10px; align-items: center; }
         .rule-search {
@@ -350,6 +365,45 @@
         .tag.action { color: var(--primary); background: var(--primary-soft); }
         .rule-actions { display: grid; gap: 10px; justify-items: end; }
         .rule-buttons { display: flex; gap: 6px; align-items: center; }
+        .content.rules-page .panel-head { min-height: 44px; padding: 0 10px; }
+        .content.rules-page .panel-title { font-size: 15px; }
+        .content.rules-page .list-tools { padding: 8px; gap: 7px; }
+        .content.rules-page .list-topline { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+        .content.rules-page .rule-search,
+        .content.rules-page .rule-sort { height: 32px; font-size: 12px; }
+        .content.rules-page .filter-row { gap: 5px; }
+        .content.rules-page .chip { min-height: 28px; padding: 0 8px; font-size: 12px; }
+        .content.rules-page .count { min-width: 17px; height: 17px; font-size: 10px; padding: 0 4px; }
+        .content.rules-page .list-summary { font-size: 11px; }
+        .content.rules-page .rule-list {
+            padding: 8px;
+            gap: 6px;
+            max-height: calc(100vh - 244px);
+        }
+        .content.rules-page .rule-card {
+            min-height: 60px;
+            padding: 8px 8px;
+            grid-template-columns: 6px minmax(0, 1fr) auto;
+            gap: 8px;
+            align-items: center;
+        }
+        .content.rules-page .drag-dots { gap: 2px; }
+        .content.rules-page .drag-dots span { width: 3px; height: 3px; }
+        .content.rules-page .rule-name { font-size: 13px; margin-bottom: 2px; }
+        .content.rules-page .rule-meta { font-size: 11px; gap: 4px; flex-wrap: nowrap; overflow: hidden; white-space: nowrap; }
+        .content.rules-page .rule-meta-icon { display: none; }
+        .content.rules-page .tag-row { margin-top: 4px; gap: 4px; flex-wrap: nowrap; overflow: hidden; }
+        .content.rules-page .tag { min-height: 18px; padding: 1px 5px; font-size: 10px; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .content.rules-page .tag svg { width: 11px; height: 11px; flex-basis: 11px; }
+        .content.rules-page .rule-actions { gap: 5px; }
+        .content.rules-page .rule-buttons { gap: 3px; }
+        .content.rules-page .rule-list-panel .step-menu { width: 26px; height: 26px; }
+        .content.rules-page .status-badge { height: 21px; padding: 0 6px; font-size: 11px; }
+        .content.rules-page .switch { width: 30px; height: 18px; }
+        .content.rules-page .switch::after { width: 14px; height: 14px; }
+        .content.rules-page .switch.on::after { transform: translateX(12px); }
+        .content.rules-page .list-footer { padding: 8px; }
+        .content.rules-page .add-rule-btn { min-height: 34px; }
         .pick-list { border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 6px; display: grid; gap: 6px; max-height: 170px; overflow: auto; }
         .pick-item { min-height: 32px; border-radius: 7px; padding: 0 8px; display: flex; align-items: center; gap: 8px; color: #344056; font-size: 13px; font-weight: 680; cursor: pointer; }
         .pick-item:hover { background: #f5f7fb; }
@@ -581,9 +635,38 @@
         .delay-grid { display: grid; grid-template-columns: 1fr 12px 1fr; gap: 5px; align-items: center; }
         .delay-grid .input { text-align: center; padding: 0 6px; }
         .field-card { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fbfcff; display: grid; gap: 8px; }
+        .backend-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+        .backend-grid .field.full,
+        .backend-grid .hint,
+        .backend-grid .failure-template { grid-column: 1 / -1; }
+        .failure-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        .failure-toolbar-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+        .mini-link { min-height: 24px; padding: 0 7px; border-radius: 6px; background: #eef2f8; color: #536078; font-size: 11px; font-weight: 760; }
+        .mini-link:hover { background: var(--primary-soft); color: var(--primary); }
         .flow-item .field { gap: 5px; }
         .flow-item .input, .flow-item .select { min-height: 36px; }
         .flow-item .textarea { min-height: 54px; }
+        .content.rules-page .tabs { height: 38px; padding: 0 12px; gap: 18px; }
+        .content.rules-page .tab { min-height: 37px; font-size: 13px; }
+        .content.rules-page .editor-body { padding: 10px; gap: 10px; }
+        .content.rules-page .section { gap: 8px; }
+        .content.rules-page .section-title { font-size: 14px; }
+        .content.rules-page .form-grid { gap: 9px; }
+        .content.rules-page .field { gap: 4px; }
+        .content.rules-page label,
+        .content.rules-page .field-label { font-size: 12px; }
+        .content.rules-page .input,
+        .content.rules-page .select { min-height: 34px; padding: 0 9px; font-size: 12px; }
+        .content.rules-page .textarea { min-height: 50px; padding: 7px 9px; font-size: 12px; line-height: 1.45; }
+        .content.rules-page .flow-list { gap: 8px; }
+        .content.rules-page .flow-item { padding: 8px; grid-template-columns: 46px minmax(0, 1fr) 30px; gap: 8px; }
+        .content.rules-page .delay-circle { width: 24px; height: 24px; font-size: 12px; }
+        .content.rules-page .delay-text { font-size: 11px; }
+        .content.rules-page .flow-top { grid-template-columns: minmax(145px, .42fr) minmax(0, 1fr); gap: 8px; }
+        .content.rules-page .field-card { padding: 8px; gap: 7px; }
+        .content.rules-page .flow-item .input,
+        .content.rules-page .flow-item .select { min-height: 32px; }
+        .content.rules-page .flow-item .textarea { min-height: 46px; }
 
         .preview-panel { min-height: calc(100vh - 188px); }
         .preview-body { padding: 14px; display: grid; gap: 14px; }
@@ -766,7 +849,7 @@
             .content { padding: 14px; grid-template-columns: 1fr; }
             .mobile-nav { display: flex; }
             .stats-row { grid-template-columns: 1fr; }
-            .form-grid, .form-grid.three, .flow-top { grid-template-columns: 1fr; }
+            .form-grid, .form-grid.three, .flow-top, .backend-grid { grid-template-columns: 1fr; }
             .list-topline { grid-template-columns: 1fr; }
             .editor-head { grid-template-columns: 1fr; align-items: start; padding-top: 10px; padding-bottom: 10px; }
             .editor-title { grid-template-columns: auto minmax(0, 1fr); width: 100%; }
@@ -839,7 +922,7 @@
                 </div>
             </header>
 
-            <section class="content">
+            <section class="content" :class="{'rules-page': ui.page === 'rules'}">
                 <div class="mobile-nav">
                     <button v-for="item in navItems" :key="item.key" class="chip" :class="{active: ui.page === item.key}" @click="setPage(item.key)">
                         <i :data-lucide="item.icon"></i>{{ item.label }}
@@ -1127,7 +1210,7 @@
                                             </div>
                                         </div>
 
-                                        <div class="field-card" v-if="step.type === 'backend_unlock'">
+                                        <div class="field-card backend-grid" v-if="step.type === 'backend_unlock'">
                                             <div class="field">
                                                 <label>解锁类型</label>
                                                 <select class="select" v-model="step.backend_action">
@@ -1172,10 +1255,17 @@
                                                 <label>失败通知对象</label>
                                                 <input class="input" v-model="step.fail_notify_to" placeholder="用户ID 或 @username">
                                             </div>
-                                            <div class="field">
-                                                <label>失败通知内容</label>
-                                                <textarea class="textarea" v-model="step.fail_notify_text" placeholder="留空使用默认：后台自动处理失败，请人工核查"></textarea>
-                                            </div>
+                                                <div class="field failure-template">
+                                                    <div class="failure-toolbar">
+                                                        <label>失败通知内容</label>
+                                                        <div class="failure-toolbar-actions">
+                                                            <button type="button" class="mini-link" @click="setDefaultFailureNotify(step)">填入默认模板</button>
+                                                            <button type="button" class="mini-link" @click="step.fail_notify_text = ''">清空用默认</button>
+                                                        </div>
+                                                    </div>
+                                                    <textarea class="textarea" v-model="step.fail_notify_text" :placeholder="defaultFailureNotifyText"></textarea>
+                                                    <span class="hint">留空也会使用默认模板。{reason} 会自动压成短原因：会员不存在、代理编码不正确、9站未登录、后台接口请求失败、拓展未同步登录态等。</span>
+                                                </div>
                                             <span class="hint">触发词在监听关键词里维护；这里仅负责提取目标值。账号类取账号，代理加白取 IPv4，催结算取注单号。催结算发送账号只影响 TG 催促消息。</span>
                                         </div>
                                     </div>
@@ -1296,7 +1386,7 @@
                                                     <textarea class="textarea" v-model="step.text" placeholder="{rule} 已审批处理 {sender}：{message}"></textarea>
                                                 </div>
                                             </div>
-                                            <div class="field-card" v-if="step.type === 'backend_unlock'">
+                                            <div class="field-card backend-grid" v-if="step.type === 'backend_unlock'">
                                                 <div class="field">
                                                     <label>解锁类型</label>
                                                     <select class="select" v-model="step.backend_action">
@@ -1341,10 +1431,17 @@
                                                     <label>失败通知对象</label>
                                                     <input class="input" v-model="step.fail_notify_to" placeholder="用户ID 或 @username">
                                                 </div>
-                                                <div class="field">
+                                            <div class="field failure-template">
+                                                <div class="failure-toolbar">
                                                     <label>失败通知内容</label>
-                                                    <textarea class="textarea" v-model="step.fail_notify_text" placeholder="留空使用默认：后台自动处理失败，请人工核查"></textarea>
+                                                    <div class="failure-toolbar-actions">
+                                                        <button type="button" class="mini-link" @click="setDefaultFailureNotify(step)">填入默认模板</button>
+                                                        <button type="button" class="mini-link" @click="step.fail_notify_text = ''">清空用默认</button>
+                                                    </div>
                                                 </div>
+                                                <textarea class="textarea" v-model="step.fail_notify_text" :placeholder="defaultFailureNotifyText"></textarea>
+                                                <span class="hint">留空也会使用默认模板。{reason} 会自动压成短原因：会员不存在、代理编码不正确、9站未登录、后台接口请求失败、拓展未同步登录态等。</span>
+                                            </div>
                                             </div>
                                         </div>
                                         <div class="step-actions">
@@ -1895,6 +1992,7 @@ createApp({
             { key: "failed", label: "失败" },
             { key: "skipped", label: "跳过" }
         ];
+        const defaultFailureNotifyText = "后台自动处理失败，请人工核查。\n规则：{rule}\n动作：{action}\n目标：{target}\n状态：{status}\n原因：{reason}";
 
         const refreshIcons = () => nextTick(() => {
             if (window.lucide) window.lucide.createIcons({ attrs: { "stroke-width": 1.8 } });
@@ -1972,6 +2070,10 @@ createApp({
             low_reply_min: rep.low_reply_min ?? 1.5,
             low_reply_max: rep.low_reply_max ?? 3
         });
+
+        const setDefaultFailureNotify = (step) => {
+            step.fail_notify_text = defaultFailureNotifyText;
+        };
 
         const ensureApprovalAction = (rule) => {
             rule.approval_action = hydrateApprovalAction(rule.approval_action);
@@ -2797,7 +2899,7 @@ createApp({
         });
 
         return {
-            config, runtime, available_accounts, ui, toast, recovery, tabs, navItems, recordFilters,
+            config, runtime, available_accounts, ui, toast, recovery, tabs, navItems, recordFilters, defaultFailureNotifyText,
             currentRule, filteredRules, stats, previewSteps, estimatedTotal,
             mainAccount, avatarText, lastRefreshText, selectedRuleStats, currentRuleRecords,
             filteredRecords, hourlyBars, compactHourlyBars, topRules, accountRows, resourceCards,
@@ -2807,7 +2909,7 @@ createApp({
             addScheduledMessage, removeScheduledMessage, formatScheduleLastSent,
             keywordsRaw,
             listToString, setList, setIntList, splitInline, shortGroups, primaryKeyword, ruleActionSummary, stepCount,
-            addStep, duplicateStep, removeStep, normalizeStep, displayDelay,
+            addStep, duplicateStep, removeStep, normalizeStep, displayDelay, setDefaultFailureNotify,
             startStepDrag, overStepDrag, dropStepDrag, endStepDrag, isStepDragScope, isStepDragging, isStepDropTarget,
             amountPart, setAmountPart, amountLowLines, setAmountLowLines,
             ensureApprovalAction, onRecoveryImage, clearRecoveryImage, runRecovery,
