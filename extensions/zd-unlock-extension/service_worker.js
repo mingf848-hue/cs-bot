@@ -1909,11 +1909,13 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
   }
 
   const matchId = matchIds.join('，');
+  // TG urge throttling only applies after the notice and settlement-apply checks above.
+  // If a notice appears later, the command returns the notice before reaching this block.
   const urgeMatchSplit = await splitTelegramUrgeMatchIds(matchIds);
   if (!urgeMatchSplit.allowed.length) {
     const replyText = String(cmd.urge_sent_reply || '赛果核实中，已催促，核实完毕后会进行结算，请耐心等待。');
-    const msg = `催结算跳过TG重复赛事：${orderNo} 赛事ID ${matchId}`;
-    await replyOrigin(config, cmd, msg, replyText, ticket.text);
+    const msg = `催结算跳过TG重复无公告赛事：${orderNo} 赛事ID ${matchId}`;
+    await replyOrigin(config, cmd, msg, replyText, settlement.text);
     return;
   }
   const limitedMatchId = urgeMatchSplit.allowed.join('，');
