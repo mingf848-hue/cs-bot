@@ -2583,6 +2583,19 @@ def build_copy_link_markup(raw_link):
         rows.append([{"text": label, "copy_text": {"text": link}}])
     return {"inline_keyboard": rows} if rows else None
 
+def build_copy_text_markup(text, label="复制整理结果"):
+    raw = str(text or "")
+    if not raw:
+        return None
+    rows = []
+    if len(raw) <= 256:
+        rows.append([{"text": label, "copy_text": {"text": raw}}])
+    else:
+        for index, line in enumerate([item for item in raw.splitlines() if item.strip()][:8], start=1):
+            if len(line) <= 256:
+                rows.append([{"text": f"复制第{index}行", "copy_text": {"text": line}}])
+    return {"inline_keyboard": rows} if rows else None
+
 def format_copy_link(link, index=None):
     if not link:
         return "🔗 消息链接：无"
@@ -2772,34 +2785,71 @@ def format_start_command_reply(message):
 
     return "\n".join(lines)
 
-def parse_withdrawal_table_text(text):
-    raw_lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
-    if len(raw_lines) < 5:
+def parse_order_table_block(raw_lines):
+    if len(raw_lines) < 4:
         return None
 
     member = raw_lines[0]
     real_name = raw_lines[1]
-    detail_line = next((line for line in raw_lines[2:] if re.search(r"\bHWD\d{12,}\b", line)), "")
+    detail_line = next((
+        line for line in raw_lines[2:]
+        if ("取款订单" in line or "存款订单" in line)
+        and re.search(r"\b[A-Z0-9]{12,}\b", line)
+    ), "")
     card_no = next((line for line in reversed(raw_lines) if re.fullmatch(r"\d{12,25}", line)), "")
-    if not detail_line or not card_no:
+    if not detail_line:
         return None
 
     parts = re.split(r"\s+", detail_line.strip())
-    hwd_index = next((idx for idx, part in enumerate(parts) if re.fullmatch(r"HWD\d{12,}", part)), -1)
-    if hwd_index < 6:
+    order_index = next((idx for idx, part in enumerate(parts) if re.fullmatch(r"[A-Z0-9]{12,}", part) and re.search(r"[A-Z]", part) and re.search(r"\d", part)), -1)
+    if order_index < 6:
         return None
 
     site = parts[0]
     vip = parts[1]
     account = parts[2]
-    order_no = parts[hwd_index]
-    amount = parts[hwd_index + 1] if hwd_index + 1 < len(parts) else ""
+    order_no = parts[order_index]
+    amount = parts[order_index + 1] if order_index + 1 < len(parts) else ""
+    order_kind = parts[order_index + 2] if order_index + 2 < len(parts) else ""
+    method = next((line for line in raw_lines[raw_lines.index(detail_line) + 1:] if not re.fullmatch(r"\d{12,25}", line)), "")
     if not all([member, real_name, site, vip, account, order_no, amount]):
+        return None
+
+    if "取款" in order_kind:
+        if not card_no:
+            return None
+        order_label = "银行卡提款"
+        tail_columns = [card_no, card_no]
+    elif "存款" in order_kind:
+        order_label = method or "存款订单"
+        tail_columns = []
+    else:
         return None
 
     today = datetime.now(BEIJING_TZ)
     date_text = f"{today.year}-{today.month}-{today.day}"
-    return f"{date_text}  {account}    银行卡提款  {member}  {real_name}  {vip}  {order_no}  {amount}  {card_no}  {card_no}"
+    columns = [date_text, account, order_label, member, real_name, vip, order_no, amount, *tail_columns]
+    return "\t".join(columns)
+
+def parse_order_table_text(text):
+    raw_text = str(text or "").strip()
+    if not raw_text:
+        return None
+    blocks = re.split(r"\n\s*\n+", raw_text)
+    rows = []
+    for block in blocks:
+        raw_lines = [line.strip() for line in block.splitlines() if line.strip()]
+        row = parse_order_table_block(raw_lines)
+        if row:
+            rows.append(row)
+    if rows:
+        return "\n".join(rows)
+
+    raw_lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    return parse_order_table_block(raw_lines)
+
+def parse_withdrawal_table_text(text):
+    return parse_order_table_text(text)
 
 def _bot_get_updates(offset=None, timeout=50):
     if not BOT_TOKEN:
@@ -3241,6 +3291,7 @@ async def bot_command_polling_task():
                 skip_send = False
                 edit_message_id = None
                 auto_delete_after = None
+                reply_markup = None
                 if is_bot_command(text, "start"):
                     reply_text = format_start_command_reply(message)
                 elif is_bot_command(text, "id"):
@@ -3250,7 +3301,10 @@ async def bot_command_polling_task():
                     if chat.get("type") != "private":
                         continue
                     withdrawal_text = parse_withdrawal_table_text(text)
-                    reply_result = withdrawal_text if withdrawal_text else await handle_site_message_bot_request(message)
+                    reply_result = (
+                        {"text": withdrawal_text, "reply_markup": build_copy_text_markup(withdrawal_text)}
+                        if withdrawal_text else await handle_site_message_bot_request(message)
+                    )
                     if not reply_result:
                         continue
                     if isinstance(reply_result, dict):
@@ -3264,6 +3318,7 @@ async def bot_command_polling_task():
                         edit_message_id = reply_result.get("edit_message_id")
                         sent_message_id = reply_result.get("sent_message_id")
                         auto_delete_after = reply_result.get("auto_delete_after")
+                        reply_markup = reply_result.get("reply_markup")
                     else:
                         reply_text = str(reply_result)
                         delete_source = False
@@ -3282,7 +3337,7 @@ async def bot_command_polling_task():
                 else:
                     sent_message_id = await loop.run_in_executor(
                         None,
-                        lambda cid=chat_id, txt=reply_text, mid=(message.get("message_id") if reply_to_source else None), thread=message.get("message_thread_id"): _bot_send_reply(cid, txt, mid, thread)
+                        lambda cid=chat_id, txt=reply_text, mid=(message.get("message_id") if reply_to_source else None), thread=message.get("message_thread_id"), markup=reply_markup: _bot_send_reply(cid, txt, mid, thread, markup)
                     )
                 if auto_delete_after and sent_message_id:
                     asyncio.create_task(delete_bot_message_later(chat_id, sent_message_id, auto_delete_after))
