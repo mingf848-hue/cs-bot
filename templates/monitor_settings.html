@@ -29,15 +29,34 @@
             --shadow-soft: 0 8px 24px rgba(28, 39, 64, .06);
         }
 
+        :root[data-theme="dark"] {
+            --bg: #101624;
+            --surface: #172033;
+            --surface-soft: #202b42;
+            --line: #2a3650;
+            --line-strong: #394864;
+            --text: #edf2fb;
+            --muted: #a8b2c7;
+            --subtle: #8793aa;
+            --primary: #8b84ff;
+            --primary-strong: #7a72ff;
+            --primary-soft: rgba(139, 132, 255, .18);
+            --green: #39c983;
+            --green-soft: rgba(57, 201, 131, .14);
+            --red: #ff6b85;
+            --red-soft: rgba(255, 107, 133, .14);
+            --blue: #72a4ff;
+            --shadow: 0 18px 48px rgba(0, 0, 0, .34);
+            --shadow-soft: 0 10px 28px rgba(0, 0, 0, .26);
+        }
+
         * { box-sizing: border-box; }
         html { min-height: 100%; background: var(--bg); -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
         body {
             margin: 0;
             min-height: 100vh;
             color: var(--text);
-            background:
-                radial-gradient(circle at 24% 12%, rgba(99, 91, 255, .06), transparent 28%),
-                linear-gradient(180deg, #fbfcff 0%, var(--bg) 34%, #f7f9fd 100%);
+            background: var(--bg);
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
             font-size: 14px;
             line-height: 1.45;
@@ -972,7 +991,7 @@
                     </a>
                     <button class="icon-btn" aria-label="失败记录" title="查看失败记录" @click="showFailedRecords"><i data-lucide="bell"></i></button>
                     <button class="icon-btn" aria-label="帮助" title="显示规则提示" @click="showRuleHelp"><i data-lucide="circle-help"></i></button>
-                    <button class="icon-btn" aria-label="同步" title="立即同步" @click="loadAll"><i data-lucide="refresh-cw"></i></button>
+                    <button class="icon-btn" :aria-label="ui.darkMode ? '日间模式' : '夜间模式'" :title="ui.darkMode ? '切换日间模式' : '切换夜间模式'" @click="toggleTheme"><i :data-lucide="ui.darkMode ? 'sun' : 'moon'"></i></button>
                     <div class="avatar">{{ avatarText }}</div>
                     <select class="ghost-btn account-select" v-model="ui.ruleAccount" @change="onRuleAccountChange">
                         <option v-for="account in accountFilterOptions" :key="account" :value="account">{{ account }}</option>
@@ -2006,6 +2025,7 @@ createApp({
             ruleAccount: "主账号",
             globalSearch: "",
             showOps: false,
+            darkMode: false,
             saving: false,
             autoSaving: false,
             togglingMonitor: false
@@ -2715,6 +2735,17 @@ createApp({
             showToast("催结算规则：监听关键词用 r: 正则，动作里的提取注单号正则可填 (?<!\\d)(533\\d{13})(?!\\d)。");
         };
 
+        const applyTheme = () => {
+            document.documentElement.dataset.theme = ui.darkMode ? "dark" : "light";
+            try { localStorage.setItem("monitorTheme", ui.darkMode ? "dark" : "light"); } catch (e) {}
+            refreshIcons();
+        };
+
+        const toggleTheme = () => {
+            ui.darkMode = !ui.darkMode;
+            applyTheme();
+        };
+
         const deltaText = (today, yesterday) => {
             const t = Number(today || 0);
             const y = Number(yesterday || 0);
@@ -2958,6 +2989,8 @@ createApp({
         watch(currentRule, refreshIcons);
         watch(config, scheduleAutoSave, { deep: true });
         onMounted(() => {
+            try { ui.darkMode = localStorage.getItem("monitorTheme") === "dark"; } catch (e) {}
+            applyTheme();
             loadAll();
             setInterval(refreshStatus, 3000);
             document.addEventListener("click", closeSelectMenus);
@@ -2971,7 +3004,7 @@ createApp({
             filteredRecords, hourlyBars, compactHourlyBars, topRules, accountRows, resourceCards,
             resourceGroupOptions, senderPrefixOptions, selectedGroupNames, selectedPrefixNames,
             loadConfig, loadRuntimeStats, loadAll, saveConfig, toggleRuleEnabled, toggleMonitorEnabled, selectRule, setPage, addRule, duplicateRule, removeRule, ruleStatus,
-            onRuleAccountChange, showFailedRecords, showRuleHelp,
+            onRuleAccountChange, showFailedRecords, showRuleHelp, toggleTheme,
             addGroupResource, removeGroupResource, addPrefixResource, removePrefixResource, isSelected, toggleListValue, toggleStringValue,
             addScheduledMessage, removeScheduledMessage, formatScheduleLastSent,
             keywordsRaw,
