@@ -1817,17 +1817,22 @@ async def execute_backend_unlock_step(step, rule, event, source_text, target_cli
         await notify_backend_failure(step, rule, event, "", backend_action, result)
         raise RuntimeError(f"后台动作未提取到目标值：{command_action_label(backend_action)}")
 
-    successes = []
-    failures = []
-    for target_value in target_values:
+    async def run_one_backend_target(target_value):
         cmd_id = queue_backend_unlock_command(target_value, rule, event, backend_action, step=step, ai_parse=ai_parse)
         logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 已下发后台指令: {backend_action} {target_value} | id={cmd_id}")
         result = await wait_backend_command_result(cmd_id, timeout=BACKEND_COMMAND_TIMEOUT)
         if not backend_result_ok(result):
             notified = await notify_backend_failure(step, rule, event, target_value, backend_action, result)
-            failures.append((target_value, result, notified))
-            continue
-        successes.append((target_value, cmd_id, result))
+            return "failure", (target_value, result, notified)
+        return "success", (target_value, cmd_id, result)
+
+    if len(target_values) > 1 and backend_action == "urge_settlement":
+        results = await asyncio.gather(*(run_one_backend_target(target_value) for target_value in target_values))
+    else:
+        results = [await run_one_backend_target(target_value) for target_value in target_values]
+
+    successes = [item for kind, item in results if kind == "success"]
+    failures = [item for kind, item in results if kind == "failure"]
 
     if not successes:
         target_text = "、".join(target_values)

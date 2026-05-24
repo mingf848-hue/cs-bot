@@ -1097,6 +1097,7 @@
                             <span class="status-badge" :class="ruleStatus(currentRule).kind">{{ ruleStatus(currentRule).text }}</span>
                         </div>
                         <div class="editor-actions">
+                            <button class="primary-btn" @click="saveConfig" :disabled="ui.saving"><i data-lucide="check"></i>{{ ui.saving ? '保存中' : '保存规则' }}</button>
                             <button class="tiny-btn" @click="duplicateRule(currentRule)"><i data-lucide="copy"></i>复制规则</button>
                             <div class="rule-id"><span>规则ID: {{ currentRule.id }}</span></div>
                         </div>
