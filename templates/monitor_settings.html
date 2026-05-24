@@ -169,6 +169,7 @@
         .more-btn { padding: 0 16px; font-weight: 720; }
         .primary-btn { padding: 0 18px; color: #fff; background: linear-gradient(135deg, #756bff, #4f46e5); border-color: transparent; font-weight: 780; box-shadow: 0 12px 24px rgba(99, 91, 255, .26); }
         .ghost-btn { padding: 0 14px; color: #536078; font-weight: 700; }
+        .account-select { min-width: 132px; appearance: none; outline: 0; cursor: pointer; }
         .tiny-btn { min-height: 34px; padding: 0 10px; font-size: 13px; font-weight: 700; color: #536078; }
 
         .avatar {
@@ -969,11 +970,13 @@
                     <a class="env-pill script-btn" href="/tool/zd_unlock_extension.zip">
                         <i data-lucide="package"></i><span>Chrome扩展ZIP</span>
                     </a>
-                    <button class="icon-btn" aria-label="通知"><i data-lucide="bell"></i></button>
-                    <button class="icon-btn" aria-label="帮助"><i data-lucide="circle-help"></i></button>
-                    <button class="icon-btn" aria-label="主题"><i data-lucide="sun"></i></button>
+                    <button class="icon-btn" aria-label="失败记录" title="查看失败记录" @click="showFailedRecords"><i data-lucide="bell"></i></button>
+                    <button class="icon-btn" aria-label="帮助" title="显示规则提示" @click="showRuleHelp"><i data-lucide="circle-help"></i></button>
+                    <button class="icon-btn" aria-label="同步" title="立即同步" @click="loadAll"><i data-lucide="refresh-cw"></i></button>
                     <div class="avatar">{{ avatarText }}</div>
-                    <button class="ghost-btn">{{ mainAccount }} <i data-lucide="chevron-down"></i></button>
+                    <select class="ghost-btn account-select" v-model="ui.ruleAccount" @change="onRuleAccountChange">
+                        <option v-for="account in accountFilterOptions" :key="account" :value="account">{{ account }}</option>
+                    </select>
                 </div>
             </header>
 
@@ -1029,7 +1032,7 @@
                         <div class="panel-title">规则列表</div>
                         <div class="toolbar">
                             <span v-if="ui.autoSaving" class="save-hint">自动保存中</span>
-                            <button class="tiny-btn" @click="ui.showOps = !ui.showOps"><i data-lucide="triangle-alert"></i>报错规则</button>
+                            <button class="tiny-btn" @click="showFailedRecords"><i data-lucide="triangle-alert"></i>报错规则</button>
                             <button class="tiny-btn" @click="loadConfig"><i data-lucide="refresh-cw"></i>刷新</button>
                         </div>
                     </div>
@@ -1039,12 +1042,7 @@
                                 <i data-lucide="search"></i>
                                 <input v-model="ui.ruleQuery" placeholder="搜索规则名、关键词、群、动作">
                             </label>
-                            <select class="rule-sort" v-model="ui.ruleSort">
-                                <option value="status">状态优先</option>
-                                <option value="name">名称排序</option>
-                                <option value="steps">步骤最多</option>
-                                <option value="newest">最新在前</option>
-                            </select>
+                            <span class="rule-sort">名称排序</span>
                         </div>
                         <div class="filter-row">
                             <button class="chip" :class="{active: ui.statusFilter === 'all'}" @click="ui.statusFilter = 'all'">全部 <span class="count">{{ stats.total }}</span></button>
@@ -1053,7 +1051,7 @@
                             <button class="chip" :class="{active: ui.statusFilter === 'draft'}" @click="ui.statusFilter = 'draft'">草稿 <span class="count">{{ stats.draft }}</span></button>
                         </div>
                         <div class="list-summary">
-                            <span>显示 <b>{{ filteredRules.length }}</b> / {{ stats.total }} 条</span>
+                            <span>{{ ui.ruleAccount }}：显示 <b>{{ filteredRules.length }}</b> / {{ stats.total }} 条</span>
                             <span v-if="ui.ruleQuery">搜索：{{ ui.ruleQuery }}</span>
                         </div>
                     </div>
@@ -2005,7 +2003,7 @@ createApp({
             recordFilter: "all",
             recordQuery: "",
             ruleQuery: "",
-            ruleSort: "status",
+            ruleAccount: "主账号",
             globalSearch: "",
             showOps: false,
             saving: false,
@@ -2275,8 +2273,10 @@ createApp({
                 if (Array.isArray(data.accounts) && data.accounts.length) {
                     runtime.accounts.splice(0, runtime.accounts.length, ...data.accounts);
                 }
-                if (!ui.selectedId || !config.rules.some(rule => rule.id === ui.selectedId)) {
-                    ui.selectedId = config.rules[0]?.id || "";
+                ui.ruleAccount = accountFilterOptions.value.includes(ui.ruleAccount) ? ui.ruleAccount : mainAccount.value;
+                const visibleRules = rulesForSelectedAccount.value;
+                if (!ui.selectedId || !visibleRules.some(rule => rule.id === ui.selectedId)) {
+                    ui.selectedId = visibleRules[0]?.id || "";
                 }
                 syncRawTexts(currentRule.value);
                 refreshIcons();
@@ -2352,7 +2352,11 @@ createApp({
             await loadRuntimeStats(true);
         };
 
-        const currentRule = computed(() => config.rules.find(rule => rule.id === ui.selectedId) || config.rules[0] || null);
+        const mainAccount = computed(() => runtime.main_account || identity.mainAccount || "主账号");
+        const accountFilterOptions = computed(() => [mainAccount.value, ...available_accounts.filter(acc => acc !== mainAccount.value)]);
+        const ruleAccountName = (rule) => String(rule?.reply_account || mainAccount.value).trim() || mainAccount.value;
+        const rulesForSelectedAccount = computed(() => config.rules.filter(rule => ruleAccountName(rule) === ui.ruleAccount));
+        const currentRule = computed(() => rulesForSelectedAccount.value.find(rule => rule.id === ui.selectedId) || rulesForSelectedAccount.value[0] || null);
 
         const ruleStatus = (rule) => {
             if (!rule.groups?.length) return { kind: "draft", text: "草稿" };
@@ -2362,7 +2366,7 @@ createApp({
 
         const filteredRules = computed(() => {
             const query = ui.ruleQuery.trim().toLowerCase();
-            const rows = config.rules.filter(rule => {
+            const rows = rulesForSelectedAccount.value.filter(rule => {
                 const status = ruleStatus(rule).kind || "running";
                 const statusOk = ui.statusFilter === "all" || ui.statusFilter === status;
                 const hay = [
@@ -2375,29 +2379,15 @@ createApp({
                 ].join(" ").toLowerCase();
                 return statusOk && (!query || hay.includes(query));
             });
-            const statusOrder = { running: 0, draft: 1, disabled: 2 };
-            return rows.slice().sort((a, b) => {
-                if (ui.ruleSort === "name") {
-                    return String(a.name || "").localeCompare(String(b.name || ""), "zh-CN");
-                }
-                if (ui.ruleSort === "steps") {
-                    return stepCount(b) - stepCount(a) || String(a.name || "").localeCompare(String(b.name || ""), "zh-CN");
-                }
-                if (ui.ruleSort === "newest") {
-                    const parseId = rule => Number(String(rule.id || "").match(/\d{10,}/)?.[0] || 0);
-                    return parseId(b) - parseId(a);
-                }
-                const ak = ruleStatus(a).kind || "running";
-                const bk = ruleStatus(b).kind || "running";
-                return (statusOrder[ak] ?? 9) - (statusOrder[bk] ?? 9) || String(a.name || "").localeCompare(String(b.name || ""), "zh-CN");
-            });
+            return rows.slice().sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "zh-CN"));
         });
 
         const stats = computed(() => {
-            const total = config.rules.length;
-            const running = config.rules.filter(rule => (ruleStatus(rule).kind || "running") === "running").length;
-            const disabled = config.rules.filter(rule => ruleStatus(rule).kind === "disabled").length;
-            const draft = config.rules.filter(rule => ruleStatus(rule).kind === "draft").length;
+            const scopedRules = rulesForSelectedAccount.value;
+            const total = scopedRules.length;
+            const running = scopedRules.filter(rule => (ruleStatus(rule).kind || "running") === "running").length;
+            const disabled = scopedRules.filter(rule => ruleStatus(rule).kind === "disabled").length;
+            const draft = scopedRules.filter(rule => ruleStatus(rule).kind === "draft").length;
             const today = Number(runtime.today.total || 0);
             const success = Number(runtime.today.success || 0);
             const failed = Number(runtime.today.failed || 0);
@@ -2435,11 +2425,20 @@ createApp({
             refreshIcons();
         };
 
+        const onRuleAccountChange = () => {
+            const firstRule = rulesForSelectedAccount.value[0] || null;
+            ui.selectedId = firstRule?.id || "";
+            syncRawTexts(firstRule);
+            if (ui.page !== "rules") ui.page = "rules";
+            refreshIcons();
+        };
+
         const addRule = () => {
             const rule = hydrateRule({
                 id: `rule_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
                 name: `新规则 #${config.rules.length + 1}`,
                 cooldown: 1,
+                reply_account: ui.ruleAccount === mainAccount.value ? "" : ui.ruleAccount,
                 replies: [hydrateReply({ type: "text", text: "收到", min: 1, max: 2 })]
             });
             config.rules.push(rule);
@@ -2454,10 +2453,10 @@ createApp({
             const copy = hydrateRule(JSON.parse(JSON.stringify(rule)));
             copy.id = `rule_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
             copy.name = `${rule.name || "未命名规则"} 副本`;
+            copy.reply_account = ui.ruleAccount === mainAccount.value ? "" : ui.ruleAccount;
             config.rules.push(copy);
             ui.selectedId = copy.id;
             ui.statusFilter = "all";
-            ui.ruleSort = "newest";
             syncRawTexts(copy);
             ui.activeTab = "basic";
             showToast("已复制规则");
@@ -2696,7 +2695,6 @@ createApp({
             return (stepTotal + approval).toFixed(1);
         });
 
-        const mainAccount = computed(() => runtime.main_account || identity.mainAccount || "主账号");
         const avatarText = computed(() => String(mainAccount.value || "A").trim().slice(0, 1).toUpperCase() || "A");
         const lastRefreshText = computed(() => runtime.server_time ? new Date(runtime.server_time).toLocaleTimeString("zh-CN", { hour12: false }) : "未同步");
 
@@ -2704,6 +2702,17 @@ createApp({
             ui.page = page;
             ui.showOps = false;
             refreshIcons();
+        };
+
+        const showFailedRecords = () => {
+            ui.page = "records";
+            ui.recordFilter = "failed";
+            ui.showOps = false;
+            refreshIcons();
+        };
+
+        const showRuleHelp = () => {
+            showToast("催结算规则：监听关键词用 r: 正则，动作里的提取注单号正则可填 (?<!\\d)(533\\d{13})(?!\\d)。");
         };
 
         const deltaText = (today, yesterday) => {
@@ -2945,7 +2954,7 @@ createApp({
         };
 
         watch(() => [ui.activeTab, ui.showOps, config.rules.length, ui.selectedId], refreshIcons);
-        watch(() => [ui.page, ui.recordFilter, ui.recordQuery, ui.ruleQuery, ui.statusFilter, ui.ruleSort], refreshIcons);
+        watch(() => [ui.page, ui.recordFilter, ui.recordQuery, ui.ruleQuery, ui.statusFilter, ui.ruleAccount], refreshIcons);
         watch(currentRule, refreshIcons);
         watch(config, scheduleAutoSave, { deep: true });
         onMounted(() => {
@@ -2958,10 +2967,11 @@ createApp({
         return {
             config, runtime, available_accounts, ui, toast, recovery, tabs, navItems, recordFilters, defaultFailureNotifyText,
             currentRule, filteredRules, stats, previewSteps, estimatedTotal,
-            mainAccount, avatarText, lastRefreshText, selectedRuleStats, currentRuleRecords,
+            mainAccount, accountFilterOptions, avatarText, lastRefreshText, selectedRuleStats, currentRuleRecords,
             filteredRecords, hourlyBars, compactHourlyBars, topRules, accountRows, resourceCards,
             resourceGroupOptions, senderPrefixOptions, selectedGroupNames, selectedPrefixNames,
             loadConfig, loadRuntimeStats, loadAll, saveConfig, toggleRuleEnabled, toggleMonitorEnabled, selectRule, setPage, addRule, duplicateRule, removeRule, ruleStatus,
+            onRuleAccountChange, showFailedRecords, showRuleHelp,
             addGroupResource, removeGroupResource, addPrefixResource, removePrefixResource, isSelected, toggleListValue, toggleStringValue,
             addScheduledMessage, removeScheduledMessage, formatScheduleLastSent,
             keywordsRaw,
