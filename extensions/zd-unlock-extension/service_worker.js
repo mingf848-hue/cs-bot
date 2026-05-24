@@ -18,6 +18,7 @@ const DEFAULT_CONFIG = {
   merchantNoticeDetailUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/noticeNew/noticeDetail',
   merchantSettlementListUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/settlement/queryNoSettleTicketList',
   merchantSettlementStatisticsUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/settlement/getStatistics',
+  merchantSettlementApplyUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/settlement/sendMqSaveSettleInfo',
   value: '',
   headers: {
     accept: '*/*',
@@ -70,7 +71,8 @@ const SITE_PROFILES = {
     merchantNoticeUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/noticeNew/notice',
     merchantNoticeDetailUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/noticeNew/noticeDetail',
     merchantSettlementListUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/settlement/queryNoSettleTicketList',
-    merchantSettlementStatisticsUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/settlement/getStatistics'
+    merchantSettlementStatisticsUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/settlement/getStatistics',
+    merchantSettlementApplyUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/settlement/sendMqSaveSettleInfo'
   }
 };
 
@@ -920,6 +922,17 @@ function merchantSettlementBody(cmd = {}, orderNo) {
   });
 }
 
+function merchantSettlementApplyBody(order = {}, detail = {}, orderNo = '') {
+  return {
+    orderNo: String(order.orderNo || orderNo || '').trim(),
+    matchId: String(detail.matchId || order.standardMatchId || detail.standardMatchId || '').trim(),
+    sportId: Number(detail.sportId || order.sportId || 0),
+    betNo: String(detail.betNo || '').trim(),
+    userId: String(order.uid || order.userId || detail.uid || detail.userId || '').trim(),
+    matchStatus: 1
+  };
+}
+
 function merchantList(data) {
   return ((((data || {}).data || {}).list) || []);
 }
@@ -1712,6 +1725,7 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
   if (!config.merchantTicketListUrl) throw new Error('场馆注单列表接口未配置');
   if (!config.merchantNoticeUrl) throw new Error('场馆公告接口未配置');
   if (!config.merchantSettlementListUrl) throw new Error('场馆结算状态接口未配置');
+  if (!config.merchantSettlementApplyUrl) throw new Error('场馆催促结算申请接口未配置');
 
   const headers = merchantHeaders(config, cmd);
   const venueLabel = config.pageAuthLabel || merchantAuthLabel(config);
@@ -1816,12 +1830,26 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
     const settlementDetails = unresolvedOrderDetails(settlementOrder).length
       ? unresolvedOrderDetails(settlementOrder)
       : detailsToCheck;
-    const reason = settlementDetails.map(settlementReasonText).find(Boolean);
-    const matchText = detailsText(settlementOrder.orderNo ? settlementOrder : order, settlementDetails) || detailsText(order, detailsToCheck);
-    const replyText = reason
-      ? `当前注单仍有未结算场次：${matchText}，原因：${reason}，请耐心等待。`
-      : `当前注单仍有未结算场次：${matchText || matchIds.join('，')}，请耐心等待。`;
-    const msg = `催结算跳过：${orderNo} 结算状态仍可查询到未结算记录`;
+    const applyItems = settlementDetails.length ? settlementDetails : detailsToCheck;
+    const seenApply = new Set();
+    let applied = 0;
+    for (const item of applyItems) {
+      const body = merchantSettlementApplyBody(settlementOrder.orderNo ? settlementOrder : order, item, orderNo);
+      const key = `${body.orderNo}:${body.matchId}:${body.betNo}`;
+      if (!body.orderNo || !body.matchId || !body.betNo || !body.userId || seenApply.has(key)) continue;
+      seenApply.add(key);
+      await setStatus({ state: 'running', message: `递交催促结算申请 ${body.orderNo} ${body.matchId}` });
+      const apply = await postJson(merchantUrl(config.merchantSettlementApplyUrl), headers, body);
+      if (!merchantApiOk(apply)) {
+        throw new Error(`递交催促结算申请失败 HTTP ${apply.res.status}: ${apply.text.slice(0, 300)}`);
+      }
+      applied += 1;
+    }
+    if (!applied) {
+      throw new Error(`催促结算申请缺少必要字段：${orderNo}`);
+    }
+    const msg = `催结算已提交申请：${orderNo}`;
+    const replyText = String(cmd.urge_sent_reply || '赛果核实中，已催促，核实完毕后会进行结算，请耐心等待。');
     await replyOrigin(config, cmd, msg, replyText, settlement.text);
     return;
   }
@@ -1831,7 +1859,9 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
   const matchInfo = detailsText(order, detailsToCheck);
   const context = {
     order_no: orderNo,
+    order_id: orderNo,
     orderNo,
+    orderId: orderNo,
     match_id: matchId,
     matchId,
     match_manage_id: matchManageId,

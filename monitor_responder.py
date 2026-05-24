@@ -680,6 +680,30 @@ def extract_backend_order_no(text, pattern="", use_default=True):
                 return order_no
     return None
 
+def extract_backend_order_nos(text, pattern="", use_default=True):
+    msg_text = str(text or "").strip()
+    if not msg_text:
+        return []
+    patterns = [pattern.strip()] if pattern and pattern.strip() else []
+    if use_default:
+        patterns.append(BACKEND_ORDER_NO_PATTERN)
+    result = []
+    seen = set()
+    for pat in patterns:
+        try:
+            matches = list(re.finditer(pat, msg_text, flags=re.IGNORECASE))
+        except re.error as e:
+            logger.warning(f"⚠️ [BackendUnlock] 注单号正则无效: {e}")
+            continue
+        for m in matches:
+            if not m.lastindex:
+                continue
+            order_no = str(m.group(1) or "").strip()
+            if order_no and order_no not in seen:
+                seen.add(order_no)
+                result.append(order_no)
+    return result
+
 def extract_backend_target(text, step, use_default=True):
     action = normalize_backend_action((step or {}).get("backend_action", "unlock_sms"))
     if action == "add_proxy_whitelist":
@@ -1712,32 +1736,65 @@ async def execute_backend_unlock_step(step, rule, event, source_text, target_cli
     backend_action = normalize_backend_action((step or {}).get("backend_action", "unlock_sms"))
     ai_parse = await parse_backend_message_with_ai(source_text or "", backend_action, str((rule or {}).get("name") or ""))
     target_value = str((ai_parse or {}).get("target") or "").strip() or extract_backend_target(source_text or "", step)
-    if not target_value:
+    target_values = [target_value] if target_value else []
+    if backend_action == "urge_settlement":
+        target_values = []
+        seen_targets = set()
+        for value in [str((ai_parse or {}).get("target") or "").strip(), *extract_backend_order_nos(source_text or "", (step or {}).get("member_pattern", ""))]:
+            if value and value not in seen_targets:
+                seen_targets.add(value)
+                target_values.append(value)
+        if not target_values and target_value:
+            target_values = [target_value]
+
+    if not target_values:
         result = {"status": "no_target", "detail": "未提取到目标值"}
         await notify_backend_failure(step, rule, event, "", backend_action, result)
         raise RuntimeError(f"后台动作未提取到目标值：{command_action_label(backend_action)}")
 
-    cmd_id = queue_backend_unlock_command(target_value, rule, event, backend_action, step=step, ai_parse=ai_parse)
-    logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 已下发后台指令: {backend_action} {target_value} | id={cmd_id}")
-    result = await wait_backend_command_result(cmd_id, timeout=90.0)
-    if not backend_result_ok(result):
-        notified = await notify_backend_failure(step, rule, event, target_value, backend_action, result)
+    successes = []
+    failures = []
+    for target_value in target_values:
+        cmd_id = queue_backend_unlock_command(target_value, rule, event, backend_action, step=step, ai_parse=ai_parse)
+        logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 已下发后台指令: {backend_action} {target_value} | id={cmd_id}")
+        result = await wait_backend_command_result(cmd_id, timeout=90.0)
+        if not backend_result_ok(result):
+            notified = await notify_backend_failure(step, rule, event, target_value, backend_action, result)
+            failures.append((target_value, result, notified))
+            continue
+        successes.append((target_value, cmd_id, result))
+
+    if not successes:
+        target_text = "、".join(target_values)
+        notified = any(item[2] for item in failures)
+        status = (failures[0][1] or {}).get("status") if failures else "failed"
         suffix = "，已通知人工核查" if notified else "，未配置失败通知对象"
-        raise RuntimeError(f"后台动作失败：{command_action_label(backend_action)} {target_value} status={result.get('status')}{suffix}")
-    reply_text = str((result or {}).get("reply_text") or "").strip()
-    if reply_text and target_client:
+        raise RuntimeError(f"后台动作失败：{command_action_label(backend_action)} {target_text} status={status}{suffix}")
+
+    reply_items = [(target, str((result or {}).get("reply_text") or "").strip()) for target, _cmd_id, result in successes]
+    reply_items = [(target, text) for target, text in reply_items if text]
+    if reply_items and target_client:
         await asyncio.sleep(random_delay_from_step(step or {}, "result_reply_min", "result_reply_max", 1.8, 3.8))
         private_reply = member_data_private_requested(source_text) or bool((ai_parse or {}).get("private_reply"))
-        if backend_action == "member_data_overview" and private_reply and not reply_text.startswith("代理编码不正确"):
+        if backend_action == "member_data_overview" and private_reply and not reply_items[0][1].startswith("代理编码不正确"):
             sender_id = getattr(event, "sender_id", None)
             if not sender_id:
                 raise RuntimeError("无法识别原消息发送者，不能私发查数据结果")
-            await target_client.send_message(sender_id, reply_text)
+            await target_client.send_message(sender_id, reply_items[0][1])
             await target_client.send_message(event.chat_id, "已发", reply_to=event.id)
         else:
+            if len(reply_items) == 1:
+                reply_text = reply_items[0][1]
+            else:
+                reply_text = "\n".join(f"{target}：{text}" for target, text in reply_items)
             await target_client.send_message(event.chat_id, reply_text, reply_to=event.id)
-    logger.info(f"✅ [BackendUnlock] 规则 '{rule.get('name')}' 后台动作成功: {backend_action} {target_value} | id={cmd_id}")
-    return {"id": cmd_id, "stop_actions": bool((result or {}).get("stop_actions"))}
+    if failures:
+        logger.warning(f"⚠️ [BackendUnlock] 规则 '{rule.get('name')}' 部分后台动作失败: {backend_action} failures={len(failures)} success={len(successes)}")
+    logger.info(f"✅ [BackendUnlock] 规则 '{rule.get('name')}' 后台动作成功: {backend_action} targets={','.join(t for t, _id, _r in successes)}")
+    return {
+        "id": successes[-1][1],
+        "stop_actions": any(bool((result or {}).get("stop_actions")) for _target, _cmd_id, result in successes)
+    }
 
 def command_action_label(action):
     if action == "add_proxy_whitelist":
