@@ -991,7 +991,6 @@
                     </a>
                     <button class="icon-btn" aria-label="失败记录" title="查看失败记录" @click="showFailedRecords"><i data-lucide="bell"></i></button>
                     <button class="icon-btn" aria-label="帮助" title="显示规则提示" @click="showRuleHelp"><i data-lucide="circle-help"></i></button>
-                    <button class="icon-btn" :aria-label="ui.darkMode ? '日间模式' : '夜间模式'" :title="ui.darkMode ? '切换日间模式' : '切换夜间模式'" @click="toggleTheme"><i :data-lucide="ui.darkMode ? 'sun' : 'moon'"></i></button>
                     <div class="avatar">{{ avatarText }}</div>
                     <select class="ghost-btn account-select" v-model="ui.ruleAccount" @change="onRuleAccountChange">
                         <option v-for="account in accountFilterOptions" :key="account" :value="account">{{ account }}</option>
@@ -2025,7 +2024,6 @@ createApp({
             ruleAccount: "主账号",
             globalSearch: "",
             showOps: false,
-            darkMode: false,
             saving: false,
             autoSaving: false,
             togglingMonitor: false
@@ -2735,17 +2733,6 @@ createApp({
             showToast("催结算规则：监听关键词用 r: 正则，动作里的提取注单号正则可填 (?<!\\d)(533\\d{13})(?!\\d)。");
         };
 
-        const applyTheme = () => {
-            document.documentElement.dataset.theme = ui.darkMode ? "dark" : "light";
-            try { localStorage.setItem("monitorTheme", ui.darkMode ? "dark" : "light"); } catch (e) {}
-            refreshIcons();
-        };
-
-        const toggleTheme = () => {
-            ui.darkMode = !ui.darkMode;
-            applyTheme();
-        };
-
         const deltaText = (today, yesterday) => {
             const t = Number(today || 0);
             const y = Number(yesterday || 0);
@@ -2989,8 +2976,8 @@ createApp({
         watch(currentRule, refreshIcons);
         watch(config, scheduleAutoSave, { deep: true });
         onMounted(() => {
-            try { ui.darkMode = localStorage.getItem("monitorTheme") === "dark"; } catch (e) {}
-            applyTheme();
+            document.documentElement.dataset.theme = "light";
+            try { localStorage.removeItem("monitorTheme"); } catch (e) {}
             loadAll();
             setInterval(refreshStatus, 3000);
             document.addEventListener("click", closeSelectMenus);
@@ -3004,7 +2991,7 @@ createApp({
             filteredRecords, hourlyBars, compactHourlyBars, topRules, accountRows, resourceCards,
             resourceGroupOptions, senderPrefixOptions, selectedGroupNames, selectedPrefixNames,
             loadConfig, loadRuntimeStats, loadAll, saveConfig, toggleRuleEnabled, toggleMonitorEnabled, selectRule, setPage, addRule, duplicateRule, removeRule, ruleStatus,
-            onRuleAccountChange, showFailedRecords, showRuleHelp, toggleTheme,
+            onRuleAccountChange, showFailedRecords, showRuleHelp,
             addGroupResource, removeGroupResource, addPrefixResource, removePrefixResource, isSelected, toggleListValue, toggleStringValue,
             addScheduledMessage, removeScheduledMessage, formatScheduleLastSent,
             keywordsRaw,
