@@ -261,6 +261,7 @@
 
         .rule-list-panel { min-height: calc(100vh - 188px); }
         .list-tools { padding: 14px; border-bottom: 1px solid var(--line); display: grid; gap: 12px; }
+        .list-topline { display: grid; grid-template-columns: minmax(0, 1fr) 132px; gap: 10px; align-items: center; }
         .rule-search {
             height: 40px;
             border-radius: 8px;
@@ -274,6 +275,19 @@
         }
 
         .rule-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; }
+        .rule-sort {
+            height: 40px;
+            min-width: 0;
+            border-radius: 8px;
+            border: 1px solid var(--line);
+            background: #fff;
+            color: #536078;
+            padding: 0 10px;
+            outline: 0;
+            font-weight: 710;
+        }
+        .list-summary { color: var(--muted); font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        .list-summary b { color: var(--text); }
         .filter-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
         .chip {
             min-height: 36px;
@@ -293,16 +307,16 @@
         .count { min-width: 21px; height: 21px; border-radius: 999px; display: grid; place-items: center; background: #eef2f8; color: #63708a; font-size: 12px; font-weight: 790; padding: 0 6px; }
         .chip.active .count { color: var(--primary); background: #dfdbff; }
 
-        .rule-list { padding: 12px; display: grid; gap: 10px; max-height: calc(100vh - 365px); overflow: auto; }
+        .rule-list { padding: 12px; display: grid; gap: 9px; max-height: calc(100vh - 405px); overflow: auto; }
         .rule-card {
-            min-height: 112px;
+            min-height: 104px;
             border-radius: 8px;
             border: 1px solid var(--line);
             background: #fff;
-            padding: 16px;
+            padding: 13px;
             display: grid;
             grid-template-columns: 12px minmax(0, 1fr) auto;
-            gap: 12px;
+            gap: 11px;
             align-items: center;
             cursor: pointer;
             transition: border .18s ease, box-shadow .18s ease, transform .18s ease, background .18s ease;
@@ -333,6 +347,9 @@
         }
         .tag-row { display: flex; gap: 7px; margin-top: 10px; flex-wrap: wrap; }
         .tag { min-height: 24px; border-radius: 6px; background: #f0f3f8; color: #536078; padding: 3px 8px; font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; gap: 5px; }
+        .tag.action { color: var(--primary); background: var(--primary-soft); }
+        .rule-actions { display: grid; gap: 10px; justify-items: end; }
+        .rule-buttons { display: flex; gap: 6px; align-items: center; }
         .pick-list { border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 6px; display: grid; gap: 6px; max-height: 170px; overflow: auto; }
         .pick-item { min-height: 32px; border-radius: 7px; padding: 0 8px; display: flex; align-items: center; gap: 8px; color: #344056; font-size: 13px; font-weight: 680; cursor: pointer; }
         .pick-item:hover { background: #f5f7fb; }
@@ -411,6 +428,7 @@
             overflow: hidden;
             text-overflow: ellipsis;
         }
+        .editor-actions { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; justify-content: flex-end; }
 
         .tabs {
             height: 45px;
@@ -749,6 +767,7 @@
             .mobile-nav { display: flex; }
             .stats-row { grid-template-columns: 1fr; }
             .form-grid, .form-grid.three, .flow-top { grid-template-columns: 1fr; }
+            .list-topline { grid-template-columns: 1fr; }
             .editor-head { grid-template-columns: 1fr; align-items: start; padding-top: 10px; padding-bottom: 10px; }
             .editor-title { grid-template-columns: auto minmax(0, 1fr); width: 100%; }
             .editor-title .status-badge { grid-column: 2; }
@@ -876,15 +895,27 @@
                         </div>
                     </div>
                     <div class="list-tools">
-                        <label class="rule-search">
-                            <i data-lucide="search"></i>
-                            <input v-model="ui.ruleQuery" placeholder="搜索规则名称/监听来源">
-                        </label>
+                        <div class="list-topline">
+                            <label class="rule-search">
+                                <i data-lucide="search"></i>
+                                <input v-model="ui.ruleQuery" placeholder="搜索规则名、关键词、群、动作">
+                            </label>
+                            <select class="rule-sort" v-model="ui.ruleSort">
+                                <option value="status">状态优先</option>
+                                <option value="name">名称排序</option>
+                                <option value="steps">步骤最多</option>
+                                <option value="newest">最新在前</option>
+                            </select>
+                        </div>
                         <div class="filter-row">
                             <button class="chip" :class="{active: ui.statusFilter === 'all'}" @click="ui.statusFilter = 'all'">全部 <span class="count">{{ stats.total }}</span></button>
                             <button class="chip" :class="{active: ui.statusFilter === 'running'}" @click="ui.statusFilter = 'running'">运行中 <span class="count">{{ stats.running }}</span></button>
                             <button class="chip" :class="{active: ui.statusFilter === 'disabled'}" @click="ui.statusFilter = 'disabled'">已停用 <span class="count">{{ stats.disabled }}</span></button>
                             <button class="chip" :class="{active: ui.statusFilter === 'draft'}" @click="ui.statusFilter = 'draft'">草稿 <span class="count">{{ stats.draft }}</span></button>
+                        </div>
+                        <div class="list-summary">
+                            <span>显示 <b>{{ filteredRules.length }}</b> / {{ stats.total }} 条</span>
+                            <span v-if="ui.ruleQuery">搜索：{{ ui.ruleQuery }}</span>
                         </div>
                     </div>
                     <div class="rule-list">
@@ -899,12 +930,14 @@
                                 <div class="tag-row">
                                     <span class="tag">{{ rule.check_file ? '文件模式' : '文本模式' }}</span>
                                     <span class="tag">{{ primaryKeyword(rule) }}</span>
+                                    <span class="tag action"><i data-lucide="route"></i>{{ ruleActionSummary(rule) }}</span>
                                     <span class="tag"><i data-lucide="user-round"></i>{{ stepCount(rule) }} 步</span>
                                 </div>
                             </div>
-                            <div style="display:grid;gap:14px;justify-items:end;">
+                            <div class="rule-actions">
                                 <span class="status-badge" :class="ruleStatus(rule).kind">{{ ruleStatus(rule).text }}</span>
-                                <div style="display:flex;gap:6px;align-items:center;">
+                                <div class="rule-buttons">
+                                    <button type="button" class="step-menu" @click.stop="duplicateRule(rule)" aria-label="复制规则" title="复制规则"><i data-lucide="copy"></i></button>
                                     <button type="button" class="step-menu" @click.stop="removeRule(rule)" aria-label="删除规则" title="删除规则"><i data-lucide="trash-2"></i></button>
                                     <button type="button" class="switch" :class="{on: rule.enabled}" :disabled="ui.saving" :aria-pressed="rule.enabled ? 'true' : 'false'" :title="rule.enabled ? '停用并保存' : '启用并保存'" @click.stop="toggleRuleEnabled(rule)"></button>
                                 </div>
@@ -924,7 +957,10 @@
                             <input v-model="currentRule.name" placeholder="规则名称">
                             <span class="status-badge" :class="ruleStatus(currentRule).kind">{{ ruleStatus(currentRule).text }}</span>
                         </div>
-                        <div class="rule-id"><span>规则ID: {{ currentRule.id }}</span> <i data-lucide="copy"></i></div>
+                        <div class="editor-actions">
+                            <button class="tiny-btn" @click="duplicateRule(currentRule)"><i data-lucide="copy"></i>复制规则</button>
+                            <div class="rule-id"><span>规则ID: {{ currentRule.id }}</span></div>
+                        </div>
                     </div>
                     <div class="tabs">
                         <button v-for="tab in tabs" :key="tab.key" class="tab" :class="{active: ui.activeTab === tab.key}" @click="ui.activeTab = tab.key">{{ tab.label }}</button>
@@ -1815,6 +1851,7 @@ createApp({
             recordFilter: "all",
             recordQuery: "",
             ruleQuery: "",
+            ruleSort: "status",
             globalSearch: "",
             showOps: false,
             saving: false,
@@ -2166,11 +2203,34 @@ createApp({
 
         const filteredRules = computed(() => {
             const query = ui.ruleQuery.trim().toLowerCase();
-            return config.rules.filter(rule => {
+            const rows = config.rules.filter(rule => {
                 const status = ruleStatus(rule).kind || "running";
                 const statusOk = ui.statusFilter === "all" || ui.statusFilter === status;
-                const hay = [rule.name, ...(rule.groups || []).map(groupLabel), ...(rule.keywords || []), ...(rule.file_extensions || [])].join(" ").toLowerCase();
+                const hay = [
+                    rule.name,
+                    ruleActionSummary(rule),
+                    ...(rule.groups || []).map(groupLabel),
+                    ...(rule.keywords || []),
+                    ...(rule.file_extensions || []),
+                    ...((rule.replies || []).map(step => [stepTitle(step), step.backend_action, step.text, step.forward_to].filter(Boolean).join(" ")))
+                ].join(" ").toLowerCase();
                 return statusOk && (!query || hay.includes(query));
+            });
+            const statusOrder = { running: 0, draft: 1, disabled: 2 };
+            return rows.slice().sort((a, b) => {
+                if (ui.ruleSort === "name") {
+                    return String(a.name || "").localeCompare(String(b.name || ""), "zh-CN");
+                }
+                if (ui.ruleSort === "steps") {
+                    return stepCount(b) - stepCount(a) || String(a.name || "").localeCompare(String(b.name || ""), "zh-CN");
+                }
+                if (ui.ruleSort === "newest") {
+                    const parseId = rule => Number(String(rule.id || "").match(/\d{10,}/)?.[0] || 0);
+                    return parseId(b) - parseId(a);
+                }
+                const ak = ruleStatus(a).kind || "running";
+                const bk = ruleStatus(b).kind || "running";
+                return (statusOrder[ak] ?? 9) - (statusOrder[bk] ?? 9) || String(a.name || "").localeCompare(String(b.name || ""), "zh-CN");
             });
         });
 
@@ -2227,6 +2287,21 @@ createApp({
             ui.selectedId = rule.id;
             syncRawTexts(rule);
             ui.activeTab = "basic";
+            refreshIcons();
+        };
+
+        const duplicateRule = (rule) => {
+            if (!rule) return;
+            const copy = hydrateRule(JSON.parse(JSON.stringify(rule)));
+            copy.id = `rule_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+            copy.name = `${rule.name || "未命名规则"} 副本`;
+            config.rules.push(copy);
+            ui.selectedId = copy.id;
+            ui.statusFilter = "all";
+            ui.ruleSort = "newest";
+            syncRawTexts(copy);
+            ui.activeTab = "basic";
+            showToast("已复制规则");
             refreshIcons();
         };
 
@@ -2372,6 +2447,26 @@ createApp({
         const primaryKeyword = (rule) => {
             if (rule.check_file) return (rule.file_extensions || [])[0]?.toUpperCase() || "文件";
             return (rule.keywords || [])[0] || "关键词";
+        };
+        const backendActionLabel = (action) => ({
+            unlock_sms: "短信/验证码",
+            clear_login_error: "登录限制",
+            add_proxy_whitelist: "代理加白",
+            migrate_milan: "迁移米兰",
+            send_site_inner_msg: "站内信",
+            member_data_overview: "查数据",
+            merchant_order_statistics: "查注单",
+            urge_settlement: "催结算"
+        }[action] || "后台操作");
+        const ruleActionSummary = (rule) => {
+            const steps = Array.isArray(rule.replies) ? rule.replies : [];
+            const actions = [];
+            for (const step of steps) {
+                const label = step.type === "backend_unlock" ? backendActionLabel(step.backend_action) : stepTitle(step);
+                if (label && !actions.includes(label)) actions.push(label);
+                if (actions.length >= 2) break;
+            }
+            return actions.length ? actions.join(" / ") : "无动作";
         };
         const stepTitle = (step) => ({
             text: "发送文本",
@@ -2691,7 +2786,7 @@ createApp({
         };
 
         watch(() => [ui.activeTab, ui.showOps, config.rules.length, ui.selectedId], refreshIcons);
-        watch(() => [ui.page, ui.recordFilter, ui.recordQuery], refreshIcons);
+        watch(() => [ui.page, ui.recordFilter, ui.recordQuery, ui.ruleQuery, ui.statusFilter, ui.ruleSort], refreshIcons);
         watch(currentRule, refreshIcons);
         watch(config, scheduleAutoSave, { deep: true });
         onMounted(() => {
@@ -2707,11 +2802,11 @@ createApp({
             mainAccount, avatarText, lastRefreshText, selectedRuleStats, currentRuleRecords,
             filteredRecords, hourlyBars, compactHourlyBars, topRules, accountRows, resourceCards,
             resourceGroupOptions, senderPrefixOptions, selectedGroupNames, selectedPrefixNames,
-            loadConfig, loadRuntimeStats, loadAll, saveConfig, toggleRuleEnabled, toggleMonitorEnabled, selectRule, setPage, addRule, removeRule, ruleStatus,
+            loadConfig, loadRuntimeStats, loadAll, saveConfig, toggleRuleEnabled, toggleMonitorEnabled, selectRule, setPage, addRule, duplicateRule, removeRule, ruleStatus,
             addGroupResource, removeGroupResource, addPrefixResource, removePrefixResource, isSelected, toggleListValue, toggleStringValue,
             addScheduledMessage, removeScheduledMessage, formatScheduleLastSent,
             keywordsRaw,
-            listToString, setList, setIntList, splitInline, shortGroups, primaryKeyword, stepCount,
+            listToString, setList, setIntList, splitInline, shortGroups, primaryKeyword, ruleActionSummary, stepCount,
             addStep, duplicateStep, removeStep, normalizeStep, displayDelay,
             startStepDrag, overStepDrag, dropStepDrag, endStepDrag, isStepDragScope, isStepDragging, isStepDropTarget,
             amountPart, setAmountPart, amountLowLines, setAmountLowLines,
