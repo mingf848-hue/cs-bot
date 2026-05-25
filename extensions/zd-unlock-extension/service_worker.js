@@ -108,6 +108,10 @@ function notify(title, message) {
       iconUrl: chrome.runtime.getURL('icon.svg'),
       title,
       message
+    }, () => {
+      // Chrome may reject SVG notification icons. Reading lastError prevents
+      // an unchecked extension error; the badge above is the reliable signal.
+      void chrome.runtime.lastError;
     });
   } catch {
     // notification is best effort
