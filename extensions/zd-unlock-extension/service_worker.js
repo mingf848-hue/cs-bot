@@ -1540,7 +1540,13 @@ async function sendTelegramFromCommand(config, cmd, text) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       id: cmd.id,
+      action: 'urge_settlement',
       rule: cmd.rule || '',
+      chat_id: cmd.chat_id || cmd.source_chat_id || '',
+      message_id: cmd.message_id || cmd.source_message_id || '',
+      source_text: cmd.source_text || '',
+      orderNo: cmd.orderNo || cmd.order_no || cmd.target_value || '',
+      target_value: cmd.target_value || cmd.orderNo || cmd.order_no || '',
       target,
       account: String(cmd.telegram_account || ''),
       text

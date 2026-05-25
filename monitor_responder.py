@@ -71,6 +71,15 @@ runtime_stats = {"records": [], "daily": {}}
 ALBUM_REPLY_DEDUP_LIMIT = 5000
 album_reply_dedup_queue = deque()
 album_reply_dedup_keys = set()
+try:
+    SETTLEMENT_TG_REPLY_TTL_SECONDS = max(3600, int(os.environ.get("SETTLEMENT_TG_REPLY_TTL_SECONDS", "172800")))
+except Exception:
+    SETTLEMENT_TG_REPLY_TTL_SECONDS = 172800
+SETTLEMENT_TG_FORWARD_DEDUP_LIMIT = 5000
+settlement_tg_bridge_lock = threading.RLock()
+settlement_tg_bridge_memory = {}
+settlement_tg_forwarded_queue = deque()
+settlement_tg_forwarded_keys = set()
 
 # --- 核心工具函数 ---
 
@@ -797,6 +806,246 @@ def record_runtime_event(kind, status, detail="", rule=None, event=None, sender_
         runtime_stats["daily"] = normalized["daily"]
     persist_runtime_stats()
     return record
+
+def settlement_tg_key_part(value):
+    return str(value or "").strip()
+
+def settlement_tg_bridge_keys(chat_id, message_id, account_name=""):
+    chat_key = settlement_tg_key_part(chat_id)
+    msg_key = settlement_tg_key_part(message_id)
+    if not chat_key or not msg_key:
+        return []
+    keys = [f"settlement_tg_bridge:{chat_key}:{msg_key}"]
+    account_key = settlement_tg_key_part(account_name)
+    if account_key:
+        keys.insert(0, f"settlement_tg_bridge:{account_key}:{chat_key}:{msg_key}")
+    return keys
+
+def telegram_peer_value(value):
+    text = str(value or "").strip()
+    if re.fullmatch(r"-?\d+", text):
+        try:
+            return int(text)
+        except Exception:
+            return text
+    return text
+
+def get_leased_command_snapshot(cmd_id):
+    if not cmd_id:
+        return {}
+    try:
+        with backend_command_lock:
+            leased = pending_command_leases.get(str(cmd_id))
+            if leased and isinstance(leased.get("cmd"), dict):
+                return dict(leased["cmd"])
+    except Exception:
+        return {}
+    return {}
+
+def merge_command_context(post_data):
+    post_data = dict(post_data or {})
+    leased = get_leased_command_snapshot(post_data.get("id"))
+    merged = dict(leased)
+    for key, value in post_data.items():
+        if value not in (None, "", []):
+            merged[key] = value
+    return merged
+
+def save_settlement_tg_bridge(account_name, sent_message, post_data):
+    cmd = merge_command_context(post_data)
+    action = normalize_backend_action(cmd.get("action") or cmd.get("backend_action") or "")
+    if action and action != "urge_settlement":
+        return
+
+    source_chat_id = cmd.get("chat_id") or cmd.get("source_chat_id")
+    source_message_id = cmd.get("message_id") or cmd.get("source_message_id")
+    sent_chat_id = getattr(sent_message, "chat_id", None) or cmd.get("telegram_chat_id")
+    sent_message_id = getattr(sent_message, "id", None)
+    if not source_chat_id or not source_message_id or not sent_chat_id or not sent_message_id:
+        logger.info(
+            "ℹ️ [SettlementBridge] 跳过关联保存，缺少来源或群消息信息: "
+            f"cmd={cmd.get('id') or '-'} source={source_chat_id}/{source_message_id} "
+            f"sent={sent_chat_id}/{sent_message_id}"
+        )
+        return
+
+    order_no = (
+        cmd.get("orderNo")
+        or cmd.get("order_no")
+        or cmd.get("order_id")
+        or cmd.get("target_value")
+        or cmd.get("member_name")
+        or ""
+    )
+    payload = {
+        "cmd_id": str(cmd.get("id") or ""),
+        "rule": str(cmd.get("rule") or "催结算"),
+        "account": str(account_name or MAIN_NAME),
+        "telegram_chat_id": str(sent_chat_id),
+        "telegram_message_id": str(sent_message_id),
+        "source_chat_id": str(source_chat_id),
+        "source_message_id": str(source_message_id),
+        "order_no": str(order_no or ""),
+        "source_text": str(cmd.get("source_text") or "")[:1000],
+        "telegram_text": str(cmd.get("text") or "")[:1000],
+        "created_at": now_bj().isoformat(),
+    }
+    keys = settlement_tg_bridge_keys(sent_chat_id, sent_message_id, account_name)
+    if not keys:
+        return
+    expires_at = time.time() + SETTLEMENT_TG_REPLY_TTL_SECONDS
+    with settlement_tg_bridge_lock:
+        for key in keys:
+            settlement_tg_bridge_memory[key] = {"payload": payload, "expires_at": expires_at}
+    if redis_client:
+        raw = json.dumps(payload, ensure_ascii=False)
+        for key in keys:
+            try:
+                redis_client.set(key, raw, ex=SETTLEMENT_TG_REPLY_TTL_SECONDS)
+            except Exception as e:
+                logger.warning(f"⚠️ [SettlementBridge] Redis 保存关联失败: {e}")
+                break
+    logger.info(
+        f"🔗 [SettlementBridge] 已关联 TG 催结算消息: tg={sent_chat_id}/{sent_message_id} "
+        f"origin={source_chat_id}/{source_message_id} order={payload['order_no'] or '-'}"
+    )
+
+def load_settlement_tg_bridge(chat_id, message_id, account_name=""):
+    now = time.time()
+    for key in settlement_tg_bridge_keys(chat_id, message_id, account_name):
+        with settlement_tg_bridge_lock:
+            item = settlement_tg_bridge_memory.get(key)
+            if item:
+                if float(item.get("expires_at") or 0) > now:
+                    return dict(item.get("payload") or {})
+                settlement_tg_bridge_memory.pop(key, None)
+        if redis_client:
+            try:
+                raw = redis_client.get(key)
+                if raw:
+                    payload = json.loads(raw)
+                    with settlement_tg_bridge_lock:
+                        settlement_tg_bridge_memory[key] = {
+                            "payload": payload,
+                            "expires_at": now + SETTLEMENT_TG_REPLY_TTL_SECONDS,
+                        }
+                    return payload
+            except Exception as e:
+                logger.warning(f"⚠️ [SettlementBridge] Redis 读取关联失败: {e}")
+    return {}
+
+def mark_settlement_tg_reply_forwarded(chat_id, reply_message_id):
+    key = f"settlement_tg_forwarded:{settlement_tg_key_part(chat_id)}:{settlement_tg_key_part(reply_message_id)}"
+    if redis_client:
+        try:
+            return bool(redis_client.set(key, "1", nx=True, ex=SETTLEMENT_TG_REPLY_TTL_SECONDS))
+        except Exception as e:
+            logger.warning(f"⚠️ [SettlementBridge] Redis 去重失败，回退内存: {e}")
+    with settlement_tg_bridge_lock:
+        if key in settlement_tg_forwarded_keys:
+            return False
+        settlement_tg_forwarded_keys.add(key)
+        settlement_tg_forwarded_queue.append(key)
+        while len(settlement_tg_forwarded_queue) > SETTLEMENT_TG_FORWARD_DEDUP_LIMIT:
+            old_key = settlement_tg_forwarded_queue.popleft()
+            settlement_tg_forwarded_keys.discard(old_key)
+    return True
+
+def clear_settlement_tg_reply_forwarded_mark(chat_id, reply_message_id):
+    key = f"settlement_tg_forwarded:{settlement_tg_key_part(chat_id)}:{settlement_tg_key_part(reply_message_id)}"
+    if redis_client:
+        try:
+            redis_client.delete(key)
+        except Exception:
+            pass
+    with settlement_tg_bridge_lock:
+        settlement_tg_forwarded_keys.discard(key)
+
+def get_message_reply_to_id(message):
+    reply_to_id = getattr(message, "reply_to_msg_id", None)
+    if reply_to_id:
+        return reply_to_id
+    reply_to = getattr(message, "reply_to", None)
+    return getattr(reply_to, "reply_to_msg_id", None) or getattr(reply_to, "reply_to_top_id", None)
+
+def clean_settlement_group_reply(text):
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    raw = re.sub(r"\r\n?", "\n", raw)
+    raw = re.sub(
+        r"(谢谢[！!。.]?)(?:\s*[A-Za-z0-9][A-Za-z0-9_-]{0,11})\s*$",
+        r"\1",
+        raw,
+    )
+    raw = re.sub(
+        r"(感谢[！!。.]?)(?:\s*[A-Za-z0-9][A-Za-z0-9_-]{0,11})\s*$",
+        r"\1",
+        raw,
+    )
+    return raw.strip()
+
+def looks_like_settlement_group_result(text):
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if len(compact) < 4:
+        return False
+    return bool(re.search(r"结算|刷新|赛果|核实|已处理|未处理|无效|取消|退回|本金|注单|盘口|比分", compact))
+
+async def forward_settlement_tg_group_reply(event, account_name):
+    message = getattr(event, "message", event)
+    if getattr(event, "out", False) or getattr(message, "out", False):
+        return
+    reply_to_id = get_message_reply_to_id(message)
+    if not reply_to_id:
+        return
+    payload = load_settlement_tg_bridge(getattr(event, "chat_id", None), reply_to_id, account_name)
+    if not payload:
+        return
+    raw_text = getattr(event, "raw_text", None) or getattr(event, "text", "") or getattr(message, "message", "") or ""
+    reply_text = clean_settlement_group_reply(raw_text)
+    if not looks_like_settlement_group_result(reply_text):
+        logger.info(f"↩️ [SettlementBridge] 忽略非结果类客服回复: tg={event.chat_id}/{getattr(message, 'id', '-')}")
+        return
+    reply_msg_id = getattr(message, "id", None)
+    if not mark_settlement_tg_reply_forwarded(getattr(event, "chat_id", None), reply_msg_id):
+        return
+
+    source_chat_id = payload.get("source_chat_id")
+    source_message_id = payload.get("source_message_id")
+    target_client = global_clients.get(MAIN_NAME) or global_clients.get(account_name)
+    if not target_client:
+        clear_settlement_tg_reply_forwarded_mark(getattr(event, "chat_id", None), reply_msg_id)
+        raise RuntimeError("没有可用于回传原消息的 Telegram 账号")
+    try:
+        await target_client.send_message(
+            telegram_peer_value(source_chat_id),
+            reply_text,
+            reply_to=int(source_message_id),
+        )
+    except Exception:
+        clear_settlement_tg_reply_forwarded_mark(getattr(event, "chat_id", None), reply_msg_id)
+        raise
+
+    record_runtime_event(
+        "settlement_group_reply",
+        "success",
+        f"TG催结算群回复已回传：{payload.get('order_no') or '-'}",
+        rule={"id": payload.get("cmd_id") or "__settlement_group_reply__", "name": payload.get("rule") or "催结算"},
+        target_account=MAIN_NAME,
+        action_count=1,
+    )
+    logger.info(
+        f"✅ [SettlementBridge] 已回传 TG 催结算群回复: "
+        f"tg={event.chat_id}/{reply_msg_id} origin={source_chat_id}/{source_message_id}"
+    )
+
+def create_settlement_tg_reply_handler(account_name):
+    async def settlement_tg_reply_handler(event):
+        try:
+            await forward_settlement_tg_group_reply(event, account_name)
+        except Exception as e:
+            logger.error(f"❌ [SettlementBridge] 回传 TG 催结算群回复失败 ({account_name}): {e}")
+    return settlement_tg_reply_handler
 
 def get_account_summaries():
     accounts = []
@@ -2689,6 +2938,7 @@ async def send_command_telegram_message(account_name, target, text, cmd=None):
     if not body:
         raise RuntimeError("Telegram 消息为空")
     sent = await target_client.send_message(peer, body)
+    save_settlement_tg_bridge(target_name, sent, {**(cmd or {}), "text": body})
     record_runtime_event(
         "settlement_urge",
         "success",
@@ -4176,6 +4426,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     MAIN_NAME = main_name # Set global main name
     
     client.add_event_handler(create_otp_handler(main_name), events.NewMessage(chats=777000))
+    client.add_event_handler(create_settlement_tg_reply_handler(main_name), events.NewMessage())
     global_clients[main_name] = client # v65: Register main client
 
     # Extra Accounts
@@ -4261,6 +4512,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                 
                 global_clients[acc_name] = extra_client
                 extra_client.add_event_handler(create_otp_handler(acc_name), events.NewMessage(chats=777000))
+                extra_client.add_event_handler(create_settlement_tg_reply_handler(acc_name), events.NewMessage())
                 bot_loop.create_task(_start_extra_client(extra_client, acc_name))
             except Exception as e:
                 logger.error(f"❌ [OTP] 初始化 {acc_name} 失败: {e}")
