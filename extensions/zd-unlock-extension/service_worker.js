@@ -2076,7 +2076,17 @@ async function pollOnce() {
     const res = await fetch(`${config.botBase}/api/cmd/poll?wait=${waitSeconds}&secret=${encodeURIComponent(config.cmdSecret)}`, {
       cache: 'no-store'
     });
-    const data = await res.json();
+    const rawText = await res.text();
+    let data = null;
+    try {
+      data = rawText ? JSON.parse(rawText) : {};
+    } catch (_err) {
+      const snippet = rawText.slice(0, 120).replace(/\s+/g, ' ');
+      throw new Error(`命令轮询返回非JSON：HTTP ${res.status} ${res.statusText || ''} ${snippet}`);
+    }
+    if (!res.ok) {
+      throw new Error(`命令轮询失败：HTTP ${res.status} ${data?.msg || data?.error || rawText.slice(0, 120)}`);
+    }
     if (data && data.ok && data.cmd && isSupportedCommandAction(data.cmd.action, data.cmd)) {
       await setStatus({ state: 'received', message: `收到命令 ${data.cmd.orderNo || data.cmd.order_no || data.cmd.target_value || data.cmd.member_name || ''}` });
       activeBackendCommands += 1;
