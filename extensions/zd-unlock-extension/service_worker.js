@@ -1302,6 +1302,62 @@ function scoreInvalidNotice(item = {}, order = {}, detail = {}) {
   return score;
 }
 
+function detailMarketCategory(detail = {}) {
+  const text = normalizeText([
+    detail.playName,
+    detail.originalPlay,
+    detail.playOptionName,
+    detail.playOptions,
+    detail.marketValue
+  ].filter(Boolean).join(' '));
+  if (/罚牌|黄牌|红牌|booking|bookings|card|cards/.test(text)) {
+    return {
+      label: '罚牌',
+      include: ['罚牌', 'booking', 'bookings', 'card', 'cards'],
+      exclude: ['角球', 'corner']
+    };
+  }
+  if (/角球|corner/.test(text)) {
+    return {
+      label: '角球',
+      include: ['角球', 'corner'],
+      exclude: ['罚牌', 'booking', 'bookings', 'card', 'cards']
+    };
+  }
+  if (/进球|入球|goal|goals/.test(text)) {
+    return {
+      label: '进球',
+      include: ['进球', '入球', 'goal', 'goals'],
+      exclude: []
+    };
+  }
+  return null;
+}
+
+function scoreSettlementNotice(item = {}, order = {}, detail = {}) {
+  const text = normalizeText(noticeText(item));
+  const home = normalizeText(detail.homeName);
+  const away = normalizeText(detail.awayName);
+  const matchName = normalizeText(detail.matchName || detail.tournamentName || order.matchName || '');
+  const beginText = String(detail.beginTimeStr || order.beginTimeStr || '').replace(/-/g, '/').slice(0, 16);
+  const begin = normalizeText(beginText);
+  const category = detailMarketCategory(detail);
+  let score = 0;
+  if (home && text.includes(home)) score += 20;
+  if (away && text.includes(away)) score += 20;
+  if (matchName && text.includes(matchName)) score += 12;
+  if (begin && text.includes(begin)) score += 12;
+  if (/赛果不明确|不能按时结算|delaysettlement|delay settlement|noclearresult|no clear result/.test(text)) score += 10;
+  if (category) {
+    if (category.include.some((token) => text.includes(normalizeText(token)))) score += 100;
+    if (category.exclude.some((token) => text.includes(normalizeText(token)))) score -= 120;
+    if (!category.include.some((token) => text.includes(normalizeText(token))) && !category.exclude.some((token) => text.includes(normalizeText(token)))) {
+      score += 3;
+    }
+  }
+  return score;
+}
+
 function bestChineseNoticeContext(detailData = {}) {
   const list = Array.isArray(detailData.list) ? detailData.list : [];
   const zh = list.find((item) => Number(item.langType) === 1 && item.context)
@@ -1890,11 +1946,15 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
     if (!merchantApiOk(notice)) {
       throw new Error(`查询公告失败 HTTP ${notice.res.status}: ${notice.text.slice(0, 300)}`);
     }
-    const notices = merchantList(notice.data);
+    const notices = merchantList(notice.data)
+      .map((noticeItem) => ({ item: noticeItem, score: scoreSettlementNotice(noticeItem, order, item) }))
+      .sort((a, b) => b.score - a.score);
     if (notices.length) {
-      const first = notices[0] || {};
-      const noticeText = await noticeReplyText(config, headers, first);
-      await replyOrigin(config, cmd, `赛事 ${matchId} 已有公告`, noticeText || '赛果核实中，请耐心等待。', notice.text);
+      const selected = notices[0] || {};
+      const selectedNotice = selected.item || {};
+      const noticeText = await noticeReplyText(config, headers, selectedNotice);
+      const marketLabel = detailMarketCategory(item)?.label || '';
+      await replyOrigin(config, cmd, `赛事 ${matchId} 已有公告${marketLabel ? `（${marketLabel}）` : ''}`, noticeText || '赛果核实中，请耐心等待。', notice.text);
       return;
     }
   }
