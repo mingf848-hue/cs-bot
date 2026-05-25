@@ -105,12 +105,12 @@ function notify(title, message) {
     if (!chrome.notifications || !chrome.notifications.create) return;
     chrome.notifications.create({
       type: 'basic',
-      iconUrl: chrome.runtime.getURL('icon.svg'),
+      iconUrl: chrome.runtime.getURL('icon-128.png'),
       title,
       message
     }, () => {
-      // Chrome may reject SVG notification icons. Reading lastError prevents
-      // an unchecked extension error; the badge above is the reliable signal.
+      // Reading lastError prevents an unchecked extension error if the host
+      // blocks notifications or image loading fails.
       void chrome.runtime.lastError;
     });
   } catch {
