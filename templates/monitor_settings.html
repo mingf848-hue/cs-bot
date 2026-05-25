@@ -178,6 +178,8 @@
 
         .env-pill { padding: 0 14px; font-weight: 760; }
         .status-dot { width: 10px; height: 10px; border-radius: 999px; background: var(--green); box-shadow: 0 0 0 4px rgba(35, 163, 107, .12); }
+        .ai-pill.on { border-color: rgba(20, 143, 106, .28); color: #128461; background: #eaf9f1; }
+        .ai-pill.off { color: #667085; background: #f8fafc; }
 
         .top-actions { display: flex; align-items: center; gap: 12px; margin-left: auto; }
         .search-box { width: 205px; padding: 0 12px; color: var(--subtle); }
@@ -801,6 +803,12 @@
         .table-row span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .settings-grid .section { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: #fff; }
+        .settings-grid .section.full { grid-column: 1 / -1; }
+        .account-ai-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+        .account-ai-card { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fbfcff; display: grid; gap: 10px; }
+        .account-ai-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        .account-ai-title { min-width: 0; font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .account-ai-card .textarea { min-height: 118px; }
         .schedule-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 620px)); gap: 14px; align-items: start; }
         .schedule-card { border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 12px; display: grid; gap: 12px; max-width: 620px; }
         .schedule-card.off { opacity: .62; }
@@ -932,7 +940,7 @@
             .rule-id { max-width: 100%; }
             .rule-list { max-height: none; }
             .ops-popover { right: 14px; top: 128px; }
-            .dashboard-grid, .resource-grid, .settings-grid, .account-list.cards, .metrics-grid.wide, .records-toolbar { grid-template-columns: 1fr; }
+            .dashboard-grid, .resource-grid, .settings-grid, .account-list.cards, .metrics-grid.wide, .records-toolbar, .account-ai-grid { grid-template-columns: 1fr; }
             .resource-row, .resource-row.prefix { grid-template-columns: 1fr auto; }
             .resource-row .input:first-child { grid-column: 1 / -1; }
             .hour-bars { gap: 3px; }
@@ -980,6 +988,10 @@
                     <span class="status-dot" :style="{background: config.enabled ? 'var(--green)' : 'var(--red)'}"></span>
                     <span>{{ ui.togglingMonitor ? '切换中' : (config.enabled ? '生产环境' : '监听暂停') }}</span>
                     <i data-lucide="chevron-down"></i>
+                </button>
+                <button class="env-pill ai-pill" :class="isCurrentAiPrivateEnabled ? 'on' : 'off'" @click="toggleCurrentAiPrivateReply" :disabled="ui.saving" :title="`控制 ${ui.ruleAccount} 的私聊 AI 回复`">
+                    <i data-lucide="bot"></i>
+                    <span>{{ isCurrentAiPrivateEnabled ? 'AI私聊开' : 'AI私聊关' }}</span>
                 </button>
                 <div class="top-actions">
                     <label class="search-box">
@@ -1995,6 +2007,24 @@
                             <div class="section-title">审批触发词</div>
                             <input class="input" :value="(config.approval_keywords || []).join(', ')" @input="config.approval_keywords = splitInline($event.target.value)" placeholder="同意, 批准, ok">
                         </section>
+                        <section class="section full">
+                            <div class="section-head">
+                                <div>
+                                    <div class="section-title">AI 私聊回复</div>
+                                    <div class="hint">只回复对应账号收到的私聊，不处理群聊。</div>
+                                </div>
+                                <button class="primary-btn" @click="saveConfig" :disabled="ui.saving"><i data-lucide="check"></i>{{ ui.saving ? '保存中' : '保存AI设置' }}</button>
+                            </div>
+                            <div class="account-ai-grid">
+                                <article class="account-ai-card" v-for="account in accountFilterOptions" :key="`ai-${account}`">
+                                    <div class="account-ai-head">
+                                        <div class="account-ai-title">{{ account }}</div>
+                                        <button type="button" class="switch" :class="{on: aiPrivateAccountConfig(account).enabled}" :aria-pressed="aiPrivateAccountConfig(account).enabled ? 'true' : 'false'" @click="toggleAiPrivateAccount(account)"></button>
+                                    </div>
+                                    <textarea class="textarea" v-model="aiPrivateAccountConfig(account).prompt" placeholder="这个账号私聊时的说话风格，比如：语气自然一点，简短，像平时聊天。"></textarea>
+                                </article>
+                            </div>
+                        </section>
                         <section class="section">
                             <div class="section-title">突发事件批量回复</div>
                             <div class="form-grid">
@@ -2071,6 +2101,7 @@ createApp({
             approval_keywords: [],
             schedule: { active: false, start: "09:00", end: "21:00" },
             resources: { groups: [], sender_prefixes: [] },
+            ai_private_reply: { accounts: {} },
             scheduled_messages: [],
             rules: []
         });
@@ -2288,6 +2319,48 @@ createApp({
                 label: item.label || item.name || item.value || ""
             })).filter(item => item.value) : []
         });
+        const hydrateAiPrivateReply = (raw = {}) => {
+            const source = (raw && typeof raw === "object") ? raw : {};
+            const rawAccounts = (source.accounts && typeof source.accounts === "object") ? source.accounts : source;
+            const accounts = {};
+            Object.entries(rawAccounts || {}).forEach(([name, item]) => {
+                const account = String(name || "").trim();
+                if (!account || account === "accounts") return;
+                if (typeof item === "boolean") {
+                    accounts[account] = { enabled: item, prompt: "" };
+                    return;
+                }
+                if (item && typeof item === "object") {
+                    accounts[account] = {
+                        enabled: !!item.enabled,
+                        prompt: String(item.prompt || "")
+                    };
+                }
+            });
+            return { accounts };
+        };
+        const ensureAiPrivateAccountConfig = (account) => {
+            const name = String(account || mainAccount.value || "主账号").trim() || "主账号";
+            if (!config.ai_private_reply || typeof config.ai_private_reply !== "object") config.ai_private_reply = { accounts: {} };
+            if (!config.ai_private_reply.accounts || typeof config.ai_private_reply.accounts !== "object") config.ai_private_reply.accounts = {};
+            if (!config.ai_private_reply.accounts[name]) {
+                config.ai_private_reply.accounts[name] = { enabled: false, prompt: "" };
+            }
+            return config.ai_private_reply.accounts[name];
+        };
+        const aiPrivateAccountConfig = (account) => ensureAiPrivateAccountConfig(account);
+        const isCurrentAiPrivateEnabled = computed(() => !!ensureAiPrivateAccountConfig(ui.ruleAccount).enabled);
+        const toggleAiPrivateAccount = (account) => {
+            const item = ensureAiPrivateAccountConfig(account);
+            item.enabled = !item.enabled;
+        };
+        const toggleCurrentAiPrivateReply = async () => {
+            const item = ensureAiPrivateAccountConfig(ui.ruleAccount);
+            item.enabled = !item.enabled;
+            const ok = await saveConfig({ silent: true, successMessage: "AI私聊设置已保存" });
+            if (ok) showToast(`${ui.ruleAccount} AI私聊已${item.enabled ? "开启" : "关闭"}`);
+            refreshIcons();
+        };
         const hasIncompleteResourceDraft = () => {
             const groups = config.resources.groups || [];
             const prefixes = config.resources.sender_prefixes || [];
@@ -2363,6 +2436,7 @@ createApp({
                 config.approval_keywords = Array.isArray(data.approval_keywords) ? data.approval_keywords : ["同意", "批准", "ok"];
                 config.schedule = data.schedule || { active: false, start: "09:00", end: "21:00" };
                 config.resources = hydrateResources(data.resources || {});
+                config.ai_private_reply = hydrateAiPrivateReply(data.ai_private_reply || {});
                 config.scheduled_messages = (data.scheduled_messages || []).map(hydrateScheduledMessage);
                 config.rules = (data.rules || []).map(hydrateRule);
                 identity.mainAccount = data.main_account || identity.mainAccount;
@@ -2370,6 +2444,7 @@ createApp({
                 if (Array.isArray(data.accounts) && data.accounts.length) {
                     runtime.accounts.splice(0, runtime.accounts.length, ...data.accounts);
                 }
+                accountFilterOptions.value.forEach(ensureAiPrivateAccountConfig);
                 ui.ruleAccount = accountFilterOptions.value.includes(ui.ruleAccount) ? ui.ruleAccount : mainAccount.value;
                 const visibleRules = rulesForSelectedAccount.value;
                 if (!ui.selectedId || !visibleRules.some(rule => rule.id === ui.selectedId)) {
@@ -3131,6 +3206,7 @@ createApp({
             importFileInput,
             currentRule, filteredRules, stats, previewSteps, estimatedTotal,
             mainAccount, accountFilterOptions, avatarText, lastRefreshText, selectedRuleStats, currentRuleRecords,
+            aiPrivateAccountConfig, isCurrentAiPrivateEnabled, toggleCurrentAiPrivateReply, toggleAiPrivateAccount,
             filteredRecords, hourlyBars, compactHourlyBars, topRules, accountRows, resourceCards,
             resourceGroupOptions, senderPrefixOptions, selectedGroupNames, selectedPrefixNames,
             loadConfig, loadRuntimeStats, loadAll, saveConfig, exportConfig, triggerImportConfig, importConfigFile, toggleRuleEnabled, toggleMonitorEnabled, selectRule, setPage, addRule, duplicateRule, removeRule, ruleStatus,

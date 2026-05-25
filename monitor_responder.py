@@ -80,6 +80,8 @@ settlement_tg_bridge_lock = threading.RLock()
 settlement_tg_bridge_memory = {}
 settlement_tg_forwarded_queue = deque()
 settlement_tg_forwarded_keys = set()
+ai_private_reply_latest = {}
+ai_private_reply_locks = {}
 
 # --- 核心工具函数 ---
 
@@ -399,12 +401,23 @@ ZD_AI_PARSE_TIMEOUT = float_env("ZD_AI_PARSE_TIMEOUT", 20, 3.0, 60.0)
 ZD_AI_INPUT_MAX_CHARS = int_env("ZD_AI_INPUT_MAX_CHARS", 1600, 300, 5000)
 ZD_AI_MAX_OUTPUT_TOKENS = int_env("ZD_AI_MAX_OUTPUT_TOKENS", 384, 128, 2048)
 ZD_AGENT_MAX_OUTPUT_TOKENS = int_env("ZD_AGENT_MAX_OUTPUT_TOKENS", 768, 256, 4096)
+AI_PRIVATE_REPLY_INPUT_MAX_CHARS = int_env("AI_PRIVATE_REPLY_INPUT_MAX_CHARS", 1200, 200, 5000)
+AI_PRIVATE_REPLY_MAX_OUTPUT_TOKENS = int_env("AI_PRIVATE_REPLY_MAX_OUTPUT_TOKENS", 256, 64, 1024)
+AI_PRIVATE_REPLY_TIMEOUT = float_env("AI_PRIVATE_REPLY_TIMEOUT", 20, 3.0, 60.0)
+AI_PRIVATE_REPLY_TEMPERATURE = float_env("AI_PRIVATE_REPLY_TEMPERATURE", 0.35, 0.0, 1.0)
+AI_PRIVATE_REPLY_CONTEXT_MESSAGES = int_env("AI_PRIVATE_REPLY_CONTEXT_MESSAGES", 12, 2, 30)
+AI_PRIVATE_REPLY_DEBOUNCE_SECONDS = float_env("AI_PRIVATE_REPLY_DEBOUNCE_SECONDS", 1.2, 0.0, 10.0)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = (os.environ.get("GEMINI_MODEL") or "gemini-3.5-flash").strip() or "gemini-3.5-flash"
 ZD_RULE_MAX_CONCURRENT = int_env("ZD_RULE_MAX_CONCURRENT", 12, 1, 100)
 BACKEND_COMMAND_TIMEOUT = float_env("BACKEND_COMMAND_TIMEOUT", 240, 30.0, 900.0)
 
 GEMINI_API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
+DEFAULT_AI_PRIVATE_REPLY_PROMPT = """
+你是当前 Telegram 账号本人，正在一对一私聊里自然聊天。
+根据最近私聊上下文，回复最后一条对方消息。
+语气自然、简短，像真人日常私聊，中文为主。
+""".strip()
 
 def gemini_generate_content_url():
     return f"{GEMINI_API_ROOT}/models/{GEMINI_MODEL}:generateContent"
@@ -602,6 +615,182 @@ async def parse_backend_message_with_ai(text, action, rule_name=""):
         return {}
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, lambda: parse_backend_message_with_ai_sync(text, action, rule_name))
+
+def normalize_ai_private_reply_config(raw):
+    if not isinstance(raw, dict):
+        raw = {}
+    accounts_raw = raw.get("accounts") if isinstance(raw.get("accounts"), dict) else raw
+    accounts = {}
+    for name, item in accounts_raw.items():
+        account_name = str(name or "").strip()
+        if not account_name or account_name == "accounts":
+            continue
+        if isinstance(item, bool):
+            enabled = item
+            prompt = ""
+        elif isinstance(item, dict):
+            enabled = bool(item.get("enabled", False))
+            prompt = str(item.get("prompt", "") or "")
+        else:
+            continue
+        accounts[account_name] = {
+            "enabled": enabled,
+            "prompt": prompt[:8000],
+        }
+    return {"accounts": accounts}
+
+def get_ai_private_reply_account_config(account_name):
+    config = normalize_ai_private_reply_config(current_config.get("ai_private_reply", {}))
+    wanted = str(account_name or MAIN_NAME).strip() or MAIN_NAME
+    accounts = config.get("accounts", {})
+    if wanted in accounts:
+        return accounts[wanted]
+    wanted_lower = wanted.lower()
+    for name, item in accounts.items():
+        if str(name).lower() == wanted_lower:
+            return item
+    return {"enabled": False, "prompt": ""}
+
+def trim_ai_private_context(text):
+    raw = str(text or "").strip()
+    if len(raw) <= AI_PRIVATE_REPLY_INPUT_MAX_CHARS:
+        return raw
+    return "...[前文已截断]\n" + raw[-AI_PRIVATE_REPLY_INPUT_MAX_CHARS:]
+
+def build_ai_private_reply_prompt(account_name, account_prompt, context_text):
+    custom_prompt = str(account_prompt or "").strip() or DEFAULT_AI_PRIVATE_REPLY_PROMPT
+    return f"""
+你要代 Telegram 账号“{account_name}”在私聊中回复。
+
+账号提示词：
+{custom_prompt}
+
+最近私聊上下文，按时间从旧到新：
+{trim_ai_private_context(context_text)}
+
+直接给出要发送的回复文本。
+""".strip()
+
+def call_ai_private_reply_sync(account_name, account_prompt, context_text):
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY 未配置")
+    prompt = build_ai_private_reply_prompt(account_name, account_prompt, context_text)
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "maxOutputTokens": AI_PRIVATE_REPLY_MAX_OUTPUT_TOKENS,
+            "temperature": AI_PRIVATE_REPLY_TEMPERATURE,
+        }
+    }
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        gemini_generate_content_url(),
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY,
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=AI_PRIVATE_REPLY_TIMEOUT) as resp:
+        status = getattr(resp, "status", resp.getcode())
+        resp_text = resp.read().decode("utf-8", errors="replace")
+    if status < 200 or status >= 300:
+        raise RuntimeError(f"AI HTTP {status}: {resp_text[:200]}")
+    data = json.loads(resp_text)
+    text = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [{}])[0].get("text", "")
+    reply = re.sub(r"^\s*[\"“”]+|[\"“”]+\s*$", "", str(text or "").strip())
+    reply = re.sub(r"\n{3,}", "\n\n", reply).strip()
+    if not reply:
+        raise ValueError("AI回复为空")
+    return reply[:1200]
+
+async def collect_ai_private_context(client, chat_id, limit=None):
+    limit = limit or AI_PRIVATE_REPLY_CONTEXT_MESSAGES
+    rows = []
+    async for message in client.iter_messages(chat_id, limit=limit):
+        text = getattr(message, "raw_text", None) or getattr(message, "text", "") or ""
+        text = re.sub(r"\s+", " ", str(text or "")).strip()
+        if not text:
+            continue
+        role = "我" if getattr(message, "out", False) else "对方"
+        rows.append(f"{role}: {text[:500]}")
+    rows.reverse()
+    return "\n".join(rows)
+
+async def generate_ai_private_reply(account_name, account_prompt, context_text):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: call_ai_private_reply_sync(account_name, account_prompt, context_text))
+
+def ai_private_reply_key(account_name, chat_id):
+    return f"{account_name}:{chat_id}"
+
+async def handle_ai_private_reply(event, account_name):
+    if not getattr(event, "is_private", False):
+        return
+    message = getattr(event, "message", event)
+    if getattr(event, "out", False) or getattr(message, "out", False):
+        return
+    if str(getattr(event, "chat_id", "") or "") == "777000":
+        return
+    text = getattr(event, "raw_text", None) or getattr(event, "text", "") or ""
+    if not str(text or "").strip() or str(text).strip().startswith("/"):
+        return
+    if getattr(event, "sender_id", None) in set(client_user_ids.values()):
+        return
+
+    account_config = get_ai_private_reply_account_config(account_name)
+    if not account_config.get("enabled"):
+        return
+    if not GEMINI_API_KEY:
+        logger.warning("⚠️ [AI-Private] GEMINI_API_KEY 未配置，跳过私聊AI回复")
+        return
+
+    key = ai_private_reply_key(account_name, getattr(event, "chat_id", ""))
+    ai_private_reply_latest[key] = getattr(event, "id", None)
+    if AI_PRIVATE_REPLY_DEBOUNCE_SECONDS > 0:
+        await asyncio.sleep(AI_PRIVATE_REPLY_DEBOUNCE_SECONDS)
+    if ai_private_reply_latest.get(key) != getattr(event, "id", None):
+        return
+
+    lock = ai_private_reply_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        ai_private_reply_locks[key] = lock
+
+    async with lock:
+        if ai_private_reply_latest.get(key) != getattr(event, "id", None):
+            return
+        context_text = await collect_ai_private_context(event.client, event.chat_id)
+        reply = await generate_ai_private_reply(account_name, account_config.get("prompt", ""), context_text)
+        if ai_private_reply_latest.get(key) != getattr(event, "id", None):
+            return
+        await event.client.send_message(event.chat_id, reply)
+        record_runtime_event(
+            "ai_private_reply",
+            "success",
+            "AI私聊回复已发送",
+            rule={"id": "__ai_private_reply__", "name": "AI私聊回复"},
+            event=event,
+            target_account=account_name,
+            action_count=1,
+        )
+
+def create_ai_private_reply_handler(account_name):
+    async def ai_private_reply_handler(event):
+        try:
+            await handle_ai_private_reply(event, account_name)
+        except Exception as e:
+            logger.error(f"❌ [AI-Private] 私聊AI回复失败 ({account_name}): {e}")
+            record_runtime_event(
+                "ai_private_reply",
+                "failed",
+                str(e),
+                rule={"id": "__ai_private_reply__", "name": "AI私聊回复"},
+                event=event,
+                target_account=account_name,
+            )
+    return ai_private_reply_handler
 
 def resolve_client_name(name):
     wanted = str(name or "").strip()
@@ -1745,6 +1934,9 @@ DEFAULT_CONFIG = {
         "groups": [],
         "sender_prefixes": []
     },
+    "ai_private_reply": {
+        "accounts": {}
+    },
     "scheduled_messages": [],
     "rules": [
         {
@@ -2764,6 +2956,7 @@ def load_config(system_cs_prefixes):
         current_config["approval_keywords"] = split_config_items(current_config.get("approval_keywords", []), split_commas=True)
     if not isinstance(current_config.get("schedule"), dict):
         current_config["schedule"] = DEFAULT_CONFIG["schedule"]
+    current_config["ai_private_reply"] = normalize_ai_private_reply_config(current_config.get("ai_private_reply", {}))
     current_config["scheduled_messages"] = normalize_scheduled_messages(current_config.get("scheduled_messages", []))
     if not isinstance(current_config.get("rules"), list):
         current_config["rules"] = []
@@ -2836,6 +3029,7 @@ def save_config(new_config):
         )
 
         new_config["extra_enabled"] = True
+        new_config["ai_private_reply"] = normalize_ai_private_reply_config(new_config.get("ai_private_reply", {}))
 
         raw_app_kws = new_config.get("approval_keywords", [])
         new_config["approval_keywords"] = split_config_items(raw_app_kws, split_commas=True)
@@ -4427,6 +4621,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     
     client.add_event_handler(create_otp_handler(main_name), events.NewMessage(chats=777000))
     client.add_event_handler(create_settlement_tg_reply_handler(main_name), events.NewMessage())
+    client.add_event_handler(create_ai_private_reply_handler(main_name), events.NewMessage(incoming=True))
     global_clients[main_name] = client # v65: Register main client
 
     # Extra Accounts
@@ -4513,6 +4708,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                 global_clients[acc_name] = extra_client
                 extra_client.add_event_handler(create_otp_handler(acc_name), events.NewMessage(chats=777000))
                 extra_client.add_event_handler(create_settlement_tg_reply_handler(acc_name), events.NewMessage())
+                extra_client.add_event_handler(create_ai_private_reply_handler(acc_name), events.NewMessage(incoming=True))
                 bot_loop.create_task(_start_extra_client(extra_client, acc_name))
             except Exception as e:
                 logger.error(f"❌ [OTP] 初始化 {acc_name} 失败: {e}")
