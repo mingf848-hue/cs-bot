@@ -1334,6 +1334,80 @@ function detailMarketCategory(detail = {}) {
   return null;
 }
 
+function addMarketTerm(terms, value) {
+  const raw = htmlText(value);
+  if (!raw) return;
+  const parts = [raw, ...raw.split(/[，,、;；|/()（）【】\[\]\s]+/)].map((item) => normalizeText(item));
+  for (const part of parts) {
+    let term = part.replace(/[0-9.]+/g, '');
+    if (!term || /^(大|小|单双|单|双|over|under|yes|no)$/.test(term)) continue;
+    if (term.length >= 2) terms.add(term);
+
+    let core = term
+      .replace(/^(全场|上半场|下半场|半场|fulltime|ft)/, '')
+      .replace(/(大小|总数|总分|单双)$/, '');
+    if (core.length >= 2) terms.add(core);
+
+    if (/罚牌|黄牌|红牌/.test(term)) {
+      ['罚牌', 'booking', 'bookings', 'card', 'cards'].forEach((item) => terms.add(item));
+    }
+    if (/角球/.test(term)) {
+      ['角球', 'corner'].forEach((item) => terms.add(item));
+    }
+    if (/进球|入球/.test(term)) {
+      ['进球', '入球', 'goal', 'goals'].forEach((item) => terms.add(item));
+    }
+  }
+}
+
+function detailMarketTerms(detail = {}) {
+  const terms = new Set();
+  [
+    detail.playName,
+    detail.originalPlay,
+    detail.marketName,
+    detail.playTypeName,
+    detail.betItemName
+  ].forEach((item) => addMarketTerm(terms, item));
+  return [...terms];
+}
+
+function noticeMarketSegmentText(item = {}) {
+  const raw = htmlText(noticeText(item));
+  const segments = [...raw.matchAll(/[【\[]([^】\]]+)[】\]]/g)].map((match) => match[1]).filter(Boolean);
+  return segments.join(' ');
+}
+
+function scoreNoticeMarketTerms(item = {}, detail = {}) {
+  const terms = detailMarketTerms(detail);
+  if (!terms.length) return 0;
+  const fullText = normalizeText(noticeText(item));
+  const segment = normalizeText(noticeMarketSegmentText(item));
+  const segmentTerms = new Set();
+  if (segment) addMarketTerm(segmentTerms, segment);
+  let score = 0;
+  let matched = false;
+  for (const term of terms) {
+    if (term.length < 2) continue;
+    if (fullText.includes(term)) {
+      score += 20;
+      matched = true;
+    }
+    if (segment && segment.includes(term)) {
+      score += 45;
+      matched = true;
+    }
+    for (const noticeTerm of segmentTerms) {
+      if (noticeTerm.length >= 2 && (term.includes(noticeTerm) || noticeTerm.includes(term))) {
+        score += 35;
+        matched = true;
+      }
+    }
+  }
+  if (segmentTerms.size && !matched) score -= 25;
+  return score;
+}
+
 function scoreSettlementNotice(item = {}, order = {}, detail = {}) {
   const text = normalizeText(noticeText(item));
   const home = normalizeText(detail.homeName);
@@ -1348,6 +1422,7 @@ function scoreSettlementNotice(item = {}, order = {}, detail = {}) {
   if (matchName && text.includes(matchName)) score += 12;
   if (begin && text.includes(begin)) score += 12;
   if (/赛果不明确|不能按时结算|delaysettlement|delay settlement|noclearresult|no clear result/.test(text)) score += 10;
+  score += scoreNoticeMarketTerms(item, detail);
   if (category) {
     if (category.include.some((token) => text.includes(normalizeText(token)))) score += 100;
     if (category.exclude.some((token) => text.includes(normalizeText(token)))) score -= 120;
