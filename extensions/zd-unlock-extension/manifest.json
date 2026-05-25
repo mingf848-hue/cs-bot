@@ -5,6 +5,7 @@
   "description": "Poll CS Bot commands, call backend endpoints, and record backend API flows.",
   "permissions": ["alarms", "storage", "notifications", "tabs"],
   "host_permissions": [
+    "https://cshelp.zeabur.app/*",
     "https://arcshelp.zeabur.app/*",
     "https://9sitebg.mvj4e7.com/*",
     "https://6sitebg.oj61i4.com/*",

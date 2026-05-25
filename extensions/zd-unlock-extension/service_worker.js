@@ -1,5 +1,11 @@
+const DEFAULT_BOT_BASE = 'https://cshelp.zeabur.app';
+const LEGACY_BOT_BASES = new Set([
+  'https://arcshelp.zeabur.app',
+  'http://arcshelp.zeabur.app'
+]);
+
 const DEFAULT_CONFIG = {
-  botBase: 'https://arcshelp.zeabur.app',
+  botBase: DEFAULT_BOT_BASE,
   cmdSecret: 'J7kN3mQxR9vTsW2pYzBf',
   memberListUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/list',
   dataDecryptionUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/component/dataDecryption',
@@ -226,19 +232,38 @@ function isAllowedMerchantEndpoint(key, url) {
 
 async function getConfig() {
   const stored = await chrome.storage.local.get(['config', 'pageAuth', 'pageAuthByHost', 'pageAuthByMerchant']);
+  const storedConfig = stored.config || {};
+  const config = {
+    ...DEFAULT_CONFIG,
+    ...storedConfig,
+    headers: {
+      ...DEFAULT_CONFIG.headers,
+      ...((storedConfig && storedConfig.headers) || {})
+    },
+    pageAuth: stored.pageAuth || null,
+    pageAuthByHost: stored.pageAuthByHost || {},
+    pageAuthByMerchant: stored.pageAuthByMerchant || {}
+  };
+  config.botBase = normalizeBotBase(config.botBase);
+  if (storedConfig.botBase && normalizeBotBase(storedConfig.botBase) !== String(storedConfig.botBase || '').trim().replace(/\/+$/, '')) {
+    await chrome.storage.local.set({ config: { ...storedConfig, botBase: config.botBase } });
+  }
   return {
     enabled: true,
-    config: {
-      ...DEFAULT_CONFIG,
-      ...(stored.config || {}),
-      headers: {
-        ...DEFAULT_CONFIG.headers,
-        ...((stored.config && stored.config.headers) || {})
-      },
-      pageAuth: stored.pageAuth || null,
-      pageAuthByHost: stored.pageAuthByHost || {},
-      pageAuthByMerchant: stored.pageAuthByMerchant || {}
-    }
+    config
+  };
+}
+
+function normalizeBotBase(value) {
+  const raw = String(value || '').trim().replace(/\/+$/, '');
+  if (!raw || LEGACY_BOT_BASES.has(raw)) return DEFAULT_BOT_BASE;
+  return raw;
+}
+
+function normalizeConfig(config = {}) {
+  return {
+    ...config,
+    botBase: normalizeBotBase(config.botBase)
   };
 }
 
@@ -2115,14 +2140,14 @@ async function pollOnce() {
 chrome.runtime.onInstalled.addListener(async () => {
   const stored = await chrome.storage.local.get(['config', 'recorderState', 'recorderRecords']);
   await chrome.storage.local.set({
-    config: {
+    config: normalizeConfig({
       ...DEFAULT_CONFIG,
       ...(stored.config || {}),
       headers: {
         ...DEFAULT_CONFIG.headers,
         ...((stored.config && stored.config.headers) || {})
       }
-    },
+    }),
     enabled: true,
     recorderState: stored.recorderState || { enabled: false, startedAt: '', stoppedAt: '', count: 0 },
     recorderRecords: stored.recorderRecords || []
@@ -2161,7 +2186,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             ...(incoming.headers || {})
           }
         };
-        return chrome.storage.local.set({ config, enabled: true });
+        return chrome.storage.local.set({ config: normalizeConfig(config), enabled: true });
       })
       .then(() => {
         chrome.alarms.create('poll', { periodInMinutes: COMMAND_POLL_ALARM_MINUTES });
@@ -2236,7 +2261,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           value,
           unlockValueSavedAt: new Date().toISOString()
         };
-        return chrome.storage.local.set({ config });
+        return chrome.storage.local.set({ config: normalizeConfig(config) });
       })
       .then(() => setStatus({
         state: 'sms_value_saved',
@@ -2261,7 +2286,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           ...(stored.config || DEFAULT_CONFIG),
           [key]: url
         };
-        return chrome.storage.local.set({ config });
+        return chrome.storage.local.set({ config: normalizeConfig(config) });
       })
       .then(() => sendResponse({ ok: true }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));

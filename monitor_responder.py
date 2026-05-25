@@ -8,6 +8,7 @@ import re
 import unicodedata
 import warnings
 import urllib.request
+import urllib.parse
 import threading
 import io
 import zipfile
@@ -3756,6 +3757,30 @@ async def run_scheduled_messages_job():
         except Exception as e:
             logger.error(f"❌ [ScheduledMessage] Error: {e}")
 
+def resolve_extension_bot_base():
+    for name in (
+        "EXTENSION_BOT_BASE",
+        "BOT_BASE_URL",
+        "BOT_MENU_URL",
+        "WEBAPP_URL",
+        "WEB_APP_URL",
+        "PUBLIC_URL",
+        "ZEABUR_WEB_URL",
+    ):
+        value = str(os.environ.get(name) or "").strip().rstrip("/")
+        if not value:
+            continue
+        parsed = urllib.parse.urlparse(value)
+        if parsed.scheme in ("http", "https") and parsed.netloc:
+            return value
+    return "https://cshelp.zeabur.app"
+
+def extension_host_permission(bot_base):
+    parsed = urllib.parse.urlparse(str(bot_base or "").strip())
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}/*"
+
 def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None):
     global global_main_handler
     global system_cs_prefixes
@@ -3973,13 +3998,34 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     @app.route('/tool/zd_unlock_extension.zip')
     def zd_unlock_extension_zip():
         extension_dir = os.path.join(os.path.dirname(__file__), "extensions", "zd-unlock-extension")
+        bot_base = resolve_extension_bot_base()
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for root, _, files in os.walk(extension_dir):
                 for filename in files:
                     path = os.path.join(root, filename)
                     rel = os.path.relpath(path, extension_dir)
-                    zf.write(path, rel)
+                    if rel == "service_worker.js":
+                        with open(path, "r", encoding="utf-8") as f:
+                            source = f.read()
+                        source = re.sub(
+                            r"const\s+DEFAULT_BOT_BASE\s*=\s*'[^']*';",
+                            f"const DEFAULT_BOT_BASE = {json.dumps(bot_base)};",
+                            source,
+                            count=1,
+                        )
+                        zf.writestr(rel, source)
+                    elif rel == "manifest.json":
+                        with open(path, "r", encoding="utf-8") as f:
+                            manifest = json.load(f)
+                        host_permission = extension_host_permission(bot_base)
+                        if host_permission:
+                            permissions = manifest.setdefault("host_permissions", [])
+                            if host_permission not in permissions:
+                                permissions.insert(0, host_permission)
+                        zf.writestr(rel, json.dumps(manifest, ensure_ascii=False, indent=2))
+                    else:
+                        zf.write(path, rel)
         buf.seek(0)
         return Response(
             buf.getvalue(),
