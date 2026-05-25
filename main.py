@@ -3592,6 +3592,25 @@ async def delete_bot_message_later(chat_id, message_id, delay_seconds=30):
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, lambda: _bot_delete_message(chat_id, message_id))
 
+def schedule_bot_message_delete(chat_id, message_id, delay_seconds=30, label=""):
+    if chat_id is None or message_id is None:
+        return
+    try:
+        delay = max(0, float(delay_seconds or 30))
+    except Exception:
+        delay = 30
+
+    def worker():
+        if delay:
+            time.sleep(delay)
+        ok = _bot_delete_message(chat_id, message_id)
+        if ok:
+            log_tree(3, f"Bot 自动删除消息成功: chat={chat_id} msg={message_id} {label}".strip())
+        else:
+            log_tree(9, f"Bot 自动删除消息失败: chat={chat_id} msg={message_id} {label}".strip())
+
+    Thread(target=worker, daemon=True).start()
+
 async def wait_backend_result_with_progress(cmd_id, chat_id, strategy, member_count):
     loop = asyncio.get_event_loop()
     progress_message_id = await loop.run_in_executor(
@@ -3746,6 +3765,7 @@ async def bot_command_polling_task():
                 reply_markup = None
                 extra_replies = []
                 copy_page_token = None
+                sent_message_id = None
                 if is_bot_command(text, "start"):
                     reply_text = format_start_command_reply(message)
                 elif is_bot_command(text, "id"):
@@ -3827,7 +3847,7 @@ async def bot_command_polling_task():
                             [message.get("message_id"), *conversion_sent_ids]
                         )
                 if auto_delete_after and sent_message_id:
-                    asyncio.create_task(delete_bot_message_later(chat_id, sent_message_id, auto_delete_after))
+                    schedule_bot_message_delete(chat_id, sent_message_id, auto_delete_after, "Bot命令结果")
                 if remember_zc_marker and sent_message_id:
                     state = ZC_BATCH_STATE.get(str(zc_chat_id))
                     if state is not None:
