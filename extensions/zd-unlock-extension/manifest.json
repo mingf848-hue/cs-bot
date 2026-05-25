@@ -6,7 +6,6 @@
   "permissions": ["alarms", "storage", "notifications", "tabs"],
   "host_permissions": [
     "https://cshelp.zeabur.app/*",
-    "https://arcshelp.zeabur.app/*",
     "https://9sitebg.mvj4e7.com/*",
     "https://6sitebg.oj61i4.com/*",
     "https://merchant-own-backstage.dbsportxxxwo8.com/*",

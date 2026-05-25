@@ -3758,6 +3758,8 @@ async def run_scheduled_messages_job():
             logger.error(f"❌ [ScheduledMessage] Error: {e}")
 
 def resolve_extension_bot_base():
+    default_url = "https://cshelp.zeabur.app"
+    legacy_urls = {"https://arcshelp.zeabur.app", "http://arcshelp.zeabur.app"}
     for name in (
         "EXTENSION_BOT_BASE",
         "BOT_BASE_URL",
@@ -3770,10 +3772,12 @@ def resolve_extension_bot_base():
         value = str(os.environ.get(name) or "").strip().rstrip("/")
         if not value:
             continue
+        if value in legacy_urls:
+            return default_url
         parsed = urllib.parse.urlparse(value)
         if parsed.scheme in ("http", "https") and parsed.netloc:
             return value
-    return "https://cshelp.zeabur.app"
+    return default_url
 
 def extension_host_permission(bot_base):
     parsed = urllib.parse.urlparse(str(bot_base or "").strip())

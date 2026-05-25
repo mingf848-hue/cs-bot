@@ -1253,6 +1253,20 @@ COPY_PAGE_TTL_SECONDS = 8 * 60 * 60
 COPY_PAGE_REDIS_PREFIX = "bot_copy_page:"
 copy_page_cache = {}
 copy_page_cache_lock = Lock()
+DEFAULT_PUBLIC_BASE_URL = "https://cshelp.zeabur.app"
+LEGACY_PUBLIC_BASE_URLS = {
+    "https://arcshelp.zeabur.app",
+    "http://arcshelp.zeabur.app",
+}
+PUBLIC_BASE_URL_ENV_NAMES = (
+    "BOT_MENU_URL",
+    "EXTENSION_BOT_BASE",
+    "BOT_BASE_URL",
+    "WEBAPP_URL",
+    "WEB_APP_URL",
+    "PUBLIC_URL",
+    "ZEABUR_WEB_URL",
+)
 
 COPY_PAGE_HTML = """
 <!DOCTYPE html>
@@ -1322,19 +1336,15 @@ async function copyArea(id, btn){
 """
 
 def get_public_base_url():
-    raw_url = (
-        os.environ.get("BOT_MENU_URL")
-        or os.environ.get("WEBAPP_URL")
-        or os.environ.get("WEB_APP_URL")
-        or os.environ.get("PUBLIC_URL")
-        or os.environ.get("ZEABUR_WEB_URL")
-    )
-    if not raw_url:
-        return None
-    raw_url = raw_url.strip()
-    if not raw_url.startswith("https://"):
-        return None
-    return raw_url.rstrip("/")
+    for name in PUBLIC_BASE_URL_ENV_NAMES:
+        raw_url = str(os.environ.get(name) or "").strip().rstrip("/")
+        if not raw_url:
+            continue
+        if raw_url in LEGACY_PUBLIC_BASE_URLS:
+            return DEFAULT_PUBLIC_BASE_URL
+        if raw_url.startswith("https://"):
+            return raw_url
+    return DEFAULT_PUBLIC_BASE_URL
 
 def store_copy_page(title, sections):
     clean_sections = []
@@ -2871,20 +2881,7 @@ def format_alert_message(title, rows, content_label=None, content=None, link=Non
     return "\n".join(lines)
 
 def get_bot_menu_url():
-    raw_url = (
-        os.environ.get("BOT_MENU_URL")
-        or os.environ.get("WEBAPP_URL")
-        or os.environ.get("WEB_APP_URL")
-        or os.environ.get("PUBLIC_URL")
-        or os.environ.get("ZEABUR_WEB_URL")
-    )
-    if not raw_url:
-        return None
-
-    raw_url = raw_url.strip()
-    if not raw_url.startswith("https://"):
-        log_tree(9, f"Bot 菜单地址必须是 https:// 开头，当前值已忽略: {raw_url}")
-        return None
+    raw_url = get_public_base_url()
 
     menu_path = os.environ.get("BOT_MENU_PATH", "/").strip() or "/"
     if not menu_path.startswith("/"):
