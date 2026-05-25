@@ -585,6 +585,31 @@ function rawErrorText(err) {
   return String(err.message || err.stack || err || '').trim();
 }
 
+function compactRequestFailureReason(text, action = '') {
+  const raw = String(text || '').replace(/\s+/g, ' ');
+  const urlMatch = raw.match(/https?:\/\/[^\s。；]+/);
+  let endpoint = '';
+  let label = action === 'urge_settlement' || action === 'merchant_order_statistics' ? '场馆接口请求失败' : '后台接口请求失败';
+  if (urlMatch) {
+    try {
+      const parsed = new URL(urlMatch[0].replace(/[),，。；]+$/, ''));
+      const parts = parsed.pathname.split('/').filter(Boolean);
+      endpoint = parts.slice(-2).join('/') || parsed.hostname;
+      if (parsed.hostname.includes('api-merchant-backstage')) label = '场馆接口请求失败';
+      else if (parsed.hostname.includes('9sitebg')) label = '9站接口请求失败';
+      else if (parsed.hostname.includes('6sitebg')) label = '6站接口请求失败';
+      else endpoint = parsed.hostname + (endpoint ? `/${endpoint}` : '');
+    } catch {
+      endpoint = '';
+    }
+  }
+  const transport = /Failed to fetch/i.test(raw) ? 'Failed to fetch'
+    : /Load failed/i.test(raw) ? 'Load failed'
+      : (raw.match(/HTTP\s*[45]\d\d/i) || [''])[0].trim();
+  const suffix = [endpoint, transport].filter(Boolean).join('，');
+  return suffix ? `${label}：${suffix}` : label;
+}
+
 function friendlyErrorReason(err, action = '', label = '') {
   const raw = rawErrorText(err);
   const text = raw.replace(/\s+/g, ' ');
@@ -602,7 +627,9 @@ function friendlyErrorReason(err, action = '', label = '') {
     return `${label || '后台'}未登录`;
   }
   if (/扩展已重新加载|拓展已重新加载|刷新对应后台页面|登录态同步|后台页面已刷新/.test(text)) return '拓展未同步登录态';
-  if (/Failed to fetch|Load failed|请求失败|HTTP\s*[45]\d\d|接口.*失败|查询.*失败/.test(text)) return '后台接口请求失败';
+  if (/Failed to fetch|Load failed|请求失败|HTTP\s*[45]\d\d|接口.*失败|查询.*失败/.test(text)) {
+    return compactRequestFailureReason(text, action);
+  }
   if (/未配置催结算TG群|TG发送失败|telegram|send_telegram/i.test(text)) return 'TG发送失败';
   if (/等待后台回执超时|超时|timeout/i.test(text)) return '后台处理超时';
   return text.split('\n')[0].slice(0, 120);
@@ -2206,7 +2233,10 @@ async function runBackendCommand(config, cmd) {
     await ack(config, cmd, ok ? 'success' : `http_${res.status}`, reason);
   } catch (err) {
     const reason = friendlyErrorReason(err, action, label);
-    const detail = `${label}失败 ${targetValue}: ${reason}`;
+    const raw = rawErrorText(err).replace(/\s+/g, ' ').slice(0, 240);
+    const detail = raw && !raw.includes(reason)
+      ? `${label}失败 ${targetValue}: ${reason}；${raw}`
+      : `${label}失败 ${targetValue}: ${reason}`;
     await setStatus({ state: 'error', message: `${label}失败 ${targetValue}`, detail: detail.slice(0, 500) });
     await ack(config, cmd, 'fetch_failed', detail);
   }

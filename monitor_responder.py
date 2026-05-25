@@ -1848,7 +1848,31 @@ def humanize_backend_failure_detail(detail, action=""):
     if "扩展已重新加载" in compact or "拓展已重新加载" in compact or "刷新对应后台页面" in compact or "登录态同步" in compact:
         return "拓展未同步登录态"
     if "Failed to fetch" in compact or "Load failed" in compact or "请求失败" in compact or re.search(r"HTTP\s*[45]\d\d", compact):
-        return "后台接口请求失败"
+        label = "场馆接口请求失败" if action in {"urge_settlement", "merchant_order_statistics"} or "api-merchant-backstage" in compact else "后台接口请求失败"
+        host_label = ""
+        url_match = re.search(r"https?://([^\s/:。；]+)(/[^\s。；]*)?", compact)
+        if url_match:
+            host = url_match.group(1)
+            path = (url_match.group(2) or "").split("?")[0]
+            parts = [item for item in path.split("/") if item]
+            endpoint = "/".join(parts[-2:]) if parts else host
+            if "9sitebg" in host:
+                label = "9站接口请求失败"
+            elif "6sitebg" in host:
+                label = "6站接口请求失败"
+            elif "api-merchant-backstage" in host:
+                label = "场馆接口请求失败"
+            host_label = endpoint or host
+        transport = ""
+        if "Failed to fetch" in compact:
+            transport = "Failed to fetch"
+        elif "Load failed" in compact:
+            transport = "Load failed"
+        else:
+            http_match = re.search(r"HTTP\s*[45]\d\d", compact)
+            transport = http_match.group(0) if http_match else ""
+        suffix = "，".join([item for item in (host_label, transport) if item])
+        return f"{label}：{suffix}"[:120] if suffix else label
     if "TG发送失败" in compact or "send_telegram" in compact or "未配置催结算TG群" in compact:
         return "TG发送失败"
     if "超时" in compact or "timeout" in compact.lower():
