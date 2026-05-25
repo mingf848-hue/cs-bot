@@ -28,7 +28,14 @@ except ImportError:
 # ==========================================
 logger = logging.getLogger("BotLogger")
 logger.setLevel(logging.DEBUG)
-LOG_FILE_PATH = 'bot_debug.log'
+DATA_DIR = (os.environ.get("DATA_DIR") or os.environ.get("PERSISTENT_DATA_DIR") or "").strip()
+if DATA_DIR:
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+def data_path(filename):
+    return os.path.join(DATA_DIR, filename) if DATA_DIR else filename
+
+LOG_FILE_PATH = data_path('bot_debug.log')
 CHAT_LOG_TO_CONSOLE = os.environ.get("CHAT_LOG_TO_CONSOLE", "0").strip().lower() in ("1", "true", "yes", "on")
 
 class BeijingFormatter(logging.Formatter):
@@ -83,7 +90,7 @@ console_handler.setFormatter(file_fmt)
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
-CHAT_LOG_DB = 'chat_logs.db'
+CHAT_LOG_DB = data_path('chat_logs.db')
 CHAT_CONTEXT_RETENTION_DAYS = int(os.environ.get("CHAT_CONTEXT_RETENTION_DAYS", os.environ.get("CHAT_LOG_RETENTION_DAYS", "90")) or "90")
 CHAT_AUDIT_RETENTION_DAYS = int(os.environ.get("CHAT_AUDIT_RETENTION_DAYS", "0") or "0")
 CHAT_HISTORY_BACKFILL_LIMIT = int(os.environ.get("CHAT_HISTORY_BACKFILL_LIMIT", "500") or "0")

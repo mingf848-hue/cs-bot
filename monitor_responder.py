@@ -34,9 +34,16 @@ except ImportError:
 
 logger = logging.getLogger("BotLogger")
 
-CONFIG_FILE = "monitor_config_v2.json"
+DATA_DIR = (os.environ.get("DATA_DIR") or os.environ.get("PERSISTENT_DATA_DIR") or "").strip()
+if DATA_DIR:
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+def data_path(filename):
+    return os.path.join(DATA_DIR, filename) if DATA_DIR else filename
+
+CONFIG_FILE = data_path("monitor_config_v2.json")
 REDIS_KEY = "monitor_config"
-RUNTIME_STATS_FILE = "monitor_runtime_stats.json"
+RUNTIME_STATS_FILE = data_path("monitor_runtime_stats.json")
 RUNTIME_STATS_KEY = "monitor_runtime_stats_v1"
 MAX_RUNTIME_RECORDS = 800
 MAX_DAILY_STATS_DAYS = 60
