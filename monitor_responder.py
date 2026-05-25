@@ -406,6 +406,7 @@ AI_PRIVATE_REPLY_MAX_OUTPUT_TOKENS = int_env("AI_PRIVATE_REPLY_MAX_OUTPUT_TOKENS
 AI_PRIVATE_REPLY_TIMEOUT = float_env("AI_PRIVATE_REPLY_TIMEOUT", 20, 3.0, 60.0)
 AI_PRIVATE_REPLY_TEMPERATURE = float_env("AI_PRIVATE_REPLY_TEMPERATURE", 0.35, 0.0, 1.0)
 AI_PRIVATE_REPLY_CONTEXT_MESSAGES = int_env("AI_PRIVATE_REPLY_CONTEXT_MESSAGES", 12, 2, 30)
+AI_PRIVATE_REPLY_CONTEXT_MINUTES = int_env("AI_PRIVATE_REPLY_CONTEXT_MINUTES", 20, 1, 1440)
 AI_PRIVATE_REPLY_DEBOUNCE_SECONDS = float_env("AI_PRIVATE_REPLY_DEBOUNCE_SECONDS", 1.2, 0.0, 10.0)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = (os.environ.get("GEMINI_MODEL") or "gemini-3.5-flash").strip() or "gemini-3.5-flash"
@@ -416,6 +417,7 @@ GEMINI_API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
 DEFAULT_AI_PRIVATE_REPLY_PROMPT = """
 你是当前 Telegram 账号本人，正在一对一私聊里自然聊天。
 根据最近私聊上下文，回复最后一条对方消息。
+旧消息只用于理解连续对话，回复围绕最后一条对方消息。
 语气自然、简短，像真人日常私聊，中文为主。
 """.strip()
 
@@ -708,13 +710,23 @@ def call_ai_private_reply_sync(account_name, account_prompt, context_text):
 async def collect_ai_private_context(client, chat_id, limit=None):
     limit = limit or AI_PRIVATE_REPLY_CONTEXT_MESSAGES
     rows = []
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=AI_PRIVATE_REPLY_CONTEXT_MINUTES)
     async for message in client.iter_messages(chat_id, limit=limit):
+        msg_date = getattr(message, "date", None)
+        if msg_date:
+            if msg_date.tzinfo is None:
+                msg_date = msg_date.replace(tzinfo=timezone.utc)
+            if msg_date < cutoff:
+                continue
         text = getattr(message, "raw_text", None) or getattr(message, "text", "") or ""
         text = re.sub(r"\s+", " ", str(text or "")).strip()
         if not text:
             continue
         role = "我" if getattr(message, "out", False) else "对方"
-        rows.append(f"{role}: {text[:500]}")
+        time_text = ""
+        if msg_date:
+            time_text = msg_date.astimezone(BJ_TZ).strftime("%H:%M")
+        rows.append(f"{time_text} {role}: {text[:500]}".strip())
     rows.reverse()
     return "\n".join(rows)
 
@@ -724,6 +736,14 @@ async def generate_ai_private_reply(account_name, account_prompt, context_text):
 
 def ai_private_reply_key(account_name, chat_id):
     return f"{account_name}:{chat_id}"
+
+def simple_ai_private_chat_reply(text):
+    compact = re.sub(r"[\s，,。.!！?？~～、]+", "", str(text or "").strip().lower())
+    if compact in {"你好", "您好", "哈喽", "哈啰", "hello", "hi", "嗨"}:
+        return "你好"
+    if compact in {"在吗", "在不", "在不在", "在"}:
+        return "在"
+    return ""
 
 async def handle_ai_private_reply(event, account_name):
     if not getattr(event, "is_private", False):
@@ -761,8 +781,10 @@ async def handle_ai_private_reply(event, account_name):
     async with lock:
         if ai_private_reply_latest.get(key) != getattr(event, "id", None):
             return
-        context_text = await collect_ai_private_context(event.client, event.chat_id)
-        reply = await generate_ai_private_reply(account_name, account_config.get("prompt", ""), context_text)
+        reply = simple_ai_private_chat_reply(text)
+        if not reply:
+            context_text = await collect_ai_private_context(event.client, event.chat_id)
+            reply = await generate_ai_private_reply(account_name, account_config.get("prompt", ""), context_text)
         if ai_private_reply_latest.get(key) != getattr(event, "id", None):
             return
         await event.client.send_message(event.chat_id, reply)
