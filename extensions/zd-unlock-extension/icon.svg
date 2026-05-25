@@ -1,6 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-  <rect width="128" height="128" rx="28" fill="#2563eb"/>
-  <path d="M36 62h56v36H36z" fill="#ffffff"/>
-  <path d="M46 62V48c0-10 8-18 18-18s18 8 18 18v14" fill="none" stroke="#ffffff" stroke-width="10" stroke-linecap="round"/>
-  <circle cx="64" cy="80" r="7" fill="#2563eb"/>
+  <defs>
+    <linearGradient id="bg" x1="18" y1="12" x2="112" y2="118" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0f766e"/>
+      <stop offset="0.48" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <linearGradient id="bolt" x1="68" y1="34" x2="48" y2="95" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#facc15"/>
+      <stop offset="1" stop-color="#22c55e"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <circle cx="100" cy="28" r="11" fill="#22c55e"/>
+  <circle cx="100" cy="28" r="5" fill="#ecfdf5"/>
+  <path d="M29 33h70c9.4 0 17 7.6 17 17v31c0 9.4-7.6 17-17 17H65l-23 16c-3.4 2.4-8.1-.1-8.1-4.3V98H29c-9.4 0-17-7.6-17-17V50c0-9.4 7.6-17 17-17Z" fill="#f8fafc"/>
+  <path d="M69 39 45 74h17l-8 29 31-42H67l2-22Z" fill="url(#bolt)"/>
+  <path d="M30 55h25" stroke="#0f172a" stroke-width="8" stroke-linecap="round"/>
+  <path d="M30 76h18" stroke="#0f172a" stroke-width="8" stroke-linecap="round" opacity=".72"/>
+  <path d="M88 73 99 84l19-25" fill="none" stroke="#22c55e" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
