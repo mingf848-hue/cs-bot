@@ -345,7 +345,7 @@
 
         .rule-list { padding: 12px; display: grid; gap: 9px; max-height: calc(100vh - 405px); overflow: auto; }
         .rule-card {
-            min-height: 104px;
+            min-height: 68px;
             border-radius: 8px;
             border: 1px solid var(--line);
             background: #fff;
@@ -403,7 +403,7 @@
             max-height: calc(100vh - 244px);
         }
         .content.rules-page .rule-card {
-            min-height: 76px;
+            min-height: 54px;
             padding: 8px 8px;
             grid-template-columns: minmax(0, 1fr);
             gap: 6px;
@@ -411,7 +411,7 @@
         }
         .content.rules-page .drag-dots { display: none; }
         .content.rules-page .drag-dots span { width: 3px; height: 3px; }
-        .content.rules-page .rule-name { font-size: 13px; margin-bottom: 2px; }
+        .content.rules-page .rule-name { font-size: 13px; margin-bottom: 0; }
         .content.rules-page .rule-meta { font-size: 11px; gap: 4px; flex-wrap: nowrap; overflow: hidden; white-space: nowrap; }
         .content.rules-page .rule-meta-icon { display: none; }
         .content.rules-page .tag-row { margin-top: 4px; gap: 4px; flex-wrap: nowrap; overflow: hidden; }
@@ -1093,16 +1093,6 @@
                             <div class="drag-dots"><span></span><span></span><span></span></div>
                             <div>
                                 <div class="rule-name">{{ rule.name || '未命名规则' }}</div>
-                                <div class="rule-meta">
-                                    <span class="rule-meta-icon"><i data-lucide="activity"></i></span>
-                                    <span>监听：{{ shortGroups(rule) }}</span>
-                                </div>
-                                <div class="tag-row">
-                                    <span class="tag">{{ rule.check_file ? '文件模式' : '文本模式' }}</span>
-                                    <span class="tag">{{ primaryKeyword(rule) }}</span>
-                                    <span class="tag action"><i data-lucide="route"></i>{{ ruleActionSummary(rule) }}</span>
-                                    <span class="tag"><i data-lucide="user-round"></i>{{ stepCount(rule) }} 步</span>
-                                </div>
                             </div>
                             <div class="rule-actions">
                                 <span class="status-badge" :class="ruleStatus(rule).kind">{{ ruleStatus(rule).text }}</span>
@@ -1684,21 +1674,6 @@
                         <button class="primary-btn" @click="saveConfig" :disabled="ui.saving"><i data-lucide="check"></i>{{ ui.saving ? '保存中' : '保存规则' }}</button>
                     </div>
                     <div class="preview-body">
-                        <div class="preview-card">
-                            <div class="preview-title">流程时间线（预计）</div>
-                            <div class="timeline">
-                                <div class="timeline-row" v-for="(item, index) in previewSteps" :key="index">
-                                    <div class="timeline-dot" :class="{event: index === 0}">{{ index === 0 ? '' : index }}</div>
-                                    <div>
-                                        <div class="timeline-name">{{ item.title }}</div>
-                                        <div class="timeline-desc">{{ item.desc }}</div>
-                                    </div>
-                                    <div class="timeline-delay">{{ item.delay }}</div>
-                                </div>
-                            </div>
-                            <div class="hint">预计总耗时：{{ estimatedTotal }} 秒</div>
-                        </div>
-
                         <div class="preview-card">
                             <div class="preview-title">运行概览（今日）<button class="inline-link" @click="setPage('analytics')">更多数据</button></div>
                             <div class="metrics-grid">
