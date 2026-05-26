@@ -1842,12 +1842,65 @@ function betFailureReply(order = {}, detail = {}) {
   return `您好，经核实，因用户下注确认期间其中赛事：${matchText} ${riskText} 导致投注失败，属于系统正常拒单，本金已退回，谢谢。`;
 }
 
+function detailIsBetFailed(detail = {}) {
+  return Number(detail.betStatus) === 5;
+}
+
+function detailIsCanceled(detail = {}) {
+  return Number(detail.betStatus) === 3 || Number(detail.cancelType) > 0;
+}
+
 function orderIsBetFailed(order = {}, detail = {}) {
-  return Number(order.orderStatus) === 4 || Number(detail.betStatus) === 5;
+  return Number(order.orderStatus) === 4 || detailIsBetFailed(detail);
 }
 
 function orderIsCanceled(order = {}, detail = {}) {
-  return Number(order.orderStatus) === 2 || Number(detail.betStatus) === 3;
+  return Number(order.orderStatus) === 2 || detailIsCanceled(detail);
+}
+
+function detailReasonRawText(detail = {}) {
+  return [
+    detail.cancelReasonName,
+    detail.cancelReason,
+    detail.riskEvent,
+    detail.remark,
+    detail.description
+  ].filter(Boolean).join(' ');
+}
+
+function detailHasCancelReason(detail = {}) {
+  if (detailIsCanceled(detail)) return true;
+  const text = normalizeText(detailReasonRawText(detail));
+  return /取消|无效|無效|退回|退还|退還|本金|弃赛|棄賽|退赛|退賽|中断|中斷|延期|推迟|推遲|协议赛|協議賽|盘口|盤口|赔率|賠率|点球|點球/.test(text);
+}
+
+function detailHasFailureReason(detail = {}) {
+  if (detailIsBetFailed(detail)) return true;
+  const text = normalizeText(detailReasonRawText(detail));
+  return /拒单|拒單|投注失败|投注失敗|失败|失敗|延迟投注|延遲投注|盘口|盤口|赔率|賠率|点球|點球|协议赛|協議賽/.test(text);
+}
+
+function ticketReasonMode(cmd = {}) {
+  const text = commandSourceText(cmd);
+  if (/取消原因|无效原因|注单取消|取消|无效|無效/.test(text)) return 'cancel';
+  if (/投注失败|投注失敗|失败原因|失敗原因|失败|失敗/.test(text)) return 'failure';
+  return 'any';
+}
+
+function ticketReasonDetail(order = {}, fallback = {}, mode = 'any') {
+  const details = orderDetails(order);
+  const canceled = details.find((detail) => detailHasCancelReason(detail));
+  const failed = details.find((detail) => detailHasFailureReason(detail));
+  if (mode === 'cancel' && canceled) return canceled;
+  if (mode === 'failure' && failed) return failed;
+  if (canceled) return canceled;
+  if (failed) return failed;
+  const reasonDetails = details.filter((detail) => detailHasCancelReason(detail) || detailHasFailureReason(detail));
+  if (reasonDetails.length) return reasonDetails[0];
+  if (orderIsCanceled(order, fallback) || orderIsBetFailed(order, fallback)) {
+    return fallback && Object.keys(fallback).length ? fallback : firstOrderDetail(order);
+  }
+  return fallback && Object.keys(fallback).length ? fallback : firstOrderDetail(order);
 }
 
 function cancelReasonText(order = {}, detail = {}) {
@@ -1897,6 +1950,38 @@ function ticketReasonReplyForOrder(order = {}, detail = {}, orderNo = '', cmd = 
   };
 }
 
+function ticketReasonTerms(order = {}, detail = {}) {
+  const reason = normalizeRiskReason(cancelReasonText(order, detail));
+  const terms = new Set();
+  const add = (value) => {
+    const text = normalizeText(value);
+    if (text && text.length >= 2) terms.add(text);
+  };
+  add(reason);
+  if (/疑似协议赛/.test(reason)) {
+    ['协议赛', '疑似协议', '假球', '操控', '对打'].forEach(add);
+  }
+  if (/可能点球/.test(reason)) {
+    ['点球', '可能点球', 'penalty'].forEach(add);
+  }
+  if (/盘口变动|赔率/.test(reason)) {
+    ['盘口', '盘口变动', '赔率', '赔率错误', 'odds'].forEach(add);
+  }
+  if (/延迟投注/.test(reason)) {
+    ['延迟投注', '延迟下注', 'latebet'].forEach(add);
+  }
+  if (/弃赛|棄賽|退赛|退賽|中途/.test(reason)) {
+    ['弃赛', '棄賽', '中途弃赛', '中途棄賽', '退赛', '退賽', 'retired', 'walkover'].forEach(add);
+  }
+  if (/中断|中斷/.test(reason)) {
+    ['比赛中断', '比賽中斷', '赛事中断', '賽事中斷', '中断', '中斷', 'interrupted'].forEach(add);
+  }
+  if (/延期|推迟|推遲/.test(reason)) {
+    ['比赛延期', '比賽延期', '赛事延期', '賽事延期', '推迟', '推遲', '延期', 'postponed'].forEach(add);
+  }
+  return [...terms];
+}
+
 function noticeText(item = {}) {
   return [
     item.title,
@@ -1913,18 +1998,28 @@ function scoreInvalidNotice(item = {}, order = {}, detail = {}) {
   const matchInfo = normalizeText(ticketMatchText(detail));
   const home = normalizeText(detail.homeName);
   const away = normalizeText(detail.awayName);
-  const risk = normalizeText(failureRiskText(order, detail));
   const play = normalizeText(detail.playName || detail.originalPlay || '');
   const option = normalizeText(detail.playOptionName || detail.marketValue || '');
+  const reasonTerms = ticketReasonTerms(order, detail);
+  const marketScore = scoreNoticeMarketTerms(item, detail);
   let score = 0;
-  if (risk && text.includes(risk)) score += 80;
+  let reasonMatched = false;
+  for (const term of reasonTerms) {
+    if (term && text.includes(term)) {
+      score += 160;
+      reasonMatched = true;
+      break;
+    }
+  }
+  score += marketScore;
   if (matchInfo && text.includes(matchInfo.replace('v', 'vs'))) score += 30;
   if (home && text.includes(home)) score += 15;
   if (away && text.includes(away)) score += 15;
   if (play && text.includes(play)) score += 10;
   if (option && text.includes(option)) score += 6;
-  if (/无效|invalid|取消|退回|本金/.test(text)) score += 20;
-  if (/不能按时结算|delaysettlement|赛果不明确/.test(text)) score -= 50;
+  if (/无效|無效|invalid|取消|取消订单|取消訂單|拒单|拒單|失败|失敗|退回|退还|退還|本金|赔率错误|賠率錯誤|盘口错误|盤口錯誤/.test(text)) score += 50;
+  if (/不能按时结算|不能按時結算|delaysettlement|赛果不明确|賽果不明確|赛果将进一步核实|賽果將進一步核實|核实完毕后会进行结算|核實完畢後會進行結算/.test(text)) score -= 500;
+  if (!reasonMatched && marketScore <= 0 && !/无效|無效|invalid|取消|拒单|拒單|失败|失敗|退回|本金|赔率|賠率|盘口|盤口/.test(text)) score -= 80;
   return score;
 }
 
@@ -1993,7 +2088,11 @@ function detailMarketTerms(detail = {}) {
     detail.originalPlay,
     detail.marketName,
     detail.playTypeName,
-    detail.betItemName
+    detail.betItemName,
+    detail.playOptionName,
+    detail.playOptions,
+    detail.marketValue,
+    detail.optionValue
   ].forEach((item) => addMarketTerm(terms, item));
   return [...terms];
 }
@@ -2563,16 +2662,16 @@ async function queryMerchantTicketOrder(config, cmd, orderNo, statusPrefix = '�
 }
 
 async function runTicketCancelReasonCommand(config, cmd, orderNo) {
-  const { ticket, order } = await queryMerchantTicketOrder(config, cmd, orderNo, '查询注单取消/失败原因');
-  const detail = firstOrderDetail(order);
-  const { replyText, msg } = ticketReasonReplyForOrder(order, detail, orderNo, cmd);
+  const { headers, ticket, order } = await queryMerchantTicketOrder(config, cmd, orderNo, '查询注单取消/失败原因');
+  const detail = ticketReasonDetail(order, {}, ticketReasonMode(cmd));
+  const { replyText, msg } = await ticketReasonReplyWithNotice(config, cmd, headers, orderNo, order, detail);
   await replyOrigin(config, cmd, msg, replyText, ticket.text);
 }
 
-async function replyInvalidTicketNotice(config, cmd, headers, orderNo, order, detail, ticketText) {
+async function queryTicketReasonNotice(config, headers, order = {}, detail = {}) {
   if (!config.merchantNoticeUrl) throw new Error('场馆公告接口未配置');
   const matchId = String(detail.matchId || order.standardMatchId || detail.standardMatchId || '').trim();
-  if (!matchId) throw new Error(`注单失效未找到赛事ID：${orderNo}`);
+  if (!matchId) return null;
   const notice = await postForm(merchantUrl(config.merchantNoticeUrl), headers, {
     mid: matchId,
     status: 1,
@@ -2586,10 +2685,32 @@ async function replyInvalidTicketNotice(config, cmd, headers, orderNo, order, de
     .map((item) => ({ item, score: scoreInvalidNotice(item, order, detail) }))
     .sort((a, b) => b.score - a.score);
   const selected = notices[0];
-  if (!selected || selected.score <= 0) {
-    throw new Error(`未匹配到注单失效公告：${orderNo}`);
+  if (!selected || selected.score < 80) {
+    return null;
   }
-  const context = await noticeReplyText(config, headers, selected.item);
+  return selected.item;
+}
+
+async function ticketReasonReplyWithNotice(config, cmd, headers, orderNo, order, detail) {
+  if (orderIsBetFailed(order, detail) || orderIsCanceled(order, detail)) {
+    const selected = await queryTicketReasonNotice(config, headers, order, detail);
+    if (selected) {
+      const context = await noticeReplyText(config, headers, selected);
+      if (context) {
+        return {
+          replyText: context,
+          msg: `注单取消/失败原因已回复公告：${orderNo}`
+        };
+      }
+    }
+  }
+  return ticketReasonReplyForOrder(order, detail, orderNo, cmd);
+}
+
+async function replyInvalidTicketNotice(config, cmd, headers, orderNo, order, detail, ticketText) {
+  const selected = await queryTicketReasonNotice(config, headers, order, detail);
+  if (!selected) throw new Error(`未匹配到注单失效公告：${orderNo}`);
+  const context = await noticeReplyText(config, headers, selected);
   if (!context) throw new Error(`公告无可回复中文内容：${orderNo}`);
   await replyOrigin(config, cmd, `注单失效已回复公告：${orderNo}`, context, ticketText);
 }
@@ -2644,20 +2765,18 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
   const detail = pendingDetails[0] || firstOrderDetail(order);
   const statusLabel = orderStatusLabel(order.orderStatus);
   if (ticketReasonRequested(cmd)) {
-    const reasonDetail = firstOrderDetail(order);
-    const { replyText, msg } = ticketReasonReplyForOrder(order, reasonDetail, orderNo, cmd);
+    const reasonDetail = ticketReasonDetail(order, detail, ticketReasonMode(cmd));
+    const { replyText, msg } = await ticketReasonReplyWithNotice(config, cmd, headers, orderNo, order, reasonDetail);
     await replyOrigin(config, cmd, msg, replyText, ticket.text);
     return;
   }
   if (orderIsBetFailed(order, detail)) {
-    const replyText = betFailureReply(order, detail);
-    const msg = `投注失败退本金已回复：${orderNo}`;
+    const { replyText, msg } = await ticketReasonReplyWithNotice(config, cmd, headers, orderNo, order, detail);
     await replyOrigin(config, cmd, msg, replyText, ticket.text);
     return;
   }
   if (orderIsCanceled(order, detail)) {
-    const replyText = ticketCancelReasonReply(order, detail);
-    const msg = `注单取消原因已回复：${orderNo}`;
+    const { replyText, msg } = await ticketReasonReplyWithNotice(config, cmd, headers, orderNo, order, detail);
     await replyOrigin(config, cmd, msg, replyText, ticket.text);
     return;
   }
