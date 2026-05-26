@@ -460,6 +460,12 @@ def ai_backend_action_schema(action):
         return "target/ip 必须是IPv4地址。"
     if action == "member_data_overview":
         return "target/member 是会员账号；data_fields 只能从 总输赢、总流水、总存款、总提款、总红利、总返水 中选择；如出现时间范围，startAt/endAt 用 YYYY-MM-DD。"
+    if action in {"query_member_line", "query_login_device_ip", "query_same_ip_device"}:
+        return "target/member 是主会员账号；members 可放多个会员账号；agent_codes 放消息里的5到12位合营代码。"
+    if action == "query_venue_turnover":
+        return "target/member 是会员账号；venue 填场馆名，例如 米兰体育。"
+    if action == "configure_rebate":
+        return "target/game 填游戏名；venue 填场馆名；site 只在明确 6站/JN 或 9站/ML 时填写 6001/9001。"
     return "target/member 是会员账号。"
 
 def build_ai_backend_parse_prompt(text, action, rule_name="", previous_error=""):
@@ -480,21 +486,29 @@ def build_ai_backend_parse_prompt(text, action, rule_name="", previous_error="")
 {{
   "ok": true,
   "target": "",
+  "members": [],
   "member": "",
   "order_no": "",
   "ip": "",
+  "agent_codes": [],
   "data_fields": [],
   "startAt": "",
   "endAt": "",
   "private_reply": false,
   "telegram_account": "",
   "agent_code": "",
+  "venue": "",
+  "game": "",
+  "site": "",
+  "line_mode": "",
   "reason": ""
 }}
 
 字段规则：
 - target 是该动作最终目标；催结算填注单号，代理加白填IP，其它账号类填会员账号。
 - member 仅账号类填写；order_no 仅催结算填写；ip 仅代理加白填写。
+- 查线/登录设备/查同IP设备支持多个会员，放 members；消息里的合营代码放 agent_codes。
+- 查询场馆流水要提取 venue；配置返水要提取 venue 和 game。
 - data_fields 只在查数据时填写，例如 ["总输赢","总红利","总返水"]；没明确要求字段时返回空数组。
 - private_reply 只有明确要求私发/私聊/发我时才是 true。
 - telegram_account 只有明确指定发送账号时填写账号名，否则空。
@@ -544,6 +558,71 @@ def clean_ai_data_fields(fields):
             out.append(label)
     return out
 
+def is_likely_agent_member(value):
+    text = str(value or "").strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{1,63}", text):
+        return False
+    if re.fullmatch(r"\d{5,24}", text):
+        return False
+    if not re.search(r"[a-z]", text) or not re.search(r"\d", text):
+        return False
+    if re.fullmatch(r"(vip\d*|tg\d*|bot\d*|http|https|www|ip|ios|android|web|h5|jn|ml|art|ok|yes|no)", text, flags=re.I):
+        return False
+    return True
+
+def clean_agent_members(values, source_text=""):
+    members = []
+    seen = set()
+    def add(value):
+        member = str(value or "").strip().lower()
+        if not member or member in seen or not is_likely_agent_member(member):
+            return
+        seen.add(member)
+        members.append(member)
+    for item in values if isinstance(values, list) else []:
+        add(item)
+    for match in re.finditer(r"\b([A-Za-z][A-Za-z0-9._-]{1,63})\b", str(source_text or "")):
+        add(match.group(1))
+    return members[:12]
+
+def clean_agent_codes(values, source_text=""):
+    codes = []
+    seen = set()
+    def add(value):
+        code = str(value or "").strip()
+        if not re.fullmatch(r"\d{5,12}", code) or code in seen:
+            return
+        seen.add(code)
+        codes.append(code)
+    for item in values if isinstance(values, list) else []:
+        add(item)
+    for match in re.finditer(r"\b(\d{5,12})\b", str(source_text or "")):
+        add(match.group(1))
+    return codes[:30]
+
+def agent_site_hint_from_text(text):
+    compact = re.sub(r"\s+", "", str(text or "")).lower()
+    if "6站" in compact or "jn站" in compact or re.search(r"\bjn\b", compact):
+        return "6001"
+    if "9站" in compact or "ml站" in compact or re.search(r"\bml\b", compact):
+        return "9001"
+    return ""
+
+def agent_venue_hint_from_text(text):
+    source = str(text or "")
+    for name in ["米兰体育", "熊猫体育", "米兰电竞", "米兰棋牌", "米兰彩票", "米兰真人", "米兰电子", "米兰捕鱼"]:
+        if name in source:
+            return name
+    match = re.search(r"([\u4e00-\u9fa5A-Za-z0-9]{2,20})场馆", source)
+    return match.group(1) if match else ""
+
+def agent_game_hint_from_text(text):
+    source = re.sub(r"配置返水|返水配置|配置|返水|场馆|游戏|6站|9站|JN站|ML站|JN|ML", " ", str(text or ""), flags=re.I)
+    for venue in ["米兰体育", "熊猫体育", "米兰电竞", "米兰棋牌", "米兰彩票", "米兰真人", "米兰电子", "米兰捕鱼"]:
+        source = source.replace(venue, " ")
+    tokens = [item.strip() for item in re.split(r"[\s,，。；;、]+", source) if item.strip()]
+    return tokens[0][:40] if tokens else ""
+
 def valid_iso_date(value):
     text = str(value or "").strip()
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
@@ -563,6 +642,11 @@ def validate_ai_backend_parse(raw, action):
     member = str(raw.get("member") or "").strip().lower()
     order_no = str(raw.get("order_no") or "").strip()
     ip = str(raw.get("ip") or "").strip()
+    members = clean_agent_members(raw.get("members"), "")
+    if member and member not in members and is_likely_agent_member(member):
+        members.insert(0, member)
+    elif target and target not in members and is_likely_agent_member(target):
+        members.insert(0, target.lower())
 
     if action == "urge_settlement":
         target = order_no or target
@@ -572,22 +656,43 @@ def validate_ai_backend_parse(raw, action):
         target = ip or target
         if not re.fullmatch(BACKEND_PROXY_IP_PATTERN, target):
             raise ValueError("AI未提取到有效IPv4")
+    elif action == "configure_rebate":
+        target = str(raw.get("game") or target or "").strip()
+        if not target:
+            raise ValueError("AI未提取到返水游戏")
+    elif action in {"query_member_line", "query_login_device_ip", "query_same_ip_device", "query_venue_turnover"}:
+        target = members[0] if members else (member or target.lower())
+        if not re.fullmatch(BACKEND_UNLOCK_ACCOUNT_PATTERN, target):
+            raise ValueError("AI未提取到有效会员账号")
     else:
         target = member or target.lower()
         if not re.fullmatch(BACKEND_UNLOCK_ACCOUNT_PATTERN, target):
             raise ValueError("AI未提取到有效会员账号")
+    site = str(raw.get("site") or "").strip().lower()
+    if site in {"6", "6站", "jn", "6001"}:
+        site = "6001"
+    elif site in {"9", "9站", "ml", "9001"}:
+        site = "9001"
+    else:
+        site = ""
 
     parsed = {
         "target": target,
-        "member": member,
+        "member": members[0] if members else member,
+        "members": members,
         "order_no": order_no,
         "ip": ip,
+        "agent_codes": clean_agent_codes(raw.get("agent_codes")),
         "data_fields": clean_ai_data_fields(raw.get("data_fields")),
         "startAt": valid_iso_date(raw.get("startAt")),
         "endAt": valid_iso_date(raw.get("endAt")),
         "private_reply": bool(raw.get("private_reply")),
         "telegram_account": str(raw.get("telegram_account") or "").strip(),
         "agent_code": str(raw.get("agent_code") or "").strip(),
+        "venue": str(raw.get("venue") or raw.get("venue_name") or "").strip(),
+        "game": str(raw.get("game") or raw.get("game_name") or "").strip(),
+        "site": site,
+        "line_mode": str(raw.get("line_mode") or "").strip(),
         "reason": str(raw.get("reason") or "").strip(),
     }
     if parsed["agent_code"] and not re.fullmatch(r"\d{5,12}", parsed["agent_code"]):
@@ -1987,8 +2092,18 @@ scheduled_message_runs = {}
 active_rule_tasks = set()
 rule_task_semaphore = None
 VALID_REPLY_TYPES = {"text", "edit_prev", "forward", "copy_file", "amount_logic", "preempt_check", "notify_user", "backend_unlock", "agent_orchestrator"}
-BACKEND_UNLOCK_ACTIONS = {"unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan", "send_site_inner_msg", "member_data_overview", "urge_settlement", "agent_existing"}
-AGENT_EXECUTABLE_ACTIONS = {"unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan", "member_data_overview", "urge_settlement"}
+BACKEND_UNLOCK_ACTIONS = {
+    "unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan",
+    "send_site_inner_msg", "member_data_overview", "query_member_line",
+    "query_login_device_ip", "query_same_ip_device", "query_venue_turnover",
+    "configure_rebate", "urge_settlement", "agent_existing"
+}
+AGENT_EXECUTABLE_ACTIONS = {
+    "unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan",
+    "member_data_overview", "query_member_line", "query_login_device_ip",
+    "query_same_ip_device", "query_venue_turnover", "configure_rebate",
+    "urge_settlement"
+}
 AGENT_CAPABILITIES = [
     {
         "action": "member_data_overview",
@@ -1996,6 +2111,36 @@ AGENT_CAPABILITIES = [
         "input": "会员账号",
         "fields": ["总输赢", "总流水", "总存款", "总提款", "总红利", "总返水"],
         "notes": "可识别私发和上级代理编号校验",
+    },
+    {
+        "action": "query_member_line",
+        "name": "查线/查代理线",
+        "input": "会员账号，可带一个或多个合营代码",
+        "reply": "查线回复 在线下/官网/其他线下；查代理线命中时回复具体合营代码",
+    },
+    {
+        "action": "query_login_device_ip",
+        "name": "登录设备 IP 在哪里",
+        "input": "会员账号，可带合营代码校验",
+        "reply": "会员 设备 地区；不在线下则回复 xxx不在线下。",
+    },
+    {
+        "action": "query_same_ip_device",
+        "name": "查同IP/查同设备",
+        "input": "会员账号，可带合营代码校验",
+        "reply": "设备无关联/设备关联 N，IP无关联/IP关联 N/IP关联多个",
+    },
+    {
+        "action": "query_venue_turnover",
+        "name": "查询场馆流水还差多少",
+        "input": "会员账号 + 场馆名，例如 米兰体育",
+        "reply": "有锁定直接回复后台提示；无锁定则自动转回1元并回复缓存刷新话术",
+    },
+    {
+        "action": "configure_rebate",
+        "name": "配置返水",
+        "input": "场馆名 + 游戏名",
+        "notes": "按后台返水等级逐级保存指定场馆游戏配置",
     },
     {"action": "urge_settlement", "name": "催结算", "input": "533开头16位注单号，可多个"},
     {"action": "unlock_sms", "name": "短信/验证码限制", "input": "会员账号"},
@@ -2065,6 +2210,29 @@ def normalize_backend_action(action):
         "member_data_query": "member_data_overview",
         "查数据": "member_data_overview",
         "数据概览": "member_data_overview",
+        "line_query": "query_member_line",
+        "query_line": "query_member_line",
+        "agent_line_query": "query_member_line",
+        "query_agent_line": "query_member_line",
+        "查线": "query_member_line",
+        "查代理线": "query_member_line",
+        "login_device_ip": "query_login_device_ip",
+        "query_device_ip": "query_login_device_ip",
+        "登录设备": "query_login_device_ip",
+        "查询登录设备": "query_login_device_ip",
+        "same_ip_device": "query_same_ip_device",
+        "query_same_device_ip": "query_same_ip_device",
+        "查同IP": "query_same_ip_device",
+        "查同ip": "query_same_ip_device",
+        "查同设备": "query_same_ip_device",
+        "venue_turnover": "query_venue_turnover",
+        "venue_turnover_lock": "query_venue_turnover",
+        "query_venue_turnover_lock": "query_venue_turnover",
+        "查场馆流水": "query_venue_turnover",
+        "流水锁定": "query_venue_turnover",
+        "rebate_config": "configure_rebate",
+        "configure_rebate_rate": "configure_rebate",
+        "配置返水": "configure_rebate",
     }
     action = aliases.get(action, action)
     return action if action in BACKEND_UNLOCK_ACTIONS else "unlock_sms"
@@ -2167,9 +2335,21 @@ def queue_backend_unlock_command(target_value, rule, event, action="unlock_sms",
     if ai_parse:
         command["ai_parse"] = {
             key: ai_parse.get(key)
-            for key in ("target", "data_fields", "startAt", "endAt", "private_reply", "telegram_account", "agent_code")
+            for key in (
+                "target", "members", "agent_codes", "data_fields", "startAt", "endAt",
+                "private_reply", "telegram_account", "agent_code", "venue", "game",
+                "site", "line_mode"
+            )
             if ai_parse.get(key) not in (None, "", [])
         }
+    for list_key in ("members", "agent_codes"):
+        if ai_parse.get(list_key):
+            command[list_key] = ai_parse[list_key]
+    for text_key in ("venue", "game", "site", "line_mode"):
+        if ai_parse.get(text_key):
+            command[text_key] = ai_parse[text_key]
+    if ai_parse.get("site"):
+        command["backend_site"] = ai_parse["site"]
     if action == "member_data_overview":
         if ai_parse.get("data_fields"):
             command["data_fields"] = ai_parse["data_fields"]
@@ -2263,6 +2443,8 @@ def format_backend_reply_items(reply_items, backend_action=""):
         return ""
     if len(clean) == 1:
         return clean[0][1]
+    if backend_action in {"query_member_line", "query_login_device_ip", "query_same_ip_device", "query_venue_turnover", "configure_rebate"}:
+        return "\n".join(text for _target, text in clean)
     if backend_action != "urge_settlement":
         return "\n".join(f"{target}：{text}" for target, text in clean)
 
@@ -2461,6 +2643,16 @@ def command_action_label(action):
         return "迁移米兰"
     if action == "member_data_overview":
         return "查数据"
+    if action == "query_member_line":
+        return "查线"
+    if action == "query_login_device_ip":
+        return "查登录设备/IP"
+    if action == "query_same_ip_device":
+        return "查同IP/设备"
+    if action == "query_venue_turnover":
+        return "查场馆流水锁定"
+    if action == "configure_rebate":
+        return "配置返水"
     if action == "urge_settlement":
         return "催结算"
     return "短信/验证码限制"
@@ -2492,15 +2684,21 @@ def build_ai_agent_plan_prompt(text, rule_name="", previous_error=""):
     {{
       "action": "member_data_overview",
       "target": "",
+      "members": [],
       "member": "",
       "order_no": "",
       "ip": "",
+      "agent_codes": [],
       "data_fields": [],
       "startAt": "",
       "endAt": "",
       "private_reply": false,
       "telegram_account": "",
       "agent_code": "",
+      "venue": "",
+      "game": "",
+      "site": "",
+      "line_mode": "",
       "reason": ""
     }}
   ],
@@ -2518,6 +2716,9 @@ def build_ai_agent_plan_prompt(text, rule_name="", previous_error=""):
 - 不要因为讨好用户而把不支持事项说成已处理。
 - 查数据 data_fields 只能从 总输赢、总流水、总存款、总提款、总红利、总返水 中选择；没明确字段时返回空数组。
 - 催结算 order_no/target 必须是12到24位注单号；代理加白 ip/target 必须是IPv4；账号类 member/target 填会员账号。
+- 查线/登录设备/查同IP设备可以把多个会员放 members，把消息里的合营代码放 agent_codes；查代理线 line_mode 填 agent。
+- 查询场馆流水 target/member 填会员账号，venue 填场馆名，例如 米兰体育。
+- 配置返水 venue 填场馆名，game 填游戏名；site 只在明确 6站/JN 或 9站/ML 时填写 6001/9001。
 - private_reply 只有明确要求私发/私聊/发我时才为 true。
 - agent_code 只有消息里明确提供上级代理编号时填写。
 {f"上次规划失败原因：{previous_error}" if previous_error else ""}
@@ -2562,6 +2763,29 @@ def normalize_agent_task_action(action):
         "member_data_query": "member_data_overview",
         "查数据": "member_data_overview",
         "数据概览": "member_data_overview",
+        "line_query": "query_member_line",
+        "query_line": "query_member_line",
+        "agent_line_query": "query_member_line",
+        "query_agent_line": "query_member_line",
+        "查线": "query_member_line",
+        "查代理线": "query_member_line",
+        "login_device_ip": "query_login_device_ip",
+        "query_device_ip": "query_login_device_ip",
+        "登录设备": "query_login_device_ip",
+        "查询登录设备": "query_login_device_ip",
+        "same_ip_device": "query_same_ip_device",
+        "query_same_device_ip": "query_same_ip_device",
+        "查同IP": "query_same_ip_device",
+        "查同ip": "query_same_ip_device",
+        "查同设备": "query_same_ip_device",
+        "venue_turnover": "query_venue_turnover",
+        "venue_turnover_lock": "query_venue_turnover",
+        "query_venue_turnover_lock": "query_venue_turnover",
+        "查场馆流水": "query_venue_turnover",
+        "流水锁定": "query_venue_turnover",
+        "rebate_config": "configure_rebate",
+        "configure_rebate_rate": "configure_rebate",
+        "配置返水": "configure_rebate",
         "settlement_urge": "urge_settlement",
         "urge_settle": "urge_settlement",
         "urge_settlement_order": "urge_settlement",
@@ -2586,6 +2810,15 @@ def sanitize_agent_task(raw_task):
     target = str(raw_task.get("target") or "").strip()
     order_no = str(raw_task.get("order_no") or "").strip()
     ip = str(raw_task.get("ip") or "").strip()
+    source_text = str(raw_task.get("source_text") or raw_task.get("text") or "")
+    members = clean_agent_members(raw_task.get("members"), source_text)
+    if member and member not in members and is_likely_agent_member(member):
+        members.insert(0, member)
+    elif target and target not in members and is_likely_agent_member(target):
+        members.insert(0, target.lower())
+    agent_codes = clean_agent_codes(raw_task.get("agent_codes"), source_text)
+    if raw_task.get("agent_code"):
+        agent_codes = clean_agent_codes([raw_task.get("agent_code"), *agent_codes])
     if action == "urge_settlement":
         target = order_no or target
         if not re.fullmatch(r"\d{12,24}", target):
@@ -2594,22 +2827,45 @@ def sanitize_agent_task(raw_task):
         target = ip or target
         if not re.fullmatch(BACKEND_PROXY_IP_PATTERN, target):
             return None
+    elif action == "configure_rebate":
+        target = str(raw_task.get("game") or target or "配置返水").strip()
+        if not target:
+            return None
+    elif action in {"query_member_line", "query_login_device_ip", "query_same_ip_device", "query_venue_turnover"}:
+        if not members and member and re.fullmatch(BACKEND_UNLOCK_ACCOUNT_PATTERN, member):
+            members = [member]
+        target = (members[0] if members else (member or target).lower())
+        if not target or not re.fullmatch(BACKEND_UNLOCK_ACCOUNT_PATTERN, target):
+            return None
     else:
         target = (member or target).lower()
         if not re.fullmatch(BACKEND_UNLOCK_ACCOUNT_PATTERN, target):
             return None
+    site = str(raw_task.get("site") or "").strip().lower()
+    if site in {"6", "6站", "jn", "6001"}:
+        site = "6001"
+    elif site in {"9", "9站", "ml", "9001"}:
+        site = "9001"
+    else:
+        site = ""
     return {
         "action": action,
         "target": target,
-        "member": member,
+        "member": members[0] if members else member,
+        "members": members,
         "order_no": order_no,
         "ip": ip,
+        "agent_codes": agent_codes,
         "data_fields": clean_ai_data_fields(raw_task.get("data_fields")),
         "startAt": valid_iso_date(raw_task.get("startAt")),
         "endAt": valid_iso_date(raw_task.get("endAt")),
         "private_reply": bool(raw_task.get("private_reply")),
         "telegram_account": str(raw_task.get("telegram_account") or "").strip(),
         "agent_code": str(raw_task.get("agent_code") or "").strip() if re.fullmatch(r"\d{5,12}", str(raw_task.get("agent_code") or "").strip()) else "",
+        "venue": str(raw_task.get("venue") or raw_task.get("venue_name") or "").strip(),
+        "game": str(raw_task.get("game") or raw_task.get("game_name") or "").strip(),
+        "site": site,
+        "line_mode": str(raw_task.get("line_mode") or "").strip(),
         "reason": str(raw_task.get("reason") or "").strip(),
     }
 
@@ -2633,6 +2889,67 @@ def agent_plan_fallback(text):
     if re.search(r"加白|白名单|代理IP|代理\s*IP", source_text, flags=re.IGNORECASE):
         ip = extract_backend_proxy_ip(source_text, "")
         add_task(sanitize_agent_task({"action": "add_proxy_whitelist", "ip": ip, "target": ip}))
+
+    members = clean_agent_members([], source_text)
+    agent_codes = clean_agent_codes([], source_text)
+    site = agent_site_hint_from_text(source_text)
+    venue = agent_venue_hint_from_text(source_text)
+
+    if re.search(r"查同\s*ip|查同IP|查同设备|同设备", source_text, flags=re.IGNORECASE) and members:
+        add_task(sanitize_agent_task({
+            "action": "query_same_ip_device",
+            "member": members[0],
+            "target": members[0],
+            "members": members,
+            "agent_codes": agent_codes,
+            "source_text": source_text,
+            "site": site,
+        }))
+
+    if re.search(r"登录设备|设备\s*ip|ip\s*在哪|IP\s*在哪", source_text, flags=re.IGNORECASE) and members:
+        add_task(sanitize_agent_task({
+            "action": "query_login_device_ip",
+            "member": members[0],
+            "target": members[0],
+            "members": members,
+            "agent_codes": agent_codes,
+            "source_text": source_text,
+            "site": site,
+        }))
+
+    if re.search(r"查代理线|查线", source_text) and members:
+        add_task(sanitize_agent_task({
+            "action": "query_member_line",
+            "member": members[0],
+            "target": members[0],
+            "members": members,
+            "agent_codes": agent_codes,
+            "source_text": source_text,
+            "line_mode": "agent" if "查代理线" in source_text else "",
+            "site": site,
+        }))
+
+    if re.search(r"流水.*还差多少|场馆.*流水|流水锁定", source_text) and members:
+        add_task(sanitize_agent_task({
+            "action": "query_venue_turnover",
+            "member": members[0],
+            "target": members[0],
+            "members": [members[0]],
+            "venue": venue,
+            "source_text": source_text,
+            "site": site,
+        }))
+
+    if "配置返水" in source_text or "返水配置" in source_text:
+        game = agent_game_hint_from_text(source_text)
+        add_task(sanitize_agent_task({
+            "action": "configure_rebate",
+            "target": game or "配置返水",
+            "venue": venue,
+            "game": game,
+            "source_text": source_text,
+            "site": site,
+        }))
 
     fields = clean_ai_data_fields([
         label for label in ["总输赢", "总流水", "总存款", "总提款", "总红利", "总返水", "总反水", "输赢", "流水", "红利", "返水", "反水"]
@@ -2755,6 +3072,9 @@ def agent_handoff_target(step):
 def format_agent_task_summary(task):
     action = str((task or {}).get("action") or "")
     target = str((task or {}).get("target") or "")
+    members = (task or {}).get("members") or []
+    if members and action in {"query_member_line", "query_login_device_ip", "query_same_ip_device"}:
+        target = "、".join(members[:6]) + ("..." if len(members) > 6 else "")
     fields = (task or {}).get("data_fields") or []
     extra = f" ({'、'.join(fields)})" if fields else ""
     return f"{command_action_label(action)}：{target}{extra}".strip("：")
@@ -3621,6 +3941,11 @@ SETTINGS_HTML = """
                                                     <option value="clear_login_error">登录密码试错限制</option>
                                                     <option value="add_proxy_whitelist">代理 IP 加白</option>
                                                     <option value="member_data_overview">查数据</option>
+                                                    <option value="query_member_line">查线</option>
+                                                    <option value="query_login_device_ip">查登录设备/IP</option>
+                                                    <option value="query_same_ip_device">查同 IP/设备</option>
+                                                    <option value="query_venue_turnover">查场馆流水锁定</option>
+                                                    <option value="configure_rebate">配置返水</option>
                                                     <option value="urge_settlement">催结算</option>
                                                 </select>
                                             </div>

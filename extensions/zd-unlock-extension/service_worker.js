@@ -16,6 +16,14 @@ const DEFAULT_CONFIG = {
   siteInnerMsgAddUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/operation/cmCfg/siteInnerMsg/add',
   memberGameTotalInfoUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/game/totalInfo2',
   memberFinanceTotalAmountUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/finance/totalAmount2',
+  loginLogUrl: 'https://9sitebg.mvj4e7.com/central/admin/fd/admin/v1/risk/loginLog',
+  gameWalletListUrl: 'https://9sitebg.mvj4e7.com/central/admin/game/admin/v1/user/game/list',
+  gameTransferOutUrl: 'https://9sitebg.mvj4e7.com/central/admin/game/admin/v1/user/game/transferOut',
+  gameTransferIntoUrl: 'https://9sitebg.mvj4e7.com/central/admin/game/admin/v1/user/game/transferInto',
+  venueQueryUrl: 'https://9sitebg.mvj4e7.com/central/admin/game/admin/v1/venue/queryByName',
+  rebateLevelListUrl: 'https://9sitebg.mvj4e7.com/central/admin/act/admin/v1/fanshui/level/list',
+  rebateLevelInfoListUrl: 'https://9sitebg.mvj4e7.com/central/admin/act/admin/v1/fanshui/level/infoList',
+  rebateLevelInfoSaveUrl: 'https://9sitebg.mvj4e7.com/central/admin/act/admin/v1/fanshui/level/infoSave',
   migrationRecordsUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/pilgrimage/recordsV2',
   migrateMilanUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/pilgrimage/migration',
   merchantStatisticsUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/userReport/getStatistics',
@@ -59,7 +67,15 @@ const SITE_PROFILES = {
     siteInnerMsgAddUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/operation/cmCfg/siteInnerMsg/add',
     siteInnerMsgClients: '0,1,2,3,8,9',
     memberGameTotalInfoUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/game/totalInfo2',
-    memberFinanceTotalAmountUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/finance/totalAmount2'
+    memberFinanceTotalAmountUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/finance/totalAmount2',
+    loginLogUrl: 'https://9sitebg.mvj4e7.com/central/admin/fd/admin/v1/risk/loginLog',
+    gameWalletListUrl: 'https://9sitebg.mvj4e7.com/central/admin/game/admin/v1/user/game/list',
+    gameTransferOutUrl: 'https://9sitebg.mvj4e7.com/central/admin/game/admin/v1/user/game/transferOut',
+    gameTransferIntoUrl: 'https://9sitebg.mvj4e7.com/central/admin/game/admin/v1/user/game/transferInto',
+    venueQueryUrl: 'https://9sitebg.mvj4e7.com/central/admin/game/admin/v1/venue/queryByName',
+    rebateLevelListUrl: 'https://9sitebg.mvj4e7.com/central/admin/act/admin/v1/fanshui/level/list',
+    rebateLevelInfoListUrl: 'https://9sitebg.mvj4e7.com/central/admin/act/admin/v1/fanshui/level/infoList',
+    rebateLevelInfoSaveUrl: 'https://9sitebg.mvj4e7.com/central/admin/act/admin/v1/fanshui/level/infoSave'
   },
   '6001': {
     host: '6sitebg.oj61i4.com',
@@ -72,7 +88,15 @@ const SITE_PROFILES = {
     siteInnerMsgAddUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/operation/cmCfg/siteInnerMsg/add',
     siteInnerMsgClients: '0,1,2,3,8',
     memberGameTotalInfoUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/user/game/totalInfo2',
-    memberFinanceTotalAmountUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/user/finance/totalAmount2'
+    memberFinanceTotalAmountUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/user/finance/totalAmount2',
+    loginLogUrl: 'https://6sitebg.oj61i4.com/central/admin/fd/admin/v1/risk/loginLog',
+    gameWalletListUrl: 'https://6sitebg.oj61i4.com/central/admin/game/admin/v1/user/game/list',
+    gameTransferOutUrl: 'https://6sitebg.oj61i4.com/central/admin/game/admin/v1/user/game/transferOut',
+    gameTransferIntoUrl: 'https://6sitebg.oj61i4.com/central/admin/game/admin/v1/user/game/transferInto',
+    venueQueryUrl: 'https://6sitebg.oj61i4.com/central/admin/game/admin/v1/venue/queryByName',
+    rebateLevelListUrl: 'https://6sitebg.oj61i4.com/central/admin/act/admin/v1/fanshui/level/list',
+    rebateLevelInfoListUrl: 'https://6sitebg.oj61i4.com/central/admin/act/admin/v1/fanshui/level/infoList',
+    rebateLevelInfoSaveUrl: 'https://6sitebg.oj61i4.com/central/admin/act/admin/v1/fanshui/level/infoSave'
   },
   'merchant': {
     host: 'api-merchant-backstage.dbsportxxxwo8.com',
@@ -141,7 +165,7 @@ function siteFromCommand(action, cmd = {}) {
     || hint === 'changguan'
     || hint === '场馆'
   ) return 'merchant';
-  if (action === 'migrate_milan' || hint === '6' || hint === '6001' || hint === '6zc') return '6001';
+  if (action === 'migrate_milan' || hint === '6' || hint === '6001' || hint === '6zc' || hint === 'jn') return '6001';
   return '9001';
 }
 
@@ -575,6 +599,11 @@ function commandLabel(action) {
   if (action === 'migrate_milan') return '迁移米兰';
   if (action === 'send_site_inner_msg') return '发送站内信';
   if (action === 'member_data_overview') return '查数据';
+  if (action === 'query_member_line') return '查线';
+  if (action === 'query_login_device_ip') return '查登录设备/IP';
+  if (action === 'query_same_ip_device') return '查同IP/设备';
+  if (action === 'query_venue_turnover') return '查场馆流水锁定';
+  if (action === 'configure_rebate') return '配置返水';
   if (action === 'merchant_order_statistics') return '场馆注单查询';
   if (action === 'urge_settlement') return '催结算';
   return '短信/验证码解锁';
@@ -655,13 +684,36 @@ function normalizeCommandAction(action, cmd = {}) {
     data_overview: 'member_data_overview',
     query_member_data: 'member_data_overview',
     member_data_query: 'member_data_overview',
+    line_query: 'query_member_line',
+    query_line: 'query_member_line',
+    agent_line_query: 'query_member_line',
+    query_agent_line: 'query_member_line',
+    login_device_ip: 'query_login_device_ip',
+    query_device_ip: 'query_login_device_ip',
+    same_ip_device: 'query_same_ip_device',
+    query_same_device_ip: 'query_same_ip_device',
+    venue_turnover: 'query_venue_turnover',
+    venue_turnover_lock: 'query_venue_turnover',
+    query_venue_turnover_lock: 'query_venue_turnover',
+    rebate_config: 'configure_rebate',
+    configure_rebate_rate: 'configure_rebate',
     '查数据': 'member_data_overview',
     '数据概览': 'member_data_overview',
+    '查线': 'query_member_line',
+    '查代理线': 'query_member_line',
+    '登录设备': 'query_login_device_ip',
+    '查询登录设备': 'query_login_device_ip',
+    '查同IP': 'query_same_ip_device',
+    '查同ip': 'query_same_ip_device',
+    '查同设备': 'query_same_ip_device',
+    '查场馆流水': 'query_venue_turnover',
+    '流水锁定': 'query_venue_turnover',
+    '配置返水': 'configure_rebate',
     '催结算': 'urge_settlement'
   };
   const normalized = aliases[raw] || raw;
   if (hasMerchantCommandHint(cmd) && (raw === '' || raw === 'unlock_sms')) return 'merchant_order_statistics';
-  return ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg', 'member_data_overview', 'merchant_order_statistics', 'urge_settlement'].includes(normalized)
+  return ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg', 'member_data_overview', 'query_member_line', 'query_login_device_ip', 'query_same_ip_device', 'query_venue_turnover', 'configure_rebate', 'merchant_order_statistics', 'urge_settlement'].includes(normalized)
     ? normalized
     : 'unlock_sms';
 }
@@ -676,6 +728,11 @@ function isSupportedCommandAction(action, cmd = {}) {
     'migrate_milan',
     'send_site_inner_msg',
     'member_data_overview',
+    'query_member_line',
+    'query_login_device_ip',
+    'query_same_ip_device',
+    'query_venue_turnover',
+    'configure_rebate',
     'merchant_order_statistics',
     'urge_settlement',
     'venue_order_statistics',
@@ -686,8 +743,31 @@ function isSupportedCommandAction(action, cmd = {}) {
     'data_overview',
     'query_member_data',
     'member_data_query',
+    'line_query',
+    'query_line',
+    'agent_line_query',
+    'query_agent_line',
+    'login_device_ip',
+    'query_device_ip',
+    'same_ip_device',
+    'query_same_device_ip',
+    'venue_turnover',
+    'venue_turnover_lock',
+    'query_venue_turnover_lock',
+    'rebate_config',
+    'configure_rebate_rate',
     '查数据',
     '数据概览',
+    '查线',
+    '查代理线',
+    '登录设备',
+    '查询登录设备',
+    '查同IP',
+    '查同ip',
+    '查同设备',
+    '查场馆流水',
+    '流水锁定',
+    '配置返水',
     'settlement_urge',
     'urge_settle',
     'urge_settlement_order',
@@ -1160,6 +1240,422 @@ async function decryptedTopInviteCode(config, member = {}) {
     throw new Error(`解密上级代理编号失败 HTTP ${decrypted.res.status}: ${decrypted.text.slice(0, 300)}`);
   }
   return String((((decrypted.data || {}).data || {})[signature]) || '').replace(/\*/g, '').trim();
+}
+
+function commandAiParse(cmd = {}) {
+  return (cmd && typeof cmd.ai_parse === 'object' && cmd.ai_parse) ? cmd.ai_parse : {};
+}
+
+function cleanMemberToken(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function isLikelyBackendMember(value) {
+  const text = cleanMemberToken(value);
+  if (!/^[a-z0-9][a-z0-9._-]{1,63}$/.test(text)) return false;
+  if (/^\d{5,24}$/.test(text)) return false;
+  if (!/[a-z]/.test(text) || !/\d/.test(text)) return false;
+  if (/^(vip\d*|tg\d*|bot\d*|http|https|www|ip|ios|android|web|h5|jn|ml|art|ok|yes|no)$/i.test(text)) return false;
+  return true;
+}
+
+function commandMembers(cmd = {}, fallbackTarget = '') {
+  const out = [];
+  const seen = new Set();
+  const add = (value) => {
+    const member = cleanMemberToken(value);
+    if (!member || seen.has(member) || !isLikelyBackendMember(member)) return;
+    seen.add(member);
+    out.push(member);
+  };
+  const ai = commandAiParse(cmd);
+  const rawMembers = [
+    ...(Array.isArray(cmd.members) ? cmd.members : []),
+    ...(Array.isArray(ai.members) ? ai.members : []),
+    cmd.member,
+    ai.member,
+    fallbackTarget,
+    cmd.target_value,
+    cmd.member_name
+  ];
+  rawMembers.forEach(add);
+  const text = commandSourceText(cmd);
+  for (const match of text.matchAll(/\b([a-zA-Z][a-zA-Z0-9._-]{1,63})\b/g)) {
+    add(match[1]);
+  }
+  return out.slice(0, 12);
+}
+
+function commandAgentCodes(cmd = {}) {
+  const ai = commandAiParse(cmd);
+  const out = [];
+  const seen = new Set();
+  const add = (value) => {
+    const code = String(value || '').trim();
+    if (!/^\d{5,12}$/.test(code) || seen.has(code)) return;
+    seen.add(code);
+    out.push(code);
+  };
+  [
+    ...(Array.isArray(cmd.agent_codes) ? cmd.agent_codes : []),
+    ...(Array.isArray(ai.agent_codes) ? ai.agent_codes : []),
+    cmd.agent_code,
+    cmd.agentCode,
+    ai.agent_code
+  ].forEach(add);
+  for (const match of commandSourceText(cmd).matchAll(/\b(\d{5,12})\b/g)) {
+    add(match[1]);
+  }
+  return out.slice(0, 30);
+}
+
+function memberLineFromSource(cmd = {}, memberName = '', codes = []) {
+  const cleanCodes = codes.filter(Boolean);
+  if (cleanCodes.length <= 1) return cleanCodes;
+  const lines = commandSourceText(cmd).split(/\r?\n/);
+  const member = cleanMemberToken(memberName);
+  for (const line of lines) {
+    if (!line.toLowerCase().includes(member)) continue;
+    const matched = [...line.matchAll(/\b(\d{5,12})\b/g)].map((item) => item[1]);
+    if (matched.length) return matched.filter((code) => cleanCodes.includes(code));
+  }
+  return cleanCodes;
+}
+
+async function queryMemberLine(config, memberName, expectedCodes = []) {
+  const member = await findExactMember(config, memberName);
+  const actualCode = await decryptedTopInviteCode(config, member);
+  const code = String(actualCode || '').trim();
+  const official = !code || code === '0';
+  const matched = !!(code && expectedCodes.includes(code));
+  return {
+    member,
+    actualCode: code,
+    official,
+    matched,
+    otherLine: !!(code && expectedCodes.length && !matched)
+  };
+}
+
+function lineReplyText(result, expectedCodes = [], agentLineMode = false) {
+  if (expectedCodes.length) {
+    if (result.matched) return agentLineMode ? result.actualCode : '在线下';
+    return result.official ? '官网' : '其他线下';
+  }
+  return result.official ? '官网' : '在线下';
+}
+
+async function runQueryMemberLineCommand(config, cmd, targetValue) {
+  const members = commandMembers(cmd, targetValue);
+  if (!members.length) throw new Error('未提取到会员账号');
+  const codes = commandAgentCodes(cmd);
+  const agentLineMode = /查代理线/.test(commandSourceText(cmd)) || String(commandAiParse(cmd).line_mode || cmd.line_mode || '').includes('agent');
+  const multiple = members.length > 1;
+  const lines = [];
+  for (const memberName of members) {
+    const result = await queryMemberLine(config, memberName, memberLineFromSource(cmd, memberName, codes));
+    const reply = lineReplyText(result, codes, agentLineMode);
+    lines.push(multiple ? `${memberName} ${reply}` : reply);
+  }
+  const replyText = lines.join('\n');
+  await setStatus({ state: 'success', message: `查线完成：${members.length}人`, detail: replyText });
+  await ack(config, cmd, 'reply_origin', `查线完成：${members.length}人`, { reply_text: replyText, stop_actions: true });
+}
+
+function loginLogRange(days = 360) {
+  const today = dateOnly(new Date());
+  return {
+    startTime: `${formatDate(addDays(today, -Math.max(1, Number(days || 360))))} 00:00:00`,
+    endTime: `${formatDate(today)} 23:59:59`
+  };
+}
+
+async function queryLoginLogs(config, memberName, days = 360) {
+  if (!config.loginLogUrl) throw new Error('登录日志接口未配置');
+  const range = loginLogRange(days);
+  await setStatus({ state: 'running', message: `查询登录日志 ${memberName}` });
+  const result = await postJson(config.loginLogUrl, config.headers, {
+    pageNum: 1,
+    pageSize: 10,
+    startTime: range.startTime,
+    endTime: range.endTime,
+    name: memberName,
+    topName: ''
+  });
+  if (!apiOk(result.res, result.data)) {
+    throw new Error(`查询登录日志失败 HTTP ${result.res.status}: ${result.text.slice(0, 300)}`);
+  }
+  return ((((result.data || {}).data || {}).list) || []).filter((item) => String(item.name || '').toLowerCase() === memberName);
+}
+
+function terminalLabel(value) {
+  const text = String(value || '').toLowerCase();
+  if (text.includes('sport_android')) return '安卓体育';
+  if (text.includes('sport_ios')) return '苹果体育';
+  if (text.includes('android')) return '安卓全站';
+  if (text.includes('ios')) return '苹果全站';
+  if (text.includes('h5')) return 'H5';
+  if (text.includes('web') || text.includes('pc')) return 'PC网页';
+  return String(value || '未知设备');
+}
+
+function provinceLabel(address) {
+  const parts = String(address || '').split('|').map((item) => item.trim()).filter(Boolean);
+  return parts[1] || parts[2] || parts[0] || '未知地区';
+}
+
+function loginDeviceIpSummary(memberName, logs = []) {
+  const seen = new Set();
+  const parts = [];
+  for (const log of logs) {
+    const item = `${terminalLabel(log.terminal)} ${provinceLabel(log.address)}`.trim();
+    if (!item || seen.has(item)) continue;
+    seen.add(item);
+    parts.push(item);
+  }
+  return parts.length ? `${memberName} ${parts.join('；')}` : `${memberName} 暂无登录记录`;
+}
+
+function relatedCountLabel(label, count) {
+  const value = Math.max(0, Number(count || 0));
+  if (value <= 0) return `${label}无关联`;
+  if (value >= 5) return `${label}关联多个`;
+  return `${label}关联 ${value}`;
+}
+
+function sameIpDeviceSummary(memberName, logs = []) {
+  let deviceTotal = 1;
+  let ipTotal = 1;
+  for (const log of logs) {
+    const related = Number(log.related || 0);
+    const ipRelated = Number(log.ipRelateUserCount || log.countIp || 0);
+    if (Number.isFinite(related) && related > deviceTotal) deviceTotal = related;
+    if (Number.isFinite(ipRelated) && ipRelated > ipTotal) ipTotal = ipRelated;
+  }
+  const deviceRelated = Math.max(0, deviceTotal - 1);
+  const ipRelated = Math.max(0, ipTotal - 1);
+  return `${memberName} ${relatedCountLabel('设备', deviceRelated)}  ${relatedCountLabel('IP', ipRelated)}`;
+}
+
+async function guardedLineCheck(config, cmd, memberName, codes) {
+  const expectedCodes = memberLineFromSource(cmd, memberName, codes);
+  if (!expectedCodes.length) return { ok: true };
+  const result = await queryMemberLine(config, memberName, expectedCodes);
+  if (!result.matched) return { ok: false, replyText: `${memberName}不在线下。` };
+  return { ok: true };
+}
+
+async function runQueryLoginDeviceIpCommand(config, cmd, targetValue) {
+  const members = commandMembers(cmd, targetValue);
+  if (!members.length) throw new Error('未提取到会员账号');
+  const codes = commandAgentCodes(cmd);
+  const lines = [];
+  for (const memberName of members) {
+    const line = await guardedLineCheck(config, cmd, memberName, codes);
+    if (!line.ok) {
+      lines.push(line.replyText);
+      continue;
+    }
+    const logs = await queryLoginLogs(config, memberName, 360);
+    lines.push(loginDeviceIpSummary(memberName, logs));
+  }
+  const replyText = lines.join('\n');
+  await setStatus({ state: 'success', message: `登录设备/IP查询完成：${members.length}人`, detail: replyText });
+  await ack(config, cmd, 'reply_origin', `登录设备/IP查询完成：${members.length}人`, { reply_text: replyText, stop_actions: true });
+}
+
+async function runQuerySameIpDeviceCommand(config, cmd, targetValue) {
+  const members = commandMembers(cmd, targetValue);
+  if (!members.length) throw new Error('未提取到会员账号');
+  const codes = commandAgentCodes(cmd);
+  const lines = [];
+  for (const memberName of members) {
+    const line = await guardedLineCheck(config, cmd, memberName, codes);
+    if (!line.ok) {
+      lines.push(line.replyText);
+      continue;
+    }
+    const logs = await queryLoginLogs(config, memberName, 360);
+    lines.push(logs.length ? sameIpDeviceSummary(memberName, logs) : `${memberName} 暂无登录记录`);
+  }
+  const replyText = lines.join('\n');
+  await setStatus({ state: 'success', message: `同IP/设备查询完成：${members.length}人`, detail: replyText });
+  await ack(config, cmd, 'reply_origin', `同IP/设备查询完成：${members.length}人`, { reply_text: replyText, stop_actions: true });
+}
+
+function normalizeVenueName(value) {
+  return String(value || '').replace(/\s+/g, '').replace(/场馆|钱包|游戏|查询|流水|还差多少/g, '').toLowerCase();
+}
+
+function commandVenueHint(cmd = {}) {
+  const ai = commandAiParse(cmd);
+  return String(cmd.venue || cmd.venue_name || cmd.venueName || ai.venue || ai.venue_name || '').trim();
+}
+
+function resolveWalletChannel(wallets = [], cmd = {}) {
+  const text = `${commandVenueHint(cmd)} ${commandSourceText(cmd)}`;
+  const normalizedText = normalizeVenueName(text);
+  const aliases = [
+    ['米兰体育', 'YBTY'],
+    ['熊猫体育', 'DBTY'],
+    ['米兰电竞', 'YBDJ'],
+    ['米兰棋牌', 'YBQP'],
+    ['米兰彩票', 'YBCP'],
+    ['米兰真人', 'YBZR'],
+    ['米兰电子', 'PMDZ'],
+    ['米兰捕鱼', 'YBDZ']
+  ];
+  for (const [label, code] of aliases) {
+    if (normalizedText.includes(normalizeVenueName(label))) {
+      const matched = wallets.find((item) => String(item.channelCode || '').toUpperCase() === code);
+      if (matched) return matched;
+    }
+  }
+  return wallets.find((item) => {
+    const name = normalizeVenueName(item.channelName);
+    const code = normalizeVenueName(item.channelCode);
+    return (name && normalizedText.includes(name)) || (code && normalizedText.includes(code));
+  }) || null;
+}
+
+async function runQueryVenueTurnoverCommand(config, cmd, targetValue) {
+  if (!config.gameWalletListUrl || !config.gameTransferOutUrl || !config.gameTransferIntoUrl) {
+    throw new Error('场馆钱包接口未配置');
+  }
+  const memberName = (commandMembers(cmd, targetValue)[0] || cleanMemberToken(targetValue));
+  if (!memberName) throw new Error('未提取到会员账号');
+  const member = await findExactMember(config, memberName);
+  const memberId = member.exactId || member.id;
+  await setStatus({ state: 'running', message: `查询场馆钱包 ${memberName}` });
+  const wallet = await postJson(config.gameWalletListUrl, config.headers, { id: Number(memberId) });
+  if (!apiOk(wallet.res, wallet.data)) {
+    throw new Error(`查询场馆钱包失败 HTTP ${wallet.res.status}: ${wallet.text.slice(0, 300)}`);
+  }
+  const venues = Array.isArray((wallet.data || {}).data) ? wallet.data.data : [];
+  const channel = resolveWalletChannel(venues, cmd);
+  if (!channel) throw new Error('未匹配到场馆钱包');
+  const body = { id: Number(memberId), channelCode: String(channel.channelCode || ''), money: 1, name: memberName };
+  await setStatus({ state: 'running', message: `尝试转出 ${channel.channelName || channel.channelCode} 1元` });
+  const out = await postJson(config.gameTransferOutUrl, config.headers, body);
+  const outMsg = String((out.data || {}).message || out.text || '').trim();
+  let replyText = '';
+  if (apiOk(out.res, out.data)) {
+    await setStatus({ state: 'running', message: `转回 ${channel.channelName || channel.channelCode} 1元` });
+    const back = await postJson(config.gameTransferIntoUrl, config.headers, body);
+    if (!apiOk(back.res, back.data)) {
+      throw new Error(`1元转回失败 HTTP ${back.res.status}: ${back.text.slice(0, 300)}`);
+    }
+    replyText = '场馆未锁定，清除缓存刷新再试一下。';
+  } else if (outMsg) {
+    replyText = outMsg;
+  } else {
+    throw new Error(`查询流水锁定失败 HTTP ${out.res.status}: ${out.text.slice(0, 300)}`);
+  }
+  const msg = `场馆流水锁定查询完成：${memberName} ${channel.channelName || channel.channelCode}`;
+  await setStatus({ state: 'success', message: msg, detail: replyText });
+  await ack(config, cmd, 'reply_origin', msg, { reply_text: replyText, stop_actions: true });
+}
+
+async function queryAllRebateLevels(config) {
+  if (!config.rebateLevelListUrl) throw new Error('返水等级接口未配置');
+  const levels = [];
+  let pageNum = 1;
+  let totalPage = 1;
+  do {
+    const result = await postJson(config.rebateLevelListUrl, config.headers, { pageNum, pageSize: 10 });
+    if (!apiOk(result.res, result.data)) {
+      throw new Error(`查询返水等级失败 HTTP ${result.res.status}: ${result.text.slice(0, 300)}`);
+    }
+    const data = ((result.data || {}).data || {});
+    levels.push(...(Array.isArray(data.list) ? data.list : []));
+    totalPage = Math.max(1, Number(data.totalPage || 1));
+    pageNum += 1;
+  } while (pageNum <= totalPage && pageNum <= 20);
+  return levels;
+}
+
+async function queryVenueList(config) {
+  if (!config.venueQueryUrl) throw new Error('场馆列表接口未配置');
+  const result = await postJson(config.venueQueryUrl, config.headers, {});
+  if (!apiOk(result.res, result.data)) {
+    throw new Error(`查询场馆列表失败 HTTP ${result.res.status}: ${result.text.slice(0, 300)}`);
+  }
+  return Array.isArray((result.data || {}).data) ? result.data.data : [];
+}
+
+function resolveRebateVenue(venues = [], cmd = {}) {
+  const text = `${commandVenueHint(cmd)} ${commandSourceText(cmd)}`;
+  const normalizedText = normalizeVenueName(text);
+  return venues.find((item) => {
+    const zh = normalizeVenueName(item.zhName);
+    const en = normalizeVenueName(item.enName);
+    return (zh && normalizedText.includes(zh)) || (en && normalizedText.includes(en));
+  }) || null;
+}
+
+function commandGameHint(cmd = {}, venue = {}) {
+  const ai = commandAiParse(cmd);
+  const direct = String(cmd.game || cmd.game_name || cmd.gameName || ai.game || ai.game_name || '').trim();
+  if (direct) return direct;
+  let text = commandSourceText(cmd)
+    .replace(/配置返水|返水配置|配置|返水|场馆|游戏|查询/g, ' ')
+    .replace(/6站|9站|JN站|ML站|JN|ML/gi, ' ');
+  [venue.zhName, venue.enName].filter(Boolean).forEach((name) => {
+    text = text.replace(new RegExp(escapeRegExp(name), 'gi'), ' ');
+  });
+  return text.split(/[\s,，。；;、]+/).map((item) => item.trim()).filter((item) => item && item.length <= 40)[0] || '';
+}
+
+async function runConfigureRebateCommand(config, cmd, targetValue) {
+  if (!config.rebateLevelInfoListUrl || !config.rebateLevelInfoSaveUrl) {
+    throw new Error('返水配置接口未配置');
+  }
+  const venues = await queryVenueList(config);
+  const venue = resolveRebateVenue(venues, cmd);
+  if (!venue) throw new Error('未匹配到返水场馆');
+  const gameHint = commandGameHint(cmd, venue) || String(targetValue || '').trim();
+  if (!gameHint) throw new Error('未提取到返水游戏');
+  const levels = await queryAllRebateLevels(config);
+  if (!levels.length) throw new Error('未查询到返水等级');
+  let matchedLevels = 0;
+  for (const level of levels) {
+    await setStatus({ state: 'running', message: `配置返水 ${venue.zhName || venue.enName} ${gameHint} ${level.name || `VIP${level.level}`}` });
+    const info = await postJson(config.rebateLevelInfoListUrl, config.headers, {
+      parentId: Number(level.id),
+      venueId: String(venue.id)
+    });
+    if (!apiOk(info.res, info.data)) {
+      throw new Error(`查询返水游戏失败 HTTP ${info.res.status}: ${info.text.slice(0, 300)}`);
+    }
+    const infoData = ((info.data || {}).data || {});
+    const infoList = Array.isArray(infoData.infoList) ? infoData.infoList : [];
+    const matchedGame = infoList.find((item) => {
+      const gameName = normalizeVenueName(item.gameName);
+      const gameCode = normalizeVenueName(item.gameCode);
+      const hint = normalizeVenueName(gameHint);
+      return hint && ((gameName && gameName.includes(hint)) || (gameCode && gameCode.includes(hint)) || (gameName && hint.includes(gameName)));
+    });
+    if (!matchedGame) continue;
+    const saveBody = {
+      isLimit: Number(level.isLimit ?? 1),
+      minLimit: Number(infoData.minLimit ?? level.minLimit ?? 1),
+      maxLimit: Number(infoData.maxLimit ?? level.maxLimit ?? 0),
+      infoList: infoList.map((item) => ({
+        venueId: String(item.venueId || venue.id),
+        infoId: Number(item.id),
+        rate: Number(item.rate || 0)
+      })).filter((item) => item.infoId)
+    };
+    const saved = await postJson(config.rebateLevelInfoSaveUrl, config.headers, saveBody);
+    if (!apiOk(saved.res, saved.data)) {
+      throw new Error(`保存返水配置失败 HTTP ${saved.res.status}: ${saved.text.slice(0, 300)}`);
+    }
+    matchedLevels += 1;
+  }
+  if (!matchedLevels) throw new Error(`未找到返水游戏：${venue.zhName || venue.enName} ${gameHint}`);
+  const replyText = `返水配置已提交：${venue.zhName || venue.enName} ${gameHint}`;
+  await setStatus({ state: 'success', message: replyText, detail: `已处理 ${matchedLevels} 个VIP等级` });
+  await ack(config, cmd, 'reply_origin', replyText, { reply_text: replyText, stop_actions: true });
 }
 
 function requestedDataOverviewFields(cmd = {}) {
@@ -2224,6 +2720,26 @@ async function runBackendCommand(config, cmd) {
     }
     if (action === 'member_data_overview') {
       await runMemberDataOverviewCommand(config, cmd, targetValue);
+      return;
+    }
+    if (action === 'query_member_line') {
+      await runQueryMemberLineCommand(config, cmd, targetValue);
+      return;
+    }
+    if (action === 'query_login_device_ip') {
+      await runQueryLoginDeviceIpCommand(config, cmd, targetValue);
+      return;
+    }
+    if (action === 'query_same_ip_device') {
+      await runQuerySameIpDeviceCommand(config, cmd, targetValue);
+      return;
+    }
+    if (action === 'query_venue_turnover') {
+      await runQueryVenueTurnoverCommand(config, cmd, targetValue);
+      return;
+    }
+    if (action === 'configure_rebate') {
+      await runConfigureRebateCommand(config, cmd, targetValue);
       return;
     }
     if (action === 'merchant_order_statistics') {
