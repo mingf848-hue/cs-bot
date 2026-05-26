@@ -1572,6 +1572,11 @@ function actionOk(res, data, text, action) {
   return false;
 }
 
+function actionSuccessReplyText(action, targetValue) {
+  if (action === 'add_proxy_whitelist') return `${targetValue} 已加白。`;
+  return '';
+}
+
 async function findExactMember(config, targetValue) {
   if (!config.memberListUrl) throw new Error('会员查询接口未配置');
   await setStatus({ state: 'running', message: `查询会员 ${targetValue}` });
@@ -2240,12 +2245,13 @@ async function runBackendCommand(config, cmd) {
     const data = parseJsonText(text);
     const ok = actionOk(res, data, text, action);
     const reason = (data && data.message) || text;
+    const replyText = ok ? actionSuccessReplyText(action, targetValue) : '';
     await setStatus({
       state: ok ? 'success' : 'error',
       message: `${label} ${targetValue} HTTP ${res.status}`,
       detail: text.slice(0, 300)
     });
-    await ack(config, cmd, ok ? 'success' : `http_${res.status}`, reason);
+    await ack(config, cmd, ok ? 'success' : `http_${res.status}`, reason, replyText ? { reply_text: replyText } : {});
   } catch (err) {
     const reason = friendlyErrorReason(err, action, label);
     const raw = rawErrorText(err).replace(/\s+/g, ' ').slice(0, 240);
