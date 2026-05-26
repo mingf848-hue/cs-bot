@@ -154,9 +154,19 @@ def rule_has_backend_action(rule, action):
         for step in (rule or {}).get("replies", [])
     )
 
+def looks_like_ticket_reason_request(text):
+    compact = str(text or "").replace(" ", "")
+    if re.search(r"自动处理失败|后台.*失败|催结算失败", compact):
+        return False
+    return bool(re.search(r"无效|無效|取消原因|无效原因|無效原因|失败原因|失敗原因|投注失败|投注失敗|注单取消|注單取消|取消|失败|失敗", compact))
+
 def looks_like_short_urge_settlement(text):
     compact = str(text or "").replace(" ", "")
     if not re.search(r"(?<!\d)533\d{13}(?!\d)", compact):
+        return False
+    if re.search(r"自动处理失败|后台.*失败|催结算失败|人工核查|状态[:：]", compact):
+        return False
+    if looks_like_ticket_reason_request(compact):
         return False
     if "催" not in compact:
         return False
@@ -505,8 +515,8 @@ def build_ai_backend_parse_prompt(text, action, rule_name="", previous_error="")
 }}
 
 字段规则：
-- target 是该动作最终目标；催结算填注单号，代理加白填IP，其它账号类填会员账号。
-- member 仅账号类填写；order_no 仅催结算填写；ip 仅代理加白填写。
+- target 是该动作最终目标；催结算/取消失败原因填注单号，代理加白填IP，其它账号类填会员账号。
+- member 仅账号类填写；order_no 仅催结算/取消失败原因填写；ip 仅代理加白填写。
 - 查线/登录设备/查同IP设备支持多个会员，放 members；消息里的合营代码放 agent_codes。
 - 查询场馆流水要提取 venue；配置返水要提取 venue 和 game。
 - data_fields 只在查数据时填写，例如 ["总输赢","总红利","总返水"]；没明确要求字段时返回空数组。
@@ -2142,8 +2152,18 @@ AGENT_CAPABILITIES = [
         "input": "场馆名 + 游戏名",
         "notes": "按后台返水等级逐级保存指定场馆游戏配置",
     },
-    {"action": "urge_settlement", "name": "催结算", "input": "533开头16位注单号，可多个"},
-    {"action": "query_ticket_cancel_reason", "name": "注单取消/失败原因", "input": "533开头16位注单号"},
+    {
+        "action": "urge_settlement",
+        "name": "催结算",
+        "input": "533开头16位注单号，可多个",
+        "notes": "只用于未结算、催促结算、一直不结算等诉求；不要用于取消/失败/无效原因。",
+    },
+    {
+        "action": "query_ticket_cancel_reason",
+        "name": "注单取消/失败原因",
+        "input": "533开头16位注单号，可多个",
+        "notes": "用于取消原因、失败原因、无效原因、投注失败、注单取消；优先按注单明细盘口/取消原因匹配公告，没有公告再回后台原因。",
+    },
     {"action": "unlock_sms", "name": "短信/验证码限制", "input": "会员账号"},
     {"action": "clear_login_error", "name": "登录密码试错限制", "input": "会员账号"},
     {"action": "add_proxy_whitelist", "name": "代理 IP 加白", "input": "IPv4地址"},
@@ -2732,7 +2752,9 @@ def build_ai_agent_plan_prompt(text, rule_name="", previous_error=""):
 - 不要因为讨好用户而把不支持事项说成已处理。
 - 查数据 data_fields 只能从 总输赢、总流水、总存款、总提款、总红利、总返水 中选择；没明确字段时返回空数组。
 - 催结算 order_no/target 必须是12到24位注单号；代理加白 ip/target 必须是IPv4；账号类 member/target 填会员账号。
-- 注单取消/失败/无效原因使用 query_ticket_cancel_reason，不要使用 urge_settlement。
+- 催结算只处理“未结算/一直不结算/催促结算/催结算”等要求推进结算的消息。
+- 注单取消/失败/无效原因必须使用 query_ticket_cancel_reason，不要使用 urge_settlement。
+- 只要消息包含“取消原因、无效原因、失败原因、投注失败、注单取消、无效、取消、失败”，即使同时出现“催”，也使用 query_ticket_cancel_reason。
 - 查线/登录设备/查同IP设备可以把多个会员放 members，把消息里的合营代码放 agent_codes；查代理线 line_mode 填 agent。
 - 查询场馆流水 target/member 填会员账号，venue 填场馆名，例如 米兰体育。
 - 配置返水 venue 填场馆名，game 填游戏名；site 只在明确 6站/JN 或 9站/ML 时填写 6001/9001。
@@ -2910,7 +2932,7 @@ def agent_plan_fallback(text):
         tasks.append(task)
 
     for order_no in extract_backend_order_nos(source_text, ""):
-        if re.search(r"无效|失败|投注失败|失败原因|取消原因|无效原因|注单取消", source_text):
+        if looks_like_ticket_reason_request(source_text):
             add_task(sanitize_agent_task({"action": "query_ticket_cancel_reason", "order_no": order_no, "target": order_no}))
         elif looks_like_short_urge_settlement(source_text):
             add_task(sanitize_agent_task({"action": "urge_settlement", "order_no": order_no, "target": order_no}))
@@ -4023,7 +4045,7 @@ SETTINGS_HTML = """
                                     </template>
                                     <template v-if="reply.type === 'agent_orchestrator'">
                                         <div class="grid grid-cols-1 gap-2">
-                                            <div class="step-help"><i class="fa-solid fa-wand-magic-sparkles mr-1"></i>自动拆解消息，只调用现有能力；不支持事项不会编结果。</div>
+                                            <div class="step-help"><i class="fa-solid fa-wand-magic-sparkles mr-1"></i>自动拆解消息，只调用现有能力；催结算和取消/失败原因分开处理，不支持事项不会编结果。</div>
                                             <div class="visual-field">
                                                 <div class="visual-label"><i class="fa-brands fa-telegram"></i>TG 催结算群</div>
                                                 <input v-model="reply.forward_to" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] text-blue-700 bg-blue-50 border-blue-100" placeholder="-1001234567890 或 @username">
