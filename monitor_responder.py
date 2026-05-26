@@ -454,7 +454,7 @@ def extract_json_object(text):
     raise ValueError("AI返回不是JSON对象")
 
 def ai_backend_action_schema(action):
-    if action == "urge_settlement":
+    if action in {"urge_settlement", "query_ticket_cancel_reason"}:
         return "target/order_no 必须是12到24位注单号。"
     if action == "add_proxy_whitelist":
         return "target/ip 必须是IPv4地址。"
@@ -648,7 +648,7 @@ def validate_ai_backend_parse(raw, action):
     elif target and target not in members and is_likely_agent_member(target):
         members.insert(0, target.lower())
 
-    if action == "urge_settlement":
+    if action in {"urge_settlement", "query_ticket_cancel_reason"}:
         target = order_no or target
         if not re.fullmatch(r"\d{12,24}", target):
             raise ValueError("AI未提取到有效注单号")
@@ -1085,7 +1085,7 @@ def extract_backend_target(text, step, use_default=True):
     action = normalize_backend_action((step or {}).get("backend_action", "unlock_sms"))
     if action == "add_proxy_whitelist":
         return extract_backend_proxy_ip(text, (step or {}).get("ip_pattern", ""), use_default=use_default)
-    if action == "urge_settlement":
+    if action in {"urge_settlement", "query_ticket_cancel_reason"}:
         return extract_backend_order_no(text, (step or {}).get("member_pattern", ""), use_default=use_default)
     return extract_backend_unlock_member(text, (step or {}).get("member_pattern", ""), use_default=use_default)
 
@@ -2094,15 +2094,15 @@ rule_task_semaphore = None
 VALID_REPLY_TYPES = {"text", "edit_prev", "forward", "copy_file", "amount_logic", "preempt_check", "notify_user", "backend_unlock", "agent_orchestrator"}
 BACKEND_UNLOCK_ACTIONS = {
     "unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan",
-    "send_site_inner_msg", "member_data_overview", "query_member_line",
-    "query_login_device_ip", "query_same_ip_device", "query_venue_turnover",
-    "configure_rebate", "urge_settlement", "agent_existing"
+        "send_site_inner_msg", "member_data_overview", "query_member_line",
+        "query_login_device_ip", "query_same_ip_device", "query_venue_turnover",
+        "configure_rebate", "urge_settlement", "query_ticket_cancel_reason", "agent_existing"
 }
 AGENT_EXECUTABLE_ACTIONS = {
     "unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan",
     "member_data_overview", "query_member_line", "query_login_device_ip",
     "query_same_ip_device", "query_venue_turnover", "configure_rebate",
-    "urge_settlement"
+    "urge_settlement", "query_ticket_cancel_reason"
 }
 AGENT_CAPABILITIES = [
     {
@@ -2143,6 +2143,7 @@ AGENT_CAPABILITIES = [
         "notes": "按后台返水等级逐级保存指定场馆游戏配置",
     },
     {"action": "urge_settlement", "name": "催结算", "input": "533开头16位注单号，可多个"},
+    {"action": "query_ticket_cancel_reason", "name": "注单取消/失败原因", "input": "533开头16位注单号"},
     {"action": "unlock_sms", "name": "短信/验证码限制", "input": "会员账号"},
     {"action": "clear_login_error", "name": "登录密码试错限制", "input": "会员账号"},
     {"action": "add_proxy_whitelist", "name": "代理 IP 加白", "input": "IPv4地址"},
@@ -2233,6 +2234,16 @@ def normalize_backend_action(action):
         "rebate_config": "configure_rebate",
         "configure_rebate_rate": "configure_rebate",
         "配置返水": "configure_rebate",
+        "ticket_cancel_reason": "query_ticket_cancel_reason",
+        "ticket_failure_reason": "query_ticket_cancel_reason",
+        "query_ticket_failure_reason": "query_ticket_cancel_reason",
+        "invalid_ticket_reason": "query_ticket_cancel_reason",
+        "query_invalid_ticket_reason": "query_ticket_cancel_reason",
+        "注单取消原因": "query_ticket_cancel_reason",
+        "取消原因": "query_ticket_cancel_reason",
+        "失败原因": "query_ticket_cancel_reason",
+        "无效原因": "query_ticket_cancel_reason",
+        "投注失败": "query_ticket_cancel_reason",
     }
     action = aliases.get(action, action)
     return action if action in BACKEND_UNLOCK_ACTIONS else "unlock_sms"
@@ -2359,7 +2370,7 @@ def queue_backend_unlock_command(target_value, rule, event, action="unlock_sms",
             command["endAt"] = ai_parse["endAt"]
         if ai_parse.get("agent_code"):
             command["agent_code"] = ai_parse["agent_code"]
-    if action == "urge_settlement":
+    if action in {"urge_settlement", "query_ticket_cancel_reason"}:
         telegram_account = str((step or {}).get("telegram_account", "") or "").strip()
         parsed_account = str(ai_parse.get("telegram_account") or "").strip()
         resolved_account = resolve_client_name(parsed_account)
@@ -2368,10 +2379,13 @@ def queue_backend_unlock_command(target_value, rule, event, action="unlock_sms",
         command.update({
             "backend_site": "merchant",
             "orderNo": target_value,
-            "telegram_target": str((step or {}).get("forward_to", "") or "").strip(),
-            "telegram_account": telegram_account,
-            "telegram_template": str((step or {}).get("text", "") or "").strip(),
         })
+        if action == "urge_settlement":
+            command.update({
+                "telegram_target": str((step or {}).get("forward_to", "") or "").strip(),
+                "telegram_account": telegram_account,
+                "telegram_template": str((step or {}).get("text", "") or "").strip(),
+            })
     if action == "unlock_sms":
         unlock_value = os.environ.get("ZD_SMS_UNLOCK_VALUE", "").strip()
         if unlock_value:
@@ -2487,13 +2501,13 @@ def humanize_backend_failure_detail(detail, action=""):
     if "6站未登录" in compact:
         return "6站未登录"
     if "未登录" in compact:
-        if action in {"urge_settlement", "merchant_order_statistics"}:
+        if action in {"urge_settlement", "merchant_order_statistics", "query_ticket_cancel_reason"}:
             return "场馆登录失效"
         return "后台未登录"
     if "扩展已重新加载" in compact or "拓展已重新加载" in compact or "刷新对应后台页面" in compact or "登录态同步" in compact:
         return "拓展未同步登录态"
     if "Failed to fetch" in compact or "Load failed" in compact or "请求失败" in compact or re.search(r"HTTP\s*[45]\d\d", compact):
-        label = "场馆接口请求失败" if action in {"urge_settlement", "merchant_order_statistics"} or "api-merchant-backstage" in compact else "后台接口请求失败"
+        label = "场馆接口请求失败" if action in {"urge_settlement", "merchant_order_statistics", "query_ticket_cancel_reason"} or "api-merchant-backstage" in compact else "后台接口请求失败"
         host_label = ""
         url_match = re.search(r"https?://([^\s/:。；]+)(/[^\s。；]*)?", compact)
         if url_match:
@@ -2550,7 +2564,7 @@ async def execute_backend_unlock_step(step, rule, event, source_text, target_cli
     if backend_action == "agent_existing":
         return await execute_agent_existing_step(step, rule, event, source_text, target_client=target_client)
     ai_parse = {}
-    if backend_action == "urge_settlement":
+    if backend_action in {"urge_settlement", "query_ticket_cancel_reason"}:
         target_values = extract_backend_order_nos(source_text or "", (step or {}).get("member_pattern", ""))
         target_value = target_values[0] if target_values else ""
         if not target_values:
@@ -2561,7 +2575,7 @@ async def execute_backend_unlock_step(step, rule, event, source_text, target_cli
         ai_parse = await parse_backend_message_with_ai(source_text or "", backend_action, str((rule or {}).get("name") or ""))
         target_value = str((ai_parse or {}).get("target") or "").strip() or extract_backend_target(source_text or "", step)
         target_values = [target_value] if target_value else []
-    if backend_action == "urge_settlement":
+    if backend_action in {"urge_settlement", "query_ticket_cancel_reason"}:
         seen_targets = set()
         clean_targets = []
         for value in [*target_values, str((ai_parse or {}).get("target") or "").strip()]:
@@ -2586,7 +2600,7 @@ async def execute_backend_unlock_step(step, rule, event, source_text, target_cli
             return "failure", (target_value, result, notified)
         return "success", (target_value, cmd_id, result)
 
-    if len(target_values) > 1 and backend_action == "urge_settlement":
+    if len(target_values) > 1 and backend_action in {"urge_settlement", "query_ticket_cancel_reason"}:
         results = await asyncio.gather(*(run_one_backend_target(target_value) for target_value in target_values))
     else:
         results = [await run_one_backend_target(target_value) for target_value in target_values]
@@ -2655,6 +2669,8 @@ def command_action_label(action):
         return "配置返水"
     if action == "urge_settlement":
         return "催结算"
+    if action == "query_ticket_cancel_reason":
+        return "注单取消/失败原因"
     return "短信/验证码限制"
 
 def member_data_private_requested(text):
@@ -2716,6 +2732,7 @@ def build_ai_agent_plan_prompt(text, rule_name="", previous_error=""):
 - 不要因为讨好用户而把不支持事项说成已处理。
 - 查数据 data_fields 只能从 总输赢、总流水、总存款、总提款、总红利、总返水 中选择；没明确字段时返回空数组。
 - 催结算 order_no/target 必须是12到24位注单号；代理加白 ip/target 必须是IPv4；账号类 member/target 填会员账号。
+- 注单取消/失败/无效原因使用 query_ticket_cancel_reason，不要使用 urge_settlement。
 - 查线/登录设备/查同IP设备可以把多个会员放 members，把消息里的合营代码放 agent_codes；查代理线 line_mode 填 agent。
 - 查询场馆流水 target/member 填会员账号，venue 填场馆名，例如 米兰体育。
 - 配置返水 venue 填场馆名，game 填游戏名；site 只在明确 6站/JN 或 9站/ML 时填写 6001/9001。
@@ -2790,6 +2807,16 @@ def normalize_agent_task_action(action):
         "urge_settle": "urge_settlement",
         "urge_settlement_order": "urge_settlement",
         "催结算": "urge_settlement",
+        "ticket_cancel_reason": "query_ticket_cancel_reason",
+        "ticket_failure_reason": "query_ticket_cancel_reason",
+        "query_ticket_failure_reason": "query_ticket_cancel_reason",
+        "invalid_ticket_reason": "query_ticket_cancel_reason",
+        "query_invalid_ticket_reason": "query_ticket_cancel_reason",
+        "注单取消原因": "query_ticket_cancel_reason",
+        "取消原因": "query_ticket_cancel_reason",
+        "失败原因": "query_ticket_cancel_reason",
+        "无效原因": "query_ticket_cancel_reason",
+        "投注失败": "query_ticket_cancel_reason",
         "代理加白": "add_proxy_whitelist",
         "代理IP加白": "add_proxy_whitelist",
         "短信解锁": "unlock_sms",
@@ -2819,7 +2846,7 @@ def sanitize_agent_task(raw_task):
     agent_codes = clean_agent_codes(raw_task.get("agent_codes"), source_text)
     if raw_task.get("agent_code"):
         agent_codes = clean_agent_codes([raw_task.get("agent_code"), *agent_codes])
-    if action == "urge_settlement":
+    if action in {"urge_settlement", "query_ticket_cancel_reason"}:
         target = order_no or target
         if not re.fullmatch(r"\d{12,24}", target):
             return None
@@ -2883,7 +2910,9 @@ def agent_plan_fallback(text):
         tasks.append(task)
 
     for order_no in extract_backend_order_nos(source_text, ""):
-        if looks_like_short_urge_settlement(source_text):
+        if re.search(r"无效|失败|投注失败|失败原因|取消原因|无效原因|注单取消", source_text):
+            add_task(sanitize_agent_task({"action": "query_ticket_cancel_reason", "order_no": order_no, "target": order_no}))
+        elif looks_like_short_urge_settlement(source_text):
             add_task(sanitize_agent_task({"action": "urge_settlement", "order_no": order_no, "target": order_no}))
 
     if re.search(r"加白|白名单|代理IP|代理\s*IP", source_text, flags=re.IGNORECASE):
@@ -3947,9 +3976,10 @@ SETTINGS_HTML = """
                                                     <option value="query_venue_turnover">查场馆流水锁定</option>
                                                     <option value="configure_rebate">配置返水</option>
                                                     <option value="urge_settlement">催结算</option>
+                                                    <option value="query_ticket_cancel_reason">注单取消/失败原因</option>
                                                 </select>
                                             </div>
-                                            <div class="visual-field" v-if="reply.backend_action === 'urge_settlement'">
+                                            <div class="visual-field" v-if="reply.backend_action === 'urge_settlement' || reply.backend_action === 'query_ticket_cancel_reason'">
                                                 <div class="visual-label"><i class="fa-solid fa-receipt"></i>提取注单号的正则</div>
                                                 <input v-model="reply.member_pattern" class="bento-input w-full px-2 py-1.5 h-8 text-[11px] font-mono text-orange-700 bg-orange-50 border-orange-200" placeholder="留空：从已匹配消息里提取 12-24 位注单号">
                                             </div>

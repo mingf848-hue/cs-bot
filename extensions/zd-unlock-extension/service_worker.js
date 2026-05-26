@@ -155,6 +155,7 @@ function siteFromCommand(action, cmd = {}) {
   if (
     action === 'merchant_order_statistics'
     || action === 'urge_settlement'
+    || action === 'query_ticket_cancel_reason'
     || action === 'venue_order_statistics'
     || action === 'merchant_order_query'
     || action === 'venue_order_query'
@@ -606,6 +607,7 @@ function commandLabel(action) {
   if (action === 'configure_rebate') return '配置返水';
   if (action === 'merchant_order_statistics') return '场馆注单查询';
   if (action === 'urge_settlement') return '催结算';
+  if (action === 'query_ticket_cancel_reason') return '注单取消/失败原因';
   return '短信/验证码解锁';
 }
 
@@ -618,7 +620,7 @@ function compactRequestFailureReason(text, action = '') {
   const raw = String(text || '').replace(/\s+/g, ' ');
   const urlMatch = raw.match(/https?:\/\/[^\s。；]+/);
   let endpoint = '';
-  let label = action === 'urge_settlement' || action === 'merchant_order_statistics' ? '场馆接口请求失败' : '后台接口请求失败';
+  let label = action === 'urge_settlement' || action === 'merchant_order_statistics' || action === 'query_ticket_cancel_reason' ? '场馆接口请求失败' : '后台接口请求失败';
   if (urlMatch) {
     try {
       const parsed = new URL(urlMatch[0].replace(/[),，。；]+$/, ''));
@@ -652,7 +654,7 @@ function friendlyErrorReason(err, action = '', label = '') {
   if (/9站未登录|9001未登录/.test(text)) return '9站未登录';
   if (/6站未登录|6001未登录/.test(text)) return '6站未登录';
   if (/未登录/.test(text)) {
-    if (action === 'urge_settlement' || action === 'merchant_order_statistics') return '场馆登录失效';
+    if (action === 'urge_settlement' || action === 'merchant_order_statistics' || action === 'query_ticket_cancel_reason') return '场馆登录失效';
     return `${label || '后台'}未登录`;
   }
   if (/扩展已重新加载|拓展已重新加载|刷新对应后台页面|登录态同步|后台页面已刷新/.test(text)) return '拓展未同步登录态';
@@ -681,6 +683,11 @@ function normalizeCommandAction(action, cmd = {}) {
     settlement_urge: 'urge_settlement',
     urge_settle: 'urge_settlement',
     urge_settlement_order: 'urge_settlement',
+    ticket_cancel_reason: 'query_ticket_cancel_reason',
+    ticket_failure_reason: 'query_ticket_cancel_reason',
+    query_ticket_failure_reason: 'query_ticket_cancel_reason',
+    invalid_ticket_reason: 'query_ticket_cancel_reason',
+    query_invalid_ticket_reason: 'query_ticket_cancel_reason',
     data_overview: 'member_data_overview',
     query_member_data: 'member_data_overview',
     member_data_query: 'member_data_overview',
@@ -709,11 +716,16 @@ function normalizeCommandAction(action, cmd = {}) {
     '查场馆流水': 'query_venue_turnover',
     '流水锁定': 'query_venue_turnover',
     '配置返水': 'configure_rebate',
-    '催结算': 'urge_settlement'
+    '催结算': 'urge_settlement',
+    '注单取消原因': 'query_ticket_cancel_reason',
+    '取消原因': 'query_ticket_cancel_reason',
+    '失败原因': 'query_ticket_cancel_reason',
+    '无效原因': 'query_ticket_cancel_reason',
+    '投注失败': 'query_ticket_cancel_reason'
   };
   const normalized = aliases[raw] || raw;
   if (hasMerchantCommandHint(cmd) && (raw === '' || raw === 'unlock_sms')) return 'merchant_order_statistics';
-  return ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg', 'member_data_overview', 'query_member_line', 'query_login_device_ip', 'query_same_ip_device', 'query_venue_turnover', 'configure_rebate', 'merchant_order_statistics', 'urge_settlement'].includes(normalized)
+  return ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg', 'member_data_overview', 'query_member_line', 'query_login_device_ip', 'query_same_ip_device', 'query_venue_turnover', 'configure_rebate', 'merchant_order_statistics', 'urge_settlement', 'query_ticket_cancel_reason'].includes(normalized)
     ? normalized
     : 'unlock_sms';
 }
@@ -735,6 +747,7 @@ function isSupportedCommandAction(action, cmd = {}) {
     'configure_rebate',
     'merchant_order_statistics',
     'urge_settlement',
+    'query_ticket_cancel_reason',
     'venue_order_statistics',
     'venue_order_query',
     'merchant_order_query',
@@ -771,7 +784,17 @@ function isSupportedCommandAction(action, cmd = {}) {
     'settlement_urge',
     'urge_settle',
     'urge_settlement_order',
-    '催结算'
+    'ticket_cancel_reason',
+    'ticket_failure_reason',
+    'query_ticket_failure_reason',
+    'invalid_ticket_reason',
+    'query_invalid_ticket_reason',
+    '催结算',
+    '注单取消原因',
+    '取消原因',
+    '失败原因',
+    '无效原因',
+    '投注失败'
   ].includes(raw);
 }
 
@@ -1779,13 +1802,34 @@ function orderStatusLabel(status) {
 
 function failureRiskText(order = {}, detail = {}) {
   const direct = String(detail.riskEvent || order.riskEvent || '').trim();
-  if (direct) return direct;
+  if (direct) return normalizeRiskReason(direct);
   const remark = String(detail.remark || order.remark || '').trim();
   const reasonMatch = remark.match(/原因[:：]\s*([^，,。\s]+)/);
-  if (reasonMatch) return reasonMatch[1].trim();
+  if (reasonMatch) return normalizeRiskReason(reasonMatch[1].trim());
   const eventMatch = remark.match(/([A-Za-z_]+|[\u4e00-\u9fa5]+)事件拒单/);
-  if (eventMatch) return eventMatch[1].trim();
+  if (eventMatch) return normalizeRiskReason(eventMatch[1].trim());
   return '盘口变动';
+}
+
+function normalizeRiskReason(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const compact = normalizeText(raw);
+  const lower = raw.toLowerCase().replace(/[\s-]+/g, '_');
+  const aliases = [
+    [/possible_penalty|penalty/i, '可能点球'],
+    [/suspected_match_fixing|match_fixing|fixed_match|suspected_fixed|agreement_match|protocol_match|suspected_agreement|suspected_protocol/i, '疑似协议赛'],
+    [/odds_change|odds_changed|odds_error|odd_change|price_change/i, '盘口变动'],
+    [/late_bet|delay_bet|bet_delay/i, '延迟投注'],
+    [/abnormal_bet|risk_bet/i, '异常投注']
+  ];
+  for (const [pattern, label] of aliases) {
+    if (pattern.test(lower)) return label;
+  }
+  if (/疑似.*协议|协议赛|假球|操控|对打/.test(compact)) return '疑似协议赛';
+  if (/可能点球|点球/.test(compact)) return '可能点球';
+  if (/盘口|赔率/.test(compact)) return '盘口变动';
+  return raw;
 }
 
 function ticketMatchText(detail = {}) {
@@ -1796,6 +1840,61 @@ function betFailureReply(order = {}, detail = {}) {
   const matchText = ticketMatchText(detail) || '相关赛事';
   const riskText = failureRiskText(order, detail);
   return `您好，经核实，因用户下注确认期间其中赛事：${matchText} ${riskText} 导致投注失败，属于系统正常拒单，本金已退回，谢谢。`;
+}
+
+function orderIsBetFailed(order = {}, detail = {}) {
+  return Number(order.orderStatus) === 4 || Number(detail.betStatus) === 5;
+}
+
+function orderIsCanceled(order = {}, detail = {}) {
+  return Number(order.orderStatus) === 2 || Number(detail.betStatus) === 3;
+}
+
+function cancelReasonText(order = {}, detail = {}) {
+  return normalizeRiskReason(
+    detail.cancelReasonName
+    || detail.cancelReason
+    || detail.riskEvent
+    || order.cancelReasonName
+    || order.cancelReason
+    || order.riskEvent
+    || failureRiskText(order, detail)
+  ) || '风控原因';
+}
+
+function ticketCancelReasonReply(order = {}, detail = {}) {
+  return `因${cancelReasonText(order, detail)}，注单取消，退本金。`;
+}
+
+function ticketReasonRequested(cmd = {}) {
+  const text = commandSourceText(cmd);
+  return /无效|失败原因|投注失败|取消原因|无效原因|注单取消/.test(text)
+    || (/失败/.test(text) && !/催结算失败|自动处理失败|后台.*失败/.test(text));
+}
+
+function ticketReasonReplyForOrder(order = {}, detail = {}, orderNo = '', cmd = {}) {
+  if (orderIsBetFailed(order, detail)) {
+    return {
+      replyText: betFailureReply(order, detail),
+      msg: `注单失败原因已回复：${orderNo}`
+    };
+  }
+  if (orderIsCanceled(order, detail)) {
+    return {
+      replyText: ticketCancelReasonReply(order, detail),
+      msg: `注单取消原因已回复：${orderNo}`
+    };
+  }
+  if (Number(order.orderStatus) !== 0) {
+    return {
+      replyText: String(cmd.settled_reply || '注单已结算，请刷新注单页面查看。'),
+      msg: `注单取消/失败原因跳过：${orderNo} ${orderStatusLabel(order.orderStatus)}`
+    };
+  }
+  return {
+    replyText: String(cmd.pending_reply || '注单目前未结算，暂未取消。'),
+    msg: `注单取消/失败原因跳过：${orderNo} 未结算`
+  };
 }
 
 function noticeText(item = {}) {
@@ -2439,6 +2538,37 @@ async function runMerchantOrderStatisticsCommand(config, cmd, targetValue) {
   await ack(config, cmd, ok ? 'success' : `http_${query.res.status}`, query.text.slice(0, 500));
 }
 
+async function queryMerchantTicketOrder(config, cmd, orderNo, statusPrefix = '查询注单') {
+  if (!config.merchantTicketListUrl) throw new Error('场馆注单列表接口未配置');
+  const headers = merchantHeaders(config, cmd);
+  const venueLabel = config.pageAuthLabel || merchantAuthLabel(config);
+  await setStatus({ state: 'running', message: `${statusPrefix} ${orderNo} (${venueLabel})` });
+  const ticket = await postJson(merchantUrl(config.merchantTicketListUrl), headers, merchantTicketBody(cmd, orderNo));
+  if (!merchantApiOk(ticket)) {
+    const err = new Error(`查询注单失败 HTTP ${ticket.res.status}: ${ticket.text.slice(0, 300)}`);
+    if (merchantAuthFailed(ticket)) {
+      err.code = 'merchant_auth_failed';
+      err.venueLabel = venueLabel;
+    }
+    throw err;
+  }
+  const order = merchantList(ticket.data)[0];
+  if (!order) {
+    const err = new Error(`未找到注单：${orderNo}`);
+    err.code = 'merchant_order_not_found';
+    err.venueLabel = venueLabel;
+    throw err;
+  }
+  return { headers, ticket, order, venueLabel };
+}
+
+async function runTicketCancelReasonCommand(config, cmd, orderNo) {
+  const { ticket, order } = await queryMerchantTicketOrder(config, cmd, orderNo, '查询注单取消/失败原因');
+  const detail = firstOrderDetail(order);
+  const { replyText, msg } = ticketReasonReplyForOrder(order, detail, orderNo, cmd);
+  await replyOrigin(config, cmd, msg, replyText, ticket.text);
+}
+
 async function replyInvalidTicketNotice(config, cmd, headers, orderNo, order, detail, ticketText) {
   if (!config.merchantNoticeUrl) throw new Error('场馆公告接口未配置');
   const matchId = String(detail.matchId || order.standardMatchId || detail.standardMatchId || '').trim();
@@ -2513,14 +2643,22 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
   const pendingDetails = unresolvedOrderDetails(order);
   const detail = pendingDetails[0] || firstOrderDetail(order);
   const statusLabel = orderStatusLabel(order.orderStatus);
-  if (Number(order.orderStatus) === 4 || Number(detail.betStatus) === 5) {
+  if (ticketReasonRequested(cmd)) {
+    const reasonDetail = firstOrderDetail(order);
+    const { replyText, msg } = ticketReasonReplyForOrder(order, reasonDetail, orderNo, cmd);
+    await replyOrigin(config, cmd, msg, replyText, ticket.text);
+    return;
+  }
+  if (orderIsBetFailed(order, detail)) {
     const replyText = betFailureReply(order, detail);
     const msg = `投注失败退本金已回复：${orderNo}`;
     await replyOrigin(config, cmd, msg, replyText, ticket.text);
     return;
   }
-  if (Number(order.orderStatus) === 2 || Number(detail.betStatus) === 3) {
-    await replyInvalidTicketNotice(config, cmd, headers, orderNo, order, detail, ticket.text);
+  if (orderIsCanceled(order, detail)) {
+    const replyText = ticketCancelReasonReply(order, detail);
+    const msg = `注单取消原因已回复：${orderNo}`;
+    await replyOrigin(config, cmd, msg, replyText, ticket.text);
     return;
   }
   if (Number(order.orderStatus) !== 0) {
@@ -2692,12 +2830,42 @@ async function runUrgeSettlementCommandWithFallback(configs, cmd, orderNo) {
   throw new Error(`所有场馆账号均未找到注单：${orderNo}${suffix}`);
 }
 
+async function runTicketCancelReasonCommandWithFallback(configs, cmd, orderNo) {
+  const tried = [];
+  const authFailed = [];
+  for (const candidate of configs) {
+    try {
+      await runTicketCancelReasonCommand(candidate, cmd, orderNo);
+      return;
+    } catch (err) {
+      const label = err.venueLabel || candidate.pageAuthLabel || merchantAuthLabel(candidate);
+      if (err && err.code === 'merchant_order_not_found') {
+        tried.push(label);
+        continue;
+      }
+      if (err && err.code === 'merchant_auth_failed') {
+        authFailed.push(label);
+        continue;
+      }
+      throw err;
+    }
+  }
+  const parts = [];
+  if (tried.length) parts.push(`未找到：${[...new Set(tried)].join('、')}`);
+  if (authFailed.length) parts.push(`登录失效：${[...new Set(authFailed)].join('、')}`);
+  const suffix = parts.length ? `（${parts.join('；')}）` : '';
+  if (!tried.length && authFailed.length) {
+    throw new Error(`所有场馆账号登录失效，未能查询注单：${orderNo}${suffix}`);
+  }
+  throw new Error(`所有场馆账号均未找到注单：${orderNo}${suffix}`);
+}
+
 async function runBackendCommand(config, cmd) {
   const action = normalizeCommandAction(cmd.action, cmd);
-  const rawValue = action === 'merchant_order_statistics' || action === 'urge_settlement'
+  const rawValue = action === 'merchant_order_statistics' || action === 'urge_settlement' || action === 'query_ticket_cancel_reason'
     ? (cmd.orderNo || cmd.order_no || cmd.target_value || cmd.member_name || '')
     : (cmd.target_value || cmd.member_name || '');
-  const targetValue = action === 'add_proxy_whitelist' || action === 'merchant_order_statistics' || action === 'urge_settlement'
+  const targetValue = action === 'add_proxy_whitelist' || action === 'merchant_order_statistics' || action === 'urge_settlement' || action === 'query_ticket_cancel_reason'
     ? String(rawValue).trim()
     : String(rawValue).trim().toLowerCase();
   if (!targetValue) return;
@@ -2707,6 +2875,11 @@ async function runBackendCommand(config, cmd) {
     if (action === 'urge_settlement') {
       const configs = authConfigsForAction(config, action, cmd);
       await runUrgeSettlementCommandWithFallback(configs, cmd, targetValue);
+      return;
+    }
+    if (action === 'query_ticket_cancel_reason') {
+      const configs = authConfigsForAction(config, action, cmd);
+      await runTicketCancelReasonCommandWithFallback(configs, cmd, targetValue);
       return;
     }
     config = configForAction(config, action, cmd);
