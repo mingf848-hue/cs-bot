@@ -1563,6 +1563,15 @@ function apiOk(res, data) {
   return res.ok && (data.status_code === undefined || Number(data.status_code) === 6000);
 }
 
+function actionOk(res, data, text, action) {
+  if (apiOk(res, data)) return true;
+  const raw = `${(data && data.message) || ''} ${text || ''}`.replace(/\s+/g, '');
+  if (action === 'add_proxy_whitelist' && res.ok && /IP[:：]?[0-9.]+已经存在|已经存在|已存在/.test(raw)) {
+    return true;
+  }
+  return false;
+}
+
 async function findExactMember(config, targetValue) {
   if (!config.memberListUrl) throw new Error('会员查询接口未配置');
   await setStatus({ state: 'running', message: `查询会员 ${targetValue}` });
@@ -2229,7 +2238,7 @@ async function runBackendCommand(config, cmd) {
     });
     const text = await res.text();
     const data = parseJsonText(text);
-    const ok = apiOk(res, data);
+    const ok = actionOk(res, data, text, action);
     const reason = (data && data.message) || text;
     await setStatus({
       state: ok ? 'success' : 'error',
