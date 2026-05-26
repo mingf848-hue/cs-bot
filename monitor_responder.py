@@ -1334,13 +1334,14 @@ def clean_settlement_group_reply(text):
     if not raw:
         return ""
     raw = re.sub(r"\r\n?", "\n", raw)
+    suffix = r"(?:\s*[~～\-—–_#]*\s*[A-Za-z0-9][A-Za-z0-9_-]{0,15})\s*[。.!！]*"
     raw = re.sub(
-        r"(谢谢[！!。.]?)(?:\s*[A-Za-z0-9][A-Za-z0-9_-]{0,11})\s*$",
+        rf"(谢谢[！!。.]?){suffix}\s*$",
         r"\1",
         raw,
     )
     raw = re.sub(
-        r"(感谢[！!。.]?)(?:\s*[A-Za-z0-9][A-Za-z0-9_-]{0,11})\s*$",
+        rf"(感谢[！!。.]?){suffix}\s*$",
         r"\1",
         raw,
     )
