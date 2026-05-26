@@ -519,7 +519,7 @@ def build_ai_backend_parse_prompt(text, action, rule_name="", previous_error="")
 - member 仅账号类填写；order_no 仅催结算/取消失败原因填写；ip 仅代理加白填写。
 - 查线/登录设备/查同IP设备支持多个会员，放 members；消息里的合营代码放 agent_codes。
 - 查询场馆流水要提取 venue；配置返水要提取 venue 和 game。
-- data_fields 只在查数据时填写，例如 ["总输赢","总红利","总返水"]；没明确要求字段时返回空数组。
+- data_fields 只在查数据时填写，并按原消息要求出现顺序返回，例如 ["总存款","总提款","总流水"]；没明确要求字段时返回空数组。
 - private_reply 只有明确要求私发/私聊/发我时才是 true。
 - telegram_account 只有明确指定发送账号时填写账号名，否则空。
 - agent_code 只有消息里明确提供上级代理编号时填写，通常是账号后面的5到12位数字。
@@ -560,12 +560,47 @@ def call_zd_ai_parse_once(text, action, rule_name="", previous_error=""):
 
 def clean_ai_data_fields(fields):
     allowed = {"总输赢", "总流水", "总存款", "总提款", "总红利", "总返水"}
-    aliases = {"总反水": "总返水", "反水": "总返水", "返水": "总返水", "输赢": "总输赢", "红利": "总红利", "流水": "总流水"}
+    aliases = {
+        "总反水": "总返水", "反水": "总返水", "返水": "总返水",
+        "输赢": "总输赢", "盈亏": "总输赢",
+        "红利": "总红利", "优惠": "总红利",
+        "流水": "总流水", "有效流水": "总流水", "有效投注": "总流水",
+        "存款": "总存款", "充值": "总存款",
+        "提款": "总提款", "取款": "总提款",
+    }
     out = []
     for item in fields if isinstance(fields, list) else []:
         label = aliases.get(str(item or "").strip(), str(item or "").strip())
         if label in allowed and label not in out:
             out.append(label)
+    return out
+
+def data_overview_fields_from_text(text):
+    aliases = [
+        ("总输赢", "总输赢"), ("输赢", "总输赢"),
+        ("总流水", "总流水"), ("有效流水", "总流水"), ("有效投注", "总流水"), ("流水", "总流水"),
+        ("总存款", "总存款"), ("存款", "总存款"), ("充值", "总存款"),
+        ("总提款", "总提款"), ("提款", "总提款"), ("取款", "总提款"),
+        ("总红利", "总红利"), ("红利", "总红利"), ("优惠", "总红利"),
+        ("总返水", "总返水"), ("总反水", "总返水"), ("返水", "总返水"), ("反水", "总返水"),
+    ]
+    source = str(text or "")
+    matches = []
+    for alias, label in aliases:
+        start = 0
+        while True:
+            idx = source.find(alias, start)
+            if idx < 0:
+                break
+            matches.append((idx, -len(alias), label))
+            start = idx + max(1, len(alias))
+    out = []
+    seen = set()
+    for _idx, _neg_len, label in sorted(matches):
+        if label in seen:
+            continue
+        seen.add(label)
+        out.append(label)
     return out
 
 def is_likely_agent_member(value):
@@ -2750,7 +2785,7 @@ def build_ai_agent_plan_prompt(text, rule_name="", previous_error=""):
 - 用户一句话有多个诉求时，拆成多个 task。
 - 用户要求的事项没有对应能力时，放到 unsupported，不能放进 tasks。
 - 不要因为讨好用户而把不支持事项说成已处理。
-- 查数据 data_fields 只能从 总输赢、总流水、总存款、总提款、总红利、总返水 中选择；没明确字段时返回空数组。
+- 查数据 data_fields 只能从 总输赢、总流水、总存款、总提款、总红利、总返水 中选择，顺序必须跟原消息要求一致；没明确字段时返回空数组。
 - 催结算 order_no/target 必须是12到24位注单号；代理加白 ip/target 必须是IPv4；账号类 member/target 填会员账号。
 - 催结算只处理“未结算/一直不结算/催促结算/催结算”等要求推进结算的消息。
 - 注单取消/失败/无效原因必须使用 query_ticket_cancel_reason，不要使用 urge_settlement。
@@ -3002,10 +3037,7 @@ def agent_plan_fallback(text):
             "site": site,
         }))
 
-    fields = clean_ai_data_fields([
-        label for label in ["总输赢", "总流水", "总存款", "总提款", "总红利", "总返水", "总反水", "输赢", "流水", "红利", "返水", "反水"]
-        if label in source_text
-    ])
+    fields = data_overview_fields_from_text(source_text)
     if fields:
         member = extract_backend_unlock_member(source_text, "")
         add_task(sanitize_agent_task({"action": "member_data_overview", "member": member, "target": member, "data_fields": fields}))
@@ -3019,10 +3051,26 @@ def sanitize_agent_plan(raw, source_text=""):
         raise ValueError(str(raw.get("reason") or "AI表示无法规划"))
     tasks = []
     seen = set()
+    data_task_index = {}
     for item in raw.get("tasks") if isinstance(raw.get("tasks"), list) else []:
         task = sanitize_agent_task(item)
         if not task:
             continue
+        if task["action"] == "member_data_overview":
+            source_fields = data_overview_fields_from_text(source_text)
+            if source_fields:
+                task["data_fields"] = source_fields
+            data_key = (task["action"], task["target"], task.get("startAt"), task.get("endAt"))
+            existing_index = data_task_index.get(data_key)
+            if existing_index is not None:
+                merged_fields = clean_ai_data_fields([
+                    *(tasks[existing_index].get("data_fields") or []),
+                    *(task.get("data_fields") or []),
+                ])
+                tasks[existing_index]["data_fields"] = merged_fields
+                tasks[existing_index]["private_reply"] = tasks[existing_index].get("private_reply") or task.get("private_reply")
+                continue
+            data_task_index[data_key] = len(tasks)
         key = (task["action"], task["target"], tuple(task.get("data_fields") or []), task.get("startAt"), task.get("endAt"))
         if key in seen:
             continue
@@ -3099,13 +3147,20 @@ def merge_agent_reply_blocks(blocks):
         lines = block.splitlines()
         if len(lines) >= 1 and re.fullmatch(BACKEND_UNLOCK_ACCOUNT_PATTERN, lines[0].strip(), flags=re.IGNORECASE):
             member = lines[0].strip().lower()
+            merged_lines = list(lines)
+            seen_lines = {line.strip() for line in merged_lines if line.strip()}
             extra_lines = []
             for jdx in range(idx + 1, len(clean)):
                 other_lines = clean[jdx].splitlines()
                 if other_lines and other_lines[0].strip().lower() == member:
-                    extra_lines.extend(other_lines[1:] or other_lines)
+                    for line in (other_lines[1:] or other_lines):
+                        compact = line.strip()
+                        if not compact or compact in seen_lines:
+                            continue
+                        seen_lines.add(compact)
+                        extra_lines.append(line)
                     used[jdx] = True
-            merged.append("\n".join([*lines, *extra_lines]).strip())
+            merged.append("\n".join([*merged_lines, *extra_lines]).strip())
         else:
             merged.append(block)
         used[idx] = True

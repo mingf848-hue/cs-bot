@@ -1682,21 +1682,78 @@ async function runConfigureRebateCommand(config, cmd, targetValue) {
 }
 
 function requestedDataOverviewFields(cmd = {}) {
-  const rawText = [
+  const sourceText = [
     cmd.source_text,
     cmd.sourceText,
     cmd.original_text,
     cmd.originalText,
     cmd.message,
-    cmd.text,
-    cmd.data_fields,
-    cmd.dataFields
+    cmd.text
   ].filter(Boolean).join(' ');
-  const text = normalizeText(rawText);
-  const selected = DATA_OVERVIEW_FIELDS.filter((field) => (
-    field.aliases || []
-  ).some((alias) => text.includes(normalizeText(alias))));
-  return selected.length ? selected : DATA_OVERVIEW_FIELDS;
+  const sourceLabels = dataOverviewFieldLabelsFromText(sourceText);
+  if (sourceLabels.length) return dataOverviewFieldsFromLabels(sourceLabels);
+  const explicitLabels = dataOverviewFieldLabelsFromValues([cmd.data_fields, cmd.dataFields]);
+  return explicitLabels.length ? dataOverviewFieldsFromLabels(explicitLabels) : DATA_OVERVIEW_FIELDS;
+}
+
+function normalizeDataOverviewFieldLabel(value) {
+  const text = normalizeText(value);
+  if (!text) return '';
+  for (const field of DATA_OVERVIEW_FIELDS) {
+    if ((field.aliases || []).some((alias) => text === normalizeText(alias))) {
+      return field.label;
+    }
+  }
+  return '';
+}
+
+function pushDataOverviewLabel(out, seen, label) {
+  if (!label || seen.has(label)) return;
+  seen.add(label);
+  out.push(label);
+}
+
+function dataOverviewFieldLabelsFromValues(values = []) {
+  const out = [];
+  const seen = new Set();
+  const add = (value) => {
+    if (Array.isArray(value)) {
+      value.forEach(add);
+      return;
+    }
+    String(value || '').split(/[，,、;；\s]+/).forEach((item) => {
+      pushDataOverviewLabel(out, seen, normalizeDataOverviewFieldLabel(item));
+    });
+  };
+  values.forEach(add);
+  return out;
+}
+
+function dataOverviewFieldLabelsFromText(value = '') {
+  const raw = String(value || '');
+  const matches = [];
+  for (const field of DATA_OVERVIEW_FIELDS) {
+    for (const alias of field.aliases || []) {
+      const matcher = new RegExp(escapeRegExp(alias), 'g');
+      let match;
+      while ((match = matcher.exec(raw))) {
+        matches.push({ index: match.index, length: alias.length, label: field.label });
+        if (!alias.length) break;
+      }
+    }
+  }
+  matches.sort((a, b) => (a.index - b.index) || (b.length - a.length));
+  const out = [];
+  const seen = new Set();
+  for (const item of matches) {
+    pushDataOverviewLabel(out, seen, item.label);
+  }
+  return out;
+}
+
+function dataOverviewFieldsFromLabels(labels = []) {
+  const fieldsByLabel = new Map(DATA_OVERVIEW_FIELDS.map((field) => [field.label, field]));
+  return labels.map((label) => fieldsByLabel.get(label)).filter(Boolean);
 }
 
 function detailIsSettled(detail = {}) {
