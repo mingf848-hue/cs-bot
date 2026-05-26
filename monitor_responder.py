@@ -2404,7 +2404,7 @@ def queue_backend_unlock_command(target_value, rule, event, action="unlock_sms",
             for key in (
                 "target", "members", "agent_codes", "data_fields", "startAt", "endAt",
                 "private_reply", "telegram_account", "agent_code", "venue", "game",
-                "site", "line_mode"
+                "site", "line_mode", "order_nos", "urge_batch_id", "urge_batch_total"
             )
             if ai_parse.get(key) not in (None, "", [])
         }
@@ -2441,6 +2441,12 @@ def queue_backend_unlock_command(target_value, rule, event, action="unlock_sms",
                 "telegram_account": telegram_account,
                 "telegram_template": str((step or {}).get("text", "") or "").strip(),
             })
+            if ai_parse.get("order_nos"):
+                command["order_nos"] = ai_parse["order_nos"]
+            if ai_parse.get("urge_batch_id"):
+                command["urge_batch_id"] = ai_parse["urge_batch_id"]
+            if ai_parse.get("urge_batch_total"):
+                command["urge_batch_total"] = ai_parse["urge_batch_total"]
     if action == "unlock_sms":
         unlock_value = os.environ.get("ZD_SMS_UNLOCK_VALUE", "").strip()
         if unlock_value:
@@ -2646,8 +2652,19 @@ async def execute_backend_unlock_step(step, rule, event, source_text, target_cli
         await notify_backend_failure(step, rule, event, "", backend_action, result)
         raise RuntimeError(f"后台动作未提取到目标值：{command_action_label(backend_action)}")
 
+    urge_batch_id = ""
+    if backend_action == "urge_settlement" and len(target_values) > 1:
+        urge_batch_id = f"{getattr(event, 'chat_id', '')}:{getattr(event, 'id', '')}:{','.join(target_values)}"
+
     async def run_one_backend_target(target_value):
-        cmd_id = queue_backend_unlock_command(target_value, rule, event, backend_action, step=step, ai_parse=ai_parse)
+        target_ai_parse = dict(ai_parse or {})
+        if urge_batch_id:
+            target_ai_parse.update({
+                "order_nos": target_values,
+                "urge_batch_id": urge_batch_id,
+                "urge_batch_total": len(target_values),
+            })
+        cmd_id = queue_backend_unlock_command(target_value, rule, event, backend_action, step=step, ai_parse=target_ai_parse)
         logger.info(f"🔓 [BackendUnlock] 规则 '{rule.get('name')}' 已下发后台指令: {backend_action} {target_value} | id={cmd_id}")
         result = await wait_backend_command_result(cmd_id, timeout=BACKEND_COMMAND_TIMEOUT)
         if not backend_result_ok(result):
@@ -3236,6 +3253,15 @@ async def execute_agent_existing_step(step, rule, event, source_text, target_cli
         result = {"status": "no_target", "detail": "Agent未识别到现有能力"}
         await notify_backend_failure(step, rule, event, "", "agent_existing", result)
         raise RuntimeError("Agent未识别到现有能力")
+
+    urge_tasks = [task for task in tasks if task.get("action") == "urge_settlement"]
+    if len(urge_tasks) > 1:
+        order_nos = [str(task.get("target") or "").strip() for task in urge_tasks if str(task.get("target") or "").strip()]
+        batch_id = f"agent:{getattr(event, 'chat_id', '')}:{getattr(event, 'id', '')}:{','.join(order_nos)}"
+        for task in urge_tasks:
+            task["order_nos"] = order_nos
+            task["urge_batch_id"] = batch_id
+            task["urge_batch_total"] = len(order_nos)
 
     async def run_one_agent_task(task):
         action = task["action"]

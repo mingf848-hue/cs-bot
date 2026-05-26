@@ -55,6 +55,9 @@ const COMMAND_POLL_ALARM_MINUTES = 0.25;
 const MERCHANT_URGE_MATCH_STATS_KEY = 'merchantUrgeMatchStatsV1';
 const MERCHANT_URGE_MATCH_LIMIT = 2;
 const MERCHANT_URGE_MATCH_TTL_MS = 24 * 60 * 60 * 1000;
+const MERCHANT_URGE_BATCH_WAIT_MS = 6000;
+const MERCHANT_URGE_BATCH_POLL_MS = 150;
+const merchantUrgeTelegramBatches = new Map();
 const SITE_PROFILES = {
   '9001': {
     host: '9sitebg.mvj4e7.com',
@@ -2310,6 +2313,121 @@ async function sendTelegramFromCommand(config, cmd, text) {
   return data;
 }
 
+function commandArrayValue(cmd = {}, ...keys) {
+  const ai = commandAiParse(cmd);
+  for (const key of keys) {
+    const value = cmd[key] ?? ai[key];
+    if (Array.isArray(value)) return value.map((item) => String(item || '').trim()).filter(Boolean);
+    if (typeof value === 'string' && value.trim()) {
+      return value.split(/[,，\s]+/).map((item) => item.trim()).filter(Boolean);
+    }
+  }
+  return [];
+}
+
+function commandNumberValue(cmd = {}, ...keys) {
+  const ai = commandAiParse(cmd);
+  for (const key of keys) {
+    const value = cmd[key] ?? ai[key];
+    const number = Number(value);
+    if (Number.isFinite(number) && number > 0) return number;
+  }
+  return 0;
+}
+
+function commandStringValue(cmd = {}, ...keys) {
+  const ai = commandAiParse(cmd);
+  for (const key of keys) {
+    const value = cmd[key] ?? ai[key];
+    if (value !== undefined && value !== null && String(value).trim()) return String(value).trim();
+  }
+  return '';
+}
+
+function merchantUrgeBatchKey(cmd = {}, matchIds = []) {
+  const matchKey = cleanMatchIdList(matchIds).join(',');
+  const sourceKey = commandStringValue(cmd, 'urge_batch_id')
+    || [
+      cmd.chat_id || cmd.source_chat_id || '',
+      cmd.message_id || cmd.source_message_id || '',
+      commandArrayValue(cmd, 'order_nos', 'orderNos').join(',')
+    ].join(':');
+  return [
+    sourceKey,
+    matchKey,
+    String(cmd.telegram_target || cmd.forward_to || '').trim(),
+    String(cmd.telegram_account || ''),
+    String(cmd.telegram_template || '')
+  ].join('|');
+}
+
+function combineUrgeContexts(contexts = []) {
+  const cleanContexts = contexts.filter(Boolean);
+  const base = { ...(cleanContexts[0] || {}) };
+  const unique = (values) => [...new Set(values.map((item) => String(item || '').trim()).filter(Boolean))];
+  const orderNos = unique(cleanContexts.map((item) => item.order_no || item.orderNo || item.order_id || item.orderId));
+  const matchIds = unique(cleanContexts.flatMap((item) => String(item.match_id || item.matchId || '').split(/[，,\s]+/)));
+  const matchManageIds = unique(cleanContexts.flatMap((item) => String(item.match_manage_id || item.matchManageId || '').split(/[，,\s]+/)));
+  const matchInfos = unique(cleanContexts.map((item) => item.match_info || item.matchInfo));
+  const users = unique(cleanContexts.map((item) => item.user_name || item.userName));
+  const orderText = orderNos.join('、');
+  return {
+    ...base,
+    order_no: orderText,
+    order_id: orderText,
+    orderNo: orderText,
+    orderId: orderText,
+    order_nos: orderNos.join('\n'),
+    orderNos: orderNos.join('\n'),
+    match_id: matchIds.join('，'),
+    matchId: matchIds.join('，'),
+    match_manage_id: matchManageIds.join('，'),
+    matchManageId: matchManageIds.join('，'),
+    match_info: matchInfos.join('；'),
+    matchInfo: matchInfos.join('；'),
+    user_name: users.join('，'),
+    userName: users.join('，')
+  };
+}
+
+async function sendTelegramFromCommandBatched(config, cmd, context, matchIds = []) {
+  const cleanIds = cleanMatchIdList(matchIds);
+  const key = merchantUrgeBatchKey(cmd, cleanIds);
+  const expected = commandNumberValue(cmd, 'urge_batch_total', 'urgeBatchTotal');
+  let batch = merchantUrgeTelegramBatches.get(key);
+  if (!batch) {
+    batch = {
+      expected,
+      contexts: new Map(),
+      promise: null
+    };
+    merchantUrgeTelegramBatches.set(key, batch);
+  }
+  batch.expected = Math.max(Number(batch.expected || 0), expected);
+  const orderNo = String(context.order_no || context.orderNo || context.order_id || context.orderId || '').trim();
+  if (orderNo) batch.contexts.set(orderNo, context);
+  if (!batch.promise) {
+    batch.promise = (async () => {
+      const deadline = Date.now() + MERCHANT_URGE_BATCH_WAIT_MS;
+      while (batch.expected > 1 && batch.contexts.size < batch.expected && Date.now() < deadline) {
+        await sleep(MERCHANT_URGE_BATCH_POLL_MS);
+      }
+      const contexts = [...batch.contexts.values()];
+      const combinedContext = combineUrgeContexts(contexts);
+      const text = settlementTemplate(cmd.telegram_template, combinedContext);
+      await sendTelegramFromCommand(config, cmd, text);
+      await recordTelegramUrgeMatchIds(cleanIds);
+      return {
+        text,
+        orderNos: String(combinedContext.order_no || '').split('、').filter(Boolean)
+      };
+    })().finally(() => {
+      merchantUrgeTelegramBatches.delete(key);
+    });
+  }
+  return batch.promise;
+}
+
 function apiOk(res, data) {
   return res.ok && (data.status_code === undefined || Number(data.status_code) === 6000);
 }
@@ -2965,12 +3083,13 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
     user_name: order.userName || '',
     userName: order.userName || ''
   };
-  const text = settlementTemplate(cmd.telegram_template, context);
-  await sendTelegramFromCommand(config, cmd, text);
-  await recordTelegramUrgeMatchIds(urgeMatchSplit.allowed);
+  const batchResult = await sendTelegramFromCommandBatched(config, cmd, context, urgeMatchSplit.allowed);
+  const text = batchResult.text || settlementTemplate(cmd.telegram_template, context);
+  const batchOrderNos = Array.isArray(batchResult.orderNos) && batchResult.orderNos.length ? batchResult.orderNos : [orderNo];
+  const msgTarget = batchOrderNos.length > 1 ? batchOrderNos.join('、') : orderNo;
   const msg = urgeMatchSplit.blocked.length
-    ? `催结算已提交：${orderNo} 赛事ID ${limitedMatchId}（跳过重复：${urgeMatchSplit.blocked.join('，')}）`
-    : `催结算已提交：${orderNo} 赛事ID ${limitedMatchId}`;
+    ? `催结算已提交：${msgTarget} 赛事ID ${limitedMatchId}（跳过重复：${urgeMatchSplit.blocked.join('，')}）`
+    : `催结算已提交：${msgTarget} 赛事ID ${limitedMatchId}`;
   const replyText = String(cmd.urge_sent_reply || '赛果核实中，已催促，核实完毕后会进行结算，请耐心等待。');
   await setStatus({ state: 'success', message: msg, detail: text.slice(0, 300) });
   await ack(config, cmd, 'reply_origin', msg, { reply_text: replyText, stop_actions: true });
