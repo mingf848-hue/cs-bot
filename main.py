@@ -1027,6 +1027,19 @@ def is_obvious_new_question(text):
     lower_text = clean_text.lower()
     return any(hint.lower() in lower_text for hint in WAIT_CHECK_NEW_QUESTION_HINTS)
 
+def is_wait_check_cs_message(message):
+    if not message:
+        return False
+    if message.sender_id in ([MY_ID] + OTHER_CS_IDS):
+        return True
+    try:
+        sender = message.sender
+        if sender and getattr(sender, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)):
+            return True
+    except Exception:
+        pass
+    return False
+
 def get_obvious_noise_reason(text):
     clean_text = (text or "").strip()
     if not clean_text:
@@ -2402,7 +2415,7 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
     【分析逻辑】:
     请像人类一样综合思考。仔细观察上下文的时间流和对话流。
     - 豁免无需回复 (is_exempt=true): 如果这条消息看起来是用户连续发言中的一句（分段发送）、对上一句的补充、无意义的语气词（如：好、好的、收到、谢谢等），或者客服在上下文中已经明显针对该【同一事件/话题】接待了该用户，请认为无需单独回复。
-    【特别注意】：聊天记录中如果带有”[使用了引用回复]”标签，代表客服精确绑定回复了某个客户。如果目标消息是单纯的催促（如单独的一个”？”、”在吗”、”处理好了吗”等），请在上下文中寻找客服的实质性回复。注意：如果客服只回复了”稍等”、”核实中”、”处理中”等安抚话语，【不等于】问题已解决，请判定为漏回 (is_exempt=false)！只有当上下文中显示客服已经带有”[使用了引用回复]”标签，并且给出了明确的【最终处理结果】（哪怕客服引用的是用户前面的订单消息，而不是引用的这句催促），才能判定为已处理，予以豁免 (is_exempt=true)！
+    【特别注意】：聊天记录中如果带有”[使用了引用回复]”标签，代表客服精确绑定回复了某个客户。没有引用也不代表一定漏回：如果客服在目标消息之后紧跟着回复，且中间没有其他客户插入新问题，或客服回复内容明确提到同一账号、注单、订单、金额、赛事等同一事件，也应判定为已处理并豁免。注意：如果客服只回复了”稍等”、”核实中”、”处理中”等安抚话语，【不等于】问题已解决，请判定为漏回 (is_exempt=false)！只有客服给出了明确处理结果、处理进展或有效答复，才能判定为已处理，予以豁免 (is_exempt=true)。
     - 属于漏回需回复 (is_exempt=false): 只有当这是一条被完全忽视的、独立的业务请求时，才标记为漏回。特别注意：如果客户在短时间内连续发送了两个完全不同的问题（例如一个问充值，一个问其它业务），而客服只回答了其中一个，那么未被回答的那个独立问题应判定为漏回 (is_exempt=false)！
 
     请输出 JSON 格式: {{“reason”: “用中文简短说明原因...”, “is_exempt”: true/false}}
@@ -2530,8 +2543,9 @@ async def check_wait_keyword_logic(keyword, result_queue):
 
                     replied_to_ids = set()
                     for m in history:
-                        if m.reply_to and m.reply_to.reply_to_msg_id:
-                            replied_to_ids.add(m.reply_to.reply_to_msg_id)
+                        # 只把客服明确引用目标当成硬闭环；未引用的人工回复交给后续上下文 AI 判断。
+                        if is_wait_check_cs_message(m):
+                            replied_to_ids.update(get_ordered_reply_target_ids(m))
                     
                     replied_grouped_ids = set()
                     for mid in replied_to_ids:
@@ -2541,14 +2555,7 @@ async def check_wait_keyword_logic(keyword, result_queue):
                     orphan_tasks = []
                     reply_continuation_ai_cache = {}
                     for i, m in enumerate(history):
-                        is_cs = False
-                        if m.sender_id in ([MY_ID] + OTHER_CS_IDS): is_cs = True
-                        else:
-                            try:
-                                s = m.sender 
-                                if s and getattr(s, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)): is_cs = True
-                            except: pass
-                        if is_cs: continue
+                        if is_wait_check_cs_message(m): continue
 
                         if m.sticker or m.gif:
                             continue
@@ -2562,17 +2569,7 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         scan_idx = i + 1
                         while scan_idx < len(history) and len(followup_texts) < WAIT_CHECK_REPLY_CONTINUATION_MAX_MESSAGES:
                             previous_msg = history[scan_idx]
-                            previous_is_cs = False
-                            if previous_msg.sender_id in ([MY_ID] + OTHER_CS_IDS):
-                                previous_is_cs = True
-                            else:
-                                try:
-                                    previous_sender = previous_msg.sender
-                                    if previous_sender and getattr(previous_sender, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)):
-                                        previous_is_cs = True
-                                except:
-                                    pass
-                            if previous_is_cs:
+                            if is_wait_check_cs_message(previous_msg):
                                 break
                             if previous_msg.sender_id != m.sender_id:
                                 break
@@ -2630,18 +2627,21 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         target_uid = m.sender_id
                         target_label = f"User({str(target_uid)[-4:]})" 
 
+                        target_related_ids = {m.id}
+                        if m.grouped_id:
+                            target_related_ids.update({
+                                grouped_msg.id for grouped_msg in history
+                                if getattr(grouped_msg, "grouped_id", None) == m.grouped_id
+                            })
+
                         context_txts = []
                         for cm in context_slice:
                             if getattr(cm, 'action', None): continue 
                             
-                            if cm.sender_id in ([MY_ID] + OTHER_CS_IDS): c_label = "CS"
+                            if is_wait_check_cs_message(cm):
+                                c_label = "CS"
                             else:
-                                is_cm_cs = False
-                                try:
-                                    if getattr(cm.sender, 'first_name', '').startswith(tuple(CS_NAME_PREFIXES)): is_cm_cs = True
-                                except: pass
-                                if is_cm_cs: c_label = "CS"
-                                else: c_label = f"User({str(cm.sender_id)[-4:]})"
+                                c_label = f"User({str(cm.sender_id)[-4:]})"
 
                             # 👇 将表情包明确标注，防止 AI 误以为是客户发的报错截图
                             if cm.sticker:
@@ -2653,10 +2653,13 @@ async def check_wait_keyword_logic(keyword, result_queue):
                                 
                             marker = " <<< TARGET" if cm.id == m.id else ""
                             
-                            # 👇 新增：判断是否使用了引用回复功能
                             reply_tag = ""
-                            if cm.reply_to and cm.reply_to.reply_to_msg_id:
-                                reply_tag = " [使用了引用回复]"
+                            reply_ids = get_ordered_reply_target_ids(cm)
+                            if reply_ids:
+                                if target_related_ids.intersection(reply_ids):
+                                    reply_tag = " [使用了引用回复:引用目标消息]"
+                                else:
+                                    reply_tag = f" [使用了引用回复:引用Msg={reply_ids[0]}]"
                                 
                             beijing_time_str = cm.date.astimezone(timezone(timedelta(hours=8))).strftime('%H:%M:%S')
                             context_txts.append(f"[{beijing_time_str}] {c_label}{reply_tag}: {c_txt}{marker}")
