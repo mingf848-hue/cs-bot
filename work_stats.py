@@ -37,6 +37,42 @@ def env_int(name, default):
 WORK_STATS_FETCH_RETRIES = max(1, env_int("WORK_STATS_FETCH_RETRIES", 8))
 WORK_STATS_SYNC_RETRIES = max(1, env_int("WORK_STATS_SYNC_RETRIES", 3))
 WORK_STATS_RETRY_SECONDS = max(1, env_int("WORK_STATS_RETRY_SECONDS", 45))
+WORK_STATS_AUTO_STATE = {
+    "enabled": False,
+    "status": "未启动",
+    "next_run": "",
+    "last_started": "",
+    "last_finished": "",
+    "last_target_day": "",
+    "last_keyword_count": 0,
+    "last_total": 0,
+    "last_error": "",
+    "last_sync_msg": "",
+    "updated_at": "",
+}
+
+def bj_now_text():
+    return datetime.now(BJ_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+def update_auto_state(**kwargs):
+    WORK_STATS_AUTO_STATE.update(kwargs)
+    WORK_STATS_AUTO_STATE["updated_at"] = bj_now_text()
+
+def mask_url(url):
+    if not url:
+        return ""
+    if len(url) <= 36:
+        return url[:8] + "***"
+    return url[:24] + "..." + url[-12:]
+
+def stats_total(stats):
+    total = 0
+    for item in (stats or {}).values():
+        try:
+            total += int(item.get("promo", 0) or 0) + int(item.get("assist", 0) or 0)
+        except Exception:
+            pass
+    return total
 
 def normalize_text(text):
     if not text: return ""
@@ -217,6 +253,7 @@ async def quiet_scan(client, start_time, end_time, keywords):
 # 4. 每日定时调度器 (04:20-04:40 随机执行机制)
 async def daily_scheduler(client):
     logger.info("⏰ 自动统计任务调度器已启动 (目标: 每天北京时间 04:20-04:40 随机时间段)")
+    update_auto_state(enabled=True, status="等待执行")
     last_run_date = None # 记录上次执行的日期，防止一天内重复执行
 
     while True:
@@ -243,21 +280,34 @@ async def daily_scheduler(client):
             
             wait_seconds = (target - now).total_seconds()
             logger.info(f"⏳ 下次自动执行锁定在: {target.strftime('%Y-%m-%d %H:%M:%S')}")
+            update_auto_state(status="等待执行", next_run=target.strftime("%Y-%m-%d %H:%M:%S"), last_error="")
             await asyncio.sleep(wait_seconds)
             
             logger.info("🤖 到达随机时间点，开始执行自动统计...")
+            update_auto_state(
+                status="执行中",
+                last_started=bj_now_text(),
+                last_finished="",
+                last_keyword_count=0,
+                last_total=0,
+                last_error="",
+                last_sync_msg="",
+            )
             
             # 自动拉取关键词。连不上表格接口就重试，最终失败则跳过，避免把残缺统计写进表格。
             online_kws, msg = await fetch_keywords_for_auto()
             if not online_kws:
                 logger.error(f"❌ 工作量关键词获取失败，已跳过自动同步，避免同步残缺数据: {msg}")
+                update_auto_state(status="关键词失败", last_finished=bj_now_text(), last_error=msg)
                 last_run_date = datetime.now(BJ_TZ).strftime('%Y-%m-%d')
                 await asyncio.sleep(60)
                 continue
             final_keywords = online_kws
+            update_auto_state(last_keyword_count=len(final_keywords))
             
             if not final_keywords:
                 logger.error("❌ 关键词为空，跳过")
+                update_auto_state(status="关键词为空", last_finished=bj_now_text(), last_error="关键词为空")
                 continue
 
             # 统计昨天的数据
@@ -265,17 +315,24 @@ async def daily_scheduler(client):
             day_str = str(yesterday.day)
             month_int = yesterday.month
             year_int = yesterday.year
+            target_day_text = yesterday.strftime("%Y-%m-%d")
+            update_auto_state(last_target_day=target_day_text)
             
             start = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
             end = yesterday.replace(hour=23, minute=59, second=59, microsecond=999999)
             
             stats = await quiet_scan(client, start, end, final_keywords)
+            update_auto_state(last_total=stats_total(stats))
             
             # 自动同步
             logger.info(f"📊 同步 {year_int}年{month_int}月{day_str}日 数据...")
             success, sync_msg = await sync_data_for_auto(day_str, month_int, year_int, stats)
-            if success: logger.info(f"✅ 自动同步成功: {sync_msg}")
-            else: logger.error(f"❌ 自动同步失败: {sync_msg}")
+            if success:
+                logger.info(f"✅ 自动同步成功: {sync_msg}")
+                update_auto_state(status="同步成功", last_finished=bj_now_text(), last_sync_msg=sync_msg, last_error="")
+            else:
+                logger.error(f"❌ 自动同步失败: {sync_msg}")
+                update_auto_state(status="同步失败", last_finished=bj_now_text(), last_sync_msg=sync_msg, last_error=sync_msg)
             
             # 更新执行记录，防止一天跑多次
             last_run_date = datetime.now(BJ_TZ).strftime('%Y-%m-%d')
@@ -284,6 +341,7 @@ async def daily_scheduler(client):
         except asyncio.CancelledError: break
         except Exception as e:
             logger.error(f"❌ 调度器错误: {e}")
+            update_auto_state(status="调度器错误", last_finished=bj_now_text(), last_error=str(e))
             await asyncio.sleep(60)
 
 # ==========================================
@@ -637,6 +695,36 @@ def init_stats_blueprint(app, client, bot_loop, _unused_args=None):
             status = False
             msg = f"关键词未加载 ({msg})"
         return render_template_string(STATS_HTML, default_keywords=kw_str, fetch_status=status, fetch_msg=msg)
+
+    @app.route('/api/work_stats_gas_check')
+    def work_stats_gas_check():
+        url, source = get_gas_url_status()
+        keywords, msg = fetch_keywords_from_gas()
+        payload = {
+            "success": bool(keywords),
+            "configured": bool(url),
+            "source": source,
+            "url": mask_url(url),
+            "keyword_count": len(keywords or []),
+            "sample_keywords": (keywords or [])[:5],
+            "msg": msg,
+            "checked_at": bj_now_text(),
+        }
+        return json.dumps(payload, ensure_ascii=False), 200, {'Content-Type': 'application/json; charset=utf-8'}
+
+    @app.route('/api/work_stats_auto_status')
+    def work_stats_auto_status():
+        url, source = get_gas_url_status()
+        payload = dict(WORK_STATS_AUTO_STATE)
+        payload.update({
+            "gas_configured": bool(url),
+            "gas_source": source,
+            "gas_url": mask_url(url),
+            "fetch_retries": WORK_STATS_FETCH_RETRIES,
+            "sync_retries": WORK_STATS_SYNC_RETRIES,
+            "retry_seconds": WORK_STATS_RETRY_SECONDS,
+        })
+        return json.dumps(payload, ensure_ascii=False), 200, {'Content-Type': 'application/json; charset=utf-8'}
 
     @app.route('/api/work_stats_stream')
     def work_stats_stream():
