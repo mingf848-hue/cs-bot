@@ -28,6 +28,16 @@ ALL_TARGET_GROUPS = list(PROMO_GROUPS | ASSIST_GROUPS)
 
 logger = logging.getLogger("BotLogger")
 
+def env_int(name, default):
+    try:
+        return int(os.environ.get(name, str(default)) or default)
+    except Exception:
+        return default
+
+WORK_STATS_FETCH_RETRIES = max(1, env_int("WORK_STATS_FETCH_RETRIES", 8))
+WORK_STATS_SYNC_RETRIES = max(1, env_int("WORK_STATS_SYNC_RETRIES", 3))
+WORK_STATS_RETRY_SECONDS = max(1, env_int("WORK_STATS_RETRY_SECONDS", 45))
+
 def normalize_text(text):
     if not text: return ""
     return text.lower().replace("～", "~").strip()
@@ -132,14 +142,51 @@ def sync_data_via_script(day, month, year, stats_data):
         return True, data.get("msg") or status
     return False, "GAS返回错误: " + str(data.get("msg") or data)
 
-# 3. 静默扫描函数 (后台自动任务用)
-async def quiet_scan(client, start_time, end_time, keywords):
+async def run_blocking(func, *args):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: func(*args))
+
+async def fetch_keywords_for_auto():
+    last_msg = ""
+    for attempt in range(1, WORK_STATS_FETCH_RETRIES + 1):
+        keywords, msg = await run_blocking(fetch_keywords_from_gas)
+        if keywords:
+            if attempt > 1:
+                logger.info(f"✅ 自动统计关键词重试成功: 第 {attempt}/{WORK_STATS_FETCH_RETRIES} 次，{len(keywords)} 条")
+            return keywords, msg
+        last_msg = msg
+        logger.error(f"❌ 自动统计关键词获取失败({attempt}/{WORK_STATS_FETCH_RETRIES}): {msg}")
+        if attempt < WORK_STATS_FETCH_RETRIES:
+            await asyncio.sleep(WORK_STATS_RETRY_SECONDS)
+    return None, last_msg
+
+async def sync_data_for_auto(day, month, year, stats_data):
+    last_msg = ""
+    for attempt in range(1, WORK_STATS_SYNC_RETRIES + 1):
+        success, msg = await run_blocking(sync_data_via_script, day, month, year, stats_data)
+        if success:
+            if attempt > 1:
+                logger.info(f"✅ 自动统计同步重试成功: 第 {attempt}/{WORK_STATS_SYNC_RETRIES} 次")
+            return True, msg
+        last_msg = msg
+        logger.error(f"❌ 自动统计同步失败({attempt}/{WORK_STATS_SYNC_RETRIES}): {msg}")
+        if attempt < WORK_STATS_SYNC_RETRIES:
+            await asyncio.sleep(WORK_STATS_RETRY_SECONDS)
+    return False, last_msg
+
+# 3. 扫描函数：自动任务和手动页面共用同一套逻辑
+async def scan_work_stats(client, start_time, end_time, keywords, result_queue=None, include_matches=False):
     stats = {kw: {'promo': 0, 'assist': 0} for kw in keywords}
-    norm_patterns = build_regex_patterns(keywords) 
+    norm_patterns = build_regex_patterns(keywords)
     utc_start = start_time.astimezone(timezone.utc)
     utc_end = end_time.astimezone(timezone.utc)
-    
-    for chat_id in ALL_TARGET_GROUPS:
+    total = len(ALL_TARGET_GROUPS)
+
+    for idx, chat_id in enumerate(ALL_TARGET_GROUPS):
+        if result_queue:
+            percent = int((idx / total) * 100)
+            result_queue.put(json.dumps({"type": "progress", "percent": percent, "msg": f"扫描中: {chat_id}"}))
+
         category = 'promo' if chat_id in PROMO_GROUPS else 'assist' if chat_id in ASSIST_GROUPS else 'other'
         if category == 'other': continue
         try:
@@ -149,11 +196,23 @@ async def quiet_scan(client, start_time, end_time, keywords):
                 content = normalize_text(message.text)
                 for orig, pattern in norm_patterns:
                     if pattern.search(content): 
+                        if result_queue and include_matches:
+                            link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{message.id}"
+                            safe_text = message.text[:30].replace('\n', ' ')
+                            result_queue.put(json.dumps({
+                                "type": "match",
+                                "kw": orig,
+                                "link": link,
+                                "text": safe_text
+                            }))
                         stats[orig][category] += 1
                         break
         except Exception as e:
-            logger.error(f"AutoScan Error Group {chat_id}: {e}")
+            logger.error(f"WorkStats Scan Error Group {chat_id}: {e}")
     return stats
+
+async def quiet_scan(client, start_time, end_time, keywords):
+    return await scan_work_stats(client, start_time, end_time, keywords)
 
 # 4. 每日定时调度器 (04:20-04:40 随机执行机制)
 async def daily_scheduler(client):
@@ -188,8 +247,8 @@ async def daily_scheduler(client):
             
             logger.info("🤖 到达随机时间点，开始执行自动统计...")
             
-            # 自动拉取关键词。连不上表格接口就跳过，避免把残缺统计写进表格。
-            online_kws, msg = fetch_keywords_from_gas()
+            # 自动拉取关键词。连不上表格接口就重试，最终失败则跳过，避免把残缺统计写进表格。
+            online_kws, msg = await fetch_keywords_for_auto()
             if not online_kws:
                 logger.error(f"❌ 工作量关键词获取失败，已跳过自动同步，避免同步残缺数据: {msg}")
                 last_run_date = datetime.now(BJ_TZ).strftime('%Y-%m-%d')
@@ -214,7 +273,7 @@ async def daily_scheduler(client):
             
             # 自动同步
             logger.info(f"📊 同步 {year_int}年{month_int}月{day_str}日 数据...")
-            success, sync_msg = sync_data_via_script(day_str, month_int, year_int, stats)
+            success, sync_msg = await sync_data_for_auto(day_str, month_int, year_int, stats)
             if success: logger.info(f"✅ 自动同步成功: {sync_msg}")
             else: logger.error(f"❌ 自动同步失败: {sync_msg}")
             
@@ -553,40 +612,7 @@ STATS_HTML = """
 # ==========================================
 async def perform_scan(client, start_time, end_time, keywords, result_queue):
     try:
-        stats = {kw: {'promo': 0, 'assist': 0} for kw in keywords}
-        norm_patterns = build_regex_patterns(keywords)
-        utc_start = start_time.astimezone(timezone.utc)
-        utc_end = end_time.astimezone(timezone.utc)
-        total = len(ALL_TARGET_GROUPS)
-        
-        for idx, chat_id in enumerate(ALL_TARGET_GROUPS):
-            percent = int((idx / total) * 100)
-            result_queue.put(json.dumps({"type": "progress", "percent": percent, "msg": f"扫描中: {chat_id}"}))
-            
-            category = 'promo' if chat_id in PROMO_GROUPS else 'assist' if chat_id in ASSIST_GROUPS else 'other'
-            if category == 'other': continue
-
-            try:
-                async for message in client.iter_messages(chat_id, offset_date=utc_end, reverse=False):
-                    if message.date < utc_start: break
-                    if not message.text: continue
-                    content = normalize_text(message.text)
-                    for orig, pattern in norm_patterns:
-                        if pattern.search(content):
-                            link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{message.id}"
-                            safe_text = message.text[:30].replace('\n', ' ')
-                            
-                            result_queue.put(json.dumps({
-                                "type": "match",
-                                "kw": orig,
-                                "link": link,
-                                "text": safe_text
-                            }))
-                            
-                            stats[orig][category] += 1
-                            break 
-            except: pass
-        
+        stats = await scan_work_stats(client, start_time, end_time, keywords, result_queue=result_queue, include_matches=True)
         result_queue.put(json.dumps({"type": "done", "results": stats}))
     except Exception as e:
         result_queue.put(json.dumps({"type": "error", "msg": str(e)}))
