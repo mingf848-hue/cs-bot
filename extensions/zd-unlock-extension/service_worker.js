@@ -1696,7 +1696,7 @@ function requestedDataOverviewFields(cmd = {}) {
   const sourceLabels = dataOverviewFieldLabelsFromText(sourceText);
   if (sourceLabels.length) return dataOverviewFieldsFromLabels(sourceLabels);
   const explicitLabels = dataOverviewFieldLabelsFromValues([cmd.data_fields, cmd.dataFields]);
-  return explicitLabels.length ? dataOverviewFieldsFromLabels(explicitLabels) : DATA_OVERVIEW_FIELDS;
+  return explicitLabels.length ? dataOverviewFieldsFromLabels(explicitLabels) : [];
 }
 
 function normalizeDataOverviewFieldLabel(value) {
@@ -2560,6 +2560,7 @@ async function runMemberDataOverviewCommand(config, cmd, targetValue) {
   if (!config.memberGameTotalInfoUrl) throw new Error('会员游戏数据概览接口未配置');
   if (!config.memberFinanceTotalAmountUrl) throw new Error('会员流水输赢接口未配置');
   const fields = requestedDataOverviewFields(cmd);
+  if (!fields.length) throw new Error('未指定查数据字段');
   const range = memberDataOverviewDateRange(cmd);
   const targets = dataOverviewTargetsFromText(cmd, targetValue);
   if (!targets.length) throw new Error('未提取到会员账号');

@@ -2156,7 +2156,7 @@ AGENT_CAPABILITIES = [
         "name": "查数据",
         "input": "会员账号",
         "fields": ["总输赢", "总流水", "总存款", "总提款", "总红利", "总返水"],
-        "notes": "可识别私发和上级代理编号校验",
+        "notes": "只有原消息明确要求总输赢/总流水/总存款/总提款/总红利/总返水等字段时才使用；会员账号单独出现不是查数据。",
     },
     {
         "action": "query_member_line",
@@ -2804,6 +2804,7 @@ def build_ai_agent_plan_prompt(text, rule_name="", previous_error=""):
 - 用户要求的事项没有对应能力时，放到 unsupported，不能放进 tasks。
 - 不要因为讨好用户而把不支持事项说成已处理。
 - 查数据 data_fields 只能从 总输赢、总流水、总存款、总提款、总红利、总返水 中选择，顺序必须跟原消息要求一致；没明确字段时返回空数组。
+- 只有原文明确出现“查总输赢/查总流水/总存款/总提款/总红利/总返水”等查数据字段，才允许创建 member_data_overview；会员账号只是辅助信息时不能查数据。
 - 催结算 order_no/target 必须是12到24位注单号；代理加白 ip/target 必须是IPv4；账号类 member/target 填会员账号。
 - 催结算只处理“未结算/一直不结算/催促结算/催结算/结算回滚”等要求推进结算的消息；结算回滚不是已结算。
 - 注单取消/失败/无效原因必须使用 query_ticket_cancel_reason，不要使用 urge_settlement。
@@ -3076,8 +3077,10 @@ def sanitize_agent_plan(raw, source_text=""):
             continue
         if task["action"] == "member_data_overview":
             source_fields = data_overview_fields_from_text(source_text)
-            if source_fields:
-                task["data_fields"] = source_fields
+            if not source_fields:
+                logger.info(f"🛡️ [ZD-Agent] 丢弃无字段查数据任务: target={task.get('target')}")
+                continue
+            task["data_fields"] = source_fields
             data_key = (task["action"], task["target"], task.get("startAt"), task.get("endAt"))
             existing_index = data_task_index.get(data_key)
             if existing_index is not None:
