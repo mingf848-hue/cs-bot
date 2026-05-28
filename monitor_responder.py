@@ -1334,18 +1334,13 @@ def clean_settlement_group_reply(text):
     if not raw:
         return ""
     raw = re.sub(r"\r\n?", "\n", raw)
-    suffix = r"(?:\s*[~～\-—–_#]*\s*[A-Za-z0-9][A-Za-z0-9_-]{0,15})\s*[。.!！]*"
-    raw = re.sub(
-        rf"(谢谢[！!。.]?){suffix}\s*$",
-        r"\1",
-        raw,
-    )
-    raw = re.sub(
-        rf"(感谢[！!。.]?){suffix}\s*$",
-        r"\1",
-        raw,
-    )
-    return raw.strip()
+    suffix = r"(?:[ \t]*[~～\-—–_#]*[ \t]*[A-Za-z][A-Za-z0-9_-]{0,15})[ \t]*[。.!！]*[ \t]*$"
+
+    def clean_line(line):
+        line = re.sub(rf"((?:谢谢|感谢)[！!。.]?){suffix}", r"\1", line)
+        return line.rstrip()
+
+    return "\n".join(clean_line(line) for line in raw.split("\n")).strip()
 
 def looks_like_settlement_group_result(text):
     compact = re.sub(r"\s+", "", str(text or ""))
