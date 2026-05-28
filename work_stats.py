@@ -28,13 +28,6 @@ ALL_TARGET_GROUPS = list(PROMO_GROUPS | ASSIST_GROUPS)
 
 logger = logging.getLogger("BotLogger")
 
-# ==========================================
-# 兜底关键词 (表格连不上时使用)
-# ==========================================
-FALLBACK_KEYWORDS = """稍等-an
-请稍等elk
-稍等～ys""" 
-
 def normalize_text(text):
     if not text: return ""
     return text.lower().replace("～", "~").strip()
@@ -57,48 +50,87 @@ def build_regex_patterns(keywords):
 # ==========================================
 # 核心功能模块 (GAS 通信)
 # ==========================================
+GAS_URL_ENV_KEYS = (
+    "GOOGLE_SCRIPT_URL",
+    "WORK_STATS_GOOGLE_SCRIPT_URL",
+    "GOOGLE_APPS_SCRIPT_URL",
+    "GAS_URL",
+)
+
 def get_gas_url():
-    return os.environ.get("GOOGLE_SCRIPT_URL")
+    for key in GAS_URL_ENV_KEYS:
+        value = (os.environ.get(key) or "").strip().strip('"').strip("'")
+        if value:
+            return value
+    return ""
+
+def get_gas_url_status():
+    for key in GAS_URL_ENV_KEYS:
+        value = (os.environ.get(key) or "").strip().strip('"').strip("'")
+        if value:
+            return value, key
+    return "", "/".join(GAS_URL_ENV_KEYS)
+
+def parse_gas_json_response(resp, action):
+    action_label = action or "sync_stats"
+    body_preview = (resp.text or "")[:180].replace("\n", " ")
+    if resp.status_code != 200:
+        raise RuntimeError(f"HTTP {resp.status_code}: {body_preview}")
+    try:
+        return resp.json()
+    except Exception:
+        raise RuntimeError(f"{action_label} 返回非JSON: {body_preview}")
+
+def call_gas(action, payload=None, timeout=15, allow_get_retry=False):
+    url, source = get_gas_url_status()
+    if not url:
+        return None, f"未配置 {source}"
+
+    req_payload = dict(payload or {})
+    if action:
+        req_payload["action"] = action
+    last_error = None
+
+    try:
+        resp = requests.post(url, json=req_payload, timeout=timeout, allow_redirects=True)
+        return parse_gas_json_response(resp, action), f"{source}=已连接"
+    except Exception as e:
+        last_error = e
+
+    if allow_get_retry:
+        try:
+            resp = requests.get(url, params=req_payload, timeout=timeout, allow_redirects=True)
+            return parse_gas_json_response(resp, action), f"{source}=已连接(GET)"
+        except Exception as e:
+            last_error = e
+
+    return None, f"{source} 连接失败: {last_error}"
 
 # 1. 从 GAS 获取关键词
 def fetch_keywords_from_gas():
-    url = get_gas_url()
-    if not url: return None, "未配置 GOOGLE_SCRIPT_URL"
-    
-    try:
-        payload = {"action": "get_keywords"}
-        resp = requests.post(url, json=payload, timeout=10, allow_redirects=True)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("success"):
-                kw_list = data.get("keywords", [])
-                if kw_list: return kw_list, "获取成功"
-                else: return None, "表格返回空列表"
-            else: return None, f"GAS错误: {data.get('msg')}"
-        return None, f"HTTP {resp.status_code}"
-    except Exception as e:
-        logger.error(f"Fetch KW Error: {e}")
-        return None, str(e)
+    data, status = call_gas("get_keywords", timeout=15, allow_get_retry=True)
+    if not data:
+        logger.error(f"Fetch KW Error: {status}")
+        return None, status
+    if data.get("success"):
+        kw_list = data.get("keywords", [])
+        if kw_list: return kw_list, status
+        return None, "表格返回空列表"
+    return None, f"GAS错误: {data.get('msg') or data}"
 
 # 2. 推送数据到 GAS (带年月参数)
 def sync_data_via_script(day, month, year, stats_data):
-    url = get_gas_url()
-    if not url: return False, "未配置 GOOGLE_SCRIPT_URL"
-    try:
-        payload = {
-            "day": day, 
-            "month": month,
-            "year": year,
-            "stats": stats_data
-        }
-        response = requests.post(url, json=payload, allow_redirects=True, timeout=20)
-        if response.status_code == 200:
-            res_json = response.json()
-            if res_json.get("success"): return True, res_json.get("msg")
-            else: return False, "GAS返回错误: " + res_json.get("msg")
-        return False, f"HTTP 请求失败: {response.status_code}"
-    except Exception as e:
-        return False, str(e)
+    data, status = call_gas(None, {
+        "day": day,
+        "month": month,
+        "year": year,
+        "stats": stats_data
+    }, timeout=25)
+    if not data:
+        return False, status
+    if data.get("success"):
+        return True, data.get("msg") or status
+    return False, "GAS返回错误: " + str(data.get("msg") or data)
 
 # 3. 静默扫描函数 (后台自动任务用)
 async def quiet_scan(client, start_time, end_time, keywords):
@@ -156,9 +188,14 @@ async def daily_scheduler(client):
             
             logger.info("🤖 到达随机时间点，开始执行自动统计...")
             
-            # 自动拉取关键词
+            # 自动拉取关键词。连不上表格接口就跳过，避免把残缺统计写进表格。
             online_kws, msg = fetch_keywords_from_gas()
-            final_keywords = online_kws if online_kws else [k.strip() for k in FALLBACK_KEYWORDS.splitlines() if k.strip()]
+            if not online_kws:
+                logger.error(f"❌ 工作量关键词获取失败，已跳过自动同步，避免同步残缺数据: {msg}")
+                last_run_date = datetime.now(BJ_TZ).strftime('%Y-%m-%d')
+                await asyncio.sleep(60)
+                continue
+            final_keywords = online_kws
             
             if not final_keywords:
                 logger.error("❌ 关键词为空，跳过")
@@ -341,9 +378,10 @@ STATS_HTML = """
                 {% if fetch_status %}
                     <span class="status-tag st-ok">已从表格同步</span>
                 {% else %}
-                    <span class="status-tag st-err">使用本地缓存 ({{ fetch_msg }})</span>
+                    <span class="status-tag st-err">{{ fetch_msg }}</span>
                 {% endif %}
                 <textarea id="keywordsInput" class="keywords-box">{{ default_keywords }}</textarea>
+                <div class="helper-text">关键词必须从 Google Script 读取；连接失败时自动统计会跳过，不会写入残缺数据。</div>
             </div>
 
             <button onclick="startStats()" id="btnSubmit" class="submit-btn">开始统计</button>
@@ -569,8 +607,9 @@ def init_stats_blueprint(app, client, bot_loop, _unused_args=None):
             kw_str = "\n".join(online_kws)
             status = True
         else:
-            kw_str = FALLBACK_KEYWORDS
+            kw_str = ""
             status = False
+            msg = f"关键词未加载 ({msg})"
         return render_template_string(STATS_HTML, default_keywords=kw_str, fetch_status=status, fetch_msg=msg)
 
     @app.route('/api/work_stats_stream')
