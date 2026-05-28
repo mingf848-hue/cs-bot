@@ -3188,14 +3188,22 @@ async function runTicketCancelReasonCommandWithFallback(configs, cmd, orderNo) {
 
 async function runBackendCommand(config, cmd) {
   const action = normalizeCommandAction(cmd.action, cmd);
-  const rawValue = action === 'merchant_order_statistics' || action === 'urge_settlement' || action === 'query_ticket_cancel_reason'
+  let rawValue = action === 'merchant_order_statistics' || action === 'urge_settlement' || action === 'query_ticket_cancel_reason'
     ? (cmd.orderNo || cmd.order_no || cmd.target_value || cmd.member_name || '')
     : (cmd.target_value || cmd.member_name || '');
+  const label = commandLabel(action);
+  if (!String(rawValue || '').trim() && ['member_data_overview', 'query_member_line', 'query_login_device_ip', 'query_same_ip_device', 'query_venue_turnover'].includes(action)) {
+    rawValue = commandMembers(cmd, '')[0] || '';
+  }
   const targetValue = action === 'add_proxy_whitelist' || action === 'merchant_order_statistics' || action === 'urge_settlement' || action === 'query_ticket_cancel_reason'
     ? String(rawValue).trim()
     : String(rawValue).trim().toLowerCase();
-  if (!targetValue) return;
-  const label = commandLabel(action);
+  if (!targetValue) {
+    const detail = `${label}未提取到目标`;
+    await setStatus({ state: 'error', message: detail, detail });
+    await ack(config, cmd, 'no_target', detail);
+    return;
+  }
   await setStatus({ state: 'running', message: `执行${label} ${targetValue}` });
   try {
     if (action === 'urge_settlement') {
