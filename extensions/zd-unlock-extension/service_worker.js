@@ -2470,7 +2470,7 @@ function actionOk(res, data, text, action) {
 }
 
 function actionSuccessReplyText(action, targetValue) {
-  if (action === 'add_proxy_whitelist') return `${targetValue} 已加白。`;
+  if (action === 'add_proxy_whitelist') return '已处理';
   return '';
 }
 
@@ -3266,7 +3266,13 @@ async function runBackendCommand(config, cmd) {
       message: `${label} ${targetValue} HTTP ${res.status}`,
       detail: text.slice(0, 300)
     });
-    await ack(config, cmd, ok ? 'success' : `http_${res.status}`, reason, replyText ? { reply_text: replyText } : {});
+    await ack(
+      config,
+      cmd,
+      ok ? 'success' : `http_${res.status}`,
+      reason,
+      replyText ? { reply_text: replyText, stop_actions: action === 'add_proxy_whitelist' } : {}
+    );
   } catch (err) {
     const reason = friendlyErrorReason(err, action, label);
     const raw = rawErrorText(err).replace(/\s+/g, ' ').slice(0, 240);

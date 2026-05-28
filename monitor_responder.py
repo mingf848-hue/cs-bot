@@ -3147,7 +3147,7 @@ async def parse_agent_plan(text, rule_name=""):
 
 def agent_success_reply(action, target):
     if action == "add_proxy_whitelist":
-        return f"{target} 已加白。"
+        return "已处理"
     if action == "migrate_milan":
         return f"{target} 已提交迁移。"
     if action in {"unlock_sms", "clear_login_error"}:
