@@ -1759,7 +1759,34 @@ function dataOverviewFieldsFromLabels(labels = []) {
   return labels.map((label) => fieldsByLabel.get(label)).filter(Boolean);
 }
 
-function detailIsSettled(detail = {}) {
+function settlementRollbackText(order = {}, detail = {}) {
+  return normalizeText([
+    order.remark,
+    order.description,
+    detail.remark,
+    detail.description,
+    detail.noSettlementRemark,
+    detail.noSettlementLog
+  ].filter(Boolean).join(' '));
+}
+
+function isSettlementRollback(order = {}, detail = {}) {
+  return /结算回滚|結算回滾|回滚结算|回滾結算|settlementrollback|rollback/.test(settlementRollbackText(order, detail));
+}
+
+function orderHasSettlementRollback(order = {}) {
+  return isSettlementRollback(order, {}) || orderDetails(order).some((detail) => isSettlementRollback(order, detail));
+}
+
+function withSettlementRollbackPrefix(replyText, order = {}, detail = {}) {
+  const raw = String(replyText || '').trim();
+  if (!raw || !isSettlementRollback(order, detail)) return raw;
+  if (/^结算回滚|^結算回滾/.test(raw)) return raw;
+  return `结算回滚了 请等待重新结算 ${raw}`;
+}
+
+function detailIsSettled(detail = {}, order = {}) {
+  if (isSettlementRollback(order, detail)) return false;
   const settleTimes = numericValue(detail.settleTimes);
   if (settleTimes !== null) return settleTimes > 0;
   const betStatus = numericValue(detail.betStatus);
@@ -1767,7 +1794,8 @@ function detailIsSettled(detail = {}) {
   return betStatus === 1 && betResult !== 0;
 }
 
-function detailIsUnsettled(detail = {}) {
+function detailIsUnsettled(detail = {}, order = {}) {
+  if (isSettlementRollback(order, detail)) return true;
   const settleTimes = numericValue(detail.settleTimes);
   if (settleTimes !== null) return settleTimes <= 0;
   const betStatus = numericValue(detail.betStatus);
@@ -1779,7 +1807,7 @@ function detailIsUnsettled(detail = {}) {
 function unresolvedOrderDetails(order = {}) {
   const details = orderDetails(order);
   if (!details.length) return [];
-  return details.filter((detail) => detailIsUnsettled(detail));
+  return details.filter((detail) => detailIsUnsettled(detail, order));
 }
 
 function detailMatchId(order = {}, detail = {}) {
@@ -2938,6 +2966,7 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
   const allDetails = orderDetails(order);
   const pendingDetails = unresolvedOrderDetails(order);
   const detail = pendingDetails[0] || firstOrderDetail(order);
+  const rollbackOrder = orderHasSettlementRollback(order);
   const statusLabel = orderStatusLabel(order.orderStatus);
   if (ticketReasonRequested(cmd)) {
     const reasonDetail = ticketReasonDetail(order, detail, ticketReasonMode(cmd));
@@ -2955,14 +2984,14 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
     await replyOrigin(config, cmd, msg, replyText, ticket.text);
     return;
   }
-  if (Number(order.orderStatus) !== 0) {
+  if (!rollbackOrder && Number(order.orderStatus) !== 0) {
     const replyText = String(cmd.settled_reply || '注单已结算，请刷新注单页面查看。');
     const msg = `催结算跳过：${orderNo} ${statusLabel}`;
     await replyOrigin(config, cmd, msg, replyText, ticket.text);
     return;
   }
 
-  if (allDetails.length && !pendingDetails.length) {
+  if (!rollbackOrder && allDetails.length && !pendingDetails.length) {
     const replyText = String(cmd.settled_reply || '注单已结算，请刷新注单页面查看。');
     const msg = `催结算跳过：${orderNo} 串关明细均已结算`;
     await replyOrigin(config, cmd, msg, replyText, ticket.text);
@@ -3008,7 +3037,8 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
       const selectedNotice = selected.item || {};
       const noticeText = await noticeReplyText(config, headers, selectedNotice);
       const marketLabel = detailMarketCategory(item)?.label || '';
-      await replyOrigin(config, cmd, `赛事 ${matchId} 已有公告${marketLabel ? `（${marketLabel}）` : ''}`, noticeText || '赛果核实中，请耐心等待。', notice.text);
+      const replyText = withSettlementRollbackPrefix(noticeText || '赛果核实中，请耐心等待。', order, item);
+      await replyOrigin(config, cmd, `赛事 ${matchId} 已有公告${marketLabel ? `（${marketLabel}）` : ''}`, replyText, notice.text);
       return;
     }
   }
@@ -3047,7 +3077,7 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
       throw new Error(`催促结算申请缺少必要字段：${orderNo}`);
     }
     const msg = `催结算已提交申请：${orderNo}`;
-    const replyText = String(cmd.urge_sent_reply || '赛果核实中，已催促，核实完毕后会进行结算，请耐心等待。');
+    const replyText = withSettlementRollbackPrefix(String(cmd.urge_sent_reply || '赛果核实中，已催促，核实完毕后会进行结算，请耐心等待。'), order, applyItems[0] || detail);
     await replyOrigin(config, cmd, msg, replyText, settlement.text);
     return;
   }
@@ -3057,7 +3087,7 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
   // If a notice appears later, the command returns the notice before reaching this block.
   const urgeMatchSplit = await splitTelegramUrgeMatchIds(matchIds);
   if (!urgeMatchSplit.allowed.length) {
-    const replyText = String(cmd.urge_sent_reply || '赛果核实中，已催促，核实完毕后会进行结算，请耐心等待。');
+    const replyText = withSettlementRollbackPrefix(String(cmd.urge_sent_reply || '赛果核实中，已催促，核实完毕后会进行结算，请耐心等待。'), order, detailsToCheck[0] || detail);
     const msg = `催结算跳过TG重复无公告赛事：${orderNo} 赛事ID ${matchId}`;
     await replyOrigin(config, cmd, msg, replyText, settlement.text);
     return;
@@ -3090,7 +3120,7 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
   const msg = urgeMatchSplit.blocked.length
     ? `催结算已提交：${msgTarget} 赛事ID ${limitedMatchId}（跳过重复：${urgeMatchSplit.blocked.join('，')}）`
     : `催结算已提交：${msgTarget} 赛事ID ${limitedMatchId}`;
-  const replyText = String(cmd.urge_sent_reply || '赛果核实中，已催促，核实完毕后会进行结算，请耐心等待。');
+  const replyText = withSettlementRollbackPrefix(String(cmd.urge_sent_reply || '赛果核实中，已催促，核实完毕后会进行结算，请耐心等待。'), order, detailsToCheck[0] || detail);
   await setStatus({ state: 'success', message: msg, detail: text.slice(0, 300) });
   await ack(config, cmd, 'reply_origin', msg, { reply_text: replyText, stop_actions: true });
 }

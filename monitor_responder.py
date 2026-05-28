@@ -168,7 +168,7 @@ def looks_like_short_urge_settlement(text):
         return False
     if looks_like_ticket_reason_request(compact):
         return False
-    if "催" not in compact:
+    if not re.search(r"催|未结算|未結算|不结算|不結算|结算回滚|結算回滾|回滚|回滾", compact):
         return False
     if re.search(r"催(?:提款|取款|提现|出款)|(?:提款|取款|提现|出款).*催", compact):
         return False
@@ -2192,7 +2192,7 @@ AGENT_CAPABILITIES = [
         "action": "urge_settlement",
         "name": "催结算",
         "input": "533开头16位注单号，可多个",
-        "notes": "只用于未结算、催促结算、一直不结算等诉求；不要用于取消/失败/无效原因。",
+        "notes": "只用于未结算、催促结算、一直不结算、结算回滚后重新催结算等诉求；不要用于取消/失败/无效原因。",
     },
     {
         "action": "query_ticket_cancel_reason",
@@ -2805,7 +2805,7 @@ def build_ai_agent_plan_prompt(text, rule_name="", previous_error=""):
 - 不要因为讨好用户而把不支持事项说成已处理。
 - 查数据 data_fields 只能从 总输赢、总流水、总存款、总提款、总红利、总返水 中选择，顺序必须跟原消息要求一致；没明确字段时返回空数组。
 - 催结算 order_no/target 必须是12到24位注单号；代理加白 ip/target 必须是IPv4；账号类 member/target 填会员账号。
-- 催结算只处理“未结算/一直不结算/催促结算/催结算”等要求推进结算的消息。
+- 催结算只处理“未结算/一直不结算/催促结算/催结算/结算回滚”等要求推进结算的消息；结算回滚不是已结算。
 - 注单取消/失败/无效原因必须使用 query_ticket_cancel_reason，不要使用 urge_settlement。
 - 只要消息包含“取消原因、无效原因、失败原因、投注失败、注单取消、无效、取消、失败”，即使同时出现“催”，也使用 query_ticket_cancel_reason。
 - 查线/登录设备/查同IP设备可以把多个会员放 members，把消息里的合营代码放 agent_codes；查代理线 line_mode 填 agent。
