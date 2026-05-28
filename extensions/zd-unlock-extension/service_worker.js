@@ -1390,15 +1390,17 @@ async function runQueryMemberLineCommand(config, cmd, targetValue) {
 
 function loginLogRange(days = 360) {
   const today = dateOnly(new Date());
+  const safeDays = Math.min(360, Math.max(1, Math.floor(Number(days || 360))));
   return {
-    startTime: `${formatDate(addDays(today, -Math.max(1, Number(days || 360))))} 00:00:00`,
+    startTime: `${formatDate(addDays(today, 1 - safeDays))} 00:00:00`,
     endTime: `${formatDate(today)} 23:59:59`
   };
 }
 
 async function queryLoginLogs(config, memberName, days = 360) {
   if (!config.loginLogUrl) throw new Error('登录日志接口未配置');
-  const range = loginLogRange(days);
+  const safeDays = Math.min(360, Math.max(1, Math.floor(Number(days || 360))));
+  const range = loginLogRange(safeDays);
   await setStatus({ state: 'running', message: `查询登录日志 ${memberName}` });
   const result = await postJson(config.loginLogUrl, config.headers, {
     pageNum: 1,
@@ -1409,6 +1411,10 @@ async function queryLoginLogs(config, memberName, days = 360) {
     topName: ''
   });
   if (!apiOk(result.res, result.data)) {
+    const message = `${((result.data || {}).message) || ''} ${result.text || ''}`;
+    if (/日期查询范围不能超过360天|不能超过\s*360\s*天/.test(message) && safeDays > 1) {
+      return queryLoginLogs(config, memberName, Math.min(359, safeDays - 1));
+    }
     throw new Error(`查询登录日志失败 HTTP ${result.res.status}: ${result.text.slice(0, 300)}`);
   }
   return ((((result.data || {}).data || {}).list) || []).filter((item) => String(item.name || '').toLowerCase() === memberName);
