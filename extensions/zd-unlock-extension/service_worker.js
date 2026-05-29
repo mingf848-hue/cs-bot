@@ -2154,6 +2154,12 @@ function addMarketTerm(terms, value) {
   if (!raw) return;
   const parts = [raw, ...raw.split(/[，,、;；|/()（）【】\[\]\s]+/)].map((item) => normalizeText(item));
   for (const part of parts) {
+    // 保留完整时间范围（含数字），用于区分同一赛事不同盘口（如 45:00-59:59 vs 60:00-74:59）
+    const timeRangeMatch = part.match(/\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}/);
+    if (timeRangeMatch) {
+      terms.add(timeRangeMatch[0].replace(/\s+/g, ''));
+    }
+
     let term = part.replace(/[0-9.]+/g, '');
     if (!term || /^(大|小|单双|单|双|over|under|yes|no)$/.test(term)) continue;
     if (term.length >= 2) terms.add(term);
