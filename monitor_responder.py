@@ -2014,7 +2014,11 @@ def monitor_has_enabled_group(chat_id):
         for rule in current_config.get("rules", [])
     )
 
-def unmatched_handoff_target(rule):
+def unmatched_handoff_target(rule, step=None):
+    if isinstance(step, dict):
+        for key in ("forward_to", "fail_notify_to"):
+            if str(step.get(key) or "").strip():
+                return parse_peer_target(step.get(key))
     for step in (rule or {}).get("replies", []):
         if not isinstance(step, dict):
             continue
@@ -2252,7 +2256,7 @@ rule_timers = {}
 scheduled_message_runs = {}
 active_rule_tasks = set()
 rule_task_semaphore = None
-VALID_REPLY_TYPES = {"text", "edit_prev", "forward", "copy_file", "amount_logic", "preempt_check", "notify_user", "backend_unlock", "agent_orchestrator"}
+VALID_REPLY_TYPES = {"text", "edit_prev", "forward", "copy_file", "amount_logic", "preempt_check", "scan_nearby_missed", "notify_user", "backend_unlock", "agent_orchestrator"}
 BACKEND_UNLOCK_ACTIONS = {
     "unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan",
         "send_site_inner_msg", "member_data_overview", "query_member_line",
@@ -4166,6 +4170,7 @@ SETTINGS_HTML = """
                                             <option value="copy_file">转发+新文案</option>
                                             <option value="amount_logic">金额分流</option>
                                             <option value="preempt_check">抢答检测（自删）</option>
+                                            <option value="scan_nearby_missed">扫描临近遗漏</option>
                                             <option value="notify_user">Bot私聊通知</option>
                                             <option value="backend_unlock">触发后台解锁</option>
                                             <option value="agent_orchestrator">Agent编排</option>
@@ -4246,6 +4251,19 @@ SETTINGS_HTML = """
 
                                     <template v-if="reply.type === 'preempt_check'">
                                         <div class="step-help"><i class="fa-solid fa-user-shield mr-1"></i>普通规则检测引用原始消息的抢答；同意审批动作流检测引用领导同意消息的抢答。命中后删除已发消息并停止后续动作。</div>
+                                    </template>
+
+                                    <template v-if="reply.type === 'scan_nearby_missed'">
+                                        <div class="grid grid-cols-1 gap-2">
+                                            <div class="visual-field">
+                                                <div class="visual-label"><i class="fa-solid fa-reply"></i>遗漏回复内容</div>
+                                                <textarea v-model="reply.text" rows="2" class="bento-input w-full px-2 py-1.5 text-[11px] resize-none" placeholder="稍等"></textarea>
+                                            </div>
+                                            <div class="visual-field">
+                                                <div class="visual-label"><i class="fa-solid fa-user"></i>Bot通知对象</div>
+                                                <input v-model="reply.forward_to" class="bento-input w-full px-2 py-1.5 h-8 text-[11px]" placeholder="用户ID，或机器人可访问的 @username">
+                                            </div>
+                                        </div>
                                     </template>
 
                                     <template v-if="reply.type === 'notify_user'">
@@ -5412,6 +5430,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         sent_msgs = list(initial_sent_msgs or [])
         initial_sent_count = len(sent_msgs)
         notify_sent = False
+        handoff_actions = 0
         backend_actions = 0
         preempted = False
         action_failed = False
@@ -5421,6 +5440,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         source_text = getattr(source_event, "text", None) or getattr(source_event, "raw_text", "") or ""
         source_file = getattr(source_message, "file", None)
         source_media = getattr(source_message, "media", None) or getattr(source_file, "media", None)
+        target_account_name = monitor_rule_account_name(rule)
 
         try:
             for step in steps:
@@ -5511,6 +5531,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                         logger.info(f"🧹 [Preempt] 检测到抢答 Msg={getattr(preempt_msg, 'id', '-')}, 已停止规则 '{rule.get('name')}' 后续动作")
                         break
 
+                elif stype == "scan_nearby_missed":
+                    handoff_actions += await handle_pending_unmatched_messages(target_client, target_account_name, rule, source_event, step=step)
+
                 elif stype == "notify_user":
                     notify_target = parse_peer_target(step.get("forward_to"))
                     notify_text = format_bot_notice(step.get("text", ""), source_event, rule, sender_name)
@@ -5545,9 +5568,10 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             "sent_msgs": sent_msgs,
             "notify_sent": notify_sent,
             "backend_actions": backend_actions,
+            "handoff_actions": handoff_actions,
             "preempted": preempted,
             "action_failed": action_failed,
-            "action_count": max(0, len(sent_msgs) - initial_sent_count) + (1 if notify_sent else 0) + backend_actions,
+            "action_count": max(0, len(sent_msgs) - initial_sent_count) + (1 if notify_sent else 0) + backend_actions + handoff_actions,
         }
 
     async def message_is_unmatched_for_monitor(message):
@@ -5602,7 +5626,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             if unmatched:
                 remember_unmatched_message(MessageEventView(message), history_sender_name)
 
-    async def handle_pending_unmatched_messages(target_client, target_name, rule, trigger_event):
+    async def handle_pending_unmatched_messages(target_client, target_name, rule, trigger_event, step=None):
         chat_id = getattr(trigger_event, "chat_id", None)
         trigger_msg_id = getattr(trigger_event, "id", None)
         if not chat_id or not trigger_msg_id:
@@ -5613,9 +5637,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         if not candidates:
             return 0
 
-        wait_text = format_caption(os.environ.get("ZD_UNMATCHED_WAIT_TEXT", "稍等").strip() or "稍等")
-        notify_target = unmatched_handoff_target(rule)
-        handled = 0
+        wait_text = format_caption(str((step or {}).get("text") or os.environ.get("ZD_UNMATCHED_WAIT_TEXT", "稍等")).strip() or "稍等")
+        notify_target = unmatched_handoff_target(rule, step=step)
+        action_total = 0
         for msg_id, item in candidates:
             message = item.get("message")
             if not message:
@@ -5629,12 +5653,13 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             started = time.time()
             try:
                 await target_client.send_message(chat_id, wait_text, reply_to=msg_id)
-                handled += 1
+                action_total += 1
                 if notify_target:
                     await send_bot_notice(
                         notify_target,
                         format_unmatched_handoff_notice(rule, pending_event, trigger_event, sender_name)
                     )
+                    action_total += 1
                 else:
                     logger.warning("⚠️ [Unmatched] 未配置人工通知对象，已仅在群内回复稍等")
                 record_runtime_event(
@@ -5660,11 +5685,10 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     target_account=target_name,
                     duration_ms=(time.time() - started) * 1000
                 )
-        return handled
+        return action_total
 
     async def run_monitor_rule_actions(target_client, target_name, rule, event, sender_name, match_started):
         rule_id = ensure_rule_id(rule)
-        await handle_pending_unmatched_messages(target_client, target_name, rule, event)
         result = await execute_rule_steps(target_client, rule, event, event.message, sender_name)
         action_count = result["action_count"]
         if result["action_failed"]:

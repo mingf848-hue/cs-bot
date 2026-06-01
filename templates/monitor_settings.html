@@ -1185,6 +1185,7 @@
                                                     <option value="copy_file">转发+新文案</option>
                                                     <option value="amount_logic">金额分流</option>
                                                     <option value="preempt_check">抢答检测（自删）</option>
+                                                    <option value="scan_nearby_missed">扫描临近遗漏</option>
                                                     <option value="notify_user">Bot私聊通知</option>
                                                     <option value="backend_unlock">触发后台解锁</option>
                                                     <option value="agent_orchestrator">Agent编排</option>
@@ -1275,6 +1276,20 @@
                                         <div class="field-card" v-if="step.type === 'preempt_check'">
                                             <strong>抢答检测（自删）</strong>
                                             <span class="hint">普通规则检测引用原始消息的抢答；命中后会删除已发消息并停止后续动作。</span>
+                                        </div>
+
+                                        <div class="form-grid" v-if="step.type === 'scan_nearby_missed'">
+                                            <div class="field">
+                                                <label>遗漏回复内容</label>
+                                                <textarea class="textarea" v-model="step.text" placeholder="稍等"></textarea>
+                                            </div>
+                                            <div class="field">
+                                                <label>Bot通知对象</label>
+                                                <input class="input" v-model="step.forward_to" placeholder="用户ID 或 @username">
+                                            </div>
+                                            <div class="field full">
+                                                <span class="hint">执行到此动作时，会扫描同群上方临近未命中规则且没人引用回复的消息，逐条引用回复这里的内容，并通知人工接手。</span>
+                                            </div>
                                         </div>
 
                                         <div class="form-grid" v-if="step.type === 'notify_user'">
@@ -2799,6 +2814,7 @@ createApp({
             copy_file: "转发 + 新文案",
             amount_logic: "金额分流",
             preempt_check: "抢答检测（自删）",
+            scan_nearby_missed: "扫描临近遗漏",
             notify_user: "Bot私聊通知",
             backend_unlock: "触发后台解锁",
             agent_orchestrator: "Agent编排"
@@ -2814,6 +2830,7 @@ createApp({
                 return `阈值：${amountPart(step, 0) || "未配置"}\\n大额：${amountPart(step, 1) || "未配置"}\\n${lowFlow}`;
             }
             if (step.type === "preempt_check") return "若有人更快，会删除已发消息并停止后续动作";
+            if (step.type === "scan_nearby_missed") return `回复：${step.text || "稍等"}\\n通知：${step.forward_to || "未配置"}`;
             if (step.type === "notify_user") return `通知：${step.forward_to || "未配置"}`;
             if (step.type === "agent_orchestrator") return "自动拆解消息，只调用现有能力；催结算和取消/失败原因分开，后台查事实后合并回复";
             if (step.type === "backend_unlock") return backendActionLabel(step.backend_action);
@@ -2971,6 +2988,7 @@ createApp({
             copy_file: "转发+新文案",
             amount_logic: "金额分流",
             preempt_check: "抢答检测",
+            scan_nearby_missed: "扫描遗漏",
             notify_user: "Bot通知",
             backend_unlock: "后台动作",
             agent_orchestrator: "Agent编排"
