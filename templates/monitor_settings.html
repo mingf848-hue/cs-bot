@@ -3025,7 +3025,8 @@ createApp({
 
         const exportConfig = async () => {
             try {
-                const res = await fetch("/api/monitor_settings/export");
+                const accountParam = encodeURIComponent(ui.ruleAccount || mainAccount.value);
+                const res = await fetch(`/api/monitor_settings/export?account=${accountParam}`);
                 if (!res.ok) throw new Error("导出接口请求失败");
                 const blob = await res.blob();
                 const disposition = res.headers.get("Content-Disposition") || "";
@@ -3039,7 +3040,7 @@ createApp({
                 link.click();
                 link.remove();
                 URL.revokeObjectURL(url);
-                showToast("配置已导出");
+                showToast(`已导出 ${ui.ruleAccount || mainAccount.value} 的规则`);
             } catch (e) {
                 showToast(`导出失败：${e.message || "网络错误"}`, "error");
             } finally {
@@ -3055,7 +3056,8 @@ createApp({
             const file = event.target.files?.[0];
             event.target.value = "";
             if (!file) return;
-            if (!confirm("导入配置会覆盖当前 ZD 规则，确定继续？")) return;
+            const targetAccount = ui.ruleAccount || mainAccount.value;
+            if (!confirm(`导入配置会覆盖「${targetAccount}」账户下的 ZD 规则，确定继续？`)) return;
             ui.saving = true;
             try {
                 const parsed = JSON.parse(await file.text());
@@ -3066,13 +3068,17 @@ createApp({
                 const res = await fetch("/api/monitor_settings/import", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(parsed)
+                    body: JSON.stringify({ config: candidate, target_account: targetAccount })
                 });
                 const json = await res.json();
                 if (!json.success) throw new Error(json.msg || "导入失败");
                 if (json.config) applyConfigData(json.config);
-                const count = json.config?.rules?.length ?? candidate.rules.length;
-                showToast(`导入成功：${count} 条规则`);
+                ui.ruleAccount = json.target_account || targetAccount;
+                const visibleRules = rulesForSelectedAccount.value;
+                ui.selectedId = visibleRules[0]?.id || "";
+                syncRawTexts(currentRule.value);
+                const count = json.imported_rule_count ?? candidate.rules.length;
+                showToast(`已导入 ${count} 条规则到 ${ui.ruleAccount}`);
             } catch (e) {
                 showToast(`导入失败：${e.message || "文件无法读取"}`, "error");
             } finally {

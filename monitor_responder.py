@@ -3596,6 +3596,84 @@ def save_config(new_config):
         logger.error(f"❌ [Monitor] 保存逻辑错误: {e}")
         return False, str(e)
 
+def clone_config_data(data):
+    return json.loads(json.dumps(data or {}, ensure_ascii=False))
+
+def monitor_rule_account_name(rule):
+    return str((rule or {}).get("reply_account") or MAIN_NAME).strip() or MAIN_NAME
+
+def normalize_monitor_account_name(value, allow_empty=False):
+    account = str(value or "").strip()
+    if not account:
+        return MAIN_NAME if allow_empty else ""
+    valid_accounts = {MAIN_NAME, *[str(name) for name in global_clients.keys()]}
+    return account if account in valid_accounts else ""
+
+def merge_monitor_resources(base_resources, imported_resources):
+    merged = clone_config_data(base_resources if isinstance(base_resources, dict) else {})
+    imported = imported_resources if isinstance(imported_resources, dict) else {}
+
+    def merge_items(key, identity_key):
+        items = []
+        seen = set()
+        for source in (merged.get(key, []), imported.get(key, [])):
+            if not isinstance(source, list):
+                continue
+            for item in source:
+                if isinstance(item, dict):
+                    marker = str(item.get(identity_key) or item.get("id") or item.get("value") or item.get("name") or "").strip().lower()
+                    clean_item = clone_config_data(item)
+                else:
+                    marker = str(item or "").strip().lower()
+                    clean_item = item
+                if not marker or marker in seen:
+                    continue
+                seen.add(marker)
+                items.append(clean_item)
+        merged[key] = items
+
+    merge_items("groups", "id")
+    merge_items("sender_prefixes", "value")
+    return merged
+
+def build_account_export_config(account_name=""):
+    target_account = normalize_monitor_account_name(account_name, allow_empty=True)
+    exported = clone_config_data(current_config)
+    if target_account:
+        exported["rules"] = [
+            clone_config_data(rule)
+            for rule in current_config.get("rules", [])
+            if monitor_rule_account_name(rule) == target_account
+        ]
+    return exported, target_account
+
+def build_account_import_config(candidate, target_account=""):
+    target_account = normalize_monitor_account_name(target_account, allow_empty=False)
+    if not target_account:
+        return clone_config_data(candidate), ""
+
+    imported = clone_config_data(candidate)
+    imported_rules = imported.get("rules", [])
+    if not isinstance(imported_rules, list):
+        imported_rules = []
+
+    remapped_rules = []
+    for rule in imported_rules:
+        if not isinstance(rule, dict):
+            continue
+        clean_rule = clone_config_data(rule)
+        clean_rule["reply_account"] = "" if target_account == MAIN_NAME else target_account
+        remapped_rules.append(clean_rule)
+
+    merged = clone_config_data(current_config)
+    merged["rules"] = [
+        clone_config_data(rule)
+        for rule in current_config.get("rules", [])
+        if monitor_rule_account_name(rule) != target_account
+    ] + remapped_rules
+    merged["resources"] = merge_monitor_resources(current_config.get("resources", {}), imported.get("resources", {}))
+    return merged, target_account
+
 async def send_command_telegram_message(account_name, target, text, cmd=None):
     target_name = str(account_name or "").strip() or MAIN_NAME
     if target_name not in global_clients:
@@ -4813,14 +4891,18 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     @app.route('/api/monitor_settings/export')
     def export_monitor_settings():
         exported_at = datetime.now(BJ_TZ)
+        export_config, export_account = build_account_export_config(request.args.get("account", ""))
         payload = {
             "type": "cs-bot.monitor_config",
             "version": 1,
             "exported_at": exported_at.isoformat(),
-            "config": current_config,
+            "export_account": export_account,
+            "main_account": MAIN_NAME,
+            "config": export_config,
         }
         body = json.dumps(payload, ensure_ascii=False, indent=2)
-        filename = f"monitor_config_{exported_at.strftime('%Y%m%d_%H%M%S')}.json"
+        safe_account = re.sub(r"[^0-9A-Za-z_.-]+", "_", export_account or "all").strip("_") or "account"
+        filename = f"monitor_config_{safe_account}_{exported_at.strftime('%Y%m%d_%H%M%S')}.json"
         response = Response(body, mimetype='application/json; charset=utf-8')
         response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response
@@ -4831,13 +4913,22 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         candidate = raw.get("config") if isinstance(raw.get("config"), dict) else raw
         if not isinstance(candidate, dict) or "rules" not in candidate:
             return jsonify({"success": False, "msg": "导入文件格式不正确，缺少 rules"})
-        success, msg = save_config(candidate)
+        target_account = raw.get("target_account") if isinstance(raw, dict) else ""
+        import_config, resolved_account = build_account_import_config(candidate, target_account)
+        success, msg = save_config(import_config)
         data = current_config.copy() if success else {}
         if success:
             data["available_accounts"] = [k for k in global_clients.keys() if k != MAIN_NAME]
             data["main_account"] = MAIN_NAME
             data["accounts"] = get_account_summaries()
-        return jsonify({"success": success, "msg": msg if not success else "", "config": data})
+        imported_rule_count = len(candidate.get("rules", [])) if isinstance(candidate.get("rules"), list) else 0
+        return jsonify({
+            "success": success,
+            "msg": msg if not success else "",
+            "config": data,
+            "target_account": resolved_account,
+            "imported_rule_count": imported_rule_count
+        })
 
     @app.route('/api/monitor_toggle', methods=['POST'])
     def update_monitor_toggle():
