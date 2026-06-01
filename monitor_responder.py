@@ -71,6 +71,10 @@ runtime_stats = {"records": [], "daily": {}}
 ALBUM_REPLY_DEDUP_LIMIT = 5000
 album_reply_dedup_queue = deque()
 album_reply_dedup_keys = set()
+PENDING_UNMATCHED_TTL_SECONDS = 180
+PENDING_UNMATCHED_LIMIT = 500
+pending_unmatched_lock = threading.RLock()
+pending_unmatched_messages = {}
 try:
     SETTLEMENT_TG_REPLY_TTL_SECONDS = max(3600, int(os.environ.get("SETTLEMENT_TG_REPLY_TTL_SECONDS", "172800")))
 except Exception:
@@ -1934,6 +1938,122 @@ async def send_bot_notice(chat_id, text, delete_button=True):
     if delete_button:
         reply_markup = {"inline_keyboard": [[{"text": "已读删除", "callback_data": "delete_notice"}]]}
     return await loop.run_in_executor(None, lambda: _send_bot_message_sync(chat_id, text, reply_markup))
+
+def prune_pending_unmatched_messages(now=None):
+    now = now or time.time()
+    with pending_unmatched_lock:
+        for chat_id in list(pending_unmatched_messages.keys()):
+            items = pending_unmatched_messages.get(chat_id) or {}
+            for msg_id, item in list(items.items()):
+                if now - float(item.get("ts") or 0) > PENDING_UNMATCHED_TTL_SECONDS:
+                    items.pop(msg_id, None)
+            if not items:
+                pending_unmatched_messages.pop(chat_id, None)
+
+        total = sum(len(items) for items in pending_unmatched_messages.values())
+        while total > PENDING_UNMATCHED_LIMIT:
+            oldest_chat = None
+            oldest_msg = None
+            oldest_ts = now
+            for chat_id, items in pending_unmatched_messages.items():
+                for msg_id, item in items.items():
+                    item_ts = float(item.get("ts") or 0)
+                    if item_ts <= oldest_ts:
+                        oldest_chat, oldest_msg, oldest_ts = chat_id, msg_id, item_ts
+            if oldest_chat is None:
+                break
+            pending_unmatched_messages.get(oldest_chat, {}).pop(oldest_msg, None)
+            if not pending_unmatched_messages.get(oldest_chat):
+                pending_unmatched_messages.pop(oldest_chat, None)
+            total -= 1
+
+def remember_unmatched_message(event, sender_name=""):
+    chat_id = getattr(event, "chat_id", None)
+    msg_id = getattr(event, "id", None)
+    if not chat_id or not msg_id or getattr(event, "is_reply", False):
+        return
+    text = getattr(event, "raw_text", None) or getattr(event, "text", "") or ""
+    message = getattr(event, "message", None)
+    if not text and not getattr(message, "file", None):
+        return
+    prune_pending_unmatched_messages()
+    with pending_unmatched_lock:
+        pending_unmatched_messages.setdefault(chat_id, {})[msg_id] = {
+            "message": message,
+            "sender_name": sender_name,
+            "sender_id": getattr(event, "sender_id", None),
+            "text": text,
+            "ts": time.time(),
+        }
+    logger.info(f"🕓 [Unmatched] 已暂存未命中消息 Chat={chat_id} Msg={msg_id} Sender={sender_name}")
+
+def discard_pending_unmatched_message(chat_id, msg_id):
+    with pending_unmatched_lock:
+        items = pending_unmatched_messages.get(chat_id) or {}
+        items.pop(msg_id, None)
+        if not items:
+            pending_unmatched_messages.pop(chat_id, None)
+
+def pop_pending_unmatched_before(chat_id, before_msg_id):
+    prune_pending_unmatched_messages()
+    with pending_unmatched_lock:
+        items = pending_unmatched_messages.get(chat_id) or {}
+        candidates = []
+        for msg_id in sorted(items.keys()):
+            if msg_id < before_msg_id:
+                candidates.append((msg_id, items.pop(msg_id)))
+        if not items:
+            pending_unmatched_messages.pop(chat_id, None)
+    return candidates
+
+def monitor_has_enabled_group(chat_id):
+    return any(
+        isinstance(rule, dict)
+        and rule.get("enabled", True)
+        and rule_matches_group(chat_id, rule.get("groups", []))
+        for rule in current_config.get("rules", [])
+    )
+
+def unmatched_handoff_target(rule):
+    for step in (rule or {}).get("replies", []):
+        if not isinstance(step, dict):
+            continue
+        if step.get("type") == "notify_user" and str(step.get("forward_to") or "").strip():
+            return parse_peer_target(step.get("forward_to"))
+        if str(step.get("fail_notify_to") or "").strip():
+            return parse_peer_target(step.get("fail_notify_to"))
+    for env_name in ("ZD_UNMATCHED_NOTIFY_TO", "AGENT_HANDOFF_TO"):
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            return parse_peer_target(value)
+    return None
+
+def format_unmatched_handoff_notice(rule, pending_event, trigger_event, sender_name=""):
+    return "\n".join([
+        "上方有未命中规则的消息，已自动回复稍等，请人工接手。",
+        f"规则：{(rule or {}).get('name') or (rule or {}).get('id') or '-'}",
+        f"群：{getattr(pending_event, 'chat_id', '')}",
+        f"消息ID：{getattr(pending_event, 'id', '')}",
+        f"发送者：{sender_name or '-'}",
+        f"触发消息ID：{getattr(trigger_event, 'id', '')}",
+        f"消息：{event_text_preview(pending_event)}",
+    ])
+
+async def pending_message_has_reply(client, chat_id, msg_id, before_msg_id):
+    try:
+        kwargs = {"min_id": msg_id, "limit": 80}
+        if before_msg_id:
+            kwargs["max_id"] = before_msg_id
+        history = await client.get_messages(chat_id, **kwargs)
+    except Exception as e:
+        logger.warning(f"⚠️ [Unmatched] 检查未命中消息是否已回复失败 Chat={chat_id} Msg={msg_id}: {e}")
+        return False
+    for msg in history:
+        if getattr(msg, "id", None) == msg_id:
+            continue
+        if msg_id in get_message_reply_target_ids(msg):
+            return True
+    return False
 
 def format_caption(tpl):
     if not tpl: return ""
@@ -5430,8 +5550,121 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             "action_count": max(0, len(sent_msgs) - initial_sent_count) + (1 if notify_sent else 0) + backend_actions,
         }
 
+    async def message_is_unmatched_for_monitor(message):
+        event_view = MessageEventView(message)
+        if getattr(event_view, "is_reply", False):
+            return False, ""
+        if not monitor_has_enabled_group(event_view.chat_id):
+            return False, ""
+        try:
+            sender = await message.get_sender()
+        except Exception:
+            sender = None
+
+        content_mismatch = False
+        for check_rule in current_config.get("rules", []):
+            if not isinstance(check_rule, dict) or not check_rule.get("enabled", True):
+                continue
+            is_match, reason, _ = await analyze_message(client, check_rule, event_view, other_cs_ids, sender, check_cooldown=False)
+            if is_match:
+                return False, get_sender_name(sender)
+            if rule_matches_group(event_view.chat_id, check_rule.get("groups", [])) and reason in ("文本关键词不符", "非文件消息", "后缀不符", "文件名关键词不符"):
+                content_mismatch = True
+        return content_mismatch, get_sender_name(sender)
+
+    async def collect_recent_unmatched_before(trigger_event):
+        chat_id = getattr(trigger_event, "chat_id", None)
+        trigger_msg_id = getattr(trigger_event, "id", None)
+        if not chat_id or not trigger_msg_id:
+            return
+        try:
+            history = await client.get_messages(chat_id, max_id=trigger_msg_id, limit=8)
+        except Exception as e:
+            logger.warning(f"⚠️ [Unmatched] 回扫上方消息失败 Chat={chat_id} Msg={trigger_msg_id}: {e}")
+            return
+        for message in reversed(list(history or [])):
+            msg_id = getattr(message, "id", None)
+            if not msg_id:
+                continue
+            msg_date = getattr(message, "date", None)
+            if msg_date:
+                try:
+                    age_seconds = (datetime.now(timezone.utc) - msg_date.astimezone(timezone.utc)).total_seconds()
+                    if age_seconds > PENDING_UNMATCHED_TTL_SECONDS:
+                        continue
+                except Exception:
+                    pass
+            with pending_unmatched_lock:
+                already_pending = msg_id in (pending_unmatched_messages.get(chat_id) or {})
+            if already_pending:
+                continue
+            unmatched, history_sender_name = await message_is_unmatched_for_monitor(message)
+            if unmatched:
+                remember_unmatched_message(MessageEventView(message), history_sender_name)
+
+    async def handle_pending_unmatched_messages(target_client, target_name, rule, trigger_event):
+        chat_id = getattr(trigger_event, "chat_id", None)
+        trigger_msg_id = getattr(trigger_event, "id", None)
+        if not chat_id or not trigger_msg_id:
+            return 0
+
+        await collect_recent_unmatched_before(trigger_event)
+        candidates = pop_pending_unmatched_before(chat_id, trigger_msg_id)
+        if not candidates:
+            return 0
+
+        wait_text = format_caption(os.environ.get("ZD_UNMATCHED_WAIT_TEXT", "稍等").strip() or "稍等")
+        notify_target = unmatched_handoff_target(rule)
+        handled = 0
+        for msg_id, item in candidates:
+            message = item.get("message")
+            if not message:
+                continue
+            if await pending_message_has_reply(target_client, chat_id, msg_id, None):
+                logger.info(f"↪️ [Unmatched] Msg={msg_id} 已有人引用回复，跳过补回复")
+                continue
+
+            pending_event = MessageEventView(message)
+            sender_name = item.get("sender_name") or ""
+            started = time.time()
+            try:
+                await target_client.send_message(chat_id, wait_text, reply_to=msg_id)
+                handled += 1
+                if notify_target:
+                    await send_bot_notice(
+                        notify_target,
+                        format_unmatched_handoff_notice(rule, pending_event, trigger_event, sender_name)
+                    )
+                else:
+                    logger.warning("⚠️ [Unmatched] 未配置人工通知对象，已仅在群内回复稍等")
+                record_runtime_event(
+                    "monitor_handoff",
+                    "success",
+                    "未命中消息已补回复稍等并通知人工" if notify_target else "未命中消息已补回复稍等，未配置人工通知对象",
+                    rule=rule,
+                    event=pending_event,
+                    sender_name=sender_name,
+                    target_account=target_name,
+                    action_count=1 + (1 if notify_target else 0),
+                    duration_ms=(time.time() - started) * 1000
+                )
+            except Exception as e:
+                logger.error(f"❌ [Unmatched] 补回复未命中消息失败 Chat={chat_id} Msg={msg_id}: {e}")
+                record_runtime_event(
+                    "monitor_handoff",
+                    "failed",
+                    f"补回复未命中消息失败：{e}",
+                    rule=rule,
+                    event=pending_event,
+                    sender_name=sender_name,
+                    target_account=target_name,
+                    duration_ms=(time.time() - started) * 1000
+                )
+        return handled
+
     async def run_monitor_rule_actions(target_client, target_name, rule, event, sender_name, match_started):
         rule_id = ensure_rule_id(rule)
+        await handle_pending_unmatched_messages(target_client, target_name, rule, event)
         result = await execute_rule_steps(target_client, rule, event, event.message, sender_name)
         action_count = result["action_count"]
         if result["action_failed"]:
@@ -5722,12 +5955,16 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             logger.info(f"🔍 [Check] Sender: {sender_name} | ID: {event.sender_id}")
         except: pass
 
+        matched_any_rule = False
+        should_remember_unmatched = False
         for rule in current_config.get("rules", []):
             try:
                 if not rule.get("enabled", True): continue
                 # v69: Pass event.sender object
                 is_match, reason, extracted_data = await analyze_message(client, rule, event, other_cs_ids, event.sender)
                 if is_match:
+                    matched_any_rule = True
+                    discard_pending_unmatched_message(event.chat_id, event.id)
                     grouped_id = getattr(event.message, "grouped_id", None)
                     if should_skip_album_reply(event.chat_id, grouped_id):
                         logger.info(f"🛡️ [Monitor] 图集去重 | Chat={event.chat_id} | GroupID={grouped_id} | Msg={event.id} 已跳过重复自动回复")
@@ -5962,6 +6199,11 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                         f"↪️ [MonitorSkip] 规则 '{rule.get('name')}' 未执行: {reason} | "
                         f"Chat={event.chat_id} Msg={event.id} Sender={sender_name}"
                     )
+                elif rule_matches_group(event.chat_id, rule.get("groups", [])) and reason in ("文本关键词不符", "非文件消息", "后缀不符", "文件名关键词不符"):
+                    should_remember_unmatched = True
             except Exception as e: logger.error(f"❌ [Monitor] Rule Error: {e}")
+
+        if not matched_any_rule and should_remember_unmatched and monitor_has_enabled_group(event.chat_id):
+            remember_unmatched_message(event, sender_name)
 
     logger.info("🛠️ [Monitor] Ultimate UI v78 (Full Source) 已启动")
