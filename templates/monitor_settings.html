@@ -1471,6 +1471,7 @@
                                                         <option value="forward">转发原始报备</option>
                                                         <option value="copy_file">转发文件+新文案</option>
                                                         <option value="preempt_check">抢答检测（自删）</option>
+                                                        <option value="scan_nearby_missed">扫描临近遗漏</option>
                                                         <option value="notify_user">Bot私聊通知</option>
                                                         <option value="backend_unlock">触发后台解锁</option>
                                                         <option value="agent_orchestrator">Agent编排</option>
@@ -1512,6 +1513,19 @@
                                             <div class="field-card" v-if="step.type === 'preempt_check'">
                                                 <strong>抢答检测（自删）</strong>
                                                 <span class="hint">检测领导同意后、别人更快引用领导同意消息回复“稍等”的抢答；命中后删除已发消息并停止后续动作。</span>
+                                            </div>
+                                            <div class="form-grid" v-if="step.type === 'scan_nearby_missed'">
+                                                <div class="field">
+                                                    <label>遗漏回复内容</label>
+                                                    <textarea class="textarea" v-model="step.text" placeholder="稍等"></textarea>
+                                                </div>
+                                                <div class="field">
+                                                    <label>Bot通知对象</label>
+                                                    <input class="input" v-model="step.forward_to" placeholder="用户ID 或 @username">
+                                                </div>
+                                                <div class="field full">
+                                                    <span class="hint">执行到此动作时，会扫描同群上方临近未命中规则且没人引用回复的消息，逐条引用回复这里的内容，并通知人工接手。</span>
+                                                </div>
                                             </div>
                                             <div class="form-grid" v-if="step.type === 'notify_user'">
                                                 <div class="field">
