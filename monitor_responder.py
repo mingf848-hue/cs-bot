@@ -2032,8 +2032,17 @@ def unmatched_handoff_target(rule, step=None):
             return parse_peer_target(value)
     return None
 
+def telegram_message_link(chat_id, msg_id):
+    if not chat_id or not msg_id:
+        return ""
+    chat_id_text = str(chat_id)
+    if chat_id_text.startswith("-100") and len(chat_id_text) > 4:
+        return f"https://t.me/c/{chat_id_text[4:]}/{msg_id}"
+    return ""
+
 def format_unmatched_handoff_notice(rule, pending_event, trigger_event, sender_name=""):
-    return "\n".join([
+    link = telegram_message_link(getattr(pending_event, "chat_id", None), getattr(pending_event, "id", None))
+    lines = [
         "上方有未命中规则的消息，已自动回复稍等，请人工接手。",
         f"规则：{(rule or {}).get('name') or (rule or {}).get('id') or '-'}",
         f"群：{getattr(pending_event, 'chat_id', '')}",
@@ -2041,7 +2050,10 @@ def format_unmatched_handoff_notice(rule, pending_event, trigger_event, sender_n
         f"发送者：{sender_name or '-'}",
         f"触发消息ID：{getattr(trigger_event, 'id', '')}",
         f"消息：{event_text_preview(pending_event)}",
-    ])
+    ]
+    if link:
+        lines.insert(4, f"消息链接：{link}")
+    return "\n".join(lines)
 
 async def pending_message_has_reply(client, chat_id, msg_id, before_msg_id):
     try:
