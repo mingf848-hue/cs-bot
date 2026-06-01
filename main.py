@@ -5041,6 +5041,16 @@ if __name__ == '__main__':
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
         logger.critical("🚨 严重错误: 主账号 SESSION_STRING 已失效！检测到多地登录冲突。")
-        sys.exit(1)
+        logger.critical("⚠️ 主账号监听已停止；Web 服务和副账号监听将继续运行。")
+        try:
+            disconnect_result = client.disconnect()
+            if asyncio.iscoroutine(disconnect_result):
+                bot_loop.run_until_complete(disconnect_result)
+        except Exception:
+            pass
+        try:
+            bot_loop.run_forever()
+        except KeyboardInterrupt:
+            pass
     except Exception as e:
         log_tree(9, f"❌ 启动失败: {e}")

@@ -5839,7 +5839,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         )
 
     @client.on(events.NewMessage())
-    async def multi_rule_handler(event):
+    async def multi_rule_handler(event, listener_client=None, listener_account=None):
+        listener_client = listener_client or client
+        listener_account = listener_account or MAIN_NAME
         if event.text == "/debug": await event.reply("Monitor Debug: Alive v78 (Full Source)"); return
         if not current_config.get("enabled", True): return
         
@@ -5850,13 +5852,13 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             if approval_keyword_matches(event_text, app_kws):
                 try:
                     approver = await event.get_sender()
-                    if await is_monitor_own_account(client, event, other_cs_ids):
+                    if await is_monitor_own_account(listener_client, event, other_cs_ids):
                         logger.info("🛡️ [Approval] 忽略已登录账号发出的审批触发词")
                         return
 
                     replied_msg = await event.get_reply_message()
                     if replied_msg:
-                        for original_msg in await collect_approval_candidate_messages(client, replied_msg):
+                        for original_msg in await collect_approval_candidate_messages(listener_client, replied_msg):
                             try:
                                 orig_sender = await original_msg.get_sender()
                             except Exception:
@@ -5864,11 +5866,12 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
                             for rule in current_config.get("rules", []):
                                 if not rule.get("enabled", True): continue
+                                if monitor_rule_account_name(rule) != listener_account: continue
                                 if not rule.get("enable_approval", False): continue
 
                                 # 1. Match the real report. If the leader replied to our prompt,
                                 #    the parent message is also tested as the original report.
-                                is_match, _, _ = await analyze_message(client, rule, MessageEventView(original_msg), other_cs_ids, orig_sender, check_cooldown=False)
+                                is_match, _, _ = await analyze_message(listener_client, rule, MessageEventView(original_msg), other_cs_ids, orig_sender, check_cooldown=False)
                                 if not is_match:
                                     continue
 
@@ -6007,8 +6010,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         for rule in current_config.get("rules", []):
             try:
                 if not rule.get("enabled", True): continue
+                if monitor_rule_account_name(rule) != listener_account: continue
                 # v69: Pass event.sender object
-                is_match, reason, extracted_data = await analyze_message(client, rule, event, other_cs_ids, event.sender)
+                is_match, reason, extracted_data = await analyze_message(listener_client, rule, event, other_cs_ids, event.sender)
                 if is_match:
                     matched_any_rule = True
                     discard_pending_unmatched_message(event.chat_id, event.id)
@@ -6252,5 +6256,19 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
         if not matched_any_rule and should_remember_unmatched and monitor_has_enabled_group(event.chat_id):
             remember_unmatched_message(event, sender_name)
+
+    def create_account_monitor_handler(listener_client, listener_account):
+        async def account_monitor_handler(event):
+            await multi_rule_handler(event, listener_client=listener_client, listener_account=listener_account)
+        return account_monitor_handler
+
+    for account_name, account_client in list(global_clients.items()):
+        if account_name == MAIN_NAME:
+            continue
+        try:
+            account_client.add_event_handler(create_account_monitor_handler(account_client, account_name), events.NewMessage())
+            logger.info(f"👂 [Monitor] 已为 {account_name} 启用账号级监听")
+        except Exception as e:
+            logger.error(f"❌ [Monitor] {account_name} 账号级监听注册失败: {e}")
 
     logger.info("🛠️ [Monitor] Ultimate UI v78 (Full Source) 已启动")
