@@ -5040,7 +5040,7 @@ if __name__ == '__main__':
         bot_loop.create_task(backfill_chat_history())
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
-        logger.critical("🚨 严重错误: SESSION_STRING 已失效！检测到多地登录冲突。")
+        logger.critical("🚨 严重错误: 主账号 SESSION_STRING 已失效！检测到多地登录冲突。")
         sys.exit(1)
     except Exception as e:
         log_tree(9, f"❌ 启动失败: {e}")

@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from flask import request, jsonify, Response, render_template_string
 from telethon import events, TelegramClient, functions
 from telethon.sessions import StringSession
+from telethon.errors import AuthKeyDuplicatedError
 
 # 忽略 asyncio 的一些无关紧要的警告
 warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -5380,6 +5381,12 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
             asyncio.create_task(keep_alive_loop(cli, name))
             await cli.run_until_disconnected()
+        except AuthKeyDuplicatedError:
+            logger.critical(f"🚨 [OTP] {name} SESSION_STRING 已失效！检测到多地登录冲突。")
+            try:
+                await cli.disconnect()
+            except Exception:
+                pass
         except Exception as e:
             logger.error(f"❌ [OTP] {name} 启动/运行失败: {e}")
 
