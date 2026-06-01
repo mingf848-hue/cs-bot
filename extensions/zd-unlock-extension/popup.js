@@ -26,6 +26,22 @@ const STATE_LABELS = {
   auth_refresh: '同步中',
   idle: '待机'
 };
+const SITE_9_HOSTS = [
+  '9sitebg.mvj4e7.com',
+  '9aynxg.hh9al.com',
+  '9aynxg.hp9yk.com',
+  '9aynxg.jr91e.com',
+  '9aynxg.w77n3i.com',
+  '9aynxg.ls3v0z.com'
+];
+const SITE_6_HOSTS = [
+  '6sitebg.oj61i4.com',
+  '6aopna.fa69m.com',
+  '6aopna.f26g7.com',
+  '6aopna.fb6e5.com',
+  '6aopna.30g7e1.com',
+  '6aopna.a079a8.com'
+];
 
 try {
   versionBadge.textContent = `v${chrome.runtime.getManifest().version}`;
@@ -87,8 +103,8 @@ function renderStatus(s = {}, pageAuth = null, pageAuthByHost = {}, pageAuthByMe
   else if (s.state && s.state !== 'auth') lines.push(s.state);
   detail.textContent = lines.join('\n');
 
-  const site9On = siteAuth(pageAuth, pageAuthByHost, '9sitebg.mvj4e7.com', '9001');
-  const site6On = siteAuth(pageAuth, pageAuthByHost, '6sitebg.oj61i4.com', '6001');
+  const site9On = siteAuth(pageAuth, pageAuthByHost, SITE_9_HOSTS, '9001');
+  const site6On = siteAuth(pageAuth, pageAuthByHost, SITE_6_HOSTS, '6001');
   const merchantAuths = Object.values(pageAuthByMerchant || {});
   const merchantOn = siteAuth(
     pageAuth,

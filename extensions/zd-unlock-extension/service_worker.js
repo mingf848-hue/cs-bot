@@ -3,6 +3,22 @@ const LEGACY_BOT_BASES = new Set([
   'https://arcshelp.zeabur.app',
   'http://arcshelp.zeabur.app'
 ]);
+const SITE_9_HOSTS = [
+  '9sitebg.mvj4e7.com',
+  '9aynxg.hh9al.com',
+  '9aynxg.hp9yk.com',
+  '9aynxg.jr91e.com',
+  '9aynxg.w77n3i.com',
+  '9aynxg.ls3v0z.com'
+];
+const SITE_6_HOSTS = [
+  '6sitebg.oj61i4.com',
+  '6aopna.fa69m.com',
+  '6aopna.f26g7.com',
+  '6aopna.fb6e5.com',
+  '6aopna.30g7e1.com',
+  '6aopna.a079a8.com'
+];
 
 const DEFAULT_CONFIG = {
   botBase: DEFAULT_BOT_BASE,
@@ -61,7 +77,7 @@ const merchantUrgeTelegramBatches = new Map();
 const SITE_PROFILES = {
   '9001': {
     host: '9sitebg.mvj4e7.com',
-    authHosts: ['9sitebg.mvj4e7.com'],
+    authHosts: SITE_9_HOSTS,
     label: '9站',
     requiredAuthHeaders: ['x-api-token', 'x-api-user'],
     memberListUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/list',
@@ -82,7 +98,7 @@ const SITE_PROFILES = {
   },
   '6001': {
     host: '6sitebg.oj61i4.com',
-    authHosts: ['6sitebg.oj61i4.com'],
+    authHosts: SITE_6_HOSTS,
     label: '6站',
     requiredAuthHeaders: ['x-api-token', 'x-api-user'],
     memberListUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/user/memberInfo/list',
@@ -192,6 +208,25 @@ function authMatches(auth, targetHost, targetSite, targetHosts = [targetHost]) {
   return targetHosts.includes(host)
     || targetHosts.some((item) => href.includes(item))
     || String(headers['x-api-site'] || '') === targetSite;
+}
+
+function profileForAuthOrigin(profile, auth) {
+  const host = authHost(auth);
+  const authHosts = profile.authHosts || [profile.host];
+  if (!host || !authHosts.includes(host) || host === profile.host) return profile;
+  const rewritten = { ...profile, host };
+  for (const [key, value] of Object.entries(profile)) {
+    if (!key.endsWith('Url') || typeof value !== 'string') continue;
+    try {
+      const parsed = new URL(value);
+      if (parsed.host !== profile.host) continue;
+      parsed.host = host;
+      rewritten[key] = parsed.toString();
+    } catch {
+      // Keep non-URL values as-is.
+    }
+  }
+  return rewritten;
 }
 
 function safeDecodeText(value) {
@@ -354,16 +389,19 @@ function authConfigsForAction(config, action, cmd = {}) {
   if (!matchedAuths.length) {
     throw new Error(`${profile.label}未登录`);
   }
-  return matchedAuths.map((matchedAuth) => ({
-    ...config,
-    ...profile,
-    headers: {
-      ...config.headers,
-      ...(matchedAuth.headers || {})
-    },
-    pageAuth: matchedAuth,
-    pageAuthLabel: targetSite === 'merchant' ? merchantAuthLabel(matchedAuth) : ''
-  }));
+  return matchedAuths.map((matchedAuth) => {
+    const authProfile = profileForAuthOrigin(profile, matchedAuth);
+    return {
+      ...config,
+      ...authProfile,
+      headers: {
+        ...config.headers,
+        ...(matchedAuth.headers || {})
+      },
+      pageAuth: matchedAuth,
+      pageAuthLabel: targetSite === 'merchant' ? merchantAuthLabel(matchedAuth) : ''
+    };
+  });
 }
 
 function configForAction(config, action, cmd = {}) {
@@ -520,7 +558,17 @@ async function refreshBackstageTabs() {
   const tabs = await queryTabs({
     url: [
       'https://9sitebg.mvj4e7.com/*',
+      'https://9aynxg.hh9al.com/*',
+      'https://9aynxg.hp9yk.com/*',
+      'https://9aynxg.jr91e.com/*',
+      'https://9aynxg.w77n3i.com/*',
+      'https://9aynxg.ls3v0z.com/*',
       'https://6sitebg.oj61i4.com/*',
+      'https://6aopna.fa69m.com/*',
+      'https://6aopna.f26g7.com/*',
+      'https://6aopna.fb6e5.com/*',
+      'https://6aopna.30g7e1.com/*',
+      'https://6aopna.a079a8.com/*',
       'https://merchant-own-backstage.dbsportxxxwo8.com/*',
       'https://*.dbsportxxxwo8.com/*'
     ]
@@ -2605,7 +2653,7 @@ async function runMemberDataOverviewCommand(config, cmd, targetValue) {
 function requireSixSiteAuth(config) {
   const site = String((config.headers && config.headers['x-api-site']) || '');
   const href = String((config.pageAuth && config.pageAuth.href) || '');
-  if (site !== '6001' && !href.includes('6sitebg.oj61i4.com')) {
+  if (site !== '6001' && !SITE_6_HOSTS.some((host) => href.includes(host))) {
     throw new Error('未登录');
   }
 }
