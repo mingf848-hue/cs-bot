@@ -19,6 +19,15 @@ const SITE_6_HOSTS = [
   '6aopna.30g7e1.com',
   '6aopna.a079a8.com'
 ];
+const MERCHANT_ENDPOINT_PATHS = {
+  merchantStatisticsUrl: '/admin/userReport/getStatistics',
+  merchantTicketListUrl: '/admin/userReport/queryTicketList',
+  merchantNoticeUrl: '/admin/noticeNew/notice',
+  merchantNoticeDetailUrl: '/admin/noticeNew/noticeDetail',
+  merchantSettlementListUrl: '/admin/settlement/queryNoSettleTicketList',
+  merchantSettlementStatisticsUrl: '/admin/settlement/getStatistics',
+  merchantSettlementApplyUrl: '/admin/settlement/sendMqSaveSettleInfo'
+};
 
 const DEFAULT_CONFIG = {
   botBase: DEFAULT_BOT_BASE,
@@ -279,22 +288,39 @@ function limitedMerchantAuthStore(pageAuthByMerchant = {}, limit = 8) {
 }
 
 function isAllowedMerchantEndpoint(key, url) {
-  const allowed = new Set([
-    'merchantStatisticsUrl',
-    'merchantTicketListUrl',
-    'merchantNoticeUrl',
-    'merchantNoticeDetailUrl',
-    'merchantSettlementListUrl',
-    'merchantSettlementStatisticsUrl',
-    'merchantSettlementApplyUrl'
-  ]);
-  if (!allowed.has(String(key || ''))) return false;
+  if (!MERCHANT_ENDPOINT_PATHS[String(key || '')]) return false;
   try {
     const parsed = new URL(String(url || ''));
     return parsed.protocol === 'https:' && parsed.hostname.endsWith('dbsportxxxwo8.com');
   } catch {
     return false;
   }
+}
+
+function merchantEndpointBaseFromUrl(url) {
+  try {
+    const parsed = new URL(String(url || ''));
+    if (parsed.protocol !== 'https:' || !parsed.hostname.endsWith('dbsportxxxwo8.com')) return '';
+    const matchedPath = Object.values(MERCHANT_ENDPOINT_PATHS).find((path) => parsed.pathname.endsWith(path));
+    if (!matchedPath) return '';
+    return `${parsed.origin}${parsed.pathname.slice(0, -matchedPath.length)}`;
+  } catch {
+    return '';
+  }
+}
+
+function applyMerchantEndpointBase(config = {}) {
+  const base = String(config.merchantEndpointBase || '').trim()
+    || merchantEndpointBaseFromUrl(config.merchantTicketListUrl)
+    || merchantEndpointBaseFromUrl(config.merchantStatisticsUrl)
+    || merchantEndpointBaseFromUrl(config.merchantSettlementListUrl)
+    || merchantEndpointBaseFromUrl(config.merchantNoticeUrl);
+  if (!base) return config;
+  const next = { ...config, merchantEndpointBase: base };
+  for (const [key, path] of Object.entries(MERCHANT_ENDPOINT_PATHS)) {
+    next[key] = `${base}${path}`;
+  }
+  return next;
 }
 
 async function getConfig() {
@@ -391,7 +417,7 @@ function authConfigsForAction(config, action, cmd = {}) {
   }
   return matchedAuths.map((matchedAuth) => {
     const authProfile = profileForAuthOrigin(profile, matchedAuth);
-    return {
+    const nextConfig = {
       ...config,
       ...authProfile,
       headers: {
@@ -401,6 +427,7 @@ function authConfigsForAction(config, action, cmd = {}) {
       pageAuth: matchedAuth,
       pageAuthLabel: targetSite === 'merchant' ? merchantAuthLabel(matchedAuth) : ''
     };
+    return targetSite === 'merchant' ? applyMerchantEndpointBase(nextConfig) : nextConfig;
   });
 }
 
@@ -1100,6 +1127,10 @@ async function postForm(url, headers, body) {
 
 function merchantUrl(baseUrl) {
   return `${baseUrl}?rnd_str_st=${Date.now()}`;
+}
+
+function merchantHttpError(label, url, result) {
+  return new Error(`${label} ${url} HTTP ${result.res.status}: ${String(result.text || '').slice(0, 300)}`);
 }
 
 function merchantApiOk(result) {
@@ -2906,9 +2937,10 @@ async function queryMerchantTicketOrder(config, cmd, orderNo, statusPrefix = '�
   const headers = merchantHeaders(config, cmd);
   const venueLabel = config.pageAuthLabel || merchantAuthLabel(config);
   await setStatus({ state: 'running', message: `${statusPrefix} ${orderNo} (${venueLabel})` });
-  const ticket = await postJson(merchantUrl(config.merchantTicketListUrl), headers, merchantTicketBody(cmd, orderNo));
+  const ticketUrl = merchantUrl(config.merchantTicketListUrl);
+  const ticket = await postJson(ticketUrl, headers, merchantTicketBody(cmd, orderNo));
   if (!merchantApiOk(ticket)) {
-    const err = new Error(`查询注单失败 HTTP ${ticket.res.status}: ${ticket.text.slice(0, 300)}`);
+    const err = merchantHttpError('查询注单失败', ticketUrl, ticket);
     if (merchantAuthFailed(ticket)) {
       err.code = 'merchant_auth_failed';
       err.venueLabel = venueLabel;
@@ -2936,14 +2968,15 @@ async function queryTicketReasonNotice(config, headers, order = {}, detail = {})
   if (!config.merchantNoticeUrl) throw new Error('场馆公告接口未配置');
   const matchId = String(detail.matchId || order.standardMatchId || detail.standardMatchId || '').trim();
   if (!matchId) return null;
-  const notice = await postForm(merchantUrl(config.merchantNoticeUrl), headers, {
+  const noticeUrl = merchantUrl(config.merchantNoticeUrl);
+  const notice = await postForm(noticeUrl, headers, {
     mid: matchId,
     status: 1,
     pgNum: 1,
     pgSize: 20
   });
   if (!merchantApiOk(notice)) {
-    throw new Error(`查询失效公告失败 HTTP ${notice.res.status}: ${notice.text.slice(0, 300)}`);
+    throw merchantHttpError('查询失效公告失败', noticeUrl, notice);
   }
   const notices = merchantList(notice.data)
     .map((item) => ({ item, score: scoreInvalidNotice(item, order, detail) }))
@@ -3007,9 +3040,10 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
   const headers = merchantHeaders(config, cmd);
   const venueLabel = config.pageAuthLabel || merchantAuthLabel(config);
   await setStatus({ state: 'running', message: `催结算查询注单 ${orderNo} (${venueLabel})` });
-  const ticket = await postJson(merchantUrl(config.merchantTicketListUrl), headers, merchantTicketBody(cmd, orderNo));
+  const ticketUrl = merchantUrl(config.merchantTicketListUrl);
+  const ticket = await postJson(ticketUrl, headers, merchantTicketBody(cmd, orderNo));
   if (!merchantApiOk(ticket)) {
-    const err = new Error(`查询注单失败 HTTP ${ticket.res.status}: ${ticket.text.slice(0, 300)}`);
+    const err = merchantHttpError('查询注单失败', ticketUrl, ticket);
     if (merchantAuthFailed(ticket)) {
       err.code = 'merchant_auth_failed';
       err.venueLabel = venueLabel;
@@ -3081,14 +3115,15 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
     const matchId = detailMatchId(order, item);
     if (!matchId) continue;
     await setStatus({ state: 'running', message: `查询赛事公告 ${matchId}` });
-    const notice = await postForm(merchantUrl(config.merchantNoticeUrl), headers, {
+    const noticeUrl = merchantUrl(config.merchantNoticeUrl);
+    const notice = await postForm(noticeUrl, headers, {
       mid: matchId,
       status: 1,
       pgNum: 1,
       pgSize: 20
     });
     if (!merchantApiOk(notice)) {
-      throw new Error(`查询公告失败 HTTP ${notice.res.status}: ${notice.text.slice(0, 300)}`);
+      throw merchantHttpError('查询公告失败', noticeUrl, notice);
     }
     const notices = merchantList(notice.data)
       .map((noticeItem) => ({ item: noticeItem, score: scoreSettlementNotice(noticeItem, order, item) }))
@@ -3105,13 +3140,10 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
   }
 
   await setStatus({ state: 'running', message: `查询结算状态 ${orderNo}` });
-  const settlement = await postJson(
-    merchantUrl(config.merchantSettlementListUrl),
-    headers,
-    merchantSettlementBody(cmd, orderNo)
-  );
+  const settlementUrl = merchantUrl(config.merchantSettlementListUrl);
+  const settlement = await postJson(settlementUrl, headers, merchantSettlementBody(cmd, orderNo));
   if (!merchantApiOk(settlement)) {
-    throw new Error(`查询结算状态失败 HTTP ${settlement.res.status}: ${settlement.text.slice(0, 300)}`);
+    throw merchantHttpError('查询结算状态失败', settlementUrl, settlement);
   }
   const settlementTotal = Number((((settlement.data || {}).data || {}).total) || 0);
   if (settlementTotal > 0 || merchantList(settlement.data).length > 0) {
@@ -3128,9 +3160,10 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
       if (!body.orderNo || !body.matchId || !body.betNo || !body.userId || seenApply.has(key)) continue;
       seenApply.add(key);
       await setStatus({ state: 'running', message: `递交催促结算申请 ${body.orderNo} ${body.matchId}` });
-      const apply = await postJson(merchantUrl(config.merchantSettlementApplyUrl), headers, body);
+      const applyUrl = merchantUrl(config.merchantSettlementApplyUrl);
+      const apply = await postJson(applyUrl, headers, body);
       if (!merchantApiOk(apply)) {
-        throw new Error(`递交催促结算申请失败 HTTP ${apply.res.status}: ${apply.text.slice(0, 300)}`);
+        throw merchantHttpError('递交催促结算申请失败', applyUrl, apply);
       }
       applied += 1;
     }
@@ -3561,11 +3594,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
     chrome.storage.local.get(['config'])
       .then((stored) => {
+        const endpointBase = merchantEndpointBaseFromUrl(url);
         const config = {
           ...(stored.config || DEFAULT_CONFIG),
-          [key]: url
+          [key]: url,
+          ...(endpointBase ? { merchantEndpointBase: endpointBase } : {})
         };
-        return chrome.storage.local.set({ config: normalizeConfig(config) });
+        return chrome.storage.local.set({ config: normalizeConfig(applyMerchantEndpointBase(config)) });
       })
       .then(() => sendResponse({ ok: true }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
