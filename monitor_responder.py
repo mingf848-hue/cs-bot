@@ -1346,6 +1346,9 @@ def clean_settlement_group_reply(text):
 
     return "\n".join(clean_line(line) for line in raw.split("\n")).strip()
 
+def filter_settlement_group_reply(text):
+    return str(text or "").replace("贵司", "您")
+
 def looks_like_settlement_group_result(text):
     compact = re.sub(r"\s+", "", str(text or ""))
     if len(compact) < 4:
@@ -1364,6 +1367,7 @@ async def forward_settlement_tg_group_reply(event, account_name):
         return
     raw_text = getattr(event, "raw_text", None) or getattr(event, "text", "") or getattr(message, "message", "") or ""
     reply_text = clean_settlement_group_reply(raw_text)
+    reply_text = filter_settlement_group_reply(reply_text)
     if not looks_like_settlement_group_result(reply_text):
         logger.info(f"↩️ [SettlementBridge] 忽略非结果类客服回复: tg={event.chat_id}/{getattr(message, 'id', '-')}")
         return
