@@ -11,6 +11,7 @@ import sqlite3
 import copy
 import secrets
 import socket
+import signal
 from collections import deque, defaultdict
 from datetime import datetime, timedelta, timezone
 from threading import Thread, Lock
@@ -48,6 +49,13 @@ CHAT_LOG_TO_CONSOLE = os.environ.get("CHAT_LOG_TO_CONSOLE", "0").strip().lower()
 BOT_COMMAND_POLL_LOCK_KEY = "bot_command_poll_lock_v1"
 BOT_COMMAND_POLL_LOCK_TTL_SECONDS = 90
 BOT_COMMAND_POLL_LOCK_OWNER = f"{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(4)}"
+TELEGRAM_RUNTIME_LOCK_KEY = os.environ.get("TELEGRAM_RUNTIME_LOCK_KEY", "telegram_runtime_lock_v1")
+TELEGRAM_RUNTIME_LOCK_TTL_SECONDS = int(os.environ.get("TELEGRAM_RUNTIME_LOCK_TTL_SECONDS", "180") or "180")
+TELEGRAM_RUNTIME_LOCK_REFRESH_SECONDS = max(15, min(60, TELEGRAM_RUNTIME_LOCK_TTL_SECONDS // 3))
+TELEGRAM_RUNTIME_LOCK_OWNER = f"{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(8)}"
+telegram_runtime_lock_acquired = False
+telegram_runtime_lock_stop = False
+telegram_shutdown_started = False
 BOT_COMMAND_POLLING_ENABLED = os.environ.get("BOT_COMMAND_POLLING_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
 BOT_COMMAND_POLL_CONFLICT_LOG_INTERVAL_SECONDS = 300
 bot_command_poll_conflict_last_log_at = 0.0
@@ -1037,8 +1045,11 @@ def schedule_session_restart():
         session_restart_scheduled = True
 
     def restart_later():
+        global telegram_runtime_lock_stop
         time.sleep(1.5)
         logger.warning("🔄 [Session] 已保存新的 SESSION_STRING，正在自动重载进程...")
+        telegram_runtime_lock_stop = True
+        release_telegram_runtime_lock()
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
     Thread(target=restart_later, name="session-auto-restart", daemon=True).start()
@@ -4011,6 +4022,139 @@ def _refresh_bot_poll_lock():
         return True
     return False
 
+def _telegram_runtime_lock_client():
+    try:
+        return get_wait_alert_redis_client()
+    except Exception as e:
+        logger.warning(f"⚠️ [RuntimeLock] Redis 获取失败，无法启用跨实例 Telegram 锁: {e}")
+        return None
+
+def acquire_telegram_runtime_lock():
+    global telegram_runtime_lock_acquired
+    client = _telegram_runtime_lock_client()
+    if not client:
+        logger.warning("⚠️ [RuntimeLock] 未配置 Redis，无法阻止多实例同时连接 Telegram；请确保 Zeabur 只运行 1 个实例")
+        telegram_runtime_lock_acquired = False
+        return True
+
+    wait_logged = False
+    while True:
+        try:
+            if client.set(TELEGRAM_RUNTIME_LOCK_KEY, TELEGRAM_RUNTIME_LOCK_OWNER, nx=True, ex=TELEGRAM_RUNTIME_LOCK_TTL_SECONDS):
+                telegram_runtime_lock_acquired = True
+                logger.info(f"🔒 [RuntimeLock] 已取得 Telegram 运行锁，TTL={TELEGRAM_RUNTIME_LOCK_TTL_SECONDS}s")
+                return True
+            if client.get(TELEGRAM_RUNTIME_LOCK_KEY) == TELEGRAM_RUNTIME_LOCK_OWNER:
+                client.expire(TELEGRAM_RUNTIME_LOCK_KEY, TELEGRAM_RUNTIME_LOCK_TTL_SECONDS)
+                telegram_runtime_lock_acquired = True
+                return True
+            if not wait_logged:
+                logger.warning("⏳ [RuntimeLock] 其它实例仍持有 Telegram 运行锁，本实例暂不连接 Telegram，等待接管...")
+                wait_logged = True
+        except Exception as e:
+            logger.warning(f"⚠️ [RuntimeLock] 锁检查异常，继续等待以避免挤号: {e}")
+        time.sleep(10)
+
+def refresh_telegram_runtime_lock():
+    client = _telegram_runtime_lock_client()
+    if not client or not telegram_runtime_lock_acquired:
+        return False
+    try:
+        if client.get(TELEGRAM_RUNTIME_LOCK_KEY) == TELEGRAM_RUNTIME_LOCK_OWNER:
+            client.expire(TELEGRAM_RUNTIME_LOCK_KEY, TELEGRAM_RUNTIME_LOCK_TTL_SECONDS)
+            return True
+    except Exception as e:
+        logger.warning(f"⚠️ [RuntimeLock] Telegram 运行锁续期失败: {e}")
+    return False
+
+def release_telegram_runtime_lock():
+    global telegram_runtime_lock_acquired
+    client = _telegram_runtime_lock_client()
+    if not client or not telegram_runtime_lock_acquired:
+        return
+    try:
+        script = """
+        if redis.call('get', KEYS[1]) == ARGV[1] then
+            return redis.call('del', KEYS[1])
+        end
+        return 0
+        """
+        client.eval(script, 1, TELEGRAM_RUNTIME_LOCK_KEY, TELEGRAM_RUNTIME_LOCK_OWNER)
+        logger.info("🔓 [RuntimeLock] 已释放 Telegram 运行锁")
+    except Exception as e:
+        logger.warning(f"⚠️ [RuntimeLock] 释放 Telegram 运行锁失败: {e}")
+    finally:
+        telegram_runtime_lock_acquired = False
+
+def start_telegram_runtime_lock_heartbeat(loop):
+    async def heartbeat():
+        global telegram_runtime_lock_stop
+        while not telegram_runtime_lock_stop:
+            await asyncio.sleep(TELEGRAM_RUNTIME_LOCK_REFRESH_SECONDS)
+            if telegram_runtime_lock_stop:
+                break
+            if telegram_runtime_lock_acquired and not refresh_telegram_runtime_lock():
+                logger.critical("🚨 [RuntimeLock] Telegram 运行锁续期失败或已被接管，为避免多实例挤号，正在退出进程")
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+                os._exit(1)
+
+    if telegram_runtime_lock_acquired:
+        loop.create_task(heartbeat())
+
+async def async_disconnect_all_telegram_clients():
+    seen = set()
+    try:
+        seen.add(id(client))
+        disconnect_result = client.disconnect()
+        if asyncio.iscoroutine(disconnect_result):
+            await disconnect_result
+    except Exception:
+        pass
+    try:
+        import monitor_responder as _monitor_responder
+        for name, cli in list(getattr(_monitor_responder, "global_clients", {}).items()):
+            if not cli or id(cli) in seen:
+                continue
+            seen.add(id(cli))
+            try:
+                result = cli.disconnect()
+                if asyncio.iscoroutine(result):
+                    await result
+                logger.info(f"🔌 [Shutdown] 已断开 Telegram 账号: {name}")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+def install_shutdown_signal_handlers(loop):
+    async def _shutdown_async(signum):
+        global telegram_runtime_lock_stop
+        logger.warning(f"🛑 [Shutdown] 收到信号 {signum}，正在断开 Telegram 并释放运行锁...")
+        telegram_runtime_lock_stop = True
+        await async_disconnect_all_telegram_clients()
+        release_telegram_runtime_lock()
+        os._exit(0)
+
+    def _handle_shutdown(signum, _frame):
+        global telegram_shutdown_started
+        if telegram_shutdown_started:
+            return
+        telegram_shutdown_started = True
+        try:
+            loop.call_soon_threadsafe(lambda: loop.create_task(_shutdown_async(signum)))
+        except Exception:
+            release_telegram_runtime_lock()
+            os._exit(0)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _handle_shutdown)
+        except Exception:
+            pass
+
 def _bot_send_reply(chat_id, text, reply_to_message_id=None, message_thread_id=None, reply_markup=None):
     if not BOT_TOKEN:
         return None
@@ -5740,6 +5884,7 @@ if __name__ == '__main__':
             time.sleep(delay)
             
         bot_loop = asyncio.get_event_loop()
+        install_shutdown_signal_handlers(bot_loop)
         bot_loop.create_task(maintenance_task())
         bot_loop.create_task(bot_command_polling_task())
         
@@ -5755,6 +5900,8 @@ if __name__ == '__main__':
         if not MAIN_SESSION_READY:
             log_tree(9, "主账号 SESSION_STRING 未配置或无效，已进入仅 Web 模式。请访问 /telegram-login 重新生成。")
             bot_loop.run_forever()
+        acquire_telegram_runtime_lock()
+        start_telegram_runtime_lock_heartbeat(bot_loop)
         log_tree(0, "✅ 系统启动 (Ver 45.22 Final Consolidated)")
         client.start()
         main_me = client.loop.run_until_complete(client.get_me())
@@ -5765,6 +5912,7 @@ if __name__ == '__main__':
             logger.info(f"✅ [Main] 主账号启动成功 | 登录身份: {main_display} ({main_me.id}) | {main_username} | Session来源: {SESSION_STRING_SOURCE}")
         bot_loop.create_task(backfill_chat_history())
         client.run_until_disconnected()
+        release_telegram_runtime_lock()
     except AuthKeyDuplicatedError:
         logger.critical("🚨 严重错误: 主账号 SESSION_STRING 已失效！检测到多地登录冲突。")
         logger.critical("⚠️ 主账号监听已停止；Web 服务和副账号监听将继续运行。")
@@ -5778,5 +5926,7 @@ if __name__ == '__main__':
             bot_loop.run_forever()
         except KeyboardInterrupt:
             pass
+        release_telegram_runtime_lock()
     except Exception as e:
         log_tree(9, f"❌ 启动失败: {e}")
+        release_telegram_runtime_lock()
