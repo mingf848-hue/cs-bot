@@ -686,6 +686,7 @@ function commandLabel(action) {
   if (action === 'merchant_order_statistics') return '场馆注单查询';
   if (action === 'urge_settlement') return '催结算';
   if (action === 'query_ticket_cancel_reason') return '注单取消/失败原因';
+  if (action === 'venue_display_control') return '场馆上下架';
   return '短信/验证码解锁';
 }
 
@@ -766,6 +767,9 @@ function normalizeCommandAction(action, cmd = {}) {
     query_ticket_failure_reason: 'query_ticket_cancel_reason',
     invalid_ticket_reason: 'query_ticket_cancel_reason',
     query_invalid_ticket_reason: 'query_ticket_cancel_reason',
+    venue_maintenance: 'venue_display_control',
+    venue_enable: 'venue_display_control',
+    venue_display: 'venue_display_control',
     data_overview: 'member_data_overview',
     query_member_data: 'member_data_overview',
     member_data_query: 'member_data_overview',
@@ -803,7 +807,7 @@ function normalizeCommandAction(action, cmd = {}) {
   };
   const normalized = aliases[raw] || raw;
   if (hasMerchantCommandHint(cmd) && (raw === '' || raw === 'unlock_sms')) return 'merchant_order_statistics';
-  return ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg', 'member_data_overview', 'query_member_line', 'query_login_device_ip', 'query_same_ip_device', 'query_venue_turnover', 'configure_rebate', 'merchant_order_statistics', 'urge_settlement', 'query_ticket_cancel_reason'].includes(normalized)
+  return ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg', 'member_data_overview', 'query_member_line', 'query_login_device_ip', 'query_same_ip_device', 'query_venue_turnover', 'configure_rebate', 'merchant_order_statistics', 'urge_settlement', 'query_ticket_cancel_reason', 'venue_display_control'].includes(normalized)
     ? normalized
     : 'unlock_sms';
 }
@@ -867,6 +871,10 @@ function isSupportedCommandAction(action, cmd = {}) {
     'query_ticket_failure_reason',
     'invalid_ticket_reason',
     'query_invalid_ticket_reason',
+    'venue_display_control',
+    'venue_maintenance',
+    'venue_enable',
+    'venue_display',
     '催结算',
     '注单取消原因',
     '取消原因',
@@ -2565,6 +2573,88 @@ function actionSuccessReplyText(action, targetValue) {
   return '';
 }
 
+function normalizeVenueControlSites(rawSites) {
+  const values = Array.isArray(rawSites) ? rawSites : String(rawSites || '').split(/[\s,，;；]+/);
+  const sites = [];
+  for (const raw of values) {
+    let site = String(raw || '').trim().toLowerCase();
+    if (['9', '9站', 'ml', '9001'].includes(site)) site = '9001';
+    else if (['6', '6站', 'jn', '6001'].includes(site)) site = '6001';
+    else continue;
+    if (!sites.includes(site)) sites.push(site);
+  }
+  return sites.length ? sites : ['9001', '6001'];
+}
+
+function venueUpdateUrl(config) {
+  if (config.venueUpdateUrl) return config.venueUpdateUrl;
+  if (!config.venueQueryUrl) throw new Error('场馆查询接口未配置');
+  return String(config.venueQueryUrl).replace(/\/queryByName(?:\?.*)?$/, '/update');
+}
+
+function findVenueByCommand(list = [], targetValue = '') {
+  const target = String(targetValue || '').trim().toLowerCase();
+  return list.find((item) => {
+    const names = [item.zhName, item.enName, item.channelName, item.name, item.id].map((value) => String(value || '').trim().toLowerCase());
+    return names.some((name) => name && (name === target || name.includes(target) || target.includes(name)));
+  }) || null;
+}
+
+async function runVenueDisplayControlCommand(baseConfig, cmd, targetValue) {
+  const mode = String(cmd.venue_mode || cmd.mode || '').trim().toLowerCase() === 'enable' ? 'enable' : 'maintenance';
+  const sites = normalizeVenueControlSites(cmd.sites || cmd.backend_sites || cmd.site);
+  const results = [];
+  const errors = [];
+
+  for (const site of sites) {
+    try {
+      const config = configForAction(baseConfig, 'venue_display_control', { ...cmd, backend_site: site });
+      await setStatus({ state: 'running', message: `${profileForSite(site).label}${mode === 'enable' ? '启用' : '维护'} ${targetValue}` });
+      const query = await postJson(config.venueQueryUrl, config.headers, { category: String(cmd.category || '4') });
+      if (!apiOk(query.res, query.data)) {
+        throw new Error(`查询场馆失败 HTTP ${query.res.status}: ${query.text.slice(0, 300)}`);
+      }
+      const list = Array.isArray(query.data?.data) ? query.data.data : (((query.data || {}).data || {}).list || []);
+      const venue = findVenueByCommand(list, targetValue) || (Number(cmd.venue_id || cmd.id) ? { id: Number(cmd.venue_id || cmd.id), zhName: targetValue } : null);
+      if (!venue || !venue.id) throw new Error(`未找到场馆：${targetValue}`);
+
+      const body = mode === 'enable'
+        ? {
+            operate: 1,
+            id: Number(venue.id),
+            isDisplay: '0',
+            reasonRemark: '',
+            hint: ''
+          }
+        : {
+            operate: 1,
+            id: Number(venue.id),
+            isDisplay: '1',
+            isDisplayMaintain: 1,
+            jumpVenueId: Number(cmd.jump_venue_id || cmd.jumpVenueId || 14),
+            reasonRemark: String(cmd.reasonRemark || ''),
+            hint: String(cmd.hint || ''),
+            startAt: String(cmd.maintenance_start_at || cmd.startAt || ''),
+            endAt: String(cmd.maintenance_end_at || cmd.endAt || ''),
+            isAutoJump: 1,
+            isUnknowEnd: 0
+          };
+      const saved = await postJson(venueUpdateUrl(config), config.headers, body);
+      if (!apiOk(saved.res, saved.data)) {
+        throw new Error(`更新场馆失败 HTTP ${saved.res.status}: ${saved.text.slice(0, 300)}`);
+      }
+      results.push(`${profileForSite(site).label}${mode === 'enable' ? '已启用' : '已维护'}`);
+    } catch (err) {
+      errors.push(`${profileForSite(site).label}: ${err && err.message ? err.message : String(err || '')}`);
+    }
+  }
+
+  if (errors.length) throw new Error(errors.join('；'));
+  const replyText = `${targetValue}${mode === 'enable' ? '启用完成' : '维护设置完成'}：${results.join('、')}`;
+  await setStatus({ state: 'success', message: replyText, detail: replyText });
+  await ack(baseConfig, cmd, 'success', replyText, { reply_text: replyText });
+}
+
 async function findExactMember(config, targetValue) {
   if (!config.memberListUrl) throw new Error('会员查询接口未配置');
   await setStatus({ state: 'running', message: `查询会员 ${targetValue}` });
@@ -3307,6 +3397,10 @@ async function runBackendCommand(config, cmd) {
     if (action === 'query_ticket_cancel_reason') {
       const configs = authConfigsForAction(config, action, cmd);
       await runTicketCancelReasonCommandWithFallback(configs, cmd, targetValue);
+      return;
+    }
+    if (action === 'venue_display_control') {
+      await runVenueDisplayControlCommand(config, cmd, targetValue);
       return;
     }
     config = configForAction(config, action, cmd);

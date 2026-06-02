@@ -2267,6 +2267,36 @@ DEFAULT_CONFIG = {
         "accounts": {}
     },
     "scheduled_messages": [],
+    "scheduled_backend_actions": [
+        {
+            "id": "default_sgcp_maintenance",
+            "name": "双赢彩票维护",
+            "enabled": True,
+            "time": "05:58",
+            "frequency": "daily",
+            "action": "venue_display_control",
+            "target": "双赢彩票",
+            "mode": "maintenance",
+            "sites": ["9001", "6001"],
+            "maintenance_start": "06:00",
+            "maintenance_end": "07:05",
+            "last_run_date": "",
+            "last_run_at": ""
+        },
+        {
+            "id": "default_sgcp_enable",
+            "name": "双赢彩票启用",
+            "enabled": True,
+            "time": "07:00",
+            "frequency": "daily",
+            "action": "venue_display_control",
+            "target": "双赢彩票",
+            "mode": "enable",
+            "sites": ["9001", "6001"],
+            "last_run_date": "",
+            "last_run_at": ""
+        }
+    ],
     "rules": [
         {
             "id": "default_rule",
@@ -2291,6 +2321,7 @@ DEFAULT_CONFIG = {
 current_config = DEFAULT_CONFIG.copy()
 rule_timers = {}
 scheduled_message_runs = {}
+scheduled_backend_action_runs = {}
 active_rule_tasks = set()
 rule_task_semaphore = None
 VALID_REPLY_TYPES = {"text", "edit_prev", "forward", "copy_file", "amount_logic", "preempt_check", "scan_nearby_missed", "notify_user", "backend_unlock", "agent_orchestrator"}
@@ -2298,7 +2329,8 @@ BACKEND_UNLOCK_ACTIONS = {
     "unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan",
         "send_site_inner_msg", "member_data_overview", "query_member_line",
         "query_login_device_ip", "query_same_ip_device", "query_venue_turnover",
-        "configure_rebate", "urge_settlement", "query_ticket_cancel_reason", "agent_existing"
+        "configure_rebate", "urge_settlement", "query_ticket_cancel_reason",
+        "venue_display_control", "agent_existing"
 }
 AGENT_EXECUTABLE_ACTIONS = {
     "unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan",
@@ -2486,6 +2518,11 @@ def normalize_backend_action(action):
         "失败原因": "query_ticket_cancel_reason",
         "无效原因": "query_ticket_cancel_reason",
         "投注失败": "query_ticket_cancel_reason",
+        "venue_maintenance": "venue_display_control",
+        "venue_enable": "venue_display_control",
+        "venue_display": "venue_display_control",
+        "双赢彩票维护": "venue_display_control",
+        "双赢彩票启用": "venue_display_control",
     }
     action = aliases.get(action, action)
     return action if action in BACKEND_UNLOCK_ACTIONS else "unlock_sms"
@@ -2929,6 +2966,8 @@ def command_action_label(action):
         return "催结算"
     if action == "query_ticket_cancel_reason":
         return "注单取消/失败原因"
+    if action == "venue_display_control":
+        return "场馆上下架"
     return "短信/验证码限制"
 
 def member_data_private_requested(text):
@@ -3563,6 +3602,99 @@ def normalize_scheduled_messages(raw_items):
         })
     return clean_items
 
+def default_scheduled_backend_actions():
+    return clone_config_data(DEFAULT_CONFIG.get("scheduled_backend_actions", []))
+
+def ensure_scheduled_backend_action_id(item):
+    if not item.get("id"):
+        item["id"] = f"backend_schedule_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+    return item["id"]
+
+def normalize_backend_schedule_sites(raw_sites):
+    if isinstance(raw_sites, str):
+        raw_sites = re.split(r"[\s,，;；]+", raw_sites)
+    if not isinstance(raw_sites, list):
+        raw_sites = ["9001", "6001"]
+    sites = []
+    for site in raw_sites:
+        text = str(site or "").strip().lower()
+        if text in {"9", "9站", "ml", "9001"}:
+            text = "9001"
+        elif text in {"6", "6站", "jn", "6001"}:
+            text = "6001"
+        else:
+            continue
+        if text not in sites:
+            sites.append(text)
+    return sites or ["9001", "6001"]
+
+def normalize_scheduled_backend_actions(raw_items, include_defaults=False):
+    if not isinstance(raw_items, list):
+        raw_items = []
+    existing_by_id = {
+        str(item.get("id")): item
+        for item in raw_items
+        if isinstance(item, dict) and item.get("id")
+    }
+    merged = []
+    if include_defaults:
+        for default_item in default_scheduled_backend_actions():
+            old = existing_by_id.pop(str(default_item.get("id")), None)
+            merged.append({**default_item, **(old or {})})
+    merged.extend(item for item in raw_items if isinstance(item, dict) and str(item.get("id") or "") in existing_by_id)
+    merged.extend(item for item in raw_items if isinstance(item, dict) and not item.get("id"))
+
+    clean_items = []
+    for item in merged:
+        if not isinstance(item, dict):
+            continue
+        ensure_scheduled_backend_action_id(item)
+        action = normalize_backend_action(item.get("action") or "venue_display_control")
+        if action != "venue_display_control":
+            continue
+        send_time = str(item.get("time", "09:00") or "09:00").strip()
+        if not re.fullmatch(r"\d{2}:\d{2}", send_time):
+            send_time = "09:00"
+        frequency = str(item.get("frequency", "daily") or "daily").strip().lower()
+        if frequency not in ("daily", "once"):
+            frequency = "daily"
+        mode = str(item.get("mode") or "maintenance").strip().lower()
+        if mode not in ("maintenance", "enable"):
+            mode = "maintenance"
+        target = str(item.get("target") or item.get("venue") or "双赢彩票").strip() or "双赢彩票"
+        clean_items.append({
+            "id": str(item["id"]),
+            "name": str(item.get("name") or target or "定时后台操作").strip(),
+            "enabled": bool(item.get("enabled", False)),
+            "time": send_time,
+            "frequency": frequency,
+            "action": action,
+            "target": target,
+            "mode": mode,
+            "sites": normalize_backend_schedule_sites(item.get("sites")),
+            "maintenance_start": str(item.get("maintenance_start") or "06:00").strip(),
+            "maintenance_end": str(item.get("maintenance_end") or "07:05").strip(),
+            "last_run_date": str(item.get("last_run_date") or "").strip(),
+            "last_run_at": str(item.get("last_run_at") or "").strip(),
+        })
+    return clean_items
+
+def merge_scheduled_backend_action_runtime_fields(items):
+    existing = {
+        str(item.get("id")): item
+        for item in current_config.get("scheduled_backend_actions", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    for item in items:
+        old = existing.get(str(item.get("id")))
+        if not old:
+            continue
+        if old.get("last_run_date") and not item.get("last_run_date"):
+            item["last_run_date"] = old.get("last_run_date", "")
+        if old.get("last_run_at") and not item.get("last_run_at"):
+            item["last_run_at"] = old.get("last_run_at", "")
+    return items
+
 # [v78] 全局 Redis 初始化函数 (Main.py 可见)
 def init_redis_connection():
     global redis_client
@@ -3626,6 +3758,10 @@ def load_config(system_cs_prefixes):
         current_config["schedule"] = DEFAULT_CONFIG["schedule"]
     current_config["ai_private_reply"] = normalize_ai_private_reply_config(current_config.get("ai_private_reply", {}))
     current_config["scheduled_messages"] = normalize_scheduled_messages(current_config.get("scheduled_messages", []))
+    current_config["scheduled_backend_actions"] = normalize_scheduled_backend_actions(
+        current_config.get("scheduled_backend_actions", []),
+        include_defaults="scheduled_backend_actions" not in current_config,
+    )
     if not isinstance(current_config.get("rules"), list):
         current_config["rules"] = []
 
@@ -3694,6 +3830,12 @@ def save_config(new_config):
 
         new_config["scheduled_messages"] = merge_scheduled_message_runtime_fields(
             normalize_scheduled_messages(new_config.get("scheduled_messages", []))
+        )
+        new_config["scheduled_backend_actions"] = merge_scheduled_backend_action_runtime_fields(
+            normalize_scheduled_backend_actions(
+                new_config.get("scheduled_backend_actions", []),
+                include_defaults="scheduled_backend_actions" not in new_config,
+            )
         )
 
         new_config["enabled"] = bool(new_config.get("enabled", True))
@@ -4951,6 +5093,101 @@ async def send_scheduled_message_job(item):
         raise RuntimeError(detail)
     return sent_count
 
+def bj_schedule_window_time(now, raw_time):
+    text = str(raw_time or "").strip()
+    if not re.fullmatch(r"\d{2}:\d{2}", text):
+        text = "00:00"
+    hour, minute = [int(part) for part in text.split(":", 1)]
+    return now.replace(hour=hour, minute=minute, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+
+def queue_scheduled_backend_action_command(item, now):
+    job_id = ensure_scheduled_backend_action_id(item)
+    target = str(item.get("target") or "双赢彩票").strip() or "双赢彩票"
+    mode = str(item.get("mode") or "maintenance").strip().lower()
+    cmd_id = f"sched_backend_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+    command = {
+        "id": cmd_id,
+        "action": normalize_backend_action(item.get("action") or "venue_display_control"),
+        "member_name": target,
+        "target_value": target,
+        "venue": target,
+        "venue_mode": mode,
+        "sites": normalize_backend_schedule_sites(item.get("sites")),
+        "source": "scheduled_backend_action",
+        "rule": item.get("name") or job_id,
+        "schedule_id": job_id,
+        "queued_at": now.isoformat(),
+    }
+    if mode == "maintenance":
+        command["maintenance_start_at"] = bj_schedule_window_time(now, item.get("maintenance_start") or "06:00")
+        command["maintenance_end_at"] = bj_schedule_window_time(now, item.get("maintenance_end") or "07:05")
+    enqueue_pending_command(command)
+    return cmd_id
+
+async def run_scheduled_backend_action_job(item):
+    job_id = ensure_scheduled_backend_action_id(item)
+    job_name = item.get("name") or job_id
+    started = time.time()
+    now = datetime.now(BJ_TZ)
+    cmd_id = queue_scheduled_backend_action_command(item, now)
+    logger.info(f"⏰ [ScheduledBackend] 已下发定时后台操作: {job_name} | id={cmd_id}")
+    result = await wait_backend_command_result(cmd_id, timeout=BACKEND_COMMAND_TIMEOUT)
+    ok = backend_result_ok(result)
+    detail = str((result or {}).get("reply_text") or (result or {}).get("detail") or "")
+    if not detail:
+        detail = "定时后台操作完成" if ok else "定时后台操作失败"
+    record_runtime_event(
+        "scheduled_backend_action",
+        "success" if ok else "failed",
+        detail,
+        rule={"id": job_id, "name": job_name},
+        action_count=1 if ok else 0,
+        duration_ms=(time.time() - started) * 1000
+    )
+    if not ok:
+        raise RuntimeError(f"{job_name}失败：{detail}")
+    return result
+
+async def run_scheduled_backend_actions_job():
+    while True:
+        try:
+            await asyncio.sleep(20)
+            now = datetime.now(BJ_TZ)
+            today = now.strftime("%Y-%m-%d")
+            current_time = now.strftime("%H:%M")
+            changed = False
+            for item in list(current_config.get("scheduled_backend_actions", [])):
+                try:
+                    job_id = ensure_scheduled_backend_action_id(item)
+                    if not item.get("enabled", False):
+                        continue
+                    if item.get("time") != current_time:
+                        continue
+                    if scheduled_backend_action_runs.get(job_id) == today or item.get("last_run_date") == today:
+                        continue
+
+                    await run_scheduled_backend_action_job(item)
+                    scheduled_backend_action_runs[job_id] = today
+                    item["last_run_date"] = today
+                    item["last_run_at"] = now.isoformat()
+                    if item.get("frequency") == "once":
+                        item["enabled"] = False
+                    changed = True
+                    logger.info(f"✅ [ScheduledBackend] 执行完成: {item.get('name') or job_id}")
+                except Exception as e:
+                    scheduled_backend_action_runs[item.get("id", "")] = today
+                    record_runtime_event(
+                        "scheduled_backend_action",
+                        "failed",
+                        f"定时后台操作失败：{e}",
+                        rule={"id": item.get("id") or "__scheduled_backend__", "name": item.get("name") or "定时后台操作"},
+                    )
+                    logger.error(f"❌ [ScheduledBackend] 执行失败: {e}")
+            if changed:
+                persist_current_config()
+        except Exception as e:
+            logger.error(f"❌ [ScheduledBackend] Error: {e}")
+
 async def run_scheduled_messages_job():
     while True:
         try:
@@ -5038,6 +5275,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     if bot_loop:
         bot_loop.create_task(run_schedule_job())
         bot_loop.create_task(run_scheduled_messages_job())
+        bot_loop.create_task(run_scheduled_backend_actions_job())
 
     @app.route('/zd')
     def monitor_settings_page(): 

@@ -818,6 +818,9 @@
         .schedule-fields .textarea { min-height: 92px; }
         .schedule-fields .message-box { min-height: 136px; }
         .schedule-meta { display: flex; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
+        .subhead { margin: 4px 0 10px; color: var(--muted); font-size: 12px; font-weight: 800; }
+        .check-row, .time-row { display: flex; align-items: center; gap: 10px; min-height: 44px; }
+        .time-row .input { min-width: 0; }
         .input.full { grid-column: 1 / -1; }
         .file-picker { display: flex; align-items: center; gap: 8px; min-width: 0; }
         .file-picker.full { grid-column: 1 / -1; }
@@ -1942,13 +1945,73 @@
 
                 <section class="panel page-wide page-panel" v-if="ui.page === 'scheduled'">
                     <div class="panel-head">
-                        <div class="panel-title"><i data-lucide="send"></i>定时发送</div>
+                        <div class="panel-title"><i data-lucide="send"></i>定时任务</div>
                         <div class="toolbar">
-                            <button class="tiny-btn" @click="addScheduledMessage"><i data-lucide="plus"></i>新增任务</button>
+                            <button class="tiny-btn" @click="addScheduledBackendAction"><i data-lucide="plus"></i>新增后台操作</button>
+                            <button class="tiny-btn" @click="addScheduledMessage"><i data-lucide="plus"></i>新增发送</button>
                             <button class="primary-btn" @click="saveConfig" :disabled="ui.saving"><i data-lucide="check"></i>{{ ui.saving ? '保存中' : '保存定时任务' }}</button>
                         </div>
                     </div>
                     <div class="page-body">
+                        <div class="subhead">定时后台操作</div>
+                        <div class="schedule-list">
+                            <article class="schedule-card" v-for="(item, index) in config.scheduled_backend_actions" :key="item.id" :class="{off: !item.enabled}">
+                                <div class="schedule-head">
+                                    <input class="input" v-model="item.name" placeholder="任务名称">
+                                    <button type="button" class="switch" :class="{on: item.enabled}" :aria-pressed="item.enabled ? 'true' : 'false'" @click="item.enabled = !item.enabled"></button>
+                                    <button class="icon-btn" @click="removeScheduledBackendAction(index)" aria-label="删除定时后台操作"><i data-lucide="trash-2"></i></button>
+                                </div>
+                                <div class="schedule-options">
+                                    <div class="field">
+                                        <label>执行时间</label>
+                                        <input class="input" type="time" v-model="item.time">
+                                    </div>
+                                    <div class="field">
+                                        <label>频率</label>
+                                        <select class="select" v-model="item.frequency">
+                                            <option value="daily">每天一次</option>
+                                            <option value="once">仅一次</option>
+                                        </select>
+                                    </div>
+                                    <div class="field">
+                                        <label>目标场馆</label>
+                                        <input class="input" v-model="item.target" placeholder="双赢彩票">
+                                    </div>
+                                    <div class="field">
+                                        <label>操作</label>
+                                        <select class="select" v-model="item.mode">
+                                            <option value="maintenance">维护</option>
+                                            <option value="enable">启用</option>
+                                        </select>
+                                    </div>
+                                    <div class="field">
+                                        <label>执行站点</label>
+                                        <div class="check-row">
+                                            <label class="inline-check"><input class="checkbox" type="checkbox" value="9001" v-model="item.sites">9站</label>
+                                            <label class="inline-check"><input class="checkbox" type="checkbox" value="6001" v-model="item.sites">6站</label>
+                                        </div>
+                                    </div>
+                                    <div class="field" v-if="item.mode === 'maintenance'">
+                                        <label>维护窗口</label>
+                                        <div class="time-row">
+                                            <input class="input" type="time" v-model="item.maintenance_start">
+                                            <input class="input" type="time" v-model="item.maintenance_end">
+                                        </div>
+                                    </div>
+                                    <div class="field">
+                                        <label>上次执行</label>
+                                        <input class="input" :value="item.last_run_at ? formatScheduleLastSent(item.last_run_at) : '未执行'" readonly>
+                                    </div>
+                                </div>
+                                <div class="schedule-meta">
+                                    <span>{{ item.enabled ? '已启用' : '已停用' }}</span>
+                                    <span>{{ item.mode === 'enable' ? '启用' : '维护' }}</span>
+                                    <span>{{ (item.sites || []).join(' / ') || '未选站点' }}</span>
+                                </div>
+                            </article>
+                            <div v-if="!config.scheduled_backend_actions.length" class="empty-state">暂无定时后台操作</div>
+                        </div>
+                        <div class="subhead">定时发送</div>
                         <div class="schedule-list">
                             <article class="schedule-card" v-for="(item, index) in config.scheduled_messages" :key="item.id" :class="{off: !item.enabled}">
                                 <div class="schedule-head">
@@ -2124,6 +2187,7 @@ createApp({
             resources: { groups: [], sender_prefixes: [] },
             ai_private_reply: { accounts: {} },
             scheduled_messages: [],
+            scheduled_backend_actions: [],
             rules: []
         });
         const identity = reactive({ mainAccount: "主账号" });
@@ -2184,7 +2248,7 @@ createApp({
             { key: "dashboard", label: "监控台", icon: "chart-no-axes-column" },
             { key: "rules", label: "规则管理", icon: "shield-check" },
             { key: "records", label: "执行记录", icon: "clipboard-list" },
-            { key: "scheduled", label: "定时发送", icon: "send" },
+            { key: "scheduled", label: "定时任务", icon: "send" },
             { key: "analytics", label: "数据看板", icon: "chart-column" },
             { key: "resources", label: "资源管理", icon: "layers-3" },
             { key: "members", label: "成员权限", icon: "users-round" },
@@ -2316,6 +2380,22 @@ createApp({
             account: item.account || "",
             last_sent_date: item.last_sent_date || "",
             last_sent_at: item.last_sent_at || ""
+        });
+
+        const hydrateScheduledBackendAction = (item = {}) => ({
+            id: item.id || `backend_schedule_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+            name: item.name || "定时后台操作",
+            enabled: item.enabled ?? false,
+            time: item.time || "09:00",
+            frequency: item.frequency === "once" ? "once" : "daily",
+            action: item.action || "venue_display_control",
+            target: item.target || "双赢彩票",
+            mode: item.mode === "enable" ? "enable" : "maintenance",
+            sites: Array.isArray(item.sites) ? item.sites : ["9001", "6001"],
+            maintenance_start: item.maintenance_start || "06:00",
+            maintenance_end: item.maintenance_end || "07:05",
+            last_run_date: item.last_run_date || "",
+            last_run_at: item.last_run_at || ""
         });
 
         const normalizeGroupId = (value) => {
@@ -2468,6 +2548,7 @@ createApp({
                 config.resources = hydrateResources(data.resources || {});
                 config.ai_private_reply = hydrateAiPrivateReply(data.ai_private_reply || {});
                 config.scheduled_messages = (data.scheduled_messages || []).map(hydrateScheduledMessage);
+                config.scheduled_backend_actions = (data.scheduled_backend_actions || []).map(hydrateScheduledBackendAction);
                 config.rules = (data.rules || []).map(hydrateRule);
                 identity.mainAccount = data.main_account || identity.mainAccount;
                 available_accounts.splice(0, available_accounts.length, ...((data.available_accounts || [])));
@@ -2686,6 +2767,20 @@ createApp({
         const removeScheduledMessage = (index) => {
             if (!confirm("确定删除此定时发送任务？")) return;
             config.scheduled_messages.splice(index, 1);
+            refreshIcons();
+        };
+
+        const addScheduledBackendAction = () => {
+            config.scheduled_backend_actions.push(hydrateScheduledBackendAction({
+                name: `定时后台操作 #${config.scheduled_backend_actions.length + 1}`,
+                enabled: true
+            }));
+            refreshIcons();
+        };
+
+        const removeScheduledBackendAction = (index) => {
+            if (!confirm("确定删除此定时后台操作？")) return;
+            config.scheduled_backend_actions.splice(index, 1);
             refreshIcons();
         };
 
@@ -3265,7 +3360,7 @@ createApp({
             loadConfig, loadRuntimeStats, loadAll, saveConfig, exportConfig, triggerImportConfig, importConfigFile, toggleRuleEnabled, toggleMonitorEnabled, selectRule, setPage, addRule, duplicateRule, removeRule, ruleStatus,
             onRuleAccountChange, showFailedRecords, showRuleHelp,
             addGroupResource, removeGroupResource, addPrefixResource, removePrefixResource, isSelected, toggleListValue, toggleStringValue,
-            addScheduledMessage, removeScheduledMessage, formatScheduleLastSent,
+            addScheduledMessage, removeScheduledMessage, addScheduledBackendAction, removeScheduledBackendAction, formatScheduleLastSent,
             keywordsRaw,
             listToString, setList, setIntList, splitInline, shortGroups, primaryKeyword, ruleActionSummary, stepCount,
             addStep, duplicateStep, removeStep, normalizeStep, displayDelay, setDefaultFailureNotify,
