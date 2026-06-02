@@ -6161,18 +6161,22 @@ if __name__ == '__main__':
         if init_stats_blueprint:
             init_stats_blueprint(app, client, bot_loop, CS_GROUP_IDS)
 
-        Thread(target=run_web).start()
-        setup_bot_menu_button()
-        setup_bot_commands()
         if has_any_telegram_session_config():
             if not acquire_telegram_runtime_lock():
                 log_tree(9, "Telegram 运行锁不可用，已进入仅 Web 模式。请检查 Redis 或关闭 REQUIRE_TELEGRAM_RUNTIME_LOCK。")
+                Thread(target=run_web).start()
+                setup_bot_menu_button()
+                setup_bot_commands()
                 bot_loop.run_forever()
                 sys.exit(0)
             start_telegram_runtime_lock_heartbeat(bot_loop)
 
         if init_monitor:
             init_monitor(client, app, OTHER_CS_IDS, CS_NAME_PREFIXES, handler)
+
+        Thread(target=run_web).start()
+        setup_bot_menu_button()
+        setup_bot_commands()
 
         if not MAIN_SESSION_READY:
             log_tree(9, "主账号 SESSION_STRING 未配置或无效，已进入仅 Web 模式。请访问 /telegram-login 重新生成。")
