@@ -2265,35 +2265,48 @@ TELEGRAM_LOGIN_HTML = """
     <title>Telegram 网页登录</title>
     <style>
         *{box-sizing:border-box}
-        body{margin:0;background:#f6f7f9;color:#111827;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:18px}
-        main{max-width:760px;margin:0 auto}
-        h1{font-size:20px;margin:0 0 8px;font-weight:800}
-        .sub{font-size:13px;color:#6b7280;margin-bottom:16px;line-height:1.6}
-        section{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:12px}
-        h2{font-size:15px;margin:0 0 12px;font-weight:800}
-        label{display:block;font-size:12px;color:#4b5563;font-weight:700;margin:12px 0 6px}
-        input,select,textarea{width:100%;border:1px solid #d1d5db;border-radius:6px;padding:10px;font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#fff;color:#111827}
-        textarea{min-height:120px;resize:vertical}
-        button{border:0;background:#111827;color:#fff;border-radius:6px;padding:10px 13px;font-size:13px;font-weight:800;cursor:pointer;margin-top:12px}
-        button.secondary{background:#2563eb}
-        button:disabled{opacity:.55;cursor:not-allowed}
-        .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+        :root{--bg:#f3f5f7;--panel:#fff;--text:#111827;--muted:#667085;--line:#d9dee7;--field:#f9fafb;--primary:#155eef;--primary-dark:#0f172a;--ok:#047857;--warn:#b42318}
+        body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:22px}
+        main{max-width:860px;margin:0 auto}
+        .page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px}
+        h1{font-size:22px;line-height:1.25;margin:0 0 6px;font-weight:800}
+        .sub{font-size:13px;color:var(--muted);line-height:1.6;max-width:620px}
+        section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:18px;margin-bottom:12px}
+        .section-head{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+        .step{width:24px;height:24px;border-radius:50%;display:inline-grid;place-items:center;background:#e0edff;color:#155eef;font-size:12px;font-weight:900;flex:0 0 auto}
+        h2{font-size:15px;margin:0;font-weight:800}
+        label{display:block;font-size:12px;color:#344054;font-weight:750;margin:12px 0 6px}
+        input,select,textarea{width:100%;border:1px solid #cfd6e1;border-radius:6px;padding:10px 11px;font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--field);color:var(--text);outline:none}
+        input:focus,select:focus,textarea:focus{border-color:#84adff;box-shadow:0 0 0 3px rgba(21,94,239,.12);background:#fff}
+        textarea{min-height:132px;resize:vertical}
+        button,a.btn{border:0;background:var(--primary-dark);color:#fff;border-radius:6px;padding:10px 13px;font-size:13px;font-weight:800;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:38px}
+        button.primary{background:var(--primary)}
+        button.secondary{background:#0f766e}
+        button.ghost,a.btn.ghost{background:#fff;color:#1f2937;border:1px solid var(--line)}
+        button:disabled{opacity:.58;cursor:not-allowed}
+        .actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px}
+        .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
         .hidden{display:none}
-        .msg{border-radius:6px;padding:10px 12px;font-size:13px;line-height:1.55;margin-bottom:12px;background:#eef2ff;color:#3730a3}
-        .msg.err{background:#fef2f2;color:#991b1b}
-        .msg.ok{background:#ecfdf5;color:#065f46}
-        .hint{font-size:12px;color:#6b7280;line-height:1.55;margin-top:8px}
-        @media(max-width:640px){.row{grid-template-columns:1fr}}
+        .msg{border-radius:8px;padding:11px 12px;font-size:13px;line-height:1.55;margin-bottom:12px;background:#eef4ff;color:#1849a9;border:1px solid #c7d7fe}
+        .msg.err{background:#fff1f0;color:#b42318;border-color:#fecdca}
+        .msg.ok{background:#ecfdf3;color:#027a48;border-color:#abefc6}
+        .hint{font-size:12px;color:var(--muted);line-height:1.55;margin-top:10px;border-left:3px solid #84adff;padding-left:10px}
+        @media(max-width:640px){body{padding:14px}.page-head{display:block}.top-actions{margin-top:12px}.row{grid-template-columns:1fr}section{padding:14px}}
     </style>
 </head>
 <body>
 <main>
-    <h1>Telegram 网页登录</h1>
-    <div class="sub">用于生成 Telethon 的 SESSION_STRING。先选择要保存的账号位置，成功后会自动保存并重载进程；页面仍会显示结果作为备份。</div>
+    <div class="page-head">
+        <div>
+            <h1>Telegram 网页登录</h1>
+            <div class="sub">选择账号槽位后完成验证码登录，成功后自动保存并重载服务。</div>
+        </div>
+        <div class="top-actions"><a class="btn ghost" id="accounts-link" href="/telegram-accounts">账号管理</a></div>
+    </div>
     <div id="msg" class="msg hidden"></div>
 
     <section>
-        <h2>1. 发送验证码</h2>
+        <div class="section-head"><span class="step">1</span><h2>发送验证码</h2></div>
         <label>保存到账号</label>
         <select id="account_key" onchange="toggleCustomAccount()">
             <option value="main">主账号</option>
@@ -2320,35 +2333,39 @@ TELEGRAM_LOGIN_HTML = """
         <input id="phone" placeholder="+8613800000000">
         <label>访问口令</label>
         <input id="token" type="password" autocomplete="current-password">
-        <button id="send-btn" type="button" onclick="sendCode()">发送验证码</button>
+        <div class="actions"><button id="send-btn" class="primary" type="button" onclick="sendCode()">发送验证码</button></div>
         <div class="hint">必须先在 Zeabur 配置 TELEGRAM_LOGIN_TOKEN 或 WEB_LOGIN_TOKEN，网页登录和账号管理 API 才会放行。</div>
     </section>
 
     <section id="code-box" class="hidden">
-        <h2>2. 提交验证码</h2>
+        <div class="section-head"><span class="step">2</span><h2>提交验证码</h2></div>
         <label>Telegram 验证码</label>
         <input id="code" inputmode="numeric" autocomplete="one-time-code">
-        <button id="code-btn" class="secondary" type="button" onclick="submitCode()">提交验证码</button>
+        <div class="actions"><button id="code-btn" class="secondary" type="button" onclick="submitCode()">提交验证码</button></div>
     </section>
 
     <section id="password-box" class="hidden">
-        <h2>3. 提交二步密码</h2>
+        <div class="section-head"><span class="step">3</span><h2>提交二步密码</h2></div>
         <label>二步验证密码</label>
         <input id="password" type="password" autocomplete="current-password">
-        <button id="password-btn" class="secondary" type="button" onclick="submitPassword()">提交密码</button>
+        <div class="actions"><button id="password-btn" class="secondary" type="button" onclick="submitPassword()">提交密码</button></div>
     </section>
 
     <section id="result-box" class="hidden">
-        <h2>登录成功</h2>
+        <div class="section-head"><span class="step">✓</span><h2>登录成功</h2></div>
         <textarea id="session" readonly></textarea>
-        <button type="button" onclick="copySession()">复制 SESSION_STRING</button>
+        <div class="actions"><button type="button" onclick="copySession()">复制 SESSION_STRING</button><a class="btn ghost" href="/telegram-accounts">查看账号</a></div>
     </section>
 </main>
 <script>
 let flowId = "";
 const initialToken = new URLSearchParams(location.search).get('token') || sessionStorage.getItem('telegram_login_token') || '';
 window.addEventListener('DOMContentLoaded', () => {
-    if (initialToken) document.getElementById('token').value = initialToken;
+    if (initialToken) {
+        document.getElementById('token').value = initialToken;
+        sessionStorage.setItem('telegram_login_token', initialToken);
+        document.getElementById('accounts-link').href = '/telegram-accounts?token=' + encodeURIComponent(initialToken);
+    }
 });
 
 function showMsg(text, type){
@@ -2482,44 +2499,55 @@ TELEGRAM_ACCOUNTS_HTML = """
     <title>Telegram 账号管理</title>
     <style>
         *{box-sizing:border-box}
-        body{margin:0;background:#f6f7f9;color:#111827;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:18px}
-        main{max-width:760px;margin:0 auto}
-        h1{font-size:20px;margin:0 0 8px;font-weight:800}
-        .sub{font-size:13px;color:#6b7280;margin-bottom:16px;line-height:1.6}
-        section{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:12px}
-        h2{font-size:15px;margin:0 0 12px;font-weight:800}
-        .row{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid #eef0f3;padding:12px 0}
+        :root{--bg:#f3f5f7;--panel:#fff;--text:#111827;--muted:#667085;--line:#d9dee7;--primary:#155eef;--ok:#047857;--danger:#b42318}
+        body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:22px}
+        main{max-width:860px;margin:0 auto}
+        .page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px}
+        h1{font-size:22px;line-height:1.25;margin:0 0 6px;font-weight:800}
+        .sub{font-size:13px;color:var(--muted);line-height:1.6;max-width:620px}
+        section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px;margin-bottom:12px}
+        .section-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+        h2{font-size:15px;margin:0;font-weight:800}
+        .row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:14px;border-top:1px solid #eef0f3;padding:14px 0;min-height:62px}
         .row:first-child{border-top:0}
-        .name{font-weight:800;font-size:14px}
-        .meta{font-size:12px;color:#6b7280;margin-top:4px}
-        .status{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:800;margin-left:8px}
+        .name-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+        .name{font-weight:850;font-size:14px;word-break:break-word}
+        .meta{font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5;word-break:break-word}
+        .status{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:850;border-radius:999px;padding:3px 8px}
         .dot{width:8px;height:8px;border-radius:50%;background:#9ca3af;display:inline-block}
-        .status.on{color:#047857}.status.on .dot{background:#10b981}
-        .status.off{color:#991b1b}.status.off .dot{background:#ef4444}
-        button,a.btn{border:0;background:#111827;color:#fff;border-radius:6px;padding:9px 12px;font-size:13px;font-weight:800;cursor:pointer;text-decoration:none;display:inline-block}
-        button.danger{background:#dc2626}
+        .status.on{color:#027a48;background:#ecfdf3}.status.on .dot{background:#12b76a}
+        .status.off{color:#b42318;background:#fff1f0}.status.off .dot{background:#f04438}
+        .actions{display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
+        button,a.btn{border:0;background:#0f172a;color:#fff;border-radius:6px;padding:9px 12px;font-size:13px;font-weight:800;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-height:36px}
+        a.btn.primary{background:var(--primary)}
+        button.danger{background:#b42318}
         button:disabled{opacity:.55;cursor:not-allowed}
-        .msg{border-radius:6px;padding:10px 12px;font-size:13px;line-height:1.55;margin-bottom:12px;background:#eef2ff;color:#3730a3}
-        .msg.err{background:#fef2f2;color:#991b1b}
-        .msg.ok{background:#ecfdf5;color:#065f46}
+        .msg{border-radius:8px;padding:11px 12px;font-size:13px;line-height:1.55;margin-bottom:12px;background:#eef4ff;color:#1849a9;border:1px solid #c7d7fe}
+        .msg.err{background:#fff1f0;color:#b42318;border-color:#fecdca}
+        .msg.ok{background:#ecfdf3;color:#027a48;border-color:#abefc6}
         .hidden{display:none}
-        .empty{font-size:13px;color:#6b7280}
+        .empty{font-size:13px;color:var(--muted);padding:10px 0}
+        @media(max-width:640px){body{padding:14px}.page-head{display:block}.top-actions{margin-top:12px}.row{grid-template-columns:1fr}.actions{justify-content:flex-start}section{padding:14px}}
     </style>
 </head>
 <body>
 <main>
-    <h1>Telegram 账号管理</h1>
-    <div class="sub">这里只显示账号槽位名称和来源，不显示 SESSION_STRING。删除副账号后会自动重载进程。</div>
+    <div class="page-head">
+        <div>
+            <h1>Telegram 账号管理</h1>
+            <div class="sub">查看当前主账号和副账号连接状态，管理网页保存的副账号 session。</div>
+        </div>
+        <div class="top-actions"><a class="btn primary" id="login-link" href="/telegram-login">新增/更新账号</a></div>
+    </div>
     <div id="msg" class="msg hidden"></div>
     <section>
-        <h2>主账号</h2>
+        <div class="section-title"><h2>主账号</h2></div>
         <div id="main-account" class="empty">加载中...</div>
     </section>
     <section>
-        <h2>副账号</h2>
+        <div class="section-title"><h2>副账号</h2></div>
         <div id="extra-accounts" class="empty">加载中...</div>
     </section>
-    <a class="btn" id="login-link" href="/telegram-login">去网页登录</a>
 </main>
 <script>
 function showMsg(text, type){
@@ -2552,7 +2580,7 @@ async function loadAccounts(){
     if (!res.ok || !data.ok) throw new Error(data.error || '加载失败');
     const main = document.getElementById('main-account');
     main.className = 'row';
-    main.innerHTML = `<div><div class="name">${escapeHtml(data.main.name)}${statusBadge(data.main)}</div><div class="meta">${escapeHtml(metaText(data.main))}</div></div>`;
+    main.innerHTML = `<div><div class="name-line"><span class="name">${escapeHtml(data.main.name)}</span>${statusBadge(data.main)}</div><div class="meta">${escapeHtml(metaText(data.main))}</div></div><div class="actions"><span class="meta">主账号</span></div>`;
 
     const box = document.getElementById('extra-accounts');
     if (!data.extra_accounts.length) {
@@ -2564,10 +2592,10 @@ async function loadAccounts(){
     box.innerHTML = data.extra_accounts.map(acc => `
         <div class="row">
             <div>
-                <div class="name">${escapeHtml(acc.name)}${statusBadge(acc)}</div>
+                <div class="name-line"><span class="name">${escapeHtml(acc.name)}</span>${statusBadge(acc)}</div>
                 <div class="meta">${escapeHtml(metaText(acc))}</div>
             </div>
-            ${acc.deletable ? `<button class="danger" type="button" data-name="${escapeAttr(acc.name)}" onclick="deleteExtra(this)">删除</button>` : `<span class="meta">环境变量中配置，需到 Zeabur 删除</span>`}
+            <div class="actions">${acc.deletable ? `<button class="danger" type="button" data-name="${escapeAttr(acc.name)}" onclick="deleteExtra(this)">删除</button>` : `<span class="meta">环境变量配置</span>`}</div>
         </div>
     `).join('');
 }
