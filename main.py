@@ -974,8 +974,6 @@ def save_extra_sessions(sessions):
         for name, session_value in (sessions or {}).items()
         if str(name).strip() and str(session_value).strip()
     }
-    if not clean_sessions:
-        raise ValueError("副账号 SESSION_STRING 为空，未保存")
 
     saved_targets = []
     payload = json.dumps(clean_sessions, ensure_ascii=False)
@@ -1004,6 +1002,21 @@ def save_extra_sessions(sessions):
     if not saved_targets:
         raise RuntimeError("副账号 SESSION_STRING 保存失败：Redis 和文件都不可用")
     return saved_targets
+
+def delete_extra_session(account_name):
+    name = str(account_name or "").strip()
+    if not name:
+        raise ValueError("副账号名称不能为空")
+    saved_sessions, _ = load_saved_extra_sessions()
+    if name not in saved_sessions:
+        return False, []
+    saved_sessions.pop(name, None)
+    saved_targets = save_extra_sessions(saved_sessions)
+    env_sessions = parse_extra_session_items(ORIGINAL_EXTRA_SESSION_STRINGS)
+    merged_sessions = dict(env_sessions)
+    merged_sessions.update(saved_sessions)
+    os.environ["EXTRA_SESSION_STRINGS"] = format_extra_session_items(merged_sessions)
+    return True, saved_targets
 
 def resolve_telegram_account_target(data):
     raw_key = str(data.get("account_key") or "main").strip()
@@ -1086,9 +1099,10 @@ try:
     API_HASH = os.environ["API_HASH"]
     SESSION_STRING, SESSION_STRING_SOURCE = load_saved_session_string()
     MAIN_SESSION_READY = bool(SESSION_STRING.strip())
+    ORIGINAL_EXTRA_SESSION_STRINGS = os.environ.get("EXTRA_SESSION_STRINGS", "")
     SAVED_EXTRA_SESSIONS, EXTRA_SESSION_SOURCE = load_saved_extra_sessions()
     if SAVED_EXTRA_SESSIONS:
-        merged_extra_sessions = parse_extra_session_items(os.environ.get("EXTRA_SESSION_STRINGS", ""))
+        merged_extra_sessions = parse_extra_session_items(ORIGINAL_EXTRA_SESSION_STRINGS)
         merged_extra_sessions.update(SAVED_EXTRA_SESSIONS)
         os.environ["EXTRA_SESSION_STRINGS"] = format_extra_session_items(merged_extra_sessions)
     EXTRA_SESSION_NAMES = sorted(parse_extra_session_items(os.environ.get("EXTRA_SESSION_STRINGS", "")).keys())
@@ -2593,6 +2607,116 @@ async function copySession(){
 </html>
 """
 
+TELEGRAM_ACCOUNTS_HTML = """
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telegram 账号管理</title>
+    <style>
+        *{box-sizing:border-box}
+        body{margin:0;background:#f6f7f9;color:#111827;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:18px}
+        main{max-width:760px;margin:0 auto}
+        h1{font-size:20px;margin:0 0 8px;font-weight:800}
+        .sub{font-size:13px;color:#6b7280;margin-bottom:16px;line-height:1.6}
+        section{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:12px}
+        h2{font-size:15px;margin:0 0 12px;font-weight:800}
+        .row{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid #eef0f3;padding:12px 0}
+        .row:first-child{border-top:0}
+        .name{font-weight:800;font-size:14px}
+        .meta{font-size:12px;color:#6b7280;margin-top:4px}
+        button,a.btn{border:0;background:#111827;color:#fff;border-radius:6px;padding:9px 12px;font-size:13px;font-weight:800;cursor:pointer;text-decoration:none;display:inline-block}
+        button.danger{background:#dc2626}
+        button:disabled{opacity:.55;cursor:not-allowed}
+        .msg{border-radius:6px;padding:10px 12px;font-size:13px;line-height:1.55;margin-bottom:12px;background:#eef2ff;color:#3730a3}
+        .msg.err{background:#fef2f2;color:#991b1b}
+        .msg.ok{background:#ecfdf5;color:#065f46}
+        .hidden{display:none}
+        .empty{font-size:13px;color:#6b7280}
+    </style>
+</head>
+<body>
+<main>
+    <h1>Telegram 账号管理</h1>
+    <div class="sub">这里只显示账号槽位名称和来源，不显示 SESSION_STRING。删除副账号后会自动重载进程。</div>
+    <div id="msg" class="msg hidden"></div>
+    <section>
+        <h2>主账号</h2>
+        <div id="main-account" class="empty">加载中...</div>
+    </section>
+    <section>
+        <h2>副账号</h2>
+        <div id="extra-accounts" class="empty">加载中...</div>
+    </section>
+    <a class="btn" href="/telegram-login">去网页登录</a>
+</main>
+<script>
+function showMsg(text, type){
+    const el = document.getElementById('msg');
+    el.textContent = text;
+    el.className = 'msg ' + (type || '');
+    el.classList.remove('hidden');
+}
+
+function tokenValue(){
+    const params = new URLSearchParams(location.search);
+    return params.get('token') || '';
+}
+
+async function loadAccounts(){
+    const res = await fetch('/api/telegram_accounts?token=' + encodeURIComponent(tokenValue()));
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || '加载失败');
+    const main = document.getElementById('main-account');
+    main.className = 'row';
+    main.innerHTML = `<div><div class="name">${data.main.name}</div><div class="meta">来源：${data.main.source} | ${data.main.has_session ? '已保存' : '未保存'}</div></div>`;
+
+    const box = document.getElementById('extra-accounts');
+    if (!data.extra_accounts.length) {
+        box.className = 'empty';
+        box.textContent = '暂无副账号 session';
+        return;
+    }
+    box.className = '';
+    box.innerHTML = data.extra_accounts.map(acc => `
+        <div class="row">
+            <div>
+                <div class="name">${acc.name}</div>
+                <div class="meta">来源：${acc.source}</div>
+            </div>
+            ${acc.deletable ? `<button class="danger" type="button" onclick="deleteExtra('${encodeURIComponent(acc.name)}', this)">删除</button>` : `<span class="meta">环境变量中配置，需到 Zeabur 删除</span>`}
+        </div>
+    `).join('');
+}
+
+async function deleteExtra(encodedName, btn){
+    const name = decodeURIComponent(encodedName);
+    if (!confirm('确定删除副账号「' + name + '」的 session 吗？')) return;
+    btn.disabled = true;
+    try {
+        const res = await fetch('/api/telegram_accounts/extra/' + encodedName, {
+            method: 'DELETE',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({token: tokenValue()})
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || '删除失败');
+        showMsg('已删除 ' + name + '，服务正在自动重载。', 'ok');
+        await loadAccounts();
+    } catch (e) {
+        showMsg(e.message, 'err');
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+loadAccounts().catch(e => showMsg(e.message, 'err'));
+</script>
+</body>
+</html>
+"""
+
 TELEGRAM_LOGIN_TTL_SECONDS = 10 * 60
 telegram_login_loop = None
 telegram_login_sessions = {}
@@ -2711,6 +2835,59 @@ def telegram_login_ui():
         api_id=os.environ.get("API_ID", ""),
         api_hash=os.environ.get("API_HASH", ""),
     )
+
+@app.route('/telegram-accounts')
+def telegram_accounts_ui():
+    return Response(TELEGRAM_ACCOUNTS_HTML, mimetype='text/html; charset=utf-8')
+
+@app.route('/api/telegram_accounts')
+def api_telegram_accounts():
+    try:
+        telegram_login_require_token({"token": request.args.get("token", "")})
+        env_sessions = parse_extra_session_items(ORIGINAL_EXTRA_SESSION_STRINGS)
+        saved_sessions, saved_source = load_saved_extra_sessions()
+        names = sorted(set(env_sessions.keys()) | set(saved_sessions.keys()))
+        extra_accounts = []
+        for name in names:
+            source = []
+            if name in saved_sessions:
+                source.append(saved_source)
+            if name in env_sessions:
+                source.append("环境变量")
+            extra_accounts.append({
+                "name": name,
+                "source": " + ".join(dict.fromkeys(source)) or "未知",
+                "deletable": name in saved_sessions,
+            })
+        return jsonify({
+            "ok": True,
+            "main": {
+                "name": os.environ.get("MAIN_SESSION_NAME", "主账号"),
+                "source": SESSION_STRING_SOURCE,
+                "has_session": bool(SESSION_STRING),
+            },
+            "extra_accounts": extra_accounts,
+        })
+    except PermissionError as e:
+        return jsonify({"ok": False, "error": str(e)}), 403
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"读取账号失败: {e}"}), 500
+
+@app.route('/api/telegram_accounts/extra/<path:account_name>', methods=['DELETE'])
+def api_delete_extra_telegram_account(account_name):
+    data = request.get_json(silent=True) or {}
+    try:
+        telegram_login_require_token(data)
+        deleted, saved_targets = delete_extra_session(account_name)
+        if not deleted:
+            return jsonify({"ok": False, "error": "副账号不存在"}), 404
+        logger.info(f"🗑️ [Session] 已删除副账号 SESSION_STRING: {account_name} | 保存到: {', '.join(saved_targets)}")
+        restart_scheduled = schedule_session_restart()
+        return jsonify({"ok": True, "deleted": account_name, "saved_targets": saved_targets, "restart_scheduled": restart_scheduled})
+    except PermissionError as e:
+        return jsonify({"ok": False, "error": str(e)}), 403
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"删除失败: {e}"}), 500
 
 @app.route('/api/telegram_login/send_code', methods=['POST'])
 def api_telegram_login_send_code():
