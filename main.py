@@ -1048,6 +1048,8 @@ def finish_telegram_login(flow_id, flow, session_string):
     account_type = flow.get("account_type") or "main"
     account_name = flow.get("account_name") or os.environ.get("MAIN_SESSION_NAME", "主账号")
     saved_targets = save_account_session(account_type, account_name, session_string)
+    target_label = "主账号" if account_type == "main" else "副账号"
+    logger.info(f"✅ [Session] Telegram 网页登录成功 | {target_label}: {account_name} | 保存到: {', '.join(saved_targets)}")
     with telegram_login_lock:
         telegram_login_sessions.pop(flow_id, None)
     try:
