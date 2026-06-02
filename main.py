@@ -838,8 +838,35 @@ def persist_wait_alert_config(signatures, routes):
 
 MAIN_SESSION_REDIS_KEY = "telegram_main_session_string_v1"
 MAIN_SESSION_FILE = data_path("telegram_session_string.txt")
+EXTRA_SESSIONS_REDIS_KEY = "telegram_extra_session_strings_v1"
+EXTRA_SESSIONS_FILE = data_path("telegram_extra_sessions.json")
 session_apply_lock = Lock()
 session_restart_scheduled = False
+
+def parse_extra_session_items(raw):
+    sessions = {}
+    for i, item in enumerate([x.strip() for x in str(raw or "").split(";") if x.strip()]):
+        if "=" in item:
+            left, right = item.split("=", 1)
+            if len(left) > 30:
+                name = f"副账号 {i + 1}"
+                session_value = item
+            else:
+                name = left.strip() or f"副账号 {i + 1}"
+                session_value = right.strip()
+        else:
+            name = f"副账号 {i + 1}"
+            session_value = item
+        if session_value:
+            sessions[name] = session_value
+    return sessions
+
+def format_extra_session_items(sessions):
+    return ";".join(
+        f"{name}={session_value}"
+        for name, session_value in (sessions or {}).items()
+        if str(name or "").strip() and str(session_value or "").strip()
+    )
 
 def load_saved_session_string():
     client = get_wait_alert_redis_client()
@@ -865,7 +892,43 @@ def load_saved_session_string():
 
     return (os.environ.get("SESSION_STRING", "") or "").strip(), "环境变量"
 
-def save_session_string(session_string):
+def load_saved_extra_sessions():
+    client = get_wait_alert_redis_client()
+    if client:
+        try:
+            raw = client.get(EXTRA_SESSIONS_REDIS_KEY)
+            if raw:
+                value = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+                data = json.loads(value)
+                if isinstance(data, dict):
+                    sessions = {
+                        str(name).strip(): str(session_value).strip()
+                        for name, session_value in data.items()
+                        if str(name).strip() and str(session_value).strip()
+                    }
+                    if sessions:
+                        return sessions, "Redis"
+        except Exception as e:
+            logger.warning(f"⚠️ [Session] Redis 副账号读取失败，尝试文件/环境变量: {e}")
+
+    try:
+        if os.path.exists(EXTRA_SESSIONS_FILE):
+            with open(EXTRA_SESSIONS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                sessions = {
+                    str(name).strip(): str(session_value).strip()
+                    for name, session_value in data.items()
+                    if str(name).strip() and str(session_value).strip()
+                }
+                if sessions:
+                    return sessions, "文件"
+    except Exception as e:
+        logger.warning(f"⚠️ [Session] 文件副账号读取失败，尝试环境变量: {e}")
+
+    return {}, "环境变量"
+
+def save_main_session_string(session_string):
     value = str(session_string or "").strip()
     if not value:
         raise ValueError("SESSION_STRING 为空，未保存")
@@ -897,6 +960,75 @@ def save_session_string(session_string):
         raise RuntimeError("SESSION_STRING 保存失败：Redis 和文件都不可用")
     return saved_targets
 
+def save_extra_sessions(sessions):
+    clean_sessions = {
+        str(name).strip(): str(session_value).strip()
+        for name, session_value in (sessions or {}).items()
+        if str(name).strip() and str(session_value).strip()
+    }
+    if not clean_sessions:
+        raise ValueError("副账号 SESSION_STRING 为空，未保存")
+
+    saved_targets = []
+    payload = json.dumps(clean_sessions, ensure_ascii=False)
+    client = get_wait_alert_redis_client()
+    if client:
+        try:
+            client.set(EXTRA_SESSIONS_REDIS_KEY, payload)
+            saved_targets.append("Redis")
+        except Exception as e:
+            logger.warning(f"⚠️ [Session] Redis 副账号保存失败，继续尝试文件: {e}")
+
+    try:
+        session_dir = os.path.dirname(EXTRA_SESSIONS_FILE)
+        if session_dir:
+            os.makedirs(session_dir, exist_ok=True)
+        with open(EXTRA_SESSIONS_FILE, "w", encoding="utf-8") as f:
+            f.write(payload)
+        try:
+            os.chmod(EXTRA_SESSIONS_FILE, 0o600)
+        except Exception:
+            pass
+        saved_targets.append("文件")
+    except Exception as e:
+        logger.warning(f"⚠️ [Session] 文件副账号保存失败: {e}")
+
+    if not saved_targets:
+        raise RuntimeError("副账号 SESSION_STRING 保存失败：Redis 和文件都不可用")
+    return saved_targets
+
+def resolve_telegram_account_target(data):
+    raw_key = str(data.get("account_key") or "main").strip()
+    custom_name = str(data.get("account_name") or "").strip()
+    if raw_key == "main":
+        return "main", os.environ.get("MAIN_SESSION_NAME", "主账号")
+    if raw_key == "extra1":
+        return "extra", "副账号 1"
+    if raw_key == "extra2":
+        return "extra", "副账号 2"
+    if raw_key == "extra3":
+        return "extra", "副账号 3"
+    if raw_key == "custom" and custom_name:
+        return "extra", custom_name[:40]
+    if raw_key.startswith("extra:"):
+        name = raw_key.split(":", 1)[1].strip()
+        if name:
+            return "extra", name[:40]
+    raise ValueError("请选择要保存的账号位置")
+
+def save_account_session(account_type, account_name, session_string):
+    if account_type == "main":
+        return save_main_session_string(session_string)
+
+    env_sessions = parse_extra_session_items(os.environ.get("EXTRA_SESSION_STRINGS", ""))
+    saved_sessions, _ = load_saved_extra_sessions()
+    merged_sessions = dict(env_sessions)
+    merged_sessions.update(saved_sessions)
+    merged_sessions[account_name] = str(session_string or "").strip()
+    saved_targets = save_extra_sessions(merged_sessions)
+    os.environ["EXTRA_SESSION_STRINGS"] = format_extra_session_items(merged_sessions)
+    return saved_targets
+
 def schedule_session_restart():
     global session_restart_scheduled
     with session_apply_lock:
@@ -913,7 +1045,9 @@ def schedule_session_restart():
     return True
 
 def finish_telegram_login(flow_id, flow, session_string):
-    saved_targets = save_session_string(session_string)
+    account_type = flow.get("account_type") or "main"
+    account_name = flow.get("account_name") or os.environ.get("MAIN_SESSION_NAME", "主账号")
+    saved_targets = save_account_session(account_type, account_name, session_string)
     with telegram_login_lock:
         telegram_login_sessions.pop(flow_id, None)
     try:
@@ -926,6 +1060,8 @@ def finish_telegram_login(flow_id, flow, session_string):
         "session_string": session_string,
         "saved": True,
         "saved_targets": saved_targets,
+        "account_type": account_type,
+        "account_name": account_name,
         "restart_scheduled": restart_scheduled,
     }
 
@@ -937,6 +1073,11 @@ try:
     API_HASH = os.environ["API_HASH"]
     SESSION_STRING, SESSION_STRING_SOURCE = load_saved_session_string()
     MAIN_SESSION_READY = bool(SESSION_STRING.strip())
+    SAVED_EXTRA_SESSIONS, EXTRA_SESSION_SOURCE = load_saved_extra_sessions()
+    if SAVED_EXTRA_SESSIONS:
+        merged_extra_sessions = parse_extra_session_items(os.environ.get("EXTRA_SESSION_STRINGS", ""))
+        merged_extra_sessions.update(SAVED_EXTRA_SESSIONS)
+        os.environ["EXTRA_SESSION_STRINGS"] = format_extra_session_items(merged_extra_sessions)
     BOT_TOKEN = os.environ["BOT_TOKEN"]
     cs_groups_env = os.environ["CS_GROUP_IDS"]
     CS_GROUP_IDS = extract_id_list(cs_groups_env)
@@ -984,7 +1125,7 @@ except Exception as e:
     logger.error(f"❌ 配置错误: {e}")
     sys.exit(1)
 
-log_tree(0, f"系统启动 | Session来源: {SESSION_STRING_SOURCE} | 稍等词: {len(WAIT_SIGNATURES)} | 稍等预警词: {len(WAIT_ALERT_SIGNATURES)} | 跟进词: {len(KEEP_SIGNATURES)} | 忽略词: {len(IGNORE_SIGNATURES)}")
+log_tree(0, f"系统启动 | 主Session来源: {SESSION_STRING_SOURCE} | 副账号Session来源: {EXTRA_SESSION_SOURCE}({len(parse_extra_session_items(os.environ.get('EXTRA_SESSION_STRINGS', '')))}个) | 稍等词: {len(WAIT_SIGNATURES)} | 稍等预警词: {len(WAIT_ALERT_SIGNATURES)} | 跟进词: {len(KEEP_SIGNATURES)} | 忽略词: {len(IGNORE_SIGNATURES)}")
 
 # ==========================================
 # 模块 3: 全局状态
@@ -2242,7 +2383,7 @@ TELEGRAM_LOGIN_HTML = """
         section{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:12px}
         h2{font-size:15px;margin:0 0 12px;font-weight:800}
         label{display:block;font-size:12px;color:#4b5563;font-weight:700;margin:12px 0 6px}
-        input,textarea{width:100%;border:1px solid #d1d5db;border-radius:6px;padding:10px;font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#fff;color:#111827}
+        input,select,textarea{width:100%;border:1px solid #d1d5db;border-radius:6px;padding:10px;font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#fff;color:#111827}
         textarea{min-height:120px;resize:vertical}
         button{border:0;background:#111827;color:#fff;border-radius:6px;padding:10px 13px;font-size:13px;font-weight:800;cursor:pointer;margin-top:12px}
         button.secondary{background:#2563eb}
@@ -2259,11 +2400,23 @@ TELEGRAM_LOGIN_HTML = """
 <body>
 <main>
     <h1>Telegram 网页登录</h1>
-    <div class="sub">用于生成 Telethon 的 SESSION_STRING。验证码和二步密码只在本次登录请求中使用，成功后会自动保存并重载进程；页面仍会显示结果作为备份。</div>
+    <div class="sub">用于生成 Telethon 的 SESSION_STRING。先选择要保存的账号位置，成功后会自动保存并重载进程；页面仍会显示结果作为备份。</div>
     <div id="msg" class="msg hidden"></div>
 
     <section>
         <h2>1. 发送验证码</h2>
+        <label>保存到账号</label>
+        <select id="account_key" onchange="toggleCustomAccount()">
+            <option value="main">主账号</option>
+            <option value="extra1">副账号 1</option>
+            <option value="extra2">副账号 2</option>
+            <option value="extra3">副账号 3</option>
+            <option value="custom">自定义副账号名</option>
+        </select>
+        <div id="custom-account-box" class="hidden">
+            <label>自定义副账号名</label>
+            <input id="account_name" placeholder="例如：收码号A">
+        </div>
         <div class="row">
             <div>
                 <label>API_ID</label>
@@ -2326,11 +2479,29 @@ async function postJson(url, payload){
 function commonPayload(){
     return {
         flow_id: flowId,
+        account_key: document.getElementById('account_key').value,
+        account_name: document.getElementById('account_name').value.trim(),
         api_id: document.getElementById('api_id').value.trim(),
         api_hash: document.getElementById('api_hash').value.trim(),
         phone: document.getElementById('phone').value.trim(),
         token: document.getElementById('token').value
     };
+}
+
+function accountLabel(){
+    const key = document.getElementById('account_key').value;
+    if (key === 'main') return '主账号';
+    if (key === 'extra1') return '副账号 1';
+    if (key === 'extra2') return '副账号 2';
+    if (key === 'extra3') return '副账号 3';
+    return document.getElementById('account_name').value.trim() || '自定义副账号';
+}
+
+function toggleCustomAccount(){
+    document.getElementById('custom-account-box').classList.toggle(
+        'hidden',
+        document.getElementById('account_key').value !== 'custom'
+    );
 }
 
 async function sendCode(){
@@ -2388,7 +2559,7 @@ function finish(sessionString){
     document.getElementById('session').value = sessionString || '';
     document.getElementById('result-box').classList.remove('hidden');
     document.getElementById('password-box').classList.add('hidden');
-    showMsg('成功生成并保存 SESSION_STRING，服务正在自动重载。页面显示的内容可作为备份保存。', 'ok');
+    showMsg('已保存到 ' + accountLabel() + '，服务正在自动重载。页面显示的内容可作为备份保存。', 'ok');
 }
 
 async function copySession(){
@@ -2532,6 +2703,7 @@ def api_telegram_login_send_code():
     try:
         telegram_login_require_token(data)
         api_id, api_hash = telegram_login_parse_api(data)
+        account_type, account_name = resolve_telegram_account_target(data)
         phone = str(data.get("phone") or "").strip()
         if not phone:
             return jsonify({"ok": False, "error": "手机号不能为空"}), 400
@@ -2546,9 +2718,11 @@ def api_telegram_login_send_code():
                 "client": client_obj,
                 "phone": phone,
                 "phone_code_hash": phone_code_hash,
+                "account_type": account_type,
+                "account_name": account_name,
                 "expires_at": time.time() + TELEGRAM_LOGIN_TTL_SECONDS,
             }
-        return jsonify({"ok": True, "flow_id": flow_id})
+        return jsonify({"ok": True, "flow_id": flow_id, "account_type": account_type, "account_name": account_name})
     except PermissionError as e:
         return jsonify({"ok": False, "error": str(e)}), 403
     except PhoneNumberInvalidError:

@@ -5,4 +5,5 @@ bot_debug.log
 monitor_config_v2.json
 monitor_runtime_stats.json
 telegram_session_string.txt
+telegram_extra_sessions.json
 extensions/zd-unlock-extension.pem
