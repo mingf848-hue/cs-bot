@@ -10,6 +10,7 @@ import queue
 import sqlite3
 import copy
 import secrets
+import socket
 from collections import deque, defaultdict
 from datetime import datetime, timedelta, timezone
 from threading import Thread, Lock
@@ -37,6 +38,10 @@ def data_path(filename):
 
 LOG_FILE_PATH = data_path('bot_debug.log')
 CHAT_LOG_TO_CONSOLE = os.environ.get("CHAT_LOG_TO_CONSOLE", "0").strip().lower() in ("1", "true", "yes", "on")
+BOT_COMMAND_POLL_LOCK_KEY = "bot_command_poll_lock_v1"
+BOT_COMMAND_POLL_LOCK_TTL_SECONDS = 90
+BOT_COMMAND_POLL_LOCK_OWNER = f"{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(4)}"
+BOT_COMMAND_POLLING_ENABLED = os.environ.get("BOT_COMMAND_POLLING_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
 
 class BeijingFormatter(logging.Formatter):
     def converter(self, timestamp):
@@ -3322,10 +3327,51 @@ def _bot_get_updates(offset=None, timeout=50):
         data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
         if resp.status_code == 200 and data.get("ok"):
             return data
+        if resp.status_code == 409 and _is_bot_poll_conflict(data):
+            log_tree(9, "Bot 命令轮询冲突: 检测到其它实例正在 getUpdates，本实例将退避等待")
+            return data
         log_tree(9, f"Bot 命令轮询失败: HTTP {resp.status_code} {str(data)[:200]}")
     except Exception as e:
         log_tree(9, f"Bot 命令轮询异常: {e}")
     return None
+
+def _is_bot_poll_conflict(data):
+    return isinstance(data, dict) and int(data.get("error_code") or 0) == 409
+
+def _bot_poll_lock_client():
+    try:
+        return get_wait_alert_redis_client()
+    except Exception as e:
+        logger.warning(f"⚠️ Bot 命令轮询锁 Redis 获取失败，继续单进程模式: {e}")
+        return None
+
+def _acquire_bot_poll_lock():
+    client = _bot_poll_lock_client()
+    if not client:
+        return True
+    try:
+        if client.set(BOT_COMMAND_POLL_LOCK_KEY, BOT_COMMAND_POLL_LOCK_OWNER, nx=True, ex=BOT_COMMAND_POLL_LOCK_TTL_SECONDS):
+            return True
+        if client.get(BOT_COMMAND_POLL_LOCK_KEY) == BOT_COMMAND_POLL_LOCK_OWNER:
+            client.expire(BOT_COMMAND_POLL_LOCK_KEY, BOT_COMMAND_POLL_LOCK_TTL_SECONDS)
+            return True
+    except Exception as e:
+        logger.warning(f"⚠️ Bot 命令轮询锁异常，继续单进程模式: {e}")
+        return True
+    return False
+
+def _refresh_bot_poll_lock():
+    client = _bot_poll_lock_client()
+    if not client:
+        return True
+    try:
+        if client.get(BOT_COMMAND_POLL_LOCK_KEY) == BOT_COMMAND_POLL_LOCK_OWNER:
+            client.expire(BOT_COMMAND_POLL_LOCK_KEY, BOT_COMMAND_POLL_LOCK_TTL_SECONDS)
+            return True
+    except Exception as e:
+        logger.warning(f"⚠️ Bot 命令轮询锁续期失败，继续单进程模式: {e}")
+        return True
+    return False
 
 def _bot_send_reply(chat_id, text, reply_to_message_id=None, message_thread_id=None, reply_markup=None):
     if not BOT_TOKEN:
@@ -3730,9 +3776,19 @@ async def handle_site_message_bot_request(message):
 async def bot_command_polling_task():
     if not BOT_TOKEN:
         return
+    if not BOT_COMMAND_POLLING_ENABLED:
+        log_tree(1, "Bot /start /id 命令轮询已关闭 (BOT_COMMAND_POLLING_ENABLED=0)")
+        return
 
     loop = asyncio.get_event_loop()
     offset = None
+    lock_wait_logged = False
+    while not _acquire_bot_poll_lock():
+        if not lock_wait_logged:
+            log_tree(1, "Bot /start /id 命令轮询由其它实例持有，本实例等待接管")
+            lock_wait_logged = True
+        await asyncio.sleep(15)
+
     first_batch = await loop.run_in_executor(None, lambda: _bot_get_updates(timeout=0))
     if first_batch and first_batch.get("result"):
         offset = max(item.get("update_id", 0) for item in first_batch["result"]) + 1
@@ -3740,7 +3796,20 @@ async def bot_command_polling_task():
 
     while True:
         try:
+            if not _refresh_bot_poll_lock():
+                if not lock_wait_logged:
+                    log_tree(1, "Bot /start /id 命令轮询锁已被其它实例接管，本实例暂停")
+                    lock_wait_logged = True
+                while not _acquire_bot_poll_lock():
+                    await asyncio.sleep(15)
+                lock_wait_logged = False
+                log_tree(1, "Bot /start /id 命令轮询锁已重新取得")
+                continue
+            lock_wait_logged = False
             data = await loop.run_in_executor(None, lambda current_offset=offset: _bot_get_updates(offset=current_offset, timeout=50))
+            if _is_bot_poll_conflict(data):
+                await asyncio.sleep(30)
+                continue
             if not data:
                 await asyncio.sleep(5)
                 continue
