@@ -1091,6 +1091,7 @@ try:
         merged_extra_sessions = parse_extra_session_items(os.environ.get("EXTRA_SESSION_STRINGS", ""))
         merged_extra_sessions.update(SAVED_EXTRA_SESSIONS)
         os.environ["EXTRA_SESSION_STRINGS"] = format_extra_session_items(merged_extra_sessions)
+    EXTRA_SESSION_NAMES = sorted(parse_extra_session_items(os.environ.get("EXTRA_SESSION_STRINGS", "")).keys())
     BOT_TOKEN = os.environ["BOT_TOKEN"]
     cs_groups_env = os.environ["CS_GROUP_IDS"]
     CS_GROUP_IDS = extract_id_list(cs_groups_env)
@@ -1138,7 +1139,8 @@ except Exception as e:
     logger.error(f"❌ 配置错误: {e}")
     sys.exit(1)
 
-log_tree(0, f"系统启动 | 主Session来源: {SESSION_STRING_SOURCE} | 副账号Session来源: {EXTRA_SESSION_SOURCE}({len(parse_extra_session_items(os.environ.get('EXTRA_SESSION_STRINGS', '')))}个) | 稍等词: {len(WAIT_SIGNATURES)} | 稍等预警词: {len(WAIT_ALERT_SIGNATURES)} | 跟进词: {len(KEEP_SIGNATURES)} | 忽略词: {len(IGNORE_SIGNATURES)}")
+extra_session_name_text = "、".join(EXTRA_SESSION_NAMES) if EXTRA_SESSION_NAMES else "无"
+log_tree(0, f"系统启动 | 主Session来源: {SESSION_STRING_SOURCE} | 副账号Session来源: {EXTRA_SESSION_SOURCE}({len(EXTRA_SESSION_NAMES)}个: {extra_session_name_text}) | 稍等词: {len(WAIT_SIGNATURES)} | 稍等预警词: {len(WAIT_ALERT_SIGNATURES)} | 跟进词: {len(KEEP_SIGNATURES)} | 忽略词: {len(IGNORE_SIGNATURES)}")
 
 # ==========================================
 # 模块 3: 全局状态
