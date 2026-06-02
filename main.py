@@ -42,6 +42,8 @@ BOT_COMMAND_POLL_LOCK_KEY = "bot_command_poll_lock_v1"
 BOT_COMMAND_POLL_LOCK_TTL_SECONDS = 90
 BOT_COMMAND_POLL_LOCK_OWNER = f"{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(4)}"
 BOT_COMMAND_POLLING_ENABLED = os.environ.get("BOT_COMMAND_POLLING_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
+BOT_COMMAND_POLL_CONFLICT_LOG_INTERVAL_SECONDS = 300
+bot_command_poll_conflict_last_log_at = 0.0
 
 class BeijingFormatter(logging.Formatter):
     def converter(self, timestamp):
@@ -3312,6 +3314,7 @@ def parse_large_timeout_text(text):
     }
 
 def _bot_get_updates(offset=None, timeout=50):
+    global bot_command_poll_conflict_last_log_at
     if not BOT_TOKEN:
         return None
 
@@ -3328,7 +3331,10 @@ def _bot_get_updates(offset=None, timeout=50):
         if resp.status_code == 200 and data.get("ok"):
             return data
         if resp.status_code == 409 and _is_bot_poll_conflict(data):
-            log_tree(9, "Bot 命令轮询冲突: 检测到其它实例正在 getUpdates，本实例将退避等待")
+            now = time.time()
+            if now - bot_command_poll_conflict_last_log_at >= BOT_COMMAND_POLL_CONFLICT_LOG_INTERVAL_SECONDS:
+                bot_command_poll_conflict_last_log_at = now
+                log_tree(2, "Bot 命令轮询冲突: 检测到其它实例正在 getUpdates，本实例将退避等待")
             return data
         log_tree(9, f"Bot 命令轮询失败: HTTP {resp.status_code} {str(data)[:200]}")
     except Exception as e:
