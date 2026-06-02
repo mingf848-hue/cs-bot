@@ -1761,8 +1761,8 @@ def check_sender_allowed(sender_obj, rule):
     prefixes = rule.get("sender_prefixes", [])
     match_found = sender_matches_prefix(sender_obj, prefixes, include_username=True)
             
-    if sender_mode == "exclude" and match_found: 
-        logger.info(f"🛡️ [Filter] 黑名单拦截: {get_sender_name(sender_obj)}")
+    if sender_mode == "exclude" and match_found:
+        logger.debug(f"🛡️ [Filter] 黑名单拦截: {get_sender_name(sender_obj)}")
         return False
     elif sender_mode == "include" and not match_found: 
         return False # 白名单未命中，拦截
@@ -6272,7 +6272,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                 duration_ms=(time.time() - match_started) * 1000
                             )
                     break
-                elif rule_matches_group(event.chat_id, rule.get("groups", [])) and reason in ("发送者是已登录账号", "发送者被排除", "冷却中", "二级密码消息不触发登录密码解锁"):
+                elif rule_matches_group(event.chat_id, rule.get("groups", [])) and reason in ("冷却中", "二级密码消息不触发登录密码解锁"):
                     logger.info(
                         f"↪️ [MonitorSkip] 规则 '{rule.get('name')}' 未执行: {reason} | "
                         f"Chat={event.chat_id} Msg={event.id} Sender={sender_name}"
