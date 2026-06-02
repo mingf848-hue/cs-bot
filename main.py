@@ -4798,6 +4798,8 @@ async def backfill_chat_history():
 async def handler(event):
     try:
         global MY_ID
+        if hasattr(client, "is_connected") and not client.is_connected():
+            return
         if not MY_ID: MY_ID = (await client.get_me()).id
         chat_id = event.chat_id
         if not is_configured_cs_group(chat_id):

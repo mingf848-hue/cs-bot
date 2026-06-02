@@ -88,6 +88,25 @@ settlement_tg_forwarded_keys = set()
 ai_private_reply_latest = {}
 ai_private_reply_locks = {}
 
+def client_is_connected(cli):
+    if not cli:
+        return False
+    try:
+        if hasattr(cli, "is_connected"):
+            return bool(cli.is_connected())
+    except Exception:
+        return False
+    return True
+
+def schedule_global_main_handler_for_sent(sent):
+    if not global_main_handler:
+        return
+    main_client = global_clients.get(MAIN_NAME)
+    if main_client and not client_is_connected(main_client):
+        logger.info("🛡️ [MainHandler] 主账号已断开，跳过自动发送消息的漏回检测转交")
+        return
+    asyncio.create_task(global_main_handler(events.NewMessage.Event(sent)))
+
 # --- 核心工具函数 ---
 
 def match_text(text, rule):
@@ -1378,7 +1397,13 @@ async def forward_settlement_tg_group_reply(event, account_name):
 
     source_chat_id = payload.get("source_chat_id")
     source_message_id = payload.get("source_message_id")
-    target_client = global_clients.get(MAIN_NAME) or global_clients.get(account_name)
+    target_client = next(
+        (
+            candidate for candidate in (global_clients.get(MAIN_NAME), global_clients.get(account_name))
+            if client_is_connected(candidate)
+        ),
+        None
+    )
     if not target_client:
         clear_settlement_tg_reply_forwarded_mark(getattr(event, "chat_id", None), reply_msg_id)
         raise RuntimeError("没有可用于回传原消息的 Telegram 账号")
@@ -1757,7 +1782,7 @@ async def is_monitor_own_account(client, event, other_cs_ids):
         if name in client_user_ids:
             continue
         try:
-            if hasattr(cli, "is_connected") and not cli.is_connected():
+            if not client_is_connected(cli):
                 continue
             me = await cli.get_me()
             if me:
@@ -2845,8 +2870,7 @@ async def execute_backend_unlock_step(step, rule, event, source_text, target_cli
         else:
             reply_text = format_backend_reply_items(reply_items, backend_action)
             sent = await target_client.send_message(event.chat_id, reply_text, reply_to=event.id)
-            if global_main_handler:
-                asyncio.create_task(global_main_handler(events.NewMessage.Event(sent)))
+            schedule_global_main_handler_for_sent(sent)
     if failures:
         logger.warning(f"⚠️ [BackendUnlock] 规则 '{rule.get('name')}' 部分后台动作失败: {backend_action} failures={len(failures)} success={len(successes)}")
     logger.info(f"✅ [BackendUnlock] 规则 '{rule.get('name')}' 后台动作成功: {backend_action} targets={','.join(t for t, _id, _r in successes)}")
@@ -3451,8 +3475,7 @@ async def execute_agent_existing_step(step, rule, event, source_text, target_cli
             sent = await target_client.send_message(event.chat_id, "已发", reply_to=event.id)
         else:
             sent = await target_client.send_message(event.chat_id, reply_text, reply_to=event.id)
-        if global_main_handler:
-            asyncio.create_task(global_main_handler(events.NewMessage.Event(sent)))
+        schedule_global_main_handler_for_sent(sent)
 
     if failures:
         logger.warning(f"⚠️ [ZD-Agent] 部分能力失败: success={len(successes)} failed={len(failures)}")
@@ -3820,7 +3843,7 @@ async def send_command_telegram_message(account_name, target, text, cmd=None):
     if target_name not in global_clients:
         raise RuntimeError(f"发送账号不存在或未注册：{target_name}")
     target_client = global_clients[target_name]
-    if target_name != MAIN_NAME and hasattr(target_client, "is_connected") and not target_client.is_connected():
+    if not client_is_connected(target_client):
         raise RuntimeError(f"发送账号未连接：{target_name}")
     peer = parse_peer_target(target)
     if peer is None:
@@ -4862,7 +4885,7 @@ async def send_scheduled_message_job(item):
         raise RuntimeError(f"发送账号不存在或未注册：{target_name}")
 
     target_client = global_clients[target_name]
-    if target_name != MAIN_NAME and hasattr(target_client, "is_connected") and not target_client.is_connected():
+    if not client_is_connected(target_client):
         raise RuntimeError(f"发送账号未连接：{target_name}")
 
     targets = [parse_peer_target(group_id) for group_id in item.get("groups", [])]
@@ -5582,8 +5605,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     if content:
                         sent = await target_client.send_message(source_chat_id, format_caption(content), reply_to=source_msg_id)
                         remember_sent_message(sent_msgs, source_chat_id, sent)
-                        if global_main_handler:
-                            asyncio.create_task(global_main_handler(events.NewMessage.Event(sent)))
+                        schedule_global_main_handler_for_sent(sent)
         except Exception as e:
             action_failed = True
             logger.error(f"❌ [Monitor] 规则 '{rule.get('name')}' 执行动作失败: {e}")
@@ -5597,7 +5619,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             "action_count": max(0, len(sent_msgs) - initial_sent_count) + (1 if notify_sent else 0) + backend_actions + handoff_actions,
         }
 
-    async def message_is_unmatched_for_monitor(message):
+    async def message_is_unmatched_for_monitor(message, analysis_client=None):
+        analysis_client = analysis_client or client
         event_view = MessageEventView(message)
         if getattr(event_view, "is_reply", False):
             return False, ""
@@ -5612,20 +5635,24 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         for check_rule in current_config.get("rules", []):
             if not isinstance(check_rule, dict) or not check_rule.get("enabled", True):
                 continue
-            is_match, reason, _ = await analyze_message(client, check_rule, event_view, other_cs_ids, sender, check_cooldown=False)
+            is_match, reason, _ = await analyze_message(analysis_client, check_rule, event_view, other_cs_ids, sender, check_cooldown=False)
             if is_match:
                 return False, get_sender_name(sender)
             if rule_matches_group(event_view.chat_id, check_rule.get("groups", [])) and reason in ("文本关键词不符", "非文件消息", "后缀不符", "文件名关键词不符"):
                 content_mismatch = True
         return content_mismatch, get_sender_name(sender)
 
-    async def collect_recent_unmatched_before(trigger_event):
+    async def collect_recent_unmatched_before(trigger_event, history_client=None):
+        history_client = history_client or client
         chat_id = getattr(trigger_event, "chat_id", None)
         trigger_msg_id = getattr(trigger_event, "id", None)
         if not chat_id or not trigger_msg_id:
             return
+        if not client_is_connected(history_client):
+            logger.warning(f"⚠️ [Unmatched] 回扫上方消息跳过 Chat={chat_id} Msg={trigger_msg_id}: 读取账号未连接")
+            return
         try:
-            history = await client.get_messages(chat_id, max_id=trigger_msg_id, limit=8)
+            history = await history_client.get_messages(chat_id, max_id=trigger_msg_id, limit=8)
         except Exception as e:
             logger.warning(f"⚠️ [Unmatched] 回扫上方消息失败 Chat={chat_id} Msg={trigger_msg_id}: {e}")
             return
@@ -5645,7 +5672,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                 already_pending = msg_id in (pending_unmatched_messages.get(chat_id) or {})
             if already_pending:
                 continue
-            unmatched, history_sender_name = await message_is_unmatched_for_monitor(message)
+            unmatched, history_sender_name = await message_is_unmatched_for_monitor(message, analysis_client=history_client)
             if unmatched:
                 remember_unmatched_message(MessageEventView(message), history_sender_name)
 
@@ -5655,7 +5682,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         if not chat_id or not trigger_msg_id:
             return 0
 
-        await collect_recent_unmatched_before(trigger_event)
+        await collect_recent_unmatched_before(trigger_event, history_client=target_client)
         candidates = pop_pending_unmatched_before(chat_id, trigger_msg_id)
         if not candidates:
             return 0
@@ -5908,7 +5935,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                     return
 
                                 replier_client = global_clients[target_name]
-                                if target_name != MAIN_NAME and hasattr(replier_client, "is_connected") and not replier_client.is_connected():
+                                if not client_is_connected(replier_client):
                                     logger.error(f"❌ [Approval] 指定回复账号未连接: {target_name}，已取消执行")
                                     record_runtime_event(
                                         "approval",
@@ -6044,7 +6071,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                         break
 
                     target_client = global_clients[target_name]
-                    if target_name != MAIN_NAME and hasattr(target_client, "is_connected") and not target_client.is_connected():
+                    if not client_is_connected(target_client):
                         logger.error(f"❌ [Routing] 指定回复账号未连接: {target_name}，规则 '{rule.get('name')}' 已取消")
                         record_runtime_event(
                             "monitor",
@@ -6185,7 +6212,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                                 if content:
                                     sent = await target_client.send_message(event.chat_id, format_caption(content), reply_to=event.id)
                                     remember_sent_message(sent_msgs, event.chat_id, sent)
-                                    if global_main_handler: asyncio.create_task(global_main_handler(events.NewMessage.Event(sent)))
+                                    schedule_global_main_handler_for_sent(sent)
                     except Exception as e:
                         action_failed = True
                         if sent_msgs or notify_sent or backend_actions:
