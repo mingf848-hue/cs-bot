@@ -18,6 +18,15 @@ from threading import Thread, Lock
 from flask import Flask, render_template, render_template_string, Response, request, stream_with_context, jsonify
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+from runtime_lock import TelegramRuntimeLock
+from session_store import SessionStore, format_extra_session_items, parse_extra_session_items
+from telegram_accounts import (
+    get_runtime_account_statuses,
+    has_any_session_config,
+    resolve_account_target,
+    runtime_status_payload,
+)
+from telegram_login import TelegramLoginManager
 from telethon.errors import (
     AuthKeyDuplicatedError,
     PasswordHashInvalidError,
@@ -54,11 +63,8 @@ def env_flag(name, default="0"):
 
 TELEGRAM_RUNTIME_LOCK_KEY = os.environ.get("TELEGRAM_RUNTIME_LOCK_KEY", "telegram_runtime_lock_v1")
 TELEGRAM_RUNTIME_LOCK_TTL_SECONDS = int(os.environ.get("TELEGRAM_RUNTIME_LOCK_TTL_SECONDS", "180") or "180")
-TELEGRAM_RUNTIME_LOCK_REFRESH_SECONDS = max(15, min(60, TELEGRAM_RUNTIME_LOCK_TTL_SECONDS // 3))
 TELEGRAM_RUNTIME_LOCK_OWNER = f"{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(8)}"
 TELEGRAM_RUNTIME_LOCK_REQUIRED = env_flag("REQUIRE_TELEGRAM_RUNTIME_LOCK") or env_flag("TELEGRAM_RUNTIME_LOCK_REQUIRED")
-telegram_runtime_lock_acquired = False
-telegram_runtime_lock_stop = False
 telegram_shutdown_started = False
 BOT_COMMAND_POLLING_ENABLED = os.environ.get("BOT_COMMAND_POLLING_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
 BOT_COMMAND_POLL_CONFLICT_LOG_INTERVAL_SECONDS = 300
@@ -848,164 +854,23 @@ def persist_wait_alert_config(signatures, routes):
         logger.warning(f"⚠️ [WaitAlert] Redis 配置保存失败: {e}")
         return False, wait_alert_store_status
 
-MAIN_SESSION_REDIS_KEY = "telegram_main_session_string_v1"
 MAIN_SESSION_FILE = data_path("telegram_session_string.txt")
-EXTRA_SESSIONS_REDIS_KEY = "telegram_extra_session_strings_v1"
 EXTRA_SESSIONS_FILE = data_path("telegram_extra_sessions.json")
+session_store = SessionStore(get_wait_alert_redis_client, MAIN_SESSION_FILE, EXTRA_SESSIONS_FILE, logger)
 session_apply_lock = Lock()
 session_restart_scheduled = False
 
-def parse_extra_session_items(raw):
-    sessions = {}
-    for i, item in enumerate([x.strip() for x in str(raw or "").split(";") if x.strip()]):
-        if "=" in item:
-            left, right = item.split("=", 1)
-            if len(left) > 30:
-                name = f"副账号 {i + 1}"
-                session_value = item
-            else:
-                name = left.strip() or f"副账号 {i + 1}"
-                session_value = right.strip()
-        else:
-            name = f"副账号 {i + 1}"
-            session_value = item
-        if session_value:
-            sessions[name] = session_value
-    return sessions
-
-def format_extra_session_items(sessions):
-    return ";".join(
-        f"{name}={session_value}"
-        for name, session_value in (sessions or {}).items()
-        if str(name or "").strip() and str(session_value or "").strip()
-    )
-
 def load_saved_session_string():
-    client = get_wait_alert_redis_client()
-    if client:
-        try:
-            raw = client.get(MAIN_SESSION_REDIS_KEY)
-            if raw:
-                value = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-                value = value.strip()
-                if value:
-                    return value, "Redis"
-        except Exception as e:
-            logger.warning(f"⚠️ [Session] Redis 读取失败，尝试文件/环境变量: {e}")
-
-    try:
-        if os.path.exists(MAIN_SESSION_FILE):
-            with open(MAIN_SESSION_FILE, "r", encoding="utf-8") as f:
-                value = f.read().strip()
-            if value:
-                return value, "文件"
-    except Exception as e:
-        logger.warning(f"⚠️ [Session] 文件读取失败，尝试环境变量: {e}")
-
-    return (os.environ.get("SESSION_STRING", "") or "").strip(), "环境变量"
+    return session_store.load_main_session()
 
 def load_saved_extra_sessions():
-    client = get_wait_alert_redis_client()
-    if client:
-        try:
-            raw = client.get(EXTRA_SESSIONS_REDIS_KEY)
-            if raw:
-                value = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-                data = json.loads(value)
-                if isinstance(data, dict):
-                    sessions = {
-                        str(name).strip(): str(session_value).strip()
-                        for name, session_value in data.items()
-                        if str(name).strip() and str(session_value).strip()
-                    }
-                    if sessions:
-                        return sessions, "Redis"
-        except Exception as e:
-            logger.warning(f"⚠️ [Session] Redis 副账号读取失败，尝试文件/环境变量: {e}")
-
-    try:
-        if os.path.exists(EXTRA_SESSIONS_FILE):
-            with open(EXTRA_SESSIONS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                sessions = {
-                    str(name).strip(): str(session_value).strip()
-                    for name, session_value in data.items()
-                    if str(name).strip() and str(session_value).strip()
-                }
-                if sessions:
-                    return sessions, "文件"
-    except Exception as e:
-        logger.warning(f"⚠️ [Session] 文件副账号读取失败，尝试环境变量: {e}")
-
-    return {}, "环境变量"
+    return session_store.load_extra_sessions()
 
 def save_main_session_string(session_string):
-    value = str(session_string or "").strip()
-    if not value:
-        raise ValueError("SESSION_STRING 为空，未保存")
-
-    saved_targets = []
-    client = get_wait_alert_redis_client()
-    if client:
-        try:
-            client.set(MAIN_SESSION_REDIS_KEY, value)
-            saved_targets.append("Redis")
-        except Exception as e:
-            logger.warning(f"⚠️ [Session] Redis 保存失败，继续尝试文件: {e}")
-
-    try:
-        session_dir = os.path.dirname(MAIN_SESSION_FILE)
-        if session_dir:
-            os.makedirs(session_dir, exist_ok=True)
-        with open(MAIN_SESSION_FILE, "w", encoding="utf-8") as f:
-            f.write(value)
-        try:
-            os.chmod(MAIN_SESSION_FILE, 0o600)
-        except Exception:
-            pass
-        saved_targets.append("文件")
-    except Exception as e:
-        logger.warning(f"⚠️ [Session] 文件保存失败: {e}")
-
-    if not saved_targets:
-        raise RuntimeError("SESSION_STRING 保存失败：Redis 和文件都不可用")
-    return saved_targets
+    return session_store.save_main_session(session_string)
 
 def save_extra_sessions(sessions):
-    clean_sessions = {
-        str(name).strip(): str(session_value).strip()
-        for name, session_value in (sessions or {}).items()
-        if str(name).strip() and str(session_value).strip()
-    }
-
-    saved_targets = []
-    payload = json.dumps(clean_sessions, ensure_ascii=False)
-    client = get_wait_alert_redis_client()
-    if client:
-        try:
-            client.set(EXTRA_SESSIONS_REDIS_KEY, payload)
-            saved_targets.append("Redis")
-        except Exception as e:
-            logger.warning(f"⚠️ [Session] Redis 副账号保存失败，继续尝试文件: {e}")
-
-    try:
-        session_dir = os.path.dirname(EXTRA_SESSIONS_FILE)
-        if session_dir:
-            os.makedirs(session_dir, exist_ok=True)
-        with open(EXTRA_SESSIONS_FILE, "w", encoding="utf-8") as f:
-            f.write(payload)
-        try:
-            os.chmod(EXTRA_SESSIONS_FILE, 0o600)
-        except Exception:
-            pass
-        saved_targets.append("文件")
-    except Exception as e:
-        logger.warning(f"⚠️ [Session] 文件副账号保存失败: {e}")
-
-    if not saved_targets:
-        raise RuntimeError("副账号 SESSION_STRING 保存失败：Redis 和文件都不可用")
-    return saved_targets
+    return session_store.save_extra_sessions(sessions)
 
 def delete_extra_session(account_name):
     name = str(account_name or "").strip()
@@ -1023,61 +888,16 @@ def delete_extra_session(account_name):
     return True, saved_targets
 
 def get_runtime_telegram_account_statuses():
-    try:
-        import monitor_responder as _monitor_responder
-        summaries = _monitor_responder.get_account_summaries()
-    except Exception:
-        summaries = []
-    result = {}
-    for item in summaries or []:
-        name = str(item.get("name") or "").strip()
-        if not name:
-            continue
-        result[name] = {
-            "registered": True,
-            "connected": bool(item.get("connected")),
-            "user_id": item.get("user_id"),
-            "role": item.get("role") or "",
-            "monitor_enabled": item.get("monitor_enabled"),
-        }
-    return result
+    return get_runtime_account_statuses()
 
 def account_runtime_status_payload(account_name, runtime_statuses):
-    status = runtime_statuses.get(str(account_name or "").strip(), {})
-    return {
-        "registered": bool(status.get("registered")),
-        "connected": bool(status.get("connected")),
-        "user_id": status.get("user_id"),
-        "role": status.get("role") or "",
-        "monitor_enabled": status.get("monitor_enabled"),
-    }
+    return runtime_status_payload(account_name, runtime_statuses)
 
 def has_any_telegram_session_config():
-    try:
-        if MAIN_SESSION_READY:
-            return True
-        return bool(parse_extra_session_items(os.environ.get("EXTRA_SESSION_STRINGS", "")))
-    except Exception:
-        return bool(MAIN_SESSION_READY)
+    return has_any_session_config(MAIN_SESSION_READY, os.environ.get("EXTRA_SESSION_STRINGS", ""))
 
 def resolve_telegram_account_target(data):
-    raw_key = str(data.get("account_key") or "main").strip()
-    custom_name = str(data.get("account_name") or "").strip()
-    if raw_key == "main":
-        return "main", os.environ.get("MAIN_SESSION_NAME", "主账号")
-    if raw_key == "extra1":
-        return "extra", "副账号 1"
-    if raw_key == "extra2":
-        return "extra", "副账号 2"
-    if raw_key == "extra3":
-        return "extra", "副账号 3"
-    if raw_key == "custom" and custom_name:
-        return "extra", custom_name[:40]
-    if raw_key.startswith("extra:"):
-        name = raw_key.split(":", 1)[1].strip()
-        if name:
-            return "extra", name[:40]
-    raise ValueError("请选择要保存的账号位置")
+    return resolve_account_target(data)
 
 def save_account_session(account_type, account_name, session_string):
     if account_type == "main":
@@ -1100,10 +920,9 @@ def schedule_session_restart():
         session_restart_scheduled = True
 
     def restart_later():
-        global telegram_runtime_lock_stop
         time.sleep(1.5)
         logger.warning("🔄 [Session] 已保存新的 SESSION_STRING，正在自动重载进程...")
-        telegram_runtime_lock_stop = True
+        telegram_runtime_lock.request_stop()
         release_telegram_runtime_lock()
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
@@ -1116,8 +935,7 @@ def finish_telegram_login(flow_id, flow, session_string):
     saved_targets = save_account_session(account_type, account_name, session_string)
     target_label = "主账号" if account_type == "main" else "副账号"
     logger.info(f"✅ [Session] Telegram 网页登录成功 | {target_label}: {account_name} | 保存到: {', '.join(saved_targets)}")
-    with telegram_login_lock:
-        telegram_login_sessions.pop(flow_id, None)
+    telegram_login_manager.pop_flow(flow_id)
     try:
         run_telegram_login_coro(flow["client"].disconnect(), timeout=10)
     except Exception:
@@ -2774,7 +2592,7 @@ async function deleteExtra(btn){
     if (!confirm('确定删除副账号「' + name + '」的 session 吗？')) return;
     btn.disabled = true;
     try {
-        const res = await fetch('/api/telegram_accounts/extra/' + encodedName, {
+        const res = await fetch('/api/telegram_accounts/extra/' + encodeURIComponent(name), {
             method: 'DELETE',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({token: tokenValue()})
@@ -2798,84 +2616,16 @@ loadAccounts().catch(e => showMsg(e.message, 'err'));
 """
 
 TELEGRAM_LOGIN_TTL_SECONDS = 10 * 60
-telegram_login_loop = None
-telegram_login_sessions = {}
-telegram_login_lock = Lock()
-
-def ensure_telegram_login_loop():
-    global telegram_login_loop
-    if telegram_login_loop and telegram_login_loop.is_running():
-        return telegram_login_loop
-    loop = asyncio.new_event_loop()
-    thread = Thread(target=loop.run_forever, name="telegram-login-loop", daemon=True)
-    thread.start()
-    telegram_login_loop = loop
-    return loop
+telegram_login_manager = TelegramLoginManager(ttl_seconds=TELEGRAM_LOGIN_TTL_SECONDS)
 
 def run_telegram_login_coro(coro, timeout=60):
-    loop = ensure_telegram_login_loop()
-    return asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=timeout)
-
-def telegram_login_client(api_id, api_hash):
-    return TelegramClient(
-        StringSession(),
-        api_id,
-        api_hash,
-        device_model=os.environ.get("TG_DEVICE_MODEL", "VMware20,1"),
-        app_version=os.environ.get("TG_APP_VERSION", "6.6.3 x64"),
-        system_version=os.environ.get("TG_SYSTEM_VERSION", "Windows 10 x64"),
-        lang_code=os.environ.get("TG_LANG_CODE", "zh-hans"),
-        system_lang_code=os.environ.get("TG_SYSTEM_LANG_CODE", "zh-hans"),
-    )
-
-def telegram_login_cleanup_locked():
-    now_ts = time.time()
-    expired = [
-        flow_id for flow_id, item in telegram_login_sessions.items()
-        if not isinstance(item, dict) or item.get("expires_at", 0) <= now_ts
-    ]
-    for flow_id in expired:
-        item = telegram_login_sessions.pop(flow_id, None)
-        client_obj = item.get("client") if isinstance(item, dict) else None
-        if client_obj:
-            try:
-                run_telegram_login_coro(client_obj.disconnect(), timeout=10)
-            except Exception:
-                pass
+    return telegram_login_manager.run_coro(coro, timeout=timeout)
 
 def telegram_login_require_token(data):
-    expected = os.environ.get("TELEGRAM_LOGIN_TOKEN") or os.environ.get("WEB_LOGIN_TOKEN") or ""
-    if not expected:
-        raise PermissionError("未配置 TELEGRAM_LOGIN_TOKEN，网页登录和账号管理已锁定")
-    if str(data.get("token") or "") != expected:
-        raise PermissionError("访问口令不正确")
+    telegram_login_manager.require_token(data)
 
 def telegram_login_parse_api(data):
-    api_id = int(str(data.get("api_id") or API_ID or "").strip())
-    api_hash = str(data.get("api_hash") or API_HASH or "").strip()
-    if api_id <= 0 or not api_hash:
-        raise ValueError("API_ID/API_HASH 不能为空")
-    return api_id, api_hash
-
-async def telegram_login_send_code_async(api_id, api_hash, phone):
-    client_obj = telegram_login_client(api_id, api_hash)
-    await client_obj.connect()
-    sent = await client_obj.send_code_request(phone)
-    return client_obj, sent.phone_code_hash
-
-async def telegram_login_sign_in_async(flow, code):
-    client_obj = flow["client"]
-    await client_obj.sign_in(
-        phone=flow["phone"],
-        code=code,
-        phone_code_hash=flow["phone_code_hash"],
-    )
-    return client_obj.session.save()
-
-async def telegram_login_password_async(flow, password):
-    client_obj = flow["client"]
-    await client_obj.sign_in(password=password)
-    return client_obj.session.save()
+    return telegram_login_manager.parse_api(data, API_ID, API_HASH)
 
 # ==========================================
 # Web 路由区域
@@ -2986,21 +2736,11 @@ def api_telegram_login_send_code():
         phone = str(data.get("phone") or "").strip()
         if not phone:
             return jsonify({"ok": False, "error": "手机号不能为空"}), 400
-        with telegram_login_lock:
-            telegram_login_cleanup_locked()
         client_obj, phone_code_hash = run_telegram_login_coro(
-            telegram_login_send_code_async(api_id, api_hash, phone)
+            telegram_login_manager.send_code_async(api_id, api_hash, phone)
         )
         flow_id = secrets.token_urlsafe(18)
-        with telegram_login_lock:
-            telegram_login_sessions[flow_id] = {
-                "client": client_obj,
-                "phone": phone,
-                "phone_code_hash": phone_code_hash,
-                "account_type": account_type,
-                "account_name": account_name,
-                "expires_at": time.time() + TELEGRAM_LOGIN_TTL_SECONDS,
-            }
+        telegram_login_manager.create_flow(flow_id, client_obj, phone, phone_code_hash, account_type, account_name)
         return jsonify({"ok": True, "flow_id": flow_id, "account_type": account_type, "account_name": account_name})
     except PermissionError as e:
         return jsonify({"ok": False, "error": str(e)}), 403
@@ -3019,15 +2759,11 @@ def api_telegram_login_sign_in():
         code = str(data.get("code") or "").strip().replace(" ", "")
         if not flow_id or not code:
             return jsonify({"ok": False, "error": "验证码不能为空"}), 400
-        with telegram_login_lock:
-            telegram_login_cleanup_locked()
-            flow = telegram_login_sessions.get(flow_id)
-            if flow:
-                flow["expires_at"] = time.time() + TELEGRAM_LOGIN_TTL_SECONDS
+        flow = telegram_login_manager.get_flow(flow_id)
         if not flow:
             return jsonify({"ok": False, "error": "登录会话已过期，请重新发送验证码"}), 410
         try:
-            session_string = run_telegram_login_coro(telegram_login_sign_in_async(flow, code))
+            session_string = run_telegram_login_coro(telegram_login_manager.sign_in_async(flow, code))
         except SessionPasswordNeededError:
             return jsonify({"ok": True, "need_password": True})
         return jsonify(finish_telegram_login(flow_id, flow, session_string))
@@ -3050,14 +2786,10 @@ def api_telegram_login_password():
         password = str(data.get("password") or "")
         if not flow_id or not password:
             return jsonify({"ok": False, "error": "二步密码不能为空"}), 400
-        with telegram_login_lock:
-            telegram_login_cleanup_locked()
-            flow = telegram_login_sessions.get(flow_id)
-            if flow:
-                flow["expires_at"] = time.time() + TELEGRAM_LOGIN_TTL_SECONDS
+        flow = telegram_login_manager.get_flow(flow_id)
         if not flow:
             return jsonify({"ok": False, "error": "登录会话已过期，请重新发送验证码"}), 410
-        session_string = run_telegram_login_coro(telegram_login_password_async(flow, password))
+        session_string = run_telegram_login_coro(telegram_login_manager.password_async(flow, password))
         return jsonify(finish_telegram_login(flow_id, flow, session_string))
     except PermissionError as e:
         return jsonify({"ok": False, "error": str(e)}), 403
@@ -4288,91 +4020,17 @@ def _refresh_bot_poll_lock():
         return True
     return False
 
-def _telegram_runtime_lock_client():
-    try:
-        return get_wait_alert_redis_client()
-    except Exception as e:
-        logger.warning(f"⚠️ [RuntimeLock] Redis 获取失败，无法启用跨实例 Telegram 锁: {e}")
-        return None
-
 def acquire_telegram_runtime_lock():
-    global telegram_runtime_lock_acquired
-    client = _telegram_runtime_lock_client()
-    if not client:
-        if TELEGRAM_RUNTIME_LOCK_REQUIRED:
-            logger.critical("🚨 [RuntimeLock] 已启用强制运行锁，但 Redis 不可用；本实例不会连接 Telegram")
-            telegram_runtime_lock_acquired = False
-            return False
-        logger.warning("⚠️ [RuntimeLock] 未配置 Redis，无法阻止多实例同时连接 Telegram；请确保 Zeabur 只运行 1 个实例")
-        telegram_runtime_lock_acquired = False
-        return True
-
-    wait_logged = False
-    while True:
-        try:
-            if client.set(TELEGRAM_RUNTIME_LOCK_KEY, TELEGRAM_RUNTIME_LOCK_OWNER, nx=True, ex=TELEGRAM_RUNTIME_LOCK_TTL_SECONDS):
-                telegram_runtime_lock_acquired = True
-                logger.info(f"🔒 [RuntimeLock] 已取得 Telegram 运行锁，TTL={TELEGRAM_RUNTIME_LOCK_TTL_SECONDS}s")
-                return True
-            if client.get(TELEGRAM_RUNTIME_LOCK_KEY) == TELEGRAM_RUNTIME_LOCK_OWNER:
-                client.expire(TELEGRAM_RUNTIME_LOCK_KEY, TELEGRAM_RUNTIME_LOCK_TTL_SECONDS)
-                telegram_runtime_lock_acquired = True
-                return True
-            if not wait_logged:
-                logger.warning("⏳ [RuntimeLock] 其它实例仍持有 Telegram 运行锁，本实例暂不连接 Telegram，等待接管...")
-                wait_logged = True
-        except Exception as e:
-            logger.warning(f"⚠️ [RuntimeLock] 锁检查异常，继续等待以避免挤号: {e}")
-        time.sleep(10)
+    return telegram_runtime_lock.acquire()
 
 def refresh_telegram_runtime_lock():
-    client = _telegram_runtime_lock_client()
-    if not client or not telegram_runtime_lock_acquired:
-        return False
-    try:
-        if client.get(TELEGRAM_RUNTIME_LOCK_KEY) == TELEGRAM_RUNTIME_LOCK_OWNER:
-            client.expire(TELEGRAM_RUNTIME_LOCK_KEY, TELEGRAM_RUNTIME_LOCK_TTL_SECONDS)
-            return True
-    except Exception as e:
-        logger.warning(f"⚠️ [RuntimeLock] Telegram 运行锁续期失败: {e}")
-    return False
+    return telegram_runtime_lock.refresh()
 
 def release_telegram_runtime_lock():
-    global telegram_runtime_lock_acquired
-    client = _telegram_runtime_lock_client()
-    if not client or not telegram_runtime_lock_acquired:
-        return
-    try:
-        script = """
-        if redis.call('get', KEYS[1]) == ARGV[1] then
-            return redis.call('del', KEYS[1])
-        end
-        return 0
-        """
-        client.eval(script, 1, TELEGRAM_RUNTIME_LOCK_KEY, TELEGRAM_RUNTIME_LOCK_OWNER)
-        logger.info("🔓 [RuntimeLock] 已释放 Telegram 运行锁")
-    except Exception as e:
-        logger.warning(f"⚠️ [RuntimeLock] 释放 Telegram 运行锁失败: {e}")
-    finally:
-        telegram_runtime_lock_acquired = False
+    telegram_runtime_lock.release()
 
 def start_telegram_runtime_lock_heartbeat(loop):
-    async def heartbeat():
-        global telegram_runtime_lock_stop
-        while not telegram_runtime_lock_stop:
-            await asyncio.sleep(TELEGRAM_RUNTIME_LOCK_REFRESH_SECONDS)
-            if telegram_runtime_lock_stop:
-                break
-            if telegram_runtime_lock_acquired and not refresh_telegram_runtime_lock():
-                logger.critical("🚨 [RuntimeLock] Telegram 运行锁续期失败或已被接管，为避免多实例挤号，正在退出进程")
-                try:
-                    await client.disconnect()
-                except Exception:
-                    pass
-                os._exit(1)
-
-    if telegram_runtime_lock_acquired:
-        loop.create_task(heartbeat())
+    telegram_runtime_lock.start_heartbeat(loop)
 
 async def async_disconnect_all_telegram_clients():
     seen = set()
@@ -4401,9 +4059,8 @@ async def async_disconnect_all_telegram_clients():
 
 def install_shutdown_signal_handlers(loop):
     async def _shutdown_async(signum):
-        global telegram_runtime_lock_stop
         logger.warning(f"🛑 [Shutdown] 收到信号 {signum}，正在断开 Telegram 并释放运行锁...")
-        telegram_runtime_lock_stop = True
+        telegram_runtime_lock.request_stop()
         await async_disconnect_all_telegram_clients()
         release_telegram_runtime_lock()
         os._exit(0)
@@ -5545,6 +5202,16 @@ client = TelegramClient(
     system_version="Windows 10 x64",
     lang_code="zh-hans",
     system_lang_code="zh-hans"
+)
+
+telegram_runtime_lock = TelegramRuntimeLock(
+    get_wait_alert_redis_client,
+    logger,
+    TELEGRAM_RUNTIME_LOCK_KEY,
+    TELEGRAM_RUNTIME_LOCK_OWNER,
+    ttl_seconds=TELEGRAM_RUNTIME_LOCK_TTL_SECONDS,
+    required=TELEGRAM_RUNTIME_LOCK_REQUIRED,
+    disconnect_callback=client.disconnect,
 )
 
 @client.on(events.NewMessage(chats='me', pattern=r'^\s*(上班|下班|状态)\s*$'))

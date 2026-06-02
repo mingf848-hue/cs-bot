@@ -18,6 +18,11 @@ from flask import request, jsonify, Response, render_template_string
 from telethon import events, TelegramClient, functions
 from telethon.sessions import StringSession
 from telethon.errors import AuthKeyDuplicatedError
+from monitor_rules import (
+    monitor_rule_account_name as resolve_monitor_rule_account_name,
+    random_delay_from_step,
+    split_reply_sequence,
+)
 
 # 忽略 asyncio 的一些无关紧要的警告
 warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -2116,26 +2121,6 @@ def format_caption(tpl):
     res = tpl.replace('{time}', now_str)
     return res
 
-def split_reply_sequence(text):
-    raw = str(text or "")
-    if not raw.strip():
-        return []
-    parts = re.split(r'(?:;;|\\n|\r?\n)+', raw)
-    return [p.strip() for p in parts if p.strip()]
-
-def random_delay_from_step(step, min_key, max_key, default_min=1.5, default_max=3.0):
-    try:
-        min_val = float(step.get(min_key, default_min))
-    except Exception:
-        min_val = default_min
-    try:
-        max_val = float(step.get(max_key, default_max))
-    except Exception:
-        max_val = default_max
-    if max_val < min_val:
-        min_val, max_val = max_val, min_val
-    return random.uniform(min_val, max_val)
-
 def approval_keyword_matches(text, keywords):
     normalized_text = unicodedata.normalize("NFKC", str(text or "")).strip().lower()
     if not normalized_text:
@@ -3807,7 +3792,7 @@ def clone_config_data(data):
     return json.loads(json.dumps(data or {}, ensure_ascii=False))
 
 def monitor_rule_account_name(rule):
-    return str((rule or {}).get("reply_account") or MAIN_NAME).strip() or MAIN_NAME
+    return resolve_monitor_rule_account_name(rule, MAIN_NAME)
 
 def normalize_monitor_account_name(value, allow_empty=False):
     account = str(value or "").strip()
