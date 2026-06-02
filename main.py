@@ -1018,6 +1018,36 @@ def delete_extra_session(account_name):
     os.environ["EXTRA_SESSION_STRINGS"] = format_extra_session_items(merged_sessions)
     return True, saved_targets
 
+def get_runtime_telegram_account_statuses():
+    try:
+        import monitor_responder as _monitor_responder
+        summaries = _monitor_responder.get_account_summaries()
+    except Exception:
+        summaries = []
+    result = {}
+    for item in summaries or []:
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        result[name] = {
+            "registered": True,
+            "connected": bool(item.get("connected")),
+            "user_id": item.get("user_id"),
+            "role": item.get("role") or "",
+            "monitor_enabled": item.get("monitor_enabled"),
+        }
+    return result
+
+def account_runtime_status_payload(account_name, runtime_statuses):
+    status = runtime_statuses.get(str(account_name or "").strip(), {})
+    return {
+        "registered": bool(status.get("registered")),
+        "connected": bool(status.get("connected")),
+        "user_id": status.get("user_id"),
+        "role": status.get("role") or "",
+        "monitor_enabled": status.get("monitor_enabled"),
+    }
+
 def resolve_telegram_account_target(data):
     raw_key = str(data.get("account_key") or "main").strip()
     custom_name = str(data.get("account_name") or "").strip()
@@ -2626,6 +2656,10 @@ TELEGRAM_ACCOUNTS_HTML = """
         .row:first-child{border-top:0}
         .name{font-weight:800;font-size:14px}
         .meta{font-size:12px;color:#6b7280;margin-top:4px}
+        .status{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:800;margin-left:8px}
+        .dot{width:8px;height:8px;border-radius:50%;background:#9ca3af;display:inline-block}
+        .status.on{color:#047857}.status.on .dot{background:#10b981}
+        .status.off{color:#991b1b}.status.off .dot{background:#ef4444}
         button,a.btn{border:0;background:#111827;color:#fff;border-radius:6px;padding:9px 12px;font-size:13px;font-weight:800;cursor:pointer;text-decoration:none;display:inline-block}
         button.danger{background:#dc2626}
         button:disabled{opacity:.55;cursor:not-allowed}
@@ -2670,7 +2704,7 @@ async function loadAccounts(){
     if (!res.ok || !data.ok) throw new Error(data.error || '加载失败');
     const main = document.getElementById('main-account');
     main.className = 'row';
-    main.innerHTML = `<div><div class="name">${data.main.name}</div><div class="meta">来源：${data.main.source} | ${data.main.has_session ? '已保存' : '未保存'}</div></div>`;
+    main.innerHTML = `<div><div class="name">${data.main.name}${statusBadge(data.main)}</div><div class="meta">${metaText(data.main)}</div></div>`;
 
     const box = document.getElementById('extra-accounts');
     if (!data.extra_accounts.length) {
@@ -2682,12 +2716,27 @@ async function loadAccounts(){
     box.innerHTML = data.extra_accounts.map(acc => `
         <div class="row">
             <div>
-                <div class="name">${acc.name}</div>
-                <div class="meta">来源：${acc.source}</div>
+                <div class="name">${acc.name}${statusBadge(acc)}</div>
+                <div class="meta">${metaText(acc)}</div>
             </div>
             ${acc.deletable ? `<button class="danger" type="button" onclick="deleteExtra('${encodeURIComponent(acc.name)}', this)">删除</button>` : `<span class="meta">环境变量中配置，需到 Zeabur 删除</span>`}
         </div>
     `).join('');
+}
+
+function statusBadge(acc){
+    const cls = acc.connected ? 'on' : 'off';
+    const text = acc.connected ? '在线' : (acc.registered ? '离线' : '未注册');
+    return `<span class="status ${cls}"><span class="dot"></span>${text}</span>`;
+}
+
+function metaText(acc){
+    const parts = [];
+    parts.push('来源：' + (acc.source || '未知'));
+    if (acc.has_session !== undefined) parts.push(acc.has_session ? '已保存' : '未保存');
+    if (acc.user_id) parts.push('ID：' + acc.user_id);
+    if (acc.monitor_enabled !== undefined && acc.monitor_enabled !== null) parts.push('ZD监听：' + (acc.monitor_enabled ? '开' : '关'));
+    return parts.join(' | ');
 }
 
 async function deleteExtra(encodedName, btn){
@@ -2846,6 +2895,8 @@ def api_telegram_accounts():
         telegram_login_require_token({"token": request.args.get("token", "")})
         env_sessions = parse_extra_session_items(ORIGINAL_EXTRA_SESSION_STRINGS)
         saved_sessions, saved_source = load_saved_extra_sessions()
+        runtime_statuses = get_runtime_telegram_account_statuses()
+        main_name = os.environ.get("MAIN_SESSION_NAME", "主账号")
         names = sorted(set(env_sessions.keys()) | set(saved_sessions.keys()))
         extra_accounts = []
         for name in names:
@@ -2854,18 +2905,22 @@ def api_telegram_accounts():
                 source.append(saved_source)
             if name in env_sessions:
                 source.append("环境变量")
-            extra_accounts.append({
+            item = {
                 "name": name,
                 "source": " + ".join(dict.fromkeys(source)) or "未知",
                 "deletable": name in saved_sessions,
-            })
+            }
+            item.update(account_runtime_status_payload(name, runtime_statuses))
+            extra_accounts.append(item)
+        main_payload = {
+            "name": main_name,
+            "source": SESSION_STRING_SOURCE,
+            "has_session": bool(SESSION_STRING),
+        }
+        main_payload.update(account_runtime_status_payload(main_name, runtime_statuses))
         return jsonify({
             "ok": True,
-            "main": {
-                "name": os.environ.get("MAIN_SESSION_NAME", "主账号"),
-                "source": SESSION_STRING_SOURCE,
-                "has_session": bool(SESSION_STRING),
-            },
+            "main": main_payload,
             "extra_accounts": extra_accounts,
         })
     except PermissionError as e:
