@@ -984,9 +984,9 @@
 
         <main class="main">
             <header class="topbar">
-                <button class="env-pill" @click="toggleMonitorEnabled" :disabled="ui.togglingMonitor">
-                    <span class="status-dot" :style="{background: config.enabled ? 'var(--green)' : 'var(--red)'}"></span>
-                    <span>{{ ui.togglingMonitor ? '切换中' : (config.enabled ? '生产环境' : '监听暂停') }}</span>
+                <button class="env-pill" @click="toggleMonitorEnabled" :disabled="ui.togglingMonitor" :title="`控制 ${ui.ruleAccount} 的ZD监听`">
+                    <span class="status-dot" :style="{background: isCurrentAccountMonitorActive ? 'var(--green)' : 'var(--red)'}"></span>
+                    <span>{{ ui.togglingMonitor ? '切换中' : (isCurrentAccountMonitorActive ? `${ui.ruleAccount}监听开` : `${ui.ruleAccount}监听关`) }}</span>
                     <i data-lucide="chevron-down"></i>
                 </button>
                 <button class="env-pill ai-pill" :class="isCurrentAiPrivateEnabled ? 'on' : 'off'" @click="toggleCurrentAiPrivateReply" :disabled="ui.saving" :title="`控制 ${ui.ruleAccount} 的私聊 AI 回复`">
@@ -2009,7 +2009,11 @@
                     <div class="page-body settings-grid">
                         <section class="section">
                             <div class="section-title">监听开关</div>
-                            <label class="inline-check"><input class="checkbox" type="checkbox" v-model="config.enabled">主监听启用</label>
+                            <label class="inline-check"><input class="checkbox" type="checkbox" v-model="config.enabled">全局监听总开关</label>
+                            <label class="inline-check" v-for="account in accountFilterOptions" :key="`monitor-${account}`">
+                                <input class="checkbox" type="checkbox" v-model="config.account_monitor_enabled[account]">
+                                {{ account }} 监听启用
+                            </label>
                         </section>
                         <section class="section">
                             <div class="section-title">自动排班</div>
@@ -2114,6 +2118,7 @@ createApp({
     setup() {
         const config = reactive({
             enabled: false,
+            account_monitor_enabled: {},
             approval_keywords: [],
             schedule: { active: false, start: "09:00", end: "21:00" },
             resources: { groups: [], sender_prefixes: [] },
@@ -2366,6 +2371,14 @@ createApp({
         };
         const aiPrivateAccountConfig = (account) => ensureAiPrivateAccountConfig(account);
         const isCurrentAiPrivateEnabled = computed(() => !!ensureAiPrivateAccountConfig(ui.ruleAccount).enabled);
+        const ensureAccountMonitorEnabled = (account) => {
+            const name = String(account || mainAccount.value || "主账号").trim() || "主账号";
+            if (!config.account_monitor_enabled || typeof config.account_monitor_enabled !== "object") config.account_monitor_enabled = {};
+            if (config.account_monitor_enabled[name] === undefined) config.account_monitor_enabled[name] = true;
+            return !!config.account_monitor_enabled[name];
+        };
+        const isCurrentAccountMonitorEnabled = computed(() => ensureAccountMonitorEnabled(ui.ruleAccount));
+        const isCurrentAccountMonitorActive = computed(() => !!config.enabled && isCurrentAccountMonitorEnabled.value);
         const toggleAiPrivateAccount = (account) => {
             const item = ensureAiPrivateAccountConfig(account);
             item.enabled = !item.enabled;
@@ -2449,6 +2462,7 @@ createApp({
             suppressAutoSave = true;
             try {
                 config.enabled = data.enabled ?? true;
+                config.account_monitor_enabled = (data.account_monitor_enabled && typeof data.account_monitor_enabled === "object") ? data.account_monitor_enabled : {};
                 config.approval_keywords = Array.isArray(data.approval_keywords) ? data.approval_keywords : ["同意", "批准", "ok"];
                 config.schedule = data.schedule || { active: false, start: "09:00", end: "21:00" };
                 config.resources = hydrateResources(data.resources || {});
@@ -2461,6 +2475,7 @@ createApp({
                     runtime.accounts.splice(0, runtime.accounts.length, ...data.accounts);
                 }
                 accountFilterOptions.value.forEach(ensureAiPrivateAccountConfig);
+                accountFilterOptions.value.forEach(ensureAccountMonitorEnabled);
                 ui.ruleAccount = accountFilterOptions.value.includes(ui.ruleAccount) ? ui.ruleAccount : mainAccount.value;
                 const visibleRules = rulesForSelectedAccount.value;
                 if (!ui.selectedId || !visibleRules.some(rule => rule.id === ui.selectedId)) {
@@ -2530,6 +2545,7 @@ createApp({
                 const res = await fetch("/tool/monitor_settings_json");
                 const data = await res.json();
                 if (data.enabled !== undefined) config.enabled = data.enabled;
+                if (data.account_monitor_enabled && typeof data.account_monitor_enabled === "object") config.account_monitor_enabled = data.account_monitor_enabled;
                 if (data.main_account) identity.mainAccount = data.main_account;
                 available_accounts.splice(0, available_accounts.length, ...((data.available_accounts || [])));
                 if (Array.isArray(data.accounts) && data.accounts.length) {
@@ -3137,23 +3153,28 @@ createApp({
         };
 
         const toggleMonitorEnabled = async () => {
-            const previous = !!config.enabled;
+            const account = ui.ruleAccount || mainAccount.value;
+            const previous = ensureAccountMonitorEnabled(account);
             const nextEnabled = !previous;
-            config.enabled = nextEnabled;
+            config.account_monitor_enabled[account] = nextEnabled;
             ui.autoSaving = true;
             ui.togglingMonitor = true;
             try {
                 const res = await fetch("/api/monitor_toggle", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ enabled: nextEnabled })
+                    body: JSON.stringify({ account, enabled: nextEnabled })
                 });
                 const json = await res.json();
                 if (!json.success) throw new Error(json.msg || "切换失败");
-                config.enabled = !!json.enabled;
-                showToast(`监听已${config.enabled ? "开启" : "暂停"}`);
+                if (json.account_monitor_enabled && typeof json.account_monitor_enabled === "object") {
+                    config.account_monitor_enabled = json.account_monitor_enabled;
+                } else {
+                    config.account_monitor_enabled[account] = !!json.enabled;
+                }
+                showToast(`${account}监听已${config.account_monitor_enabled[account] ? "开启" : "暂停"}`);
             } catch (e) {
-                config.enabled = previous;
+                config.account_monitor_enabled[account] = previous;
                 showToast(`监听切换失败：${e.message || "网络错误"}`, "error");
             } finally {
                 ui.autoSaving = false;
@@ -3238,6 +3259,7 @@ createApp({
             currentRule, filteredRules, stats, previewSteps, estimatedTotal,
             mainAccount, accountFilterOptions, avatarText, lastRefreshText, selectedRuleStats, currentRuleRecords,
             aiPrivateAccountConfig, isCurrentAiPrivateEnabled, toggleCurrentAiPrivateReply, toggleAiPrivateAccount,
+            isCurrentAccountMonitorEnabled, isCurrentAccountMonitorActive, ensureAccountMonitorEnabled,
             filteredRecords, hourlyBars, compactHourlyBars, topRules, accountRows, resourceCards,
             resourceGroupOptions, senderPrefixOptions, selectedGroupNames, selectedPrefixNames,
             loadConfig, loadRuntimeStats, loadAll, saveConfig, exportConfig, triggerImportConfig, importConfigFile, toggleRuleEnabled, toggleMonitorEnabled, selectRule, setPage, addRule, duplicateRule, removeRule, ruleStatus,

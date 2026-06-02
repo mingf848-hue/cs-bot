@@ -1451,6 +1451,7 @@ def get_account_summaries():
             "name": name,
             "role": "主账号" if name == MAIN_NAME else "副账号",
             "connected": connected,
+            "monitor_enabled": is_account_monitor_enabled(name),
             "user_id": client_user_ids.get(name)
         })
     return accounts
@@ -2258,6 +2259,7 @@ def approval_amount_gate_passes(rule, message):
 DEFAULT_CONFIG = {
     "enabled": True, 
     "extra_enabled": True, # retained for old configs;副账号发送不再受总开关限制
+    "account_monitor_enabled": {},
     "approval_keywords": ["同意", "批准", "ok"],
     "schedule": {
         "active": False,
@@ -2311,6 +2313,36 @@ AGENT_EXECUTABLE_ACTIONS = {
     "query_same_ip_device", "query_venue_turnover", "configure_rebate",
     "urge_settlement", "query_ticket_cancel_reason"
 }
+
+def normalize_account_monitor_enabled(raw=None):
+    if isinstance(raw, dict):
+        return {
+            str(name).strip(): bool(enabled)
+            for name, enabled in raw.items()
+            if str(name).strip()
+        }
+    return {}
+
+def is_account_monitor_enabled(account_name):
+    account = str(account_name or MAIN_NAME).strip() or MAIN_NAME
+    per_account = current_config.get("account_monitor_enabled", {})
+    if not isinstance(per_account, dict):
+        return True
+    return bool(per_account.get(account, True))
+
+def save_account_monitor_enabled(account_name, enabled):
+    global current_config
+    account = str(account_name or MAIN_NAME).strip() or MAIN_NAME
+    try:
+        current_config["account_monitor_enabled"] = normalize_account_monitor_enabled(current_config.get("account_monitor_enabled", {}))
+        current_config["account_monitor_enabled"][account] = bool(enabled)
+        if not persist_current_config():
+            return False, "配置持久化失败"
+        logger.info(f"💾 [Monitor] {account} 监听状态已更新: {'开启' if enabled else '暂停'}")
+        return True, ""
+    except Exception as e:
+        logger.error(f"❌ [Monitor] {account} 监听状态保存失败: {e}")
+        return False, str(e)
 AGENT_CAPABILITIES = [
     {
         "action": "member_data_overview",
@@ -3590,6 +3622,7 @@ def load_config(system_cs_prefixes):
 
     if "enabled" not in current_config:
         current_config["enabled"] = True
+    current_config["account_monitor_enabled"] = normalize_account_monitor_enabled(current_config.get("account_monitor_enabled", {}))
     current_config["extra_enabled"] = True
 
     if "approval_keywords" not in current_config:
@@ -3670,6 +3703,8 @@ def save_config(new_config):
             normalize_scheduled_messages(new_config.get("scheduled_messages", []))
         )
 
+        new_config["enabled"] = bool(new_config.get("enabled", True))
+        new_config["account_monitor_enabled"] = normalize_account_monitor_enabled(new_config.get("account_monitor_enabled", {}))
         new_config["extra_enabled"] = True
         new_config["ai_private_reply"] = normalize_ai_private_reply_config(new_config.get("ai_private_reply", {}))
 
@@ -5111,13 +5146,26 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     @app.route('/api/monitor_toggle', methods=['POST'])
     def update_monitor_toggle():
         data = request.get_json(silent=True) or {}
+        account = str(data.get("account") or "").strip()
         enabled = data.get("enabled")
+        if account:
+            if enabled is None:
+                enabled = not is_account_monitor_enabled(account)
+            success, msg = save_account_monitor_enabled(account, bool(enabled))
+            return jsonify({
+                "success": success,
+                "enabled": is_account_monitor_enabled(account),
+                "account": account,
+                "account_monitor_enabled": current_config.get("account_monitor_enabled", {}),
+                "msg": msg if not success else ""
+            })
         if enabled is None:
             enabled = not current_config.get("enabled", True)
         success, msg = save_monitor_enabled(bool(enabled))
         return jsonify({
             "success": success,
             "enabled": current_config.get("enabled", True),
+            "account_monitor_enabled": current_config.get("account_monitor_enabled", {}),
             "msg": msg if not success else ""
         })
 
@@ -5871,6 +5919,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         listener_account = listener_account or MAIN_NAME
         if event.text == "/debug": await event.reply("Monitor Debug: Alive v78 (Full Source)"); return
         if not current_config.get("enabled", True): return
+        if not is_account_monitor_enabled(listener_account): return
         
         # Approval Logic
         if event.is_reply:
