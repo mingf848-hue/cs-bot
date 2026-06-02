@@ -1146,6 +1146,12 @@ function merchantApiOk(result) {
   return !!(result && result.res && result.res.ok && (data.code === undefined || data.code === '0000000') && data.status !== false);
 }
 
+function merchantNoSettlementData(result) {
+  const data = (result && result.data) || {};
+  const text = `${data.msg || data.message || ''} ${(result && result.text) || ''}`.replace(/\s+/g, '');
+  return !!(result && result.res && result.res.ok && data.code === '9999999' && /没有未结算赛事id数据|沒有未結算賽事id數據|未结算赛事id数据|未結算賽事id數據/.test(text));
+}
+
 function merchantAuthFailed(result) {
   const status = Number((result && result.res && result.res.status) || 0);
   if (status === 401 || status === 403) return true;
@@ -3233,7 +3239,11 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
   const settlementUrl = merchantUrl(config.merchantSettlementListUrl);
   const settlement = await postJson(settlementUrl, headers, merchantSettlementBody(cmd, orderNo));
   if (!merchantApiOk(settlement)) {
-    throw merchantHttpError('查询结算状态失败', settlementUrl, settlement);
+    if (merchantNoSettlementData(settlement)) {
+      console.info('[CS Bot ZD Unlock] no settlement data, continue TG urge', orderNo, settlement.data && settlement.data.msg);
+    } else {
+      throw merchantHttpError('查询结算状态失败', settlementUrl, settlement);
+    }
   }
   const settlementTotal = Number((((settlement.data || {}).data || {}).total) || 0);
   if (settlementTotal > 0 || merchantList(settlement.data).length > 0) {
