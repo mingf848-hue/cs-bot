@@ -1397,13 +1397,21 @@ async def forward_settlement_tg_group_reply(event, account_name):
 
     source_chat_id = payload.get("source_chat_id")
     source_message_id = payload.get("source_message_id")
-    target_client = next(
-        (
-            candidate for candidate in (global_clients.get(MAIN_NAME), global_clients.get(account_name))
-            if client_is_connected(candidate)
-        ),
-        None
-    )
+    preferred_account = str(payload.get("account") or account_name or MAIN_NAME).strip() or MAIN_NAME
+    candidate_names = []
+    for candidate_name in (preferred_account, account_name, MAIN_NAME):
+        candidate_name = str(candidate_name or "").strip()
+        if candidate_name and candidate_name not in candidate_names:
+            candidate_names.append(candidate_name)
+
+    target_account_name = ""
+    target_client = None
+    for candidate_name in candidate_names:
+        candidate = global_clients.get(candidate_name)
+        if client_is_connected(candidate):
+            target_account_name = candidate_name
+            target_client = candidate
+            break
     if not target_client:
         clear_settlement_tg_reply_forwarded_mark(getattr(event, "chat_id", None), reply_msg_id)
         raise RuntimeError("没有可用于回传原消息的 Telegram 账号")
@@ -1422,12 +1430,12 @@ async def forward_settlement_tg_group_reply(event, account_name):
         "success",
         f"TG催结算群回复已回传：{payload.get('order_no') or '-'}",
         rule={"id": payload.get("cmd_id") or "__settlement_group_reply__", "name": payload.get("rule") or "催结算"},
-        target_account=MAIN_NAME,
+        target_account=target_account_name or preferred_account,
         action_count=1,
     )
     logger.info(
         f"✅ [SettlementBridge] 已回传 TG 催结算群回复: "
-        f"tg={event.chat_id}/{reply_msg_id} origin={source_chat_id}/{source_message_id}"
+        f"tg={event.chat_id}/{reply_msg_id} origin={source_chat_id}/{source_message_id} account={target_account_name or preferred_account}"
     )
 
 def create_settlement_tg_reply_handler(account_name):
