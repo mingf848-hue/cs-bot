@@ -4,4 +4,5 @@ __pycache__/
 bot_debug.log
 monitor_config_v2.json
 monitor_runtime_stats.json
+telegram_session_string.txt
 extensions/zd-unlock-extension.pem

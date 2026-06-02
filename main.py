@@ -17,7 +17,14 @@ from threading import Thread, Lock
 from flask import Flask, render_template, render_template_string, Response, request, stream_with_context, jsonify
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.errors import AuthKeyDuplicatedError
+from telethon.errors import (
+    AuthKeyDuplicatedError,
+    PasswordHashInvalidError,
+    PhoneCodeExpiredError,
+    PhoneCodeInvalidError,
+    PhoneNumberInvalidError,
+    SessionPasswordNeededError,
+)
 
 try:
     import redis
@@ -829,13 +836,107 @@ def persist_wait_alert_config(signatures, routes):
         logger.warning(f"⚠️ [WaitAlert] Redis 配置保存失败: {e}")
         return False, wait_alert_store_status
 
+MAIN_SESSION_REDIS_KEY = "telegram_main_session_string_v1"
+MAIN_SESSION_FILE = data_path("telegram_session_string.txt")
+session_apply_lock = Lock()
+session_restart_scheduled = False
+
+def load_saved_session_string():
+    client = get_wait_alert_redis_client()
+    if client:
+        try:
+            raw = client.get(MAIN_SESSION_REDIS_KEY)
+            if raw:
+                value = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+                value = value.strip()
+                if value:
+                    return value, "Redis"
+        except Exception as e:
+            logger.warning(f"⚠️ [Session] Redis 读取失败，尝试文件/环境变量: {e}")
+
+    try:
+        if os.path.exists(MAIN_SESSION_FILE):
+            with open(MAIN_SESSION_FILE, "r", encoding="utf-8") as f:
+                value = f.read().strip()
+            if value:
+                return value, "文件"
+    except Exception as e:
+        logger.warning(f"⚠️ [Session] 文件读取失败，尝试环境变量: {e}")
+
+    return (os.environ.get("SESSION_STRING", "") or "").strip(), "环境变量"
+
+def save_session_string(session_string):
+    value = str(session_string or "").strip()
+    if not value:
+        raise ValueError("SESSION_STRING 为空，未保存")
+
+    saved_targets = []
+    client = get_wait_alert_redis_client()
+    if client:
+        try:
+            client.set(MAIN_SESSION_REDIS_KEY, value)
+            saved_targets.append("Redis")
+        except Exception as e:
+            logger.warning(f"⚠️ [Session] Redis 保存失败，继续尝试文件: {e}")
+
+    try:
+        session_dir = os.path.dirname(MAIN_SESSION_FILE)
+        if session_dir:
+            os.makedirs(session_dir, exist_ok=True)
+        with open(MAIN_SESSION_FILE, "w", encoding="utf-8") as f:
+            f.write(value)
+        try:
+            os.chmod(MAIN_SESSION_FILE, 0o600)
+        except Exception:
+            pass
+        saved_targets.append("文件")
+    except Exception as e:
+        logger.warning(f"⚠️ [Session] 文件保存失败: {e}")
+
+    if not saved_targets:
+        raise RuntimeError("SESSION_STRING 保存失败：Redis 和文件都不可用")
+    return saved_targets
+
+def schedule_session_restart():
+    global session_restart_scheduled
+    with session_apply_lock:
+        if session_restart_scheduled:
+            return False
+        session_restart_scheduled = True
+
+    def restart_later():
+        time.sleep(1.5)
+        logger.warning("🔄 [Session] 已保存新的 SESSION_STRING，正在自动重载进程...")
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    Thread(target=restart_later, name="session-auto-restart", daemon=True).start()
+    return True
+
+def finish_telegram_login(flow_id, flow, session_string):
+    saved_targets = save_session_string(session_string)
+    with telegram_login_lock:
+        telegram_login_sessions.pop(flow_id, None)
+    try:
+        run_telegram_login_coro(flow["client"].disconnect(), timeout=10)
+    except Exception:
+        pass
+    restart_scheduled = schedule_session_restart()
+    return {
+        "ok": True,
+        "session_string": session_string,
+        "saved": True,
+        "saved_targets": saved_targets,
+        "restart_scheduled": restart_scheduled,
+    }
+
 # ==========================================
 # 模块 2: 配置加载
 # ==========================================
 try:
     API_ID = int(os.environ["API_ID"])
     API_HASH = os.environ["API_HASH"]
-    SESSION_STRING = os.environ["SESSION_STRING"]
+    SESSION_STRING, SESSION_STRING_SOURCE = load_saved_session_string()
+    MAIN_SESSION_READY = bool(SESSION_STRING.strip())
     BOT_TOKEN = os.environ["BOT_TOKEN"]
     cs_groups_env = os.environ["CS_GROUP_IDS"]
     CS_GROUP_IDS = extract_id_list(cs_groups_env)
@@ -883,7 +984,7 @@ except Exception as e:
     logger.error(f"❌ 配置错误: {e}")
     sys.exit(1)
 
-log_tree(0, f"系统启动 | 稍等词: {len(WAIT_SIGNATURES)} | 稍等预警词: {len(WAIT_ALERT_SIGNATURES)} | 跟进词: {len(KEEP_SIGNATURES)} | 忽略词: {len(IGNORE_SIGNATURES)}")
+log_tree(0, f"系统启动 | Session来源: {SESSION_STRING_SOURCE} | 稍等词: {len(WAIT_SIGNATURES)} | 稍等预警词: {len(WAIT_ALERT_SIGNATURES)} | 跟进词: {len(KEEP_SIGNATURES)} | 忽略词: {len(IGNORE_SIGNATURES)}")
 
 # ==========================================
 # 模块 3: 全局状态
@@ -2125,6 +2226,265 @@ WAIT_ALERTS_HTML = """
 </html>
 """
 
+TELEGRAM_LOGIN_HTML = """
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telegram 网页登录</title>
+    <style>
+        *{box-sizing:border-box}
+        body{margin:0;background:#f6f7f9;color:#111827;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:18px}
+        main{max-width:760px;margin:0 auto}
+        h1{font-size:20px;margin:0 0 8px;font-weight:800}
+        .sub{font-size:13px;color:#6b7280;margin-bottom:16px;line-height:1.6}
+        section{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:12px}
+        h2{font-size:15px;margin:0 0 12px;font-weight:800}
+        label{display:block;font-size:12px;color:#4b5563;font-weight:700;margin:12px 0 6px}
+        input,textarea{width:100%;border:1px solid #d1d5db;border-radius:6px;padding:10px;font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#fff;color:#111827}
+        textarea{min-height:120px;resize:vertical}
+        button{border:0;background:#111827;color:#fff;border-radius:6px;padding:10px 13px;font-size:13px;font-weight:800;cursor:pointer;margin-top:12px}
+        button.secondary{background:#2563eb}
+        button:disabled{opacity:.55;cursor:not-allowed}
+        .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+        .hidden{display:none}
+        .msg{border-radius:6px;padding:10px 12px;font-size:13px;line-height:1.55;margin-bottom:12px;background:#eef2ff;color:#3730a3}
+        .msg.err{background:#fef2f2;color:#991b1b}
+        .msg.ok{background:#ecfdf5;color:#065f46}
+        .hint{font-size:12px;color:#6b7280;line-height:1.55;margin-top:8px}
+        @media(max-width:640px){.row{grid-template-columns:1fr}}
+    </style>
+</head>
+<body>
+<main>
+    <h1>Telegram 网页登录</h1>
+    <div class="sub">用于生成 Telethon 的 SESSION_STRING。验证码和二步密码只在本次登录请求中使用，成功后会自动保存并重载进程；页面仍会显示结果作为备份。</div>
+    <div id="msg" class="msg hidden"></div>
+
+    <section>
+        <h2>1. 发送验证码</h2>
+        <div class="row">
+            <div>
+                <label>API_ID</label>
+                <input id="api_id" inputmode="numeric" value="{{ api_id }}">
+            </div>
+            <div>
+                <label>API_HASH</label>
+                <input id="api_hash" value="{{ api_hash }}">
+            </div>
+        </div>
+        <label>手机号</label>
+        <input id="phone" placeholder="+8613800000000">
+        <label>访问口令（如配置了 TELEGRAM_LOGIN_TOKEN）</label>
+        <input id="token" type="password" autocomplete="current-password">
+        <button id="send-btn" type="button" onclick="sendCode()">发送验证码</button>
+        <div class="hint">如果页面暴露在公网，建议先设置 TELEGRAM_LOGIN_TOKEN 环境变量，再用这个口令访问。</div>
+    </section>
+
+    <section id="code-box" class="hidden">
+        <h2>2. 提交验证码</h2>
+        <label>Telegram 验证码</label>
+        <input id="code" inputmode="numeric" autocomplete="one-time-code">
+        <button id="code-btn" class="secondary" type="button" onclick="submitCode()">提交验证码</button>
+    </section>
+
+    <section id="password-box" class="hidden">
+        <h2>3. 提交二步密码</h2>
+        <label>二步验证密码</label>
+        <input id="password" type="password" autocomplete="current-password">
+        <button id="password-btn" class="secondary" type="button" onclick="submitPassword()">提交密码</button>
+    </section>
+
+    <section id="result-box" class="hidden">
+        <h2>登录成功</h2>
+        <textarea id="session" readonly></textarea>
+        <button type="button" onclick="copySession()">复制 SESSION_STRING</button>
+    </section>
+</main>
+<script>
+let flowId = "";
+
+function showMsg(text, type){
+    const el = document.getElementById('msg');
+    el.textContent = text;
+    el.className = 'msg ' + (type || '');
+    el.classList.remove('hidden');
+}
+
+async function postJson(url, payload){
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || '请求失败');
+    return data;
+}
+
+function commonPayload(){
+    return {
+        flow_id: flowId,
+        api_id: document.getElementById('api_id').value.trim(),
+        api_hash: document.getElementById('api_hash').value.trim(),
+        phone: document.getElementById('phone').value.trim(),
+        token: document.getElementById('token').value
+    };
+}
+
+async function sendCode(){
+    const btn = document.getElementById('send-btn');
+    btn.disabled = true;
+    try {
+        const data = await postJson('/api/telegram_login/send_code', commonPayload());
+        flowId = data.flow_id;
+        document.getElementById('code-box').classList.remove('hidden');
+        document.getElementById('password-box').classList.add('hidden');
+        showMsg('验证码已发送，请查看 Telegram。', 'ok');
+    } catch (e) {
+        showMsg(e.message, 'err');
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+async function submitCode(){
+    const btn = document.getElementById('code-btn');
+    btn.disabled = true;
+    try {
+        const payload = commonPayload();
+        payload.code = document.getElementById('code').value.trim();
+        const data = await postJson('/api/telegram_login/sign_in', payload);
+        if (data.need_password) {
+            document.getElementById('password-box').classList.remove('hidden');
+            showMsg('账号开启了二步验证，请输入二步密码。', '');
+        } else {
+            finish(data.session_string);
+        }
+    } catch (e) {
+        showMsg(e.message, 'err');
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+async function submitPassword(){
+    const btn = document.getElementById('password-btn');
+    btn.disabled = true;
+    try {
+        const payload = commonPayload();
+        payload.password = document.getElementById('password').value;
+        const data = await postJson('/api/telegram_login/password', payload);
+        finish(data.session_string);
+    } catch (e) {
+        showMsg(e.message, 'err');
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+function finish(sessionString){
+    document.getElementById('session').value = sessionString || '';
+    document.getElementById('result-box').classList.remove('hidden');
+    document.getElementById('password-box').classList.add('hidden');
+    showMsg('成功生成并保存 SESSION_STRING，服务正在自动重载。页面显示的内容可作为备份保存。', 'ok');
+}
+
+async function copySession(){
+    const el = document.getElementById('session');
+    try {
+        await navigator.clipboard.writeText(el.value);
+        showMsg('已复制 SESSION_STRING。', 'ok');
+    } catch (e) {
+        el.focus();
+        el.select();
+        document.execCommand('copy');
+    }
+}
+</script>
+</body>
+</html>
+"""
+
+TELEGRAM_LOGIN_TTL_SECONDS = 10 * 60
+telegram_login_loop = None
+telegram_login_sessions = {}
+telegram_login_lock = Lock()
+
+def ensure_telegram_login_loop():
+    global telegram_login_loop
+    if telegram_login_loop and telegram_login_loop.is_running():
+        return telegram_login_loop
+    loop = asyncio.new_event_loop()
+    thread = Thread(target=loop.run_forever, name="telegram-login-loop", daemon=True)
+    thread.start()
+    telegram_login_loop = loop
+    return loop
+
+def run_telegram_login_coro(coro, timeout=60):
+    loop = ensure_telegram_login_loop()
+    return asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=timeout)
+
+def telegram_login_client(api_id, api_hash):
+    return TelegramClient(
+        StringSession(),
+        api_id,
+        api_hash,
+        device_model=os.environ.get("TG_DEVICE_MODEL", "VMware20,1"),
+        app_version=os.environ.get("TG_APP_VERSION", "6.6.3 x64"),
+        system_version=os.environ.get("TG_SYSTEM_VERSION", "Windows 10 x64"),
+        lang_code=os.environ.get("TG_LANG_CODE", "zh-hans"),
+        system_lang_code=os.environ.get("TG_SYSTEM_LANG_CODE", "zh-hans"),
+    )
+
+def telegram_login_cleanup_locked():
+    now_ts = time.time()
+    expired = [
+        flow_id for flow_id, item in telegram_login_sessions.items()
+        if not isinstance(item, dict) or item.get("expires_at", 0) <= now_ts
+    ]
+    for flow_id in expired:
+        item = telegram_login_sessions.pop(flow_id, None)
+        client_obj = item.get("client") if isinstance(item, dict) else None
+        if client_obj:
+            try:
+                run_telegram_login_coro(client_obj.disconnect(), timeout=10)
+            except Exception:
+                pass
+
+def telegram_login_require_token(data):
+    expected = os.environ.get("TELEGRAM_LOGIN_TOKEN") or os.environ.get("WEB_LOGIN_TOKEN") or ""
+    if expected and str(data.get("token") or "") != expected:
+        raise PermissionError("访问口令不正确")
+
+def telegram_login_parse_api(data):
+    api_id = int(str(data.get("api_id") or API_ID or "").strip())
+    api_hash = str(data.get("api_hash") or API_HASH or "").strip()
+    if api_id <= 0 or not api_hash:
+        raise ValueError("API_ID/API_HASH 不能为空")
+    return api_id, api_hash
+
+async def telegram_login_send_code_async(api_id, api_hash, phone):
+    client_obj = telegram_login_client(api_id, api_hash)
+    await client_obj.connect()
+    sent = await client_obj.send_code_request(phone)
+    return client_obj, sent.phone_code_hash
+
+async def telegram_login_sign_in_async(flow, code):
+    client_obj = flow["client"]
+    await client_obj.sign_in(
+        phone=flow["phone"],
+        code=code,
+        phone_code_hash=flow["phone_code_hash"],
+    )
+    return client_obj.session.save()
+
+async def telegram_login_password_async(flow, password):
+    client_obj = flow["client"]
+    await client_obj.sign_in(password=password)
+    return client_obj.session.save()
+
 # ==========================================
 # Web 路由区域
 # ==========================================
@@ -2157,6 +2517,102 @@ def wait_check_ui():
 @app.route('/tool/wait_alerts')
 def wait_alerts_ui():
     return Response(WAIT_ALERTS_HTML, mimetype='text/html')
+
+@app.route('/telegram-login')
+def telegram_login_ui():
+    return render_template_string(
+        TELEGRAM_LOGIN_HTML,
+        api_id=os.environ.get("API_ID", ""),
+        api_hash=os.environ.get("API_HASH", ""),
+    )
+
+@app.route('/api/telegram_login/send_code', methods=['POST'])
+def api_telegram_login_send_code():
+    data = request.get_json(silent=True) or {}
+    try:
+        telegram_login_require_token(data)
+        api_id, api_hash = telegram_login_parse_api(data)
+        phone = str(data.get("phone") or "").strip()
+        if not phone:
+            return jsonify({"ok": False, "error": "手机号不能为空"}), 400
+        with telegram_login_lock:
+            telegram_login_cleanup_locked()
+        client_obj, phone_code_hash = run_telegram_login_coro(
+            telegram_login_send_code_async(api_id, api_hash, phone)
+        )
+        flow_id = secrets.token_urlsafe(18)
+        with telegram_login_lock:
+            telegram_login_sessions[flow_id] = {
+                "client": client_obj,
+                "phone": phone,
+                "phone_code_hash": phone_code_hash,
+                "expires_at": time.time() + TELEGRAM_LOGIN_TTL_SECONDS,
+            }
+        return jsonify({"ok": True, "flow_id": flow_id})
+    except PermissionError as e:
+        return jsonify({"ok": False, "error": str(e)}), 403
+    except PhoneNumberInvalidError:
+        return jsonify({"ok": False, "error": "手机号格式不正确，请带国家区号，例如 +86..."}), 400
+    except Exception as e:
+        logger.error(f"❌ Telegram 网页登录发送验证码失败: {e}")
+        return jsonify({"ok": False, "error": f"发送验证码失败: {e}"}), 500
+
+@app.route('/api/telegram_login/sign_in', methods=['POST'])
+def api_telegram_login_sign_in():
+    data = request.get_json(silent=True) or {}
+    try:
+        telegram_login_require_token(data)
+        flow_id = str(data.get("flow_id") or "").strip()
+        code = str(data.get("code") or "").strip().replace(" ", "")
+        if not flow_id or not code:
+            return jsonify({"ok": False, "error": "验证码不能为空"}), 400
+        with telegram_login_lock:
+            telegram_login_cleanup_locked()
+            flow = telegram_login_sessions.get(flow_id)
+            if flow:
+                flow["expires_at"] = time.time() + TELEGRAM_LOGIN_TTL_SECONDS
+        if not flow:
+            return jsonify({"ok": False, "error": "登录会话已过期，请重新发送验证码"}), 410
+        try:
+            session_string = run_telegram_login_coro(telegram_login_sign_in_async(flow, code))
+        except SessionPasswordNeededError:
+            return jsonify({"ok": True, "need_password": True})
+        return jsonify(finish_telegram_login(flow_id, flow, session_string))
+    except PermissionError as e:
+        return jsonify({"ok": False, "error": str(e)}), 403
+    except PhoneCodeInvalidError:
+        return jsonify({"ok": False, "error": "验证码不正确"}), 400
+    except PhoneCodeExpiredError:
+        return jsonify({"ok": False, "error": "验证码已过期，请重新发送"}), 400
+    except Exception as e:
+        logger.error(f"❌ Telegram 网页登录提交验证码失败: {e}")
+        return jsonify({"ok": False, "error": f"登录失败: {e}"}), 500
+
+@app.route('/api/telegram_login/password', methods=['POST'])
+def api_telegram_login_password():
+    data = request.get_json(silent=True) or {}
+    try:
+        telegram_login_require_token(data)
+        flow_id = str(data.get("flow_id") or "").strip()
+        password = str(data.get("password") or "")
+        if not flow_id or not password:
+            return jsonify({"ok": False, "error": "二步密码不能为空"}), 400
+        with telegram_login_lock:
+            telegram_login_cleanup_locked()
+            flow = telegram_login_sessions.get(flow_id)
+            if flow:
+                flow["expires_at"] = time.time() + TELEGRAM_LOGIN_TTL_SECONDS
+        if not flow:
+            return jsonify({"ok": False, "error": "登录会话已过期，请重新发送验证码"}), 410
+        session_string = run_telegram_login_coro(telegram_login_password_async(flow, password))
+        return jsonify(finish_telegram_login(flow_id, flow, session_string))
+    except PermissionError as e:
+        return jsonify({"ok": False, "error": str(e)}), 403
+    except PasswordHashInvalidError:
+        return jsonify({"ok": False, "error": "二步密码不正确"}), 400
+    except Exception as e:
+        logger.error(f"❌ Telegram 网页登录提交二步密码失败: {e}")
+        return jsonify({"ok": False, "error": f"二步验证失败: {e}"}), 500
 
 @app.route('/log_raw')
 def log_raw():
@@ -4477,11 +4933,21 @@ async def task_self_reply_timeout(trigger_msg_id, user_name, content, link, chat
              if trigger_msg_id in self_reply_timers: del self_reply_timers[trigger_msg_id]
              remove_task_record(chat_id, user_id, trigger_msg_id, thread_id)
 
+def build_main_string_session():
+    global MAIN_SESSION_READY
+    try:
+        return StringSession(SESSION_STRING)
+    except Exception as e:
+        MAIN_SESSION_READY = False
+        logger.critical(f"🚨 主账号 SESSION_STRING 无法解析: {e}")
+        logger.critical("⚠️ Web 服务仍会启动，请打开 /telegram-login 重新生成 SESSION_STRING。")
+        return StringSession()
+
 # ==========================================
 # 模块 8: 客户端与逻辑增强
 # ==========================================
 client = TelegramClient(
-    StringSession(SESSION_STRING), 
+    build_main_string_session(),
     API_ID, 
     API_HASH,
     device_model="VMware20,1", 
@@ -5092,7 +5558,7 @@ async def handler(event):
 
 if __name__ == '__main__':
     try:
-        delay = int(os.environ.get("STARTUP_DELAY", 120))
+        delay = int(os.environ.get("STARTUP_DELAY", 120)) if MAIN_SESSION_READY else 0
         if delay > 0:
             logger.info(f"⏳ 启动延迟: 等待 {delay} 秒以确保旧连接断开...")
             time.sleep(delay)
@@ -5110,6 +5576,9 @@ if __name__ == '__main__':
         Thread(target=run_web).start()
         setup_bot_menu_button()
         setup_bot_commands()
+        if not MAIN_SESSION_READY:
+            log_tree(9, "主账号 SESSION_STRING 未配置或无效，已进入仅 Web 模式。请访问 /telegram-login 重新生成。")
+            bot_loop.run_forever()
         log_tree(0, "✅ 系统启动 (Ver 45.22 Final Consolidated)")
         client.start()
         if not MY_ID:
