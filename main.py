@@ -5757,8 +5757,12 @@ if __name__ == '__main__':
             bot_loop.run_forever()
         log_tree(0, "✅ 系统启动 (Ver 45.22 Final Consolidated)")
         client.start()
-        if not MY_ID:
-            MY_ID = client.loop.run_until_complete(client.get_me()).id
+        main_me = client.loop.run_until_complete(client.get_me())
+        if main_me:
+            MY_ID = main_me.id
+            main_display = " ".join([x for x in [getattr(main_me, "first_name", ""), getattr(main_me, "last_name", "")] if x]).strip() or "Unknown"
+            main_username = f"@{main_me.username}" if getattr(main_me, "username", None) else "无用户名"
+            logger.info(f"✅ [Main] 主账号启动成功 | 登录身份: {main_display} ({main_me.id}) | {main_username} | Session来源: {SESSION_STRING_SOURCE}")
         bot_loop.create_task(backfill_chat_history())
         client.run_until_disconnected()
     except AuthKeyDuplicatedError:
