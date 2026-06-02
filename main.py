@@ -49,10 +49,14 @@ CHAT_LOG_TO_CONSOLE = os.environ.get("CHAT_LOG_TO_CONSOLE", "0").strip().lower()
 BOT_COMMAND_POLL_LOCK_KEY = "bot_command_poll_lock_v1"
 BOT_COMMAND_POLL_LOCK_TTL_SECONDS = 90
 BOT_COMMAND_POLL_LOCK_OWNER = f"{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(4)}"
+def env_flag(name, default="0"):
+    return str(os.environ.get(name, default) or default).strip().lower() in ("1", "true", "yes", "on")
+
 TELEGRAM_RUNTIME_LOCK_KEY = os.environ.get("TELEGRAM_RUNTIME_LOCK_KEY", "telegram_runtime_lock_v1")
 TELEGRAM_RUNTIME_LOCK_TTL_SECONDS = int(os.environ.get("TELEGRAM_RUNTIME_LOCK_TTL_SECONDS", "180") or "180")
 TELEGRAM_RUNTIME_LOCK_REFRESH_SECONDS = max(15, min(60, TELEGRAM_RUNTIME_LOCK_TTL_SECONDS // 3))
 TELEGRAM_RUNTIME_LOCK_OWNER = f"{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(8)}"
+TELEGRAM_RUNTIME_LOCK_REQUIRED = env_flag("REQUIRE_TELEGRAM_RUNTIME_LOCK") or env_flag("TELEGRAM_RUNTIME_LOCK_REQUIRED")
 telegram_runtime_lock_acquired = False
 telegram_runtime_lock_stop = False
 telegram_shutdown_started = False
@@ -1047,6 +1051,14 @@ def account_runtime_status_payload(account_name, runtime_statuses):
         "role": status.get("role") or "",
         "monitor_enabled": status.get("monitor_enabled"),
     }
+
+def has_any_telegram_session_config():
+    try:
+        if MAIN_SESSION_READY:
+            return True
+        return bool(parse_extra_session_items(os.environ.get("EXTRA_SESSION_STRINGS", "")))
+    except Exception:
+        return bool(MAIN_SESSION_READY)
 
 def resolve_telegram_account_target(data):
     raw_key = str(data.get("account_key") or "main").strip()
@@ -2483,15 +2495,15 @@ TELEGRAM_LOGIN_HTML = """
             </div>
             <div>
                 <label>API_HASH</label>
-                <input id="api_hash" value="{{ api_hash }}">
+                <input id="api_hash" placeholder="留空则使用服务端环境变量">
             </div>
         </div>
         <label>手机号</label>
         <input id="phone" placeholder="+8613800000000">
-        <label>访问口令（如配置了 TELEGRAM_LOGIN_TOKEN）</label>
+        <label>访问口令</label>
         <input id="token" type="password" autocomplete="current-password">
         <button id="send-btn" type="button" onclick="sendCode()">发送验证码</button>
-        <div class="hint">如果页面暴露在公网，建议先设置 TELEGRAM_LOGIN_TOKEN 环境变量，再用这个口令访问。</div>
+        <div class="hint">必须先在 Zeabur 配置 TELEGRAM_LOGIN_TOKEN 或 WEB_LOGIN_TOKEN，网页登录和账号管理 API 才会放行。</div>
     </section>
 
     <section id="code-box" class="hidden">
@@ -2516,6 +2528,10 @@ TELEGRAM_LOGIN_HTML = """
 </main>
 <script>
 let flowId = "";
+const initialToken = new URLSearchParams(location.search).get('token') || sessionStorage.getItem('telegram_login_token') || '';
+window.addEventListener('DOMContentLoaded', () => {
+    if (initialToken) document.getElementById('token').value = initialToken;
+});
 
 function showMsg(text, type){
     const el = document.getElementById('msg');
@@ -2536,6 +2552,8 @@ async function postJson(url, payload){
 }
 
 function commonPayload(){
+    const token = document.getElementById('token').value;
+    if (token) sessionStorage.setItem('telegram_login_token', token);
     return {
         flow_id: flowId,
         account_key: document.getElementById('account_key').value,
@@ -2543,7 +2561,7 @@ function commonPayload(){
         api_id: document.getElementById('api_id').value.trim(),
         api_hash: document.getElementById('api_hash').value.trim(),
         phone: document.getElementById('phone').value.trim(),
-        token: document.getElementById('token').value
+        token
     };
 }
 
@@ -2683,7 +2701,7 @@ TELEGRAM_ACCOUNTS_HTML = """
         <h2>副账号</h2>
         <div id="extra-accounts" class="empty">加载中...</div>
     </section>
-    <a class="btn" href="/telegram-login">去网页登录</a>
+    <a class="btn" id="login-link" href="/telegram-login">去网页登录</a>
 </main>
 <script>
 function showMsg(text, type){
@@ -2695,7 +2713,19 @@ function showMsg(text, type){
 
 function tokenValue(){
     const params = new URLSearchParams(location.search);
-    return params.get('token') || '';
+    const token = params.get('token') || sessionStorage.getItem('telegram_login_token') || '';
+    if (token) sessionStorage.setItem('telegram_login_token', token);
+    return token;
+}
+
+function escapeHtml(text) {
+    return String(text == null ? '' : text).replace(/[&<>"']/g, ch => ({
+        '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+    }[ch]));
+}
+
+function escapeAttr(text) {
+    return escapeHtml(text);
 }
 
 async function loadAccounts(){
@@ -2704,7 +2734,7 @@ async function loadAccounts(){
     if (!res.ok || !data.ok) throw new Error(data.error || '加载失败');
     const main = document.getElementById('main-account');
     main.className = 'row';
-    main.innerHTML = `<div><div class="name">${data.main.name}${statusBadge(data.main)}</div><div class="meta">${metaText(data.main)}</div></div>`;
+    main.innerHTML = `<div><div class="name">${escapeHtml(data.main.name)}${statusBadge(data.main)}</div><div class="meta">${escapeHtml(metaText(data.main))}</div></div>`;
 
     const box = document.getElementById('extra-accounts');
     if (!data.extra_accounts.length) {
@@ -2716,10 +2746,10 @@ async function loadAccounts(){
     box.innerHTML = data.extra_accounts.map(acc => `
         <div class="row">
             <div>
-                <div class="name">${acc.name}${statusBadge(acc)}</div>
-                <div class="meta">${metaText(acc)}</div>
+                <div class="name">${escapeHtml(acc.name)}${statusBadge(acc)}</div>
+                <div class="meta">${escapeHtml(metaText(acc))}</div>
             </div>
-            ${acc.deletable ? `<button class="danger" type="button" onclick="deleteExtra('${encodeURIComponent(acc.name)}', this)">删除</button>` : `<span class="meta">环境变量中配置，需到 Zeabur 删除</span>`}
+            ${acc.deletable ? `<button class="danger" type="button" data-name="${escapeAttr(acc.name)}" onclick="deleteExtra(this)">删除</button>` : `<span class="meta">环境变量中配置，需到 Zeabur 删除</span>`}
         </div>
     `).join('');
 }
@@ -2739,8 +2769,8 @@ function metaText(acc){
     return parts.join(' | ');
 }
 
-async function deleteExtra(encodedName, btn){
-    const name = decodeURIComponent(encodedName);
+async function deleteExtra(btn){
+    const name = btn.dataset.name || '';
     if (!confirm('确定删除副账号「' + name + '」的 session 吗？')) return;
     btn.disabled = true;
     try {
@@ -2760,6 +2790,7 @@ async function deleteExtra(encodedName, btn){
     }
 }
 
+document.getElementById('login-link').href = '/telegram-login' + (tokenValue() ? '?token=' + encodeURIComponent(tokenValue()) : '');
 loadAccounts().catch(e => showMsg(e.message, 'err'));
 </script>
 </body>
@@ -2814,7 +2845,9 @@ def telegram_login_cleanup_locked():
 
 def telegram_login_require_token(data):
     expected = os.environ.get("TELEGRAM_LOGIN_TOKEN") or os.environ.get("WEB_LOGIN_TOKEN") or ""
-    if expected and str(data.get("token") or "") != expected:
+    if not expected:
+        raise PermissionError("未配置 TELEGRAM_LOGIN_TOKEN，网页登录和账号管理已锁定")
+    if str(data.get("token") or "") != expected:
         raise PermissionError("访问口令不正确")
 
 def telegram_login_parse_api(data):
@@ -2882,7 +2915,6 @@ def telegram_login_ui():
     return render_template_string(
         TELEGRAM_LOGIN_HTML,
         api_id=os.environ.get("API_ID", ""),
-        api_hash=os.environ.get("API_HASH", ""),
     )
 
 @app.route('/telegram-accounts')
@@ -4267,6 +4299,10 @@ def acquire_telegram_runtime_lock():
     global telegram_runtime_lock_acquired
     client = _telegram_runtime_lock_client()
     if not client:
+        if TELEGRAM_RUNTIME_LOCK_REQUIRED:
+            logger.critical("🚨 [RuntimeLock] 已启用强制运行锁，但 Redis 不可用；本实例不会连接 Telegram")
+            telegram_runtime_lock_acquired = False
+            return False
         logger.warning("⚠️ [RuntimeLock] 未配置 Redis，无法阻止多实例同时连接 Telegram；请确保 Zeabur 只运行 1 个实例")
         telegram_runtime_lock_acquired = False
         return True
@@ -6124,18 +6160,24 @@ if __name__ == '__main__':
         
         if init_stats_blueprint:
             init_stats_blueprint(app, client, bot_loop, CS_GROUP_IDS)
-        
-        if init_monitor:
-            init_monitor(client, app, OTHER_CS_IDS, CS_NAME_PREFIXES, handler)
-            
+
         Thread(target=run_web).start()
         setup_bot_menu_button()
         setup_bot_commands()
+        if has_any_telegram_session_config():
+            if not acquire_telegram_runtime_lock():
+                log_tree(9, "Telegram 运行锁不可用，已进入仅 Web 模式。请检查 Redis 或关闭 REQUIRE_TELEGRAM_RUNTIME_LOCK。")
+                bot_loop.run_forever()
+                sys.exit(0)
+            start_telegram_runtime_lock_heartbeat(bot_loop)
+
+        if init_monitor:
+            init_monitor(client, app, OTHER_CS_IDS, CS_NAME_PREFIXES, handler)
+
         if not MAIN_SESSION_READY:
             log_tree(9, "主账号 SESSION_STRING 未配置或无效，已进入仅 Web 模式。请访问 /telegram-login 重新生成。")
             bot_loop.run_forever()
-        acquire_telegram_runtime_lock()
-        start_telegram_runtime_lock_heartbeat(bot_loop)
+            sys.exit(0)
         log_tree(0, "✅ 系统启动 (Ver 45.22 Final Consolidated)")
         client.start()
         main_me = client.loop.run_until_complete(client.get_me())
