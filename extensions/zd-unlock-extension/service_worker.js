@@ -74,6 +74,7 @@ const RECORDER_BODY_LIMIT = 8000;
 const RECORDER_RESPONSE_LIMIT = 20000;
 const AUTH_SYNC_WAIT_MS = 12000;
 const FETCH_RETRY_DELAYS_MS = [800, 1800, 3200];
+const TRANSIENT_HTTP_RETRY_STATUSES = [502, 503, 504];
 const MAX_ACTIVE_BACKEND_COMMANDS = 4;
 const COMMAND_POLL_WAIT_SECONDS = 5;
 const COMMAND_POLL_ALARM_MINUTES = 0.25;
@@ -489,9 +490,17 @@ function sleep(ms) {
 
 async function fetchWithRetry(url, options = {}, retryDelays = FETCH_RETRY_DELAYS_MS) {
   let lastErr = null;
+  const retryHttpStatuses = Array.isArray(options.retryHttpStatuses) ? options.retryHttpStatuses.map(Number) : [];
+  const fetchOptions = { ...options };
+  delete fetchOptions.retryHttpStatuses;
   for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
     try {
-      return await fetch(url, options);
+      const res = await fetch(url, fetchOptions);
+      if (retryHttpStatuses.includes(Number(res.status)) && attempt < retryDelays.length) {
+        await sleep(retryDelays[attempt]);
+        continue;
+      }
+      return res;
     } catch (err) {
       lastErr = err;
       if (attempt >= retryDelays.length) break;
@@ -1092,6 +1101,24 @@ async function postJson(url, headers, body) {
   return postJsonText(url, headers, JSON.stringify(body));
 }
 
+function retryHttpStatusesForUrl(url) {
+  const raw = String(url || '');
+  const retryablePaths = [
+    '/admin/userReport/queryTicketList',
+    '/admin/userReport/getStatistics',
+    '/admin/settlement/queryNoSettleTicketList',
+    '/admin/settlement/getStatistics',
+    '/admin/noticeNew/notice',
+    '/admin/noticeNew/noticeDetail',
+    '/admin/noticeNew/getLightNews',
+    '/admin/abnormal/queryAbnormalCount',
+    '/admin/player/getSportList',
+    '/admin/userReport/queryHmOrderPlayName',
+    '/admin/userReport/getCancelMatchResultTypes'
+  ];
+  return retryablePaths.some((path) => raw.includes(path)) ? TRANSIENT_HTTP_RETRY_STATUSES : [];
+}
+
 async function postJsonText(url, headers, bodyText) {
   let res;
   try {
@@ -1100,7 +1127,8 @@ async function postJsonText(url, headers, bodyText) {
       mode: 'cors',
       credentials: 'include',
       headers,
-      body: String(bodyText || '{}')
+      body: String(bodyText || '{}'),
+      retryHttpStatuses: retryHttpStatusesForUrl(url)
     });
   } catch (err) {
     throw new Error(`请求失败 ${url}: ${err && err.message ? err.message : String(err || 'unknown')}。请确认扩展已重新加载，并刷新对应后台页面。`);
@@ -1124,7 +1152,8 @@ async function postForm(url, headers, body) {
         ...headers,
         'content-type': 'application/x-www-form-urlencoded; charset=UTF-8'
       },
-      body: params.toString()
+      body: params.toString(),
+      retryHttpStatuses: retryHttpStatusesForUrl(url)
     });
   } catch (err) {
     throw new Error(`请求失败 ${url}: ${err && err.message ? err.message : String(err || 'unknown')}。请确认扩展已重新加载，并刷新对应后台页面。`);
