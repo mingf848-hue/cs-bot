@@ -2456,6 +2456,42 @@ SITE_MESSAGE_PROFILES = {
             {"template_id": 229, "msg_type": 3, "icon_url": "9", "clients": "0,1,2,3,8"},
         ],
     },
+    "9ly": {
+        "site": "9",
+        "name": "9站老友集结",
+        "steps": [
+            {
+                "template_id": 245,
+                "msg_type": 1,
+                "icon_url": "17",
+                "clients": "0,1,2,3,8,9",
+                "title": "🌟专属！您有一笔回归彩金等待领取🌟",
+                "content": "🎁老朋友回归，平台送礼！登录即领取，最高888元回归彩金🧧存款更享最高1,288元福利💰分享专属链接呼朋唤友一同回归，更享激活彩金，立即点击查看详情",
+                "pc_path": "https://static.752faka.com/images/new_public/web/bg/fd/cs/d3qrjvs64d2q4bvghhvg_988586.png",
+                "h5_path": "https://static.752faka.com/images/new_public/web/bg/fd/cs/d3qrk7k64d2q4bvghi0g_741854.png",
+                "pc_url": "/activity/kingReturn/3000000000000000005",
+                "h5_url": "/activity/list/3000000000000000005",
+            }
+        ],
+    },
+    "6ly": {
+        "site": "6",
+        "name": "6站老友集结",
+        "steps": [
+            {
+                "template_id": 245,
+                "msg_type": 1,
+                "icon_url": "12",
+                "clients": "0,1,2,3,8",
+                "title": "🌟专属！您有一笔回归彩金等待领取🌟",
+                "content": "🎁老朋友回归，平台送礼！登录即领取，最高888元回归彩金🧧存款更享最高1,288元福利💰分享专属链接呼朋唤友一同回归，更享激活彩金，立即点击查看详情",
+                "pc_path": "https://static.752faka.com/images/new_public/web/bg/fd/cs/d3qrjvs64d2q4bvghhvg_988586.png",
+                "h5_path": "https://static.752faka.com/images/new_public/web/bg/fd/cs/d3qrk7k64d2q4bvghi0g_741854.png",
+                "pc_url": "/activity/kingReturn/3000000000000000005",
+                "h5_url": "/activity/list/3000000000000000005",
+            }
+        ],
+    },
 }
 
 def _prune_backend_command_maps_locked():

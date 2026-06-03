@@ -17,6 +17,7 @@
     'user-id'
   ];
   let rememberedApiHeaders = {};
+  let merchantLoginAttempted = false;
 
   function cookieValue(name) {
     const prefix = `${name}=`;
@@ -227,6 +228,105 @@
       setTimeout(() => box.remove(), 4500);
     } catch {
       // best effort
+    }
+  }
+
+  function visibleInput(input) {
+    if (!input || input.disabled || input.readOnly) return false;
+    const rect = input.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function setInputValue(input, value) {
+    if (!input) return;
+    const proto = Object.getPrototypeOf(input);
+    const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (descriptor && descriptor.set) descriptor.set.call(input, value);
+    else input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function inputScore(input, keywords) {
+    const text = [
+      input.name,
+      input.id,
+      input.placeholder,
+      input.getAttribute('aria-label'),
+      input.autocomplete
+    ].join(' ').toLowerCase();
+    let score = 0;
+    for (const key of keywords) {
+      if (text.includes(key)) score += 10;
+    }
+    if (visibleInput(input)) score += 2;
+    return score;
+  }
+
+  function pickInput(inputs, keywords, fallbackIndex = 0) {
+    const scored = inputs
+      .filter(visibleInput)
+      .map((input, index) => ({ input, index, score: inputScore(input, keywords) }))
+      .sort((a, b) => b.score - a.score || a.index - b.index);
+    return (scored[0] && scored[0].score > 0 ? scored[0].input : inputs.filter(visibleInput)[fallbackIndex]) || null;
+  }
+
+  function merchantAccountMatches(account = {}, labels = []) {
+    const haystack = [
+      account.name,
+      account.merchant,
+      account.merchantName,
+      account.username,
+      account.user
+    ].map((value) => String(value || '').toLowerCase()).join(' ');
+    const cleanLabels = (labels || []).map((item) => String(item || '').toLowerCase()).filter(Boolean);
+    return !cleanLabels.length || cleanLabels.some((label) => haystack.includes(label) || label.includes(haystack));
+  }
+
+  async function maybeAutoMerchantLogin() {
+    if (merchantLoginAttempted || !location.hostname.endsWith('dbsportxxxwo8.com')) return;
+    if (merchantHeadersFromStorage().authorization) return;
+    let stored;
+    try {
+      stored = await chrome.storage.local.get(['config', 'pendingMerchantRelogin']);
+    } catch {
+      return;
+    }
+    const pending = stored.pendingMerchantRelogin || {};
+    if (!pending.active || Number(pending.until || 0) < Date.now()) return;
+    const config = stored.config || {};
+    const accounts = Array.isArray(config.merchantLoginAccounts) ? config.merchantLoginAccounts : [];
+    if (config.merchantAutoLogin === false || !accounts.length) return;
+    const account = accounts.find((item) => item && item.enabled !== false && merchantAccountMatches(item, pending.labels))
+      || accounts.find((item) => item && item.enabled !== false);
+    const username = String((account && (account.username || account.user)) || '').trim();
+    const password = String((account && account.password) || '').trim();
+    if (!username || !password) return;
+
+    merchantLoginAttempted = true;
+    const inputs = [...document.querySelectorAll('input')];
+    const passwordInput = inputs.find((input) => input.type === 'password' && visibleInput(input));
+    const userInput = pickInput(
+      inputs.filter((input) => input !== passwordInput && input.type !== 'password' && input.type !== 'hidden'),
+      ['user', 'account', 'login', 'name', '账号', '帳號', '用户名', '用戶名', '商户', '商戶'],
+      0
+    );
+    if (!userInput || !passwordInput) {
+      merchantLoginAttempted = false;
+      return;
+    }
+    setInputValue(userInput, username);
+    setInputValue(passwordInput, password);
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    const buttons = [...document.querySelectorAll('button, [role="button"], input[type="submit"]')].filter((el) => {
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && !el.disabled;
+    });
+    const loginButton = buttons.find((el) => /登录|登入|登錄|login|sign\s*in/i.test(String(el.innerText || el.value || el.textContent || '')))
+      || buttons[0];
+    if (loginButton) {
+      showToast('CS Bot 正在尝试自动登录场馆后台');
+      loginButton.click();
     }
   }
 
@@ -502,6 +602,9 @@
 
   sendAuth();
   syncRecorderState();
+  setTimeout(() => maybeAutoMerchantLogin(), 800);
+  setTimeout(() => maybeAutoMerchantLogin(), 2200);
+  setTimeout(() => maybeAutoMerchantLogin(), 5000);
   setInterval(() => sendAuth(), 5000);
   setInterval(() => syncRecorderState(), 5000);
 })();

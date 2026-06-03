@@ -73,6 +73,7 @@ const RECORDER_LIMIT = 400;
 const RECORDER_BODY_LIMIT = 8000;
 const RECORDER_RESPONSE_LIMIT = 20000;
 const AUTH_SYNC_WAIT_MS = 12000;
+const MERCHANT_RELOGIN_WAIT_MS = 90000;
 const FETCH_RETRY_DELAYS_MS = [800, 1800, 3200];
 const TRANSIENT_HTTP_RETRY_STATUSES = [502, 503, 504];
 const MAX_ACTIVE_BACKEND_COMMANDS = 4;
@@ -269,6 +270,21 @@ function merchantAuthLabel(authOrConfig = {}) {
   if (merchantName) return merchantName;
   if (userId) return `user-id ${userId}`;
   return '场馆账号';
+}
+
+function deepFindValue(input, names = [], depth = 0) {
+  if (!input || typeof input !== 'object' || depth > 8) return '';
+  const wanted = names.map((name) => String(name).toLowerCase());
+  for (const [key, value] of Object.entries(input)) {
+    if (wanted.includes(String(key).toLowerCase()) && value !== undefined && value !== null && typeof value !== 'object') {
+      return String(value);
+    }
+  }
+  for (const value of Object.values(input)) {
+    const found = deepFindValue(value, names, depth + 1);
+    if (found) return found;
+  }
+  return '';
 }
 
 function merchantAuthPriority(auth, cmd = {}, index = 0) {
@@ -588,6 +604,172 @@ function reloadTab(tabId) {
       resolve({ ok: !err, error: err ? err.message : '' });
     });
   });
+}
+
+function createTab(url) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.create({ url, active: false }, (tab) => {
+      const err = chrome.runtime.lastError;
+      if (err) reject(new Error(err.message));
+      else resolve(tab || null);
+    });
+  });
+}
+
+async function waitForMerchantAuthRefresh(startedAtMs, waitMs = MERCHANT_RELOGIN_WAIT_MS) {
+  const deadline = Date.now() + Math.max(1000, Number(waitMs || MERCHANT_RELOGIN_WAIT_MS));
+  while (Date.now() < deadline) {
+    const stored = await chrome.storage.local.get(['pageAuthByMerchant']);
+    const auths = Object.values(stored.pageAuthByMerchant || {});
+    const refreshed = auths.find((auth) => {
+      const headers = pageAuthHeaders(auth);
+      const capturedAt = Date.parse(auth && auth.capturedAt || '');
+      return headers.authorization && headers['user-id'] && capturedAt >= startedAtMs;
+    });
+    if (refreshed) return true;
+    await sleep(1500);
+  }
+  return false;
+}
+
+function accountMatchesLabels(account = {}, labels = []) {
+  const haystack = [
+    account.name,
+    account.merchant,
+    account.merchantName,
+    account.username,
+    account.user
+  ].map((value) => String(value || '').toLowerCase()).join(' ');
+  const cleanLabels = (labels || []).map((item) => String(item || '').toLowerCase()).filter(Boolean);
+  return !cleanLabels.length || cleanLabels.some((label) => haystack.includes(label) || label.includes(haystack));
+}
+
+function merchantLoginPasswordValue(account = {}) {
+  const hash = String(account.passwordHash || account.password_hash || '').trim();
+  if (/^[a-f0-9]{32}$/i.test(hash)) return hash.toLowerCase();
+  const password = String(account.password || '').trim();
+  if (/^[a-f0-9]{32}$/i.test(password)) return password.toLowerCase();
+  return '';
+}
+
+async function saveMerchantLoginAuth(config, account, loginData) {
+  const data = (loginData && loginData.data) || {};
+  const token = deepFindValue(data, ['token', 'accessToken', 'access_token', 'authorization', 'jwt']);
+  if (!token) throw new Error('登录成功但未找到token');
+  const userId = deepFindValue(data, ['userId', 'user-id', 'id', 'uid']) || String(account.userId || account.user_id || '').trim();
+  const merchantName = deepFindValue(data, ['merchantName', 'merchantname']) || String(account.merchantName || account.merchant || account.name || '').trim();
+  const headers = {
+    authorization: token,
+    language: String(account.language || 'zs')
+  };
+  if (userId) headers['user-id'] = userId;
+  if (merchantName) headers.merchantname = encodeURIComponent(merchantName);
+  const auth = {
+    href: String(config.merchantLoginUrl || 'https://merchant-own-backstage.dbsportxxxwo8.com/'),
+    capturedAt: new Date().toISOString(),
+    headers
+  };
+  const key = merchantAuthKey(auth) || `${merchantName || account.username || 'merchant'}|${userId || 'unknown'}`;
+  const stored = await chrome.storage.local.get(['pageAuthByHost', 'pageAuthByMerchant']);
+  await chrome.storage.local.set({
+    pageAuth: auth,
+    pageAuthByHost: {
+      ...(stored.pageAuthByHost || {}),
+      merchant: auth,
+      'merchant-own-backstage.dbsportxxxwo8.com': auth,
+      'api-merchant-backstage.dbsportxxxwo8.com': auth
+    },
+    pageAuthByMerchant: limitedMerchantAuthStore({
+      ...(stored.pageAuthByMerchant || {}),
+      [key]: auth
+    })
+  });
+  return auth;
+}
+
+async function loginMerchantAccount(config, account) {
+  const username = String(account.username || account.user || '').trim();
+  const password = merchantLoginPasswordValue(account);
+  if (!username || !password) throw new Error('场馆自动登录账号缺少username或passwordHash');
+  const loginUrl = String(config.merchantLoginApiUrl || config.merchantLoginUrlApi || 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/auth/login');
+  const res = await fetchWithRetry(loginUrl, {
+    method: 'POST',
+    mode: 'cors',
+    credentials: 'include',
+    headers: {
+      accept: 'application/json, text/plain, */*',
+      'content-type': 'application/json',
+      language: String(account.language || 'zs'),
+      'request-id': `${Math.random().toString(16).slice(2)}-${Date.now()}`
+    },
+    body: JSON.stringify({ username, password }),
+    retryHttpStatuses: TRANSIENT_HTTP_RETRY_STATUSES
+  });
+  const text = await res.text();
+  let data = {};
+  try { data = JSON.parse(text || '{}'); } catch { data = {}; }
+  if (!res.ok || data.code !== '0000000' || data.status === false) {
+    throw new Error(`场馆自动登录失败 HTTP ${res.status}: ${String(data.msg || data.message || text).slice(0, 160)}`);
+  }
+  return saveMerchantLoginAuth(config, account, data);
+}
+
+async function tryMerchantApiRelogin(config, labels = []) {
+  const accounts = Array.isArray(config.merchantLoginAccounts) ? config.merchantLoginAccounts : [];
+  const candidates = accounts.filter((item) => item && item.enabled !== false && merchantLoginPasswordValue(item));
+  if (!candidates.length) return false;
+  const preferred = candidates.filter((item) => accountMatchesLabels(item, labels));
+  const queue = preferred.length ? preferred : candidates;
+  const errors = [];
+  for (const account of queue) {
+    try {
+      await setStatus({
+        state: 'auth_refresh',
+        message: `场馆登录失效，正在接口重登 ${account.name || account.username || ''}`.trim(),
+        detail: '登录成功后会自动重试原后台操作。'
+      });
+      await loginMerchantAccount(config, account);
+      return true;
+    } catch (err) {
+      errors.push(err && err.message ? err.message : String(err || ''));
+    }
+  }
+  console.warn('[CS Bot ZD Unlock] merchant api relogin failed', errors);
+  return false;
+}
+
+async function requestMerchantRelogin(config, labels = []) {
+  if (await tryMerchantApiRelogin(config, labels)) return true;
+  const startedAt = Date.now();
+  await chrome.storage.local.set({
+    pendingMerchantRelogin: {
+      active: true,
+      labels: [...new Set((labels || []).map((item) => String(item || '').trim()).filter(Boolean))],
+      startedAt,
+      until: startedAt + MERCHANT_RELOGIN_WAIT_MS
+    }
+  });
+  await setStatus({
+    state: 'auth_refresh',
+    message: '场馆登录失效，正在尝试重新登录',
+    detail: '已打开场馆后台登录页，等待新登录态同步后自动重试。'
+  });
+  try {
+    await createTab(String(config.merchantLoginUrl || 'https://merchant-own-backstage.dbsportxxxwo8.com/'));
+  } catch (err) {
+    console.warn('[CS Bot ZD Unlock] open merchant login failed', err);
+  }
+  const ok = await waitForMerchantAuthRefresh(startedAt);
+  const stored = await chrome.storage.local.get(['pendingMerchantRelogin']);
+  await chrome.storage.local.set({
+    pendingMerchantRelogin: {
+      ...(stored.pendingMerchantRelogin || {}),
+      active: false,
+      completedAt: new Date().toISOString(),
+      until: 0
+    }
+  });
+  return ok;
 }
 
 async function refreshBackstageTabs() {
@@ -3373,6 +3555,15 @@ async function runUrgeSettlementCommandWithFallback(configs, cmd, orderNo) {
   if (authFailed.length) parts.push(`登录失效：${[...new Set(authFailed)].join('、')}`);
   const suffix = parts.length ? `（${parts.join('；')}）` : '';
   if (!tried.length && authFailed.length) {
+    if (cmd.__merchantReloginRetried) {
+      throw new Error(`所有场馆账号登录失效，未能查询注单：${orderNo}${suffix}`);
+    }
+    const refreshed = await requestMerchantRelogin(configs[0] || {}, authFailed);
+    if (refreshed) {
+      const nextConfig = (await getConfig()).config;
+      const nextConfigs = authConfigsForAction(nextConfig, 'urge_settlement', { ...cmd, __merchantReloginRetried: true });
+      return runUrgeSettlementCommandWithFallback(nextConfigs, { ...cmd, __merchantReloginRetried: true }, orderNo);
+    }
     throw new Error(`所有场馆账号登录失效，未能查询注单：${orderNo}${suffix}`);
   }
   throw new Error(`所有场馆账号均未找到注单：${orderNo}${suffix}`);
@@ -3403,6 +3594,15 @@ async function runTicketCancelReasonCommandWithFallback(configs, cmd, orderNo) {
   if (authFailed.length) parts.push(`登录失效：${[...new Set(authFailed)].join('、')}`);
   const suffix = parts.length ? `（${parts.join('；')}）` : '';
   if (!tried.length && authFailed.length) {
+    if (cmd.__merchantReloginRetried) {
+      throw new Error(`所有场馆账号登录失效，未能查询注单：${orderNo}${suffix}`);
+    }
+    const refreshed = await requestMerchantRelogin(configs[0] || {}, authFailed);
+    if (refreshed) {
+      const nextConfig = (await getConfig()).config;
+      const nextConfigs = authConfigsForAction(nextConfig, 'query_ticket_cancel_reason', { ...cmd, __merchantReloginRetried: true });
+      return runTicketCancelReasonCommandWithFallback(nextConfigs, { ...cmd, __merchantReloginRetried: true }, orderNo);
+    }
     throw new Error(`所有场馆账号登录失效，未能查询注单：${orderNo}${suffix}`);
   }
   throw new Error(`所有场馆账号均未找到注单：${orderNo}${suffix}`);

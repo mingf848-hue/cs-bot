@@ -1068,7 +1068,7 @@ ZC_BATCH_STATE = {}
 ZC_BATCH_TTL_SECONDS = 6 * 60 * 60
 SITE_MESSAGE_CHUNK_STATE = {}
 SITE_MESSAGE_CHUNK_TTL_SECONDS = 5 * 60
-SITE_MESSAGE_STRATEGIES = {"sb", "9zc", "6zc"}
+SITE_MESSAGE_STRATEGIES = {"sb", "9zc", "6zc", "9ly", "6ly"}
 SITE_MESSAGE_MEMBER_RE = re.compile(r"[a-z0-9_@.\-]{3,32}", re.IGNORECASE)
 SB_REPORT_WINDOWS = [
     (0, 0, "00:00-00:59"),
@@ -4305,6 +4305,15 @@ def format_zc_summary(counts):
         "（ML站/  人）",
     ])
 
+def format_ly_summary(counts):
+    jn_count = counts.get("jn", "")
+    ml_count = counts.get("ml", "")
+    return "\n".join([
+        "JN/ML站",
+        "王者回归发送",
+        f"（JN站 {jn_count}人）（ML站 {ml_count}  人）",
+    ])
+
 def sb_time_window_text(now=None):
     now = now or datetime.now(BEIJING_TZ)
     target_hour = (now.hour - 1) % 24
@@ -4333,6 +4342,8 @@ def site_message_type_label(strategy):
         "sb": "存款温馨提示",
         "9zc": "9站新注册连续6条",
         "6zc": "6站新注册连续3条",
+        "9ly": "9站老友集结",
+        "6ly": "6站老友集结",
     }.get(strategy, strategy)
 
 def site_message_step_total(strategy):
@@ -4340,6 +4351,8 @@ def site_message_step_total(strategy):
         "9zc": 6,
         "6zc": 3,
         "sb": 1,
+        "9ly": 1,
+        "6ly": 1,
     }.get(strategy, 1)
 
 def format_site_message_progress(strategy, member_count, progress=None, force_percent=None):
@@ -4461,15 +4474,19 @@ async def handle_site_message_bot_request(message):
             "auto_delete_after": 30,
             "delete_after_send_ids": split_source_ids,
         }
-    if strategy in {"6zc", "9zc"} and ok:
-        site_key = "jn" if strategy == "6zc" else "ml"
-        state = cleanup_zc_state(chat_id) or {"counts": {}, "marker_ids": [], "source_ids": [], "updated_at": time.time()}
+    if strategy in {"6zc", "9zc", "6ly", "9ly"} and ok:
+        batch_type = "ly" if strategy.endswith("ly") else "zc"
+        site_key = "jn" if strategy.startswith("6") else "ml"
+        state = cleanup_zc_state(chat_id) or {"counts": {}, "marker_ids": [], "source_ids": [], "updated_at": time.time(), "batch_type": batch_type}
+        if state.get("batch_type") and state.get("batch_type") != batch_type:
+            state = {"counts": {}, "marker_ids": [], "source_ids": [], "updated_at": time.time(), "batch_type": batch_type}
+        state["batch_type"] = batch_type
         state["counts"][site_key] = len(clean_members)
         state.setdefault("source_ids", []).extend([*split_source_ids, message_id])
         state["updated_at"] = time.time()
         ZC_BATCH_STATE[str(chat_id)] = state
         if "jn" in state.get("counts", {}) and "ml" in state.get("counts", {}):
-            final_text = format_zc_summary(state["counts"])
+            final_text = format_ly_summary(state["counts"]) if batch_type == "ly" else format_zc_summary(state["counts"])
             cleanup_ids = [mid for mid in (state.get("marker_ids", []) + state.get("source_ids", [])) if mid]
             ZC_BATCH_STATE.pop(str(chat_id), None)
             return {
