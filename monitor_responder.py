@@ -5290,8 +5290,8 @@ async def run_scheduled_messages_job():
             logger.error(f"❌ [ScheduledMessage] Error: {e}")
 
 def resolve_extension_bot_base():
-    default_url = "https://cshelp.zeabur.app"
-    legacy_urls = {"https://arcshelp.zeabur.app", "http://arcshelp.zeabur.app"}
+    default_url = "https://yyhelp.zeabur.app"
+    legacy_urls = set()
     for name in (
         "EXTENSION_BOT_BASE",
         "BOT_BASE_URL",

@@ -1421,11 +1421,8 @@ COPY_PAGE_TTL_SECONDS = 8 * 60 * 60
 COPY_PAGE_REDIS_PREFIX = "bot_copy_page:"
 copy_page_cache = {}
 copy_page_cache_lock = Lock()
-DEFAULT_PUBLIC_BASE_URL = "https://cshelp.zeabur.app"
-LEGACY_PUBLIC_BASE_URLS = {
-    "https://arcshelp.zeabur.app",
-    "http://arcshelp.zeabur.app",
-}
+DEFAULT_PUBLIC_BASE_URL = "https://yyhelp.zeabur.app"
+LEGACY_PUBLIC_BASE_URLS = set()
 PUBLIC_BASE_URL_ENV_NAMES = (
     "BOT_MENU_URL",
     "EXTENSION_BOT_BASE",

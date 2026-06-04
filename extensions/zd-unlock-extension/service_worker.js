@@ -1,8 +1,5 @@
-const DEFAULT_BOT_BASE = 'https://cshelp.zeabur.app';
-const LEGACY_BOT_BASES = new Set([
-  'https://arcshelp.zeabur.app',
-  'http://arcshelp.zeabur.app'
-]);
+const DEFAULT_BOT_BASE = 'https://yyhelp.zeabur.app';
+const LEGACY_BOT_BASES = new Set();
 const SITE_9_HOSTS = [
   '9sitebg.mvj4e7.com',
   '9aynxg.hh9al.com',
