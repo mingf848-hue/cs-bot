@@ -1088,10 +1088,12 @@ SB_REPORT_WINDOWS = [
     (23, 23, "23:00-23:59"),
 ]
 WAIT_CHECK_SHIFT_WINDOWS = {
-    "早班全体": ("12:30", "21:00"),
-    "中班全体": ("20:45", "05:00"),
-    "晚班全体": ("04:45", "13:00"),
+    "早班全体": ("08:00", "20:00"),
+    "中班全体": ("16:00", "04:00"),
+    "晚班全体": ("21:00", "09:00"),
 }
+WAIT_CHECK_APPROVAL_MISSED_KEYWORD = "同意遗漏"
+WAIT_CHECK_LOOKBACK_HOURS = 12
 WAIT_CHECK_REPLY_CONTINUATION_MAX_MESSAGES = 3
 WAIT_CHECK_REPLY_CONTINUATION_SECONDS = 180
 WAIT_CHECK_CONTINUATION_PHRASES = [
@@ -1111,6 +1113,11 @@ WAIT_CHECK_ML_MENTION_ALLOWLIST = {
 
 def is_all_wait_check_keyword(keyword):
     return keyword in ["全体", "全体检测"] or keyword in WAIT_CHECK_SHIFT_WINDOWS
+
+def is_wait_check_approval_message(message):
+    if not message or not get_direct_reply_target_id(message):
+        return False
+    return (message.text or "").strip() == "同意"
 
 def get_wait_check_shift_window(keyword):
     if keyword not in WAIT_CHECK_SHIFT_WINDOWS:
@@ -1288,6 +1295,16 @@ def get_ordered_reply_target_ids(message):
         add_id(getattr(reply_to, "reply_to_msg_id", None))
         add_id(getattr(reply_to, "reply_to_top_id", None))
     return ids
+
+def get_direct_reply_target_id(message):
+    value = getattr(message, "reply_to_msg_id", None)
+    if not value:
+        reply_to = getattr(message, "reply_to", None)
+        value = getattr(reply_to, "reply_to_msg_id", None) if reply_to else None
+    try:
+        return int(value) if value else None
+    except Exception:
+        return None
 
 def get_primary_reply_target_id(message):
     reply_ids = get_ordered_reply_target_ids(message)
@@ -1891,6 +1908,9 @@ WAIT_CHECK_HTML = """
                     <div class="kw-btn" onclick="fillKeyword('晚班全体')">
                         <svg class="icon-sm" style="color:#0f766e" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 晚班全体
                     </div>
+                    <div class="kw-btn" onclick="fillKeyword('同意遗漏')">
+                        <svg class="icon-sm" style="color:#dc2626" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg> 同意遗漏
+                    </div>
                     {% for kw in wait_keywords %}
                     <div class="kw-btn" onclick="fillKeyword('{{ kw }}')">
                         <svg class="icon-sm" style="color:#64748b" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg> {{ kw }}
@@ -1907,7 +1927,7 @@ WAIT_CHECK_HTML = """
                     闭环情况检测
                 </h1>
                 <div class="form-group">
-                    <label>扫描配置 (选择班次全体可按固定时间段排查)</label>
+                    <label>扫描配置 (班次按固定时段，关键词及同意遗漏回看12小时)</label>
                     <input type="text" id="keyword" placeholder="点击左侧快捷键或输入关键词..." value="早班全体">
                 </div>
                 <button onclick="startCheck()" id="btn-search">
@@ -3169,8 +3189,8 @@ async def _check_is_closed_logic(latest_msg):
 
 async def check_wait_keyword_logic(keyword, result_queue):
     try:
-        cutoff_hours = 10
-        limit_count = 3000
+        cutoff_hours = WAIT_CHECK_LOOKBACK_HOURS
+        limit_count = 6000
         shift_window = get_wait_check_shift_window(keyword)
         if is_all_wait_check_keyword(keyword):
             cutoff_hours = 20
@@ -3209,6 +3229,50 @@ async def check_wait_keyword_logic(keyword, result_queue):
                     if m.date and m.date < scan_start_time: break
                     if getattr(m, 'action', None): continue # 过滤拉人、置顶等系统服务消息
                     history.append(m)
+
+                if keyword == WAIT_CHECK_APPROVAL_MISSED_KEYWORD:
+                    replied_to_ids = set()
+                    for m in history:
+                        direct_reply_id = get_direct_reply_target_id(m)
+                        if direct_reply_id:
+                            replied_to_ids.add(direct_reply_id)
+
+                    for approval_msg in history:
+                        if not is_wait_check_approval_message(approval_msg):
+                            continue
+                        found_count += 1
+                        is_closed = approval_msg.id in replied_to_ids
+                        if is_closed:
+                            closed_count += 1
+
+                        group_name = str(chat_id)
+                        try:
+                            g = await client.get_entity(chat_id)
+                            group_name = g.title
+                        except Exception:
+                            pass
+
+                        sender_name = "未知发送者"
+                        try:
+                            sender = await approval_msg.get_sender()
+                            sender_name = getattr(sender, "first_name", "") or getattr(sender, "username", "") or sender_name
+                        except Exception:
+                            pass
+
+                        beijing_time = approval_msg.date.astimezone(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')
+                        real_chat_id = str(chat_id).replace('-100', '')
+                        link = f"https://t.me/c/{real_chat_id}/{approval_msg.id}"
+                        result_queue.put(json.dumps({
+                            "type": "result",
+                            "is_closed": is_closed,
+                            "reason": "已有人员引用领导同意消息回复处理。" if is_closed else "领导已回复同意，但后续无人引用该同意消息回复处理。",
+                            "time": beijing_time,
+                            "group_name": group_name,
+                            "found_text": f"{sender_name}：同意",
+                            "latest_text": "已有人员引用处理" if is_closed else "无人引用处理",
+                            "link": link
+                        }))
+                    continue
                 
                 if is_all_wait_check_keyword(keyword):
                     msg_grouped_map = {}

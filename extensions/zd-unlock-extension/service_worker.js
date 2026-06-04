@@ -1919,6 +1919,19 @@ async function queryVenueList(config) {
   return Array.isArray((result.data || {}).data) ? result.data.data : [];
 }
 
+function parseRebateInfoData(result) {
+  const losslessText = String((result && result.text) || '').replace(
+    /("id"\s*:\s*)(-?\d{16,})(?=\s*[,}])/g,
+    '$1"$2"'
+  );
+  const parsed = parseJsonText(losslessText);
+  return ((parsed || {}).data || {});
+}
+
+function rebateInfoSaveBodyText(body) {
+  return JSON.stringify(body).replace(/("infoId"\s*:\s*)"(\d+)"/g, '$1$2');
+}
+
 function resolveRebateVenue(venues = [], cmd = {}) {
   const text = `${commandVenueHint(cmd)} ${commandSourceText(cmd)}`;
   const normalizedText = normalizeVenueName(text);
@@ -1946,50 +1959,63 @@ async function runConfigureRebateCommand(config, cmd, targetValue) {
   if (!config.rebateLevelInfoListUrl || !config.rebateLevelInfoSaveUrl) {
     throw new Error('返水配置接口未配置');
   }
+  const siteLabel = profileForSite(actionSite('configure_rebate', cmd)).label;
   const venues = await queryVenueList(config);
   const venue = resolveRebateVenue(venues, cmd);
-  if (!venue) throw new Error('未匹配到返水场馆');
+  if (!venue) throw new Error(`${siteLabel}未匹配到返水场馆`);
   const gameHint = commandGameHint(cmd, venue) || String(targetValue || '').trim();
-  if (!gameHint) throw new Error('未提取到返水游戏');
+  if (!gameHint) throw new Error(`${siteLabel}未提取到返水游戏`);
   const levels = await queryAllRebateLevels(config);
-  if (!levels.length) throw new Error('未查询到返水等级');
+  if (!levels.length) throw new Error(`${siteLabel}未查询到返水等级`);
   let matchedLevels = 0;
   for (const level of levels) {
     await setStatus({ state: 'running', message: `配置返水 ${venue.zhName || venue.enName} ${gameHint} ${level.name || `VIP${level.level}`}` });
-    const info = await postJson(config.rebateLevelInfoListUrl, config.headers, {
+    const baseInfo = await postJson(config.rebateLevelInfoListUrl, config.headers, {
       parentId: Number(level.id),
-      venueId: String(venue.id)
+      venueId: '50'
     });
-    if (!apiOk(info.res, info.data)) {
-      throw new Error(`查询返水游戏失败 HTTP ${info.res.status}: ${info.text.slice(0, 300)}`);
+    if (!apiOk(baseInfo.res, baseInfo.data)) {
+      throw new Error(`${siteLabel}查询返水默认配置失败 HTTP ${baseInfo.res.status}: ${baseInfo.text.slice(0, 300)}`);
     }
-    const infoData = ((info.data || {}).data || {});
-    const infoList = Array.isArray(infoData.infoList) ? infoData.infoList : [];
-    const matchedGame = infoList.find((item) => {
+    const baseInfoData = parseRebateInfoData(baseInfo);
+    let targetInfoData = baseInfoData;
+    if (String(venue.id) !== '50') {
+      const targetInfo = await postJson(config.rebateLevelInfoListUrl, config.headers, {
+        parentId: Number(level.id),
+        venueId: String(venue.id)
+      });
+      if (!apiOk(targetInfo.res, targetInfo.data)) {
+        throw new Error(`${siteLabel}查询返水游戏失败 HTTP ${targetInfo.res.status}: ${targetInfo.text.slice(0, 300)}`);
+      }
+      targetInfoData = parseRebateInfoData(targetInfo);
+    }
+    const baseInfoList = Array.isArray(baseInfoData.infoList) ? baseInfoData.infoList : [];
+    const targetInfoList = Array.isArray(targetInfoData.infoList) ? targetInfoData.infoList : [];
+    const matchedGame = targetInfoList.find((item) => {
       const gameName = normalizeVenueName(item.gameName);
       const gameCode = normalizeVenueName(item.gameCode);
       const hint = normalizeVenueName(gameHint);
       return hint && ((gameName && gameName.includes(hint)) || (gameCode && gameCode.includes(hint)) || (gameName && hint.includes(gameName)));
     });
     if (!matchedGame) continue;
+    const infoList = String(venue.id) === '50' ? baseInfoList : [...baseInfoList, ...targetInfoList];
     const saveBody = {
       isLimit: Number(level.isLimit ?? 1),
-      minLimit: Number(infoData.minLimit ?? level.minLimit ?? 1),
-      maxLimit: Number(infoData.maxLimit ?? level.maxLimit ?? 0),
+      minLimit: Number(targetInfoData.minLimit ?? baseInfoData.minLimit ?? level.minLimit ?? 1),
+      maxLimit: Number(targetInfoData.maxLimit ?? baseInfoData.maxLimit ?? level.maxLimit ?? 0),
       infoList: infoList.map((item) => ({
         venueId: String(item.venueId || venue.id),
-        infoId: Number(item.id),
+        infoId: String(item.id || ''),
         rate: Number(item.rate || 0)
       })).filter((item) => item.infoId)
     };
-    const saved = await postJson(config.rebateLevelInfoSaveUrl, config.headers, saveBody);
+    const saved = await postJsonText(config.rebateLevelInfoSaveUrl, config.headers, rebateInfoSaveBodyText(saveBody));
     if (!apiOk(saved.res, saved.data)) {
-      throw new Error(`保存返水配置失败 HTTP ${saved.res.status}: ${saved.text.slice(0, 300)}`);
+      throw new Error(`${siteLabel}保存返水配置失败 HTTP ${saved.res.status}: ${saved.text.slice(0, 300)}`);
     }
     matchedLevels += 1;
   }
-  if (!matchedLevels) throw new Error(`未找到返水游戏：${venue.zhName || venue.enName} ${gameHint}`);
-  const siteLabel = profileForSite(actionSite('configure_rebate', cmd)).label;
+  if (!matchedLevels) throw new Error(`${siteLabel}未找到返水游戏：${venue.zhName || venue.enName} ${gameHint}`);
   const replyText = `${siteLabel}返水配置已提交：${venue.zhName || venue.enName} ${gameHint}`;
   await setStatus({ state: 'success', message: replyText, detail: `已处理 ${matchedLevels} 个VIP等级` });
   await ack(config, cmd, 'reply_origin', replyText, { reply_text: replyText, stop_actions: true });
