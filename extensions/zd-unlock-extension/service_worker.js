@@ -1989,7 +1989,8 @@ async function runConfigureRebateCommand(config, cmd, targetValue) {
     matchedLevels += 1;
   }
   if (!matchedLevels) throw new Error(`未找到返水游戏：${venue.zhName || venue.enName} ${gameHint}`);
-  const replyText = `返水配置已提交：${venue.zhName || venue.enName} ${gameHint}`;
+  const siteLabel = profileForSite(actionSite('configure_rebate', cmd)).label;
+  const replyText = `${siteLabel}返水配置已提交：${venue.zhName || venue.enName} ${gameHint}`;
   await setStatus({ state: 'success', message: replyText, detail: `已处理 ${matchedLevels} 个VIP等级` });
   await ack(config, cmd, 'reply_origin', replyText, { reply_text: replyText, stop_actions: true });
 }

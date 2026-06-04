@@ -697,6 +697,19 @@ def agent_game_hint_from_text(text):
     tokens = [item.strip() for item in re.split(r"[\s,，。；;、]+", source) if item.strip()]
     return tokens[0][:40] if tokens else ""
 
+def parse_fixed_configure_rebate(text):
+    match = re.fullmatch(r"\s*配置返水\s+([^\s,，。；;、]+)\s+([^\s,，。；;、]+)\s*", str(text or ""))
+    if not match:
+        return {}
+    venue, game = (item.strip() for item in match.groups())
+    if not venue or not game:
+        return {}
+    return {
+        "target": game[:40],
+        "venue": venue[:40],
+        "game": game[:40],
+    }
+
 def valid_iso_date(value):
     text = str(value or "").strip()
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
@@ -2885,7 +2898,11 @@ async def execute_backend_unlock_step(step, rule, event, source_text, target_cli
     if backend_action == "agent_existing":
         return await execute_agent_existing_step(step, rule, event, source_text, target_client=target_client)
     ai_parse = {}
-    if backend_action in {"urge_settlement", "query_ticket_cancel_reason"}:
+    if backend_action == "configure_rebate":
+        ai_parse = parse_fixed_configure_rebate(source_text or "")
+        target_value = str(ai_parse.get("target") or "").strip()
+        target_values = [target_value] if target_value else []
+    elif backend_action in {"urge_settlement", "query_ticket_cancel_reason"}:
         target_values = extract_backend_order_nos(source_text or "", (step or {}).get("member_pattern", ""))
         target_value = target_values[0] if target_values else ""
         if not target_values:
@@ -2908,16 +2925,18 @@ async def execute_backend_unlock_step(step, rule, event, source_text, target_cli
             target_values = [target_value]
 
     if not target_values:
-        result = {"status": "no_target", "detail": "未提取到目标值"}
+        detail = "格式错误，请使用：配置返水 场馆 游戏" if backend_action == "configure_rebate" else "未提取到目标值"
+        result = {"status": "no_target", "detail": detail}
         await notify_backend_failure(step, rule, event, "", backend_action, result)
-        raise RuntimeError(f"后台动作未提取到目标值：{command_action_label(backend_action)}")
+        raise RuntimeError(f"后台动作未提取到目标值：{command_action_label(backend_action)}；{detail}")
 
     urge_batch_id = ""
     if backend_action == "urge_settlement" and len(target_values) > 1:
         urge_batch_id = f"{getattr(event, 'chat_id', '')}:{getattr(event, 'id', '')}:{','.join(target_values)}"
 
-    async def run_one_backend_target(target_value):
+    async def run_one_backend_target(target_value, parse_overrides=None):
         target_ai_parse = dict(ai_parse or {})
+        target_ai_parse.update(parse_overrides or {})
         if urge_batch_id:
             target_ai_parse.update({
                 "order_nos": target_values,
@@ -2932,7 +2951,11 @@ async def execute_backend_unlock_step(step, rule, event, source_text, target_cli
             return "failure", (target_value, result, notified)
         return "success", (target_value, cmd_id, result)
 
-    if len(target_values) > 1 and backend_action in {"urge_settlement", "query_ticket_cancel_reason"}:
+    if backend_action == "configure_rebate":
+        results = []
+        for site in ("6001", "9001"):
+            results.append(await run_one_backend_target(target_value, {"site": site}))
+    elif len(target_values) > 1 and backend_action in {"urge_settlement", "query_ticket_cancel_reason"}:
         results = await asyncio.gather(*(run_one_backend_target(target_value) for target_value in target_values))
     else:
         results = [await run_one_backend_target(target_value) for target_value in target_values]
