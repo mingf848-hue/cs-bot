@@ -5292,6 +5292,7 @@ async def run_scheduled_messages_job():
 def resolve_extension_bot_base():
     default_url = "https://yyhelp.zeabur.app"
     legacy_urls = set()
+    blocked_hosts = {f"{prefix}help.zeabur.app" for prefix in ("cs", "arcs")}
     for name in (
         "EXTENSION_BOT_BASE",
         "BOT_BASE_URL",
@@ -5304,9 +5305,9 @@ def resolve_extension_bot_base():
         value = str(os.environ.get(name) or "").strip().rstrip("/")
         if not value:
             continue
-        if value in legacy_urls:
-            return default_url
         parsed = urllib.parse.urlparse(value)
+        if value in legacy_urls or parsed.netloc in blocked_hosts:
+            return default_url
         if parsed.scheme in ("http", "https") and parsed.netloc:
             return value
     return default_url

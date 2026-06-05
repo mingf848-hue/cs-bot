@@ -1,5 +1,6 @@
 const DEFAULT_BOT_BASE = 'https://yyhelp.zeabur.app';
 const LEGACY_BOT_BASES = new Set();
+const BLOCKED_BOT_BASE_HOSTS = new Set(['cs', 'arcs'].map((prefix) => `${prefix}help.zeabur.app`));
 const SITE_9_HOSTS = [
   '9sitebg.mvj4e7.com',
   '9aynxg.hh9al.com',
@@ -364,6 +365,11 @@ async function getConfig() {
 function normalizeBotBase(value) {
   const raw = String(value || '').trim().replace(/\/+$/, '');
   if (!raw || LEGACY_BOT_BASES.has(raw)) return DEFAULT_BOT_BASE;
+  try {
+    if (BLOCKED_BOT_BASE_HOSTS.has(new URL(raw).host)) return DEFAULT_BOT_BASE;
+  } catch {
+    // Keep existing fallback behavior for non-URL custom values.
+  }
   return raw;
 }
 
@@ -3038,6 +3044,12 @@ async function runMigrateMilanCommand(config, cmd, targetValue) {
   if (!member || !member.id || !member.name) {
     throw new Error(`未找到迁移会员：${targetValue}`);
   }
+  if (isSelfMilanUpgradeComplete(member, targetValue)) {
+    const replyText = '会员已自助升级完成。';
+    await setStatus({ state: 'success', message: replyText, detail: `${member.name} 已自助从6站迁移到米兰` });
+    await ack(config, cmd, 'reply_origin', replyText, { reply_text: replyText, stop_actions: true });
+    return;
+  }
 
   await setStatus({ state: 'running', message: `执行迁移米兰 ${member.name}` });
   const migration = await postJson(config.migrateMilanUrl, config.headers, {
@@ -3057,6 +3069,25 @@ async function runMigrateMilanCommand(config, cmd, targetValue) {
     detail: migration.text.slice(0, 300)
   });
   await ack(config, cmd, ok ? 'success' : 'failed', detail);
+}
+
+function isSelfMilanUpgradeComplete(record = {}, targetValue = '') {
+  const memberName = String(record.name || targetValue || '').trim().toLowerCase();
+  const targetName = String(targetValue || record.name || '').trim().toLowerCase();
+  const operator = String(record.operatorNext || '').trim().toLowerCase();
+  const fromSite = String(record.siteIdFromNext ?? '').trim();
+  const toSite = String(record.siteIdToNext ?? '').trim();
+  const state = Number(record.migrationStateNext);
+  const result = String(record.migrationResultNext || '').trim();
+  return !!(
+    memberName
+    && operator
+    && (operator === memberName || operator === targetName)
+    && fromSite === '6001'
+    && toSite === '9001'
+    && state === 2
+    && result.includes('迁移成功')
+  );
 }
 
 async function runSiteInnerMessageCommand(config, cmd) {

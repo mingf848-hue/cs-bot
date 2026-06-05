@@ -1423,6 +1423,7 @@ copy_page_cache = {}
 copy_page_cache_lock = Lock()
 DEFAULT_PUBLIC_BASE_URL = "https://yyhelp.zeabur.app"
 LEGACY_PUBLIC_BASE_URLS = set()
+BLOCKED_PUBLIC_BASE_HOSTS = {f"{prefix}help.zeabur.app" for prefix in ("cs", "arcs")}
 PUBLIC_BASE_URL_ENV_NAMES = (
     "BOT_MENU_URL",
     "EXTENSION_BOT_BASE",
@@ -1505,7 +1506,8 @@ def get_public_base_url():
         raw_url = str(os.environ.get(name) or "").strip().rstrip("/")
         if not raw_url:
             continue
-        if raw_url in LEGACY_PUBLIC_BASE_URLS:
+        parsed = urllib.parse.urlparse(raw_url)
+        if raw_url in LEGACY_PUBLIC_BASE_URLS or parsed.netloc in BLOCKED_PUBLIC_BASE_HOSTS:
             return DEFAULT_PUBLIC_BASE_URL
         if raw_url.startswith("https://"):
             return raw_url
