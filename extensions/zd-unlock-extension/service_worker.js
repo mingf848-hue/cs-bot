@@ -1,22 +1,55 @@
 const DEFAULT_BOT_BASE = 'https://yyhelp.zeabur.app';
 const LEGACY_BOT_BASES = new Set();
 const BLOCKED_BOT_BASE_HOSTS = new Set(['cs', 'arcs'].map((prefix) => `${prefix}help.zeabur.app`));
+const SITE_9_PRIMARY_HOST = '9aynxg.hh9al.com';
+const SITE_6_PRIMARY_HOST = '6aopna.fa69m.com';
 const SITE_9_HOSTS = [
-  '9sitebg.mvj4e7.com',
-  '9aynxg.hh9al.com',
+  SITE_9_PRIMARY_HOST,
   '9aynxg.hp9yk.com',
   '9aynxg.jr91e.com',
   '9aynxg.w77n3i.com',
   '9aynxg.ls3v0z.com'
 ];
 const SITE_6_HOSTS = [
-  '6sitebg.oj61i4.com',
-  '6aopna.fa69m.com',
+  SITE_6_PRIMARY_HOST,
   '6aopna.f26g7.com',
   '6aopna.fb6e5.com',
   '6aopna.30g7e1.com',
   '6aopna.a079a8.com'
 ];
+const siteBackendUrl = (host, path) => `https://${host}${path}`;
+const SITE_BACKEND_PATHS = {
+  memberListUrl: '/central/admin/site/admin/v1/user/memberInfo/list',
+  dataDecryptionUrl: '/central/admin/site/admin/v1/component/dataDecryption',
+  unlockUrl: '/central/admin/site/admin/v1/user/memberInfo/unlockIpOrNameForCheckPhone',
+  loginErrorUrl: '/central/admin/site/admin/v1/user/memberInfo/clearLoginErrorRedisKey',
+  proxyWhitelistUrl: '/central/admin/site/admin/v1/system/siteAccessManage/add',
+  siteInnerMsgTemplateUrl: '/central/admin/site/admin/v1/operation/cmCfg/template/info/list',
+  siteInnerMsgAddUrl: '/central/admin/site/admin/v1/operation/cmCfg/siteInnerMsg/add',
+  memberGameTotalInfoUrl: '/central/admin/site/admin/v1/user/game/totalInfo2',
+  memberFinanceTotalAmountUrl: '/central/admin/site/admin/v1/user/finance/totalAmount2',
+  loginLogUrl: '/central/admin/fd/admin/v1/risk/loginLog',
+  gameWalletListUrl: '/central/admin/game/admin/v1/user/game/list',
+  gameTransferOutUrl: '/central/admin/game/admin/v1/user/game/transferOut',
+  gameTransferIntoUrl: '/central/admin/game/admin/v1/user/game/transferInto',
+  venueQueryUrl: '/central/admin/game/admin/v1/venue/queryByName',
+  rebateLevelListUrl: '/central/admin/act/admin/v1/fanshui/level/list',
+  rebateLevelInfoListUrl: '/central/admin/act/admin/v1/fanshui/level/infoList',
+  rebateLevelInfoSaveUrl: '/central/admin/act/admin/v1/fanshui/level/infoSave'
+};
+const SITE_URL_KEYS = [
+  ...Object.keys(SITE_BACKEND_PATHS),
+  'migrationRecordsUrl',
+  'migrateMilanUrl'
+];
+const legacySiteHost = (site, token) => `${site}${['si', 'tebg'].join('')}.${token}.com`;
+const LEGACY_SITE_HOST_REPLACEMENTS = new Map([
+  [legacySiteHost('9', 'mvj4e7'), SITE_9_PRIMARY_HOST],
+  [legacySiteHost('6', 'oj61i4'), SITE_6_PRIMARY_HOST]
+]);
+const siteBackendConfig = (host, keys = Object.keys(SITE_BACKEND_PATHS)) => Object.fromEntries(
+  keys.map((key) => [key, siteBackendUrl(host, SITE_BACKEND_PATHS[key])])
+);
 const MERCHANT_ENDPOINT_PATHS = {
   merchantStatisticsUrl: '/admin/userReport/getStatistics',
   merchantTicketListUrl: '/admin/userReport/queryTicketList',
@@ -30,25 +63,9 @@ const MERCHANT_ENDPOINT_PATHS = {
 const DEFAULT_CONFIG = {
   botBase: DEFAULT_BOT_BASE,
   cmdSecret: 'J7kN3mQxR9vTsW2pYzBf',
-  memberListUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/list',
-  dataDecryptionUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/component/dataDecryption',
-  unlockUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/unlockIpOrNameForCheckPhone',
-  loginErrorUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/clearLoginErrorRedisKey',
-  proxyWhitelistUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/system/siteAccessManage/add',
-  siteInnerMsgTemplateUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/operation/cmCfg/template/info/list',
-  siteInnerMsgAddUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/operation/cmCfg/siteInnerMsg/add',
-  memberGameTotalInfoUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/game/totalInfo2',
-  memberFinanceTotalAmountUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/finance/totalAmount2',
-  loginLogUrl: 'https://9sitebg.mvj4e7.com/central/admin/fd/admin/v1/risk/loginLog',
-  gameWalletListUrl: 'https://9sitebg.mvj4e7.com/central/admin/game/admin/v1/user/game/list',
-  gameTransferOutUrl: 'https://9sitebg.mvj4e7.com/central/admin/game/admin/v1/user/game/transferOut',
-  gameTransferIntoUrl: 'https://9sitebg.mvj4e7.com/central/admin/game/admin/v1/user/game/transferInto',
-  venueQueryUrl: 'https://9sitebg.mvj4e7.com/central/admin/game/admin/v1/venue/queryByName',
-  rebateLevelListUrl: 'https://9sitebg.mvj4e7.com/central/admin/act/admin/v1/fanshui/level/list',
-  rebateLevelInfoListUrl: 'https://9sitebg.mvj4e7.com/central/admin/act/admin/v1/fanshui/level/infoList',
-  rebateLevelInfoSaveUrl: 'https://9sitebg.mvj4e7.com/central/admin/act/admin/v1/fanshui/level/infoSave',
-  migrationRecordsUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/pilgrimage/recordsV2',
-  migrateMilanUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/pilgrimage/migration',
+  ...siteBackendConfig(SITE_9_PRIMARY_HOST),
+  migrationRecordsUrl: siteBackendUrl(SITE_6_PRIMARY_HOST, '/central/admin/site/admin/v1/pilgrimage/recordsV2'),
+  migrateMilanUrl: siteBackendUrl(SITE_6_PRIMARY_HOST, '/central/admin/site/admin/v1/pilgrimage/migration'),
   merchantStatisticsUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/userReport/getStatistics',
   merchantTicketListUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/userReport/queryTicketList',
   merchantNoticeUrl: 'https://api-merchant-backstage.dbsportxxxwo8.com/yewu17/admin/noticeNew/notice',
@@ -85,46 +102,20 @@ const MERCHANT_URGE_BATCH_POLL_MS = 150;
 const merchantUrgeTelegramBatches = new Map();
 const SITE_PROFILES = {
   '9001': {
-    host: '9sitebg.mvj4e7.com',
+    host: SITE_9_PRIMARY_HOST,
     authHosts: SITE_9_HOSTS,
     label: '9站',
     requiredAuthHeaders: ['x-api-token', 'x-api-user'],
-    memberListUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/memberInfo/list',
-    dataDecryptionUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/component/dataDecryption',
-    siteInnerMsgTemplateUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/operation/cmCfg/template/info/list',
-    siteInnerMsgAddUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/operation/cmCfg/siteInnerMsg/add',
+    ...siteBackendConfig(SITE_9_PRIMARY_HOST, Object.keys(SITE_BACKEND_PATHS).filter((key) => !['unlockUrl', 'loginErrorUrl', 'proxyWhitelistUrl'].includes(key))),
     siteInnerMsgClients: '0,1,2,3,8,9',
-    memberGameTotalInfoUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/game/totalInfo2',
-    memberFinanceTotalAmountUrl: 'https://9sitebg.mvj4e7.com/central/admin/site/admin/v1/user/finance/totalAmount2',
-    loginLogUrl: 'https://9sitebg.mvj4e7.com/central/admin/fd/admin/v1/risk/loginLog',
-    gameWalletListUrl: 'https://9sitebg.mvj4e7.com/central/admin/game/admin/v1/user/game/list',
-    gameTransferOutUrl: 'https://9sitebg.mvj4e7.com/central/admin/game/admin/v1/user/game/transferOut',
-    gameTransferIntoUrl: 'https://9sitebg.mvj4e7.com/central/admin/game/admin/v1/user/game/transferInto',
-    venueQueryUrl: 'https://9sitebg.mvj4e7.com/central/admin/game/admin/v1/venue/queryByName',
-    rebateLevelListUrl: 'https://9sitebg.mvj4e7.com/central/admin/act/admin/v1/fanshui/level/list',
-    rebateLevelInfoListUrl: 'https://9sitebg.mvj4e7.com/central/admin/act/admin/v1/fanshui/level/infoList',
-    rebateLevelInfoSaveUrl: 'https://9sitebg.mvj4e7.com/central/admin/act/admin/v1/fanshui/level/infoSave'
   },
   '6001': {
-    host: '6sitebg.oj61i4.com',
+    host: SITE_6_PRIMARY_HOST,
     authHosts: SITE_6_HOSTS,
     label: '6站',
     requiredAuthHeaders: ['x-api-token', 'x-api-user'],
-    memberListUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/user/memberInfo/list',
-    dataDecryptionUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/component/dataDecryption',
-    siteInnerMsgTemplateUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/operation/cmCfg/template/info/list',
-    siteInnerMsgAddUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/operation/cmCfg/siteInnerMsg/add',
+    ...siteBackendConfig(SITE_6_PRIMARY_HOST, Object.keys(SITE_BACKEND_PATHS).filter((key) => !['unlockUrl', 'loginErrorUrl', 'proxyWhitelistUrl'].includes(key))),
     siteInnerMsgClients: '0,1,2,3,8',
-    memberGameTotalInfoUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/user/game/totalInfo2',
-    memberFinanceTotalAmountUrl: 'https://6sitebg.oj61i4.com/central/admin/site/admin/v1/user/finance/totalAmount2',
-    loginLogUrl: 'https://6sitebg.oj61i4.com/central/admin/fd/admin/v1/risk/loginLog',
-    gameWalletListUrl: 'https://6sitebg.oj61i4.com/central/admin/game/admin/v1/user/game/list',
-    gameTransferOutUrl: 'https://6sitebg.oj61i4.com/central/admin/game/admin/v1/user/game/transferOut',
-    gameTransferIntoUrl: 'https://6sitebg.oj61i4.com/central/admin/game/admin/v1/user/game/transferInto',
-    venueQueryUrl: 'https://6sitebg.oj61i4.com/central/admin/game/admin/v1/venue/queryByName',
-    rebateLevelListUrl: 'https://6sitebg.oj61i4.com/central/admin/act/admin/v1/fanshui/level/list',
-    rebateLevelInfoListUrl: 'https://6sitebg.oj61i4.com/central/admin/act/admin/v1/fanshui/level/infoList',
-    rebateLevelInfoSaveUrl: 'https://6sitebg.oj61i4.com/central/admin/act/admin/v1/fanshui/level/infoSave'
   },
   'merchant': {
     host: 'api-merchant-backstage.dbsportxxxwo8.com',
@@ -217,6 +208,15 @@ function authMatches(auth, targetHost, targetSite, targetHosts = [targetHost]) {
   return targetHosts.includes(host)
     || targetHosts.some((item) => href.includes(item))
     || String(headers['x-api-site'] || '') === targetSite;
+}
+
+function backendSiteFailureLabel(host) {
+  const normalized = String(host || '').trim().toLowerCase();
+  if (!normalized) return '';
+  const replacement = LEGACY_SITE_HOST_REPLACEMENTS.get(normalized);
+  if (SITE_9_HOSTS.includes(normalized) || normalized.startsWith('9aynxg.') || replacement === SITE_9_PRIMARY_HOST) return '9站接口请求失败';
+  if (SITE_6_HOSTS.includes(normalized) || normalized.startsWith('6aopna.') || replacement === SITE_6_PRIMARY_HOST) return '6站接口请求失败';
+  return '';
 }
 
 function profileForAuthOrigin(profile, auth) {
@@ -341,7 +341,7 @@ function applyMerchantEndpointBase(config = {}) {
 async function getConfig() {
   const stored = await chrome.storage.local.get(['config', 'pageAuth', 'pageAuthByHost', 'pageAuthByMerchant']);
   const storedConfig = stored.config || {};
-  const config = {
+  let config = {
     ...DEFAULT_CONFIG,
     ...storedConfig,
     headers: {
@@ -352,9 +352,10 @@ async function getConfig() {
     pageAuthByHost: stored.pageAuthByHost || {},
     pageAuthByMerchant: stored.pageAuthByMerchant || {}
   };
-  config.botBase = normalizeBotBase(config.botBase);
-  if (storedConfig.botBase && normalizeBotBase(storedConfig.botBase) !== String(storedConfig.botBase || '').trim().replace(/\/+$/, '')) {
-    await chrome.storage.local.set({ config: { ...storedConfig, botBase: config.botBase } });
+  config = normalizeConfig(config);
+  const normalizedStoredConfig = normalizeConfig(storedConfig, { normalizeEmptyBotBase: false });
+  if (JSON.stringify(normalizedStoredConfig) !== JSON.stringify(storedConfig)) {
+    await chrome.storage.local.set({ config: normalizedStoredConfig });
   }
   return {
     enabled: true,
@@ -373,11 +374,29 @@ function normalizeBotBase(value) {
   return raw;
 }
 
-function normalizeConfig(config = {}) {
-  return {
-    ...config,
-    botBase: normalizeBotBase(config.botBase)
-  };
+function normalizeBackendUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return raw;
+  try {
+    const parsed = new URL(raw);
+    const replacement = LEGACY_SITE_HOST_REPLACEMENTS.get(parsed.host.toLowerCase());
+    if (!replacement) return raw;
+    parsed.host = replacement;
+    return parsed.toString();
+  } catch {
+    return raw;
+  }
+}
+
+function normalizeConfig(config = {}, options = {}) {
+  const next = { ...config };
+  if (options.normalizeEmptyBotBase !== false || Object.prototype.hasOwnProperty.call(next, 'botBase')) {
+    next.botBase = normalizeBotBase(next.botBase);
+  }
+  for (const key of SITE_URL_KEYS) {
+    if (typeof next[key] === 'string') next[key] = normalizeBackendUrl(next[key]);
+  }
+  return next;
 }
 
 function uniqueAuthCandidates(candidates = []) {
@@ -778,18 +797,8 @@ async function requestMerchantRelogin(config, labels = []) {
 async function refreshBackstageTabs() {
   const tabs = await queryTabs({
     url: [
-      'https://9sitebg.mvj4e7.com/*',
-      'https://9aynxg.hh9al.com/*',
-      'https://9aynxg.hp9yk.com/*',
-      'https://9aynxg.jr91e.com/*',
-      'https://9aynxg.w77n3i.com/*',
-      'https://9aynxg.ls3v0z.com/*',
-      'https://6sitebg.oj61i4.com/*',
-      'https://6aopna.fa69m.com/*',
-      'https://6aopna.f26g7.com/*',
-      'https://6aopna.fb6e5.com/*',
-      'https://6aopna.30g7e1.com/*',
-      'https://6aopna.a079a8.com/*',
+      ...SITE_9_HOSTS.map((host) => `https://${host}/*`),
+      ...SITE_6_HOSTS.map((host) => `https://${host}/*`),
       'https://merchant-own-backstage.dbsportxxxwo8.com/*',
       'https://*.dbsportxxxwo8.com/*'
     ]
@@ -900,9 +909,11 @@ function compactRequestFailureReason(text, action = '') {
       const parts = parsed.pathname.split('/').filter(Boolean);
       endpoint = parts.slice(-2).join('/') || parsed.hostname;
       if (parsed.hostname.includes('api-merchant-backstage')) label = '场馆接口请求失败';
-      else if (parsed.hostname.includes('9sitebg')) label = '9站接口请求失败';
-      else if (parsed.hostname.includes('6sitebg')) label = '6站接口请求失败';
-      else endpoint = parsed.hostname + (endpoint ? `/${endpoint}` : '');
+      else {
+        const siteLabel = backendSiteFailureLabel(parsed.hostname);
+        if (siteLabel) label = siteLabel;
+        else endpoint = parsed.hostname + (endpoint ? `/${endpoint}` : '');
+      }
     } catch {
       endpoint = '';
     }

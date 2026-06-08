@@ -27,7 +27,6 @@ const STATE_LABELS = {
   idle: '待机'
 };
 const SITE_9_HOSTS = [
-  '9sitebg.mvj4e7.com',
   '9aynxg.hh9al.com',
   '9aynxg.hp9yk.com',
   '9aynxg.jr91e.com',
@@ -35,7 +34,6 @@ const SITE_9_HOSTS = [
   '9aynxg.ls3v0z.com'
 ];
 const SITE_6_HOSTS = [
-  '6sitebg.oj61i4.com',
   '6aopna.fa69m.com',
   '6aopna.f26g7.com',
   '6aopna.fb6e5.com',

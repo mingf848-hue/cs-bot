@@ -2849,9 +2849,9 @@ def humanize_backend_failure_detail(detail, action=""):
             path = (url_match.group(2) or "").split("?")[0]
             parts = [item for item in path.split("/") if item]
             endpoint = "/".join(parts[-2:]) if parts else host
-            if "9sitebg" in host:
+            if host.startswith("9aynxg."):
                 label = "9站接口请求失败"
-            elif "6sitebg" in host:
+            elif host.startswith("6aopna."):
                 label = "6站接口请求失败"
             elif "api-merchant-backstage" in host:
                 label = "场馆接口请求失败"
