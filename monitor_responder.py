@@ -2023,7 +2023,94 @@ def prune_pending_unmatched_messages(now=None):
             if not pending_unmatched_messages.get(oldest_chat):
                 pending_unmatched_messages.pop(oldest_chat, None)
             total -= 1
+def split_unmatched_wait_keywords():
+    raw = os.environ.get("WAIT_KEYWORDS", "")
+    for sep in ("，", "；", ";", "|", "\n", "\r"):
+        raw = raw.replace(sep, ",")
+    return [x.strip() for x in raw.split(",") if x.strip()]
 
+def normalize_unmatched_wait_text(text):
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", str(text or "").strip().lower())
+
+def text_matches_unmatched_wait_keyword(text):
+    raw = str(text or "").strip()
+    if not raw:
+        return False
+    raw_lower = raw.lower()
+    normalized = normalize_unmatched_wait_text(raw)
+    for keyword in sorted(split_unmatched_wait_keywords(), key=len, reverse=True):
+        keyword_lower = keyword.lower()
+        if keyword_lower and keyword_lower in raw_lower:
+            return True
+        keyword_norm = normalize_unmatched_wait_text(keyword)
+        if keyword_norm and keyword_norm in normalized:
+            return True
+    return False
+
+def unmatched_sender_name_is_cs(sender_name):
+    sender_name = str(sender_name or "").strip()
+    if not sender_name:
+        return False
+    name_norm = normalize_unmatched_wait_text(sender_name)
+    for prefix in system_cs_prefixes or []:
+        prefix = str(prefix or "").strip()
+        if not prefix:
+            continue
+        if sender_name.lower().startswith(prefix.lower()):
+            return True
+        prefix_norm = normalize_unmatched_wait_text(prefix)
+        if prefix_norm and (name_norm.startswith(prefix_norm) or prefix_norm in name_norm):
+            return True
+    return False
+
+def should_skip_pending_unmatched(event_or_message, sender_name="", item=None, text=None):
+    message = getattr(event_or_message, "message", event_or_message)
+
+    if bool(getattr(event_or_message, "out", False)) or bool(getattr(message, "out", False)):
+        return "自己账号消息"
+
+    sender_id = (
+        (item or {}).get("sender_id")
+        or getattr(event_or_message, "sender_id", None)
+        or getattr(message, "sender_id", None)
+    )
+    if sender_id and sender_id in set(client_user_ids.values()):
+        return "已登录客服账号消息"
+
+    if unmatched_sender_name_is_cs(sender_name or (item or {}).get("sender_name", "")):
+        return "客服账号消息"
+
+    check_text = text
+    if check_text is None:
+        check_text = (
+            (item or {}).get("text")
+            or getattr(event_or_message, "raw_text", None)
+            or getattr(event_or_message, "text", None)
+            or getattr(message, "raw_text", None)
+            or getattr(message, "text", None)
+            or getattr(message, "message", "")
+            or ""
+        )
+
+    if text_matches_unmatched_wait_keyword(check_text):
+        return "稍等关键词消息"
+
+    return ""
+
+def filter_pending_unmatched_candidates(chat_id, candidates):
+    result = []
+    for msg_id, item in candidates:
+        message = (item or {}).get("message")
+        reason = should_skip_pending_unmatched(
+            message,
+            sender_name=(item or {}).get("sender_name", ""),
+            item=item or {},
+        )
+        if reason:
+            logger.info(f"🛡️ [Unmatched] 扫描补漏跳过{reason} Chat={chat_id} Msg={msg_id}")
+            continue
+        result.append((msg_id, item))
+    return result
 def remember_unmatched_message(event, sender_name=""):
     chat_id = getattr(event, "chat_id", None)
     msg_id = getattr(event, "id", None)
@@ -2031,8 +2118,14 @@ def remember_unmatched_message(event, sender_name=""):
         return
     text = getattr(event, "raw_text", None) or getattr(event, "text", "") or ""
     message = getattr(event, "message", None)
-    if not text and not getattr(message, "file", None):
+        if not text and not getattr(message, "file", None):
         return
+
+    skip_reason = should_skip_pending_unmatched(event, sender_name=sender_name, text=text)
+    if skip_reason:
+        logger.info(f"🛡️ [Unmatched] 跳过暂存{skip_reason} Chat={chat_id} Msg={msg_id} Sender={sender_name or '-'}")
+        return
+
     prune_pending_unmatched_messages()
     with pending_unmatched_lock:
         pending_unmatched_messages.setdefault(chat_id, {})[msg_id] = {
@@ -2061,7 +2154,7 @@ def pop_pending_unmatched_before(chat_id, before_msg_id):
                 candidates.append((msg_id, items.pop(msg_id)))
         if not items:
             pending_unmatched_messages.pop(chat_id, None)
-    return candidates
+        return filter_pending_unmatched_candidates(chat_id, candidates)
 
 def monitor_has_enabled_group(chat_id):
     return any(
@@ -2120,11 +2213,15 @@ async def pending_message_has_reply(client, chat_id, msg_id, before_msg_id):
         history = await client.get_messages(chat_id, **kwargs)
     except Exception as e:
         logger.warning(f"⚠️ [Unmatched] 检查未命中消息是否已回复失败 Chat={chat_id} Msg={msg_id}: {e}")
-        return False
+        return true
     for msg in history:
         if getattr(msg, "id", None) == msg_id:
             continue
-        if msg_id in get_message_reply_target_ids(msg):
+                if msg_id in get_message_reply_target_ids(msg):
+            return True
+
+        text = getattr(msg, "raw_text", None) or getattr(msg, "text", "") or getattr(msg, "message", "") or ""
+        if text_matches_unmatched_wait_keyword(text):
             return True
     return False
 
@@ -6041,7 +6138,14 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             sender_name = item.get("sender_name") or ""
             started = time.time()
             try:
-                await target_client.send_message(chat_id, wait_text, reply_to=msg_id)
+                                sent_wait = await target_client.send_message(chat_id, wait_text, reply_to=msg_id)
+                if msg_id not in get_message_reply_target_ids(sent_wait):
+                    try:
+                        await target_client.delete_messages(chat_id, [getattr(sent_wait, "id", None)])
+                    except Exception:
+                        pass
+                    logger.warning(f"⚠️ [Unmatched] 稍等发送成功但未引用目标，已删除 Chat={chat_id} Msg={msg_id}")
+                    continue
                 action_total += 1
                 if notify_target:
                     await send_bot_notice(
