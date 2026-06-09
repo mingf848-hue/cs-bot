@@ -412,6 +412,7 @@ def event_text_preview(event, limit=120):
 BACKEND_UNLOCK_ACCOUNT_PATTERN = r"([A-Za-z0-9][A-Za-z0-9._-]{1,63})"
 BACKEND_ORDER_NO_PATTERN = r"(?<!\d)(\d{12,24})(?!\d)"
 BACKEND_PROXY_IP_PATTERN = r"\b((?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d))\b"
+DEFAULT_DISABLE_DEVICE_TG_TARGET = "-1003511979135"
 def int_env(name, default, min_value=None, max_value=None):
     try:
         value = int(os.environ.get(name, default) or default)
@@ -499,7 +500,7 @@ def ai_backend_action_schema(action):
         return "target/ip 必须是IPv4地址。"
     if action == "member_data_overview":
         return "target/member 是会员账号；data_fields 只能从 总输赢、总流水、总存款、总提款、总红利、总返水 中选择；如出现时间范围，startAt/endAt 用 YYYY-MM-DD。"
-    if action in {"query_member_line", "query_login_device_ip", "query_same_ip_device"}:
+    if action in {"query_member_line", "query_login_device_ip", "query_same_ip_device", "disable_login_device"}:
         return "target/member 是主会员账号；members 可放多个会员账号；agent_codes 放消息里的5到12位合营代码。"
     if action == "query_venue_turnover":
         return "target/member 是会员账号；venue 填场馆名，例如 米兰体育。"
@@ -546,7 +547,7 @@ def build_ai_backend_parse_prompt(text, action, rule_name="", previous_error="")
 字段规则：
 - target 是该动作最终目标；催结算/取消失败原因填注单号，代理加白填IP，其它账号类填会员账号。
 - member 仅账号类填写；order_no 仅催结算/取消失败原因填写；ip 仅代理加白填写。
-- 查线/登录设备/查同IP设备支持多个会员，放 members；消息里的合营代码放 agent_codes。
+- 查线/登录设备/查同IP设备支持多个会员，放 members；禁用设备优先提取“会员账号：xxx”；消息里的合营代码放 agent_codes。
 - 查询场馆流水要提取 venue；配置返水要提取 venue 和 game。
 - data_fields 只在查数据时填写，并按原消息要求出现顺序返回，例如 ["总存款","总提款","总流水"]；没明确要求字段时返回空数组。
 - private_reply 只有明确要求私发/私聊/发我时才是 true。
@@ -682,6 +683,32 @@ def agent_site_hint_from_text(text):
         return "9001"
     return ""
 
+def extract_labeled_member(text):
+    source = str(text or "")
+    match = re.search(r"会员账号\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{1,63})", source, flags=re.IGNORECASE)
+    if match and is_likely_agent_member(match.group(1)):
+        return match.group(1).strip().lower()
+    return ""
+
+def extract_disable_device_reason(text):
+    match = re.search(r"禁用原因\s*[:：]\s*([^\r\n]+)", str(text or ""), flags=re.IGNORECASE)
+    return str((match and match.group(1)) or "").strip()
+
+def parse_fixed_disable_login_device(text):
+    source = str(text or "")
+    member = extract_labeled_member(source) or (extract_backend_unlock_member(source, "") or "")
+    if member and not is_likely_agent_member(member):
+        member = ""
+    site = agent_site_hint_from_text(source)
+    reason = extract_disable_device_reason(source)
+    return {
+        "target": member,
+        "member": member,
+        "members": [member] if member else [],
+        "site": site,
+        "reason": reason,
+    }
+
 def agent_venue_hint_from_text(text):
     source = str(text or "")
     for name in ["米兰体育", "熊猫体育", "米兰电竞", "米兰棋牌", "米兰彩票", "米兰真人", "米兰电子", "米兰捕鱼"]:
@@ -747,7 +774,7 @@ def validate_ai_backend_parse(raw, action):
         target = str(raw.get("game") or target or "").strip()
         if not target:
             raise ValueError("AI未提取到返水游戏")
-    elif action in {"query_member_line", "query_login_device_ip", "query_same_ip_device", "query_venue_turnover"}:
+    elif action in {"query_member_line", "query_login_device_ip", "query_same_ip_device", "disable_login_device", "query_venue_turnover"}:
         target = members[0] if members else (member or target.lower())
         if not re.fullmatch(BACKEND_UNLOCK_ACCOUNT_PATTERN, target):
             raise ValueError("AI未提取到有效会员账号")
@@ -2342,13 +2369,13 @@ BACKEND_UNLOCK_ACTIONS = {
     "unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan",
         "send_site_inner_msg", "member_data_overview", "query_member_line",
         "query_login_device_ip", "query_same_ip_device", "query_venue_turnover",
-        "configure_rebate", "urge_settlement", "query_ticket_cancel_reason",
+        "disable_login_device", "configure_rebate", "urge_settlement", "query_ticket_cancel_reason",
         "venue_display_control", "agent_existing"
 }
 AGENT_EXECUTABLE_ACTIONS = {
     "unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan",
     "member_data_overview", "query_member_line", "query_login_device_ip",
-    "query_same_ip_device", "query_venue_turnover", "configure_rebate",
+    "query_same_ip_device", "disable_login_device", "query_venue_turnover", "configure_rebate",
     "urge_settlement", "query_ticket_cancel_reason"
 }
 
@@ -2406,6 +2433,12 @@ AGENT_CAPABILITIES = [
         "name": "查同IP/查同设备",
         "input": "会员账号，可带合营代码校验",
         "reply": "设备无关联/设备关联 N，IP无关联/IP关联 N/IP关联多个",
+    },
+    {
+        "action": "disable_login_device",
+        "name": "禁用设备申请",
+        "input": "会员账号，优先读取“会员账号：xxx”",
+        "reply": "无关联，已反馈。/ 关联账号 已反馈。",
     },
     {
         "action": "query_venue_turnover",
@@ -2549,6 +2582,10 @@ def normalize_backend_action(action):
         "查同IP": "query_same_ip_device",
         "查同ip": "query_same_ip_device",
         "查同设备": "query_same_ip_device",
+        "disable_device": "disable_login_device",
+        "disable_login_device_apply": "disable_login_device",
+        "禁用设备": "disable_login_device",
+        "申请禁用设备": "disable_login_device",
         "venue_turnover": "query_venue_turnover",
         "venue_turnover_lock": "query_venue_turnover",
         "query_venue_turnover_lock": "query_venue_turnover",
@@ -2677,7 +2714,7 @@ def queue_backend_unlock_command(target_value, rule, event, action="unlock_sms",
             for key in (
                 "target", "members", "agent_codes", "data_fields", "startAt", "endAt",
                 "private_reply", "telegram_account", "agent_code", "venue", "game",
-                "site", "line_mode", "order_nos", "urge_batch_id", "urge_batch_total"
+                "site", "line_mode", "reason", "order_nos", "urge_batch_id", "urge_batch_total"
             )
             if ai_parse.get(key) not in (None, "", [])
         }
@@ -2724,6 +2761,13 @@ def queue_backend_unlock_command(target_value, rule, event, action="unlock_sms",
         unlock_value = os.environ.get("ZD_SMS_UNLOCK_VALUE", "").strip()
         if unlock_value:
             command["value"] = unlock_value
+    if action == "disable_login_device":
+        command.update({
+            "backend_site": ai_parse.get("site") or agent_site_hint_from_text(command.get("source_text") or "") or "9001",
+            "telegram_target": str((step or {}).get("forward_to") or DEFAULT_DISABLE_DEVICE_TG_TARGET).strip() or DEFAULT_DISABLE_DEVICE_TG_TARGET,
+            "telegram_account": str((step or {}).get("telegram_account") or "").strip(),
+            "disable_reason": str(ai_parse.get("reason") or extract_disable_device_reason(command.get("source_text") or "") or "").strip(),
+        })
     enqueue_pending_command(command)
     return cmd_id
 
@@ -2791,7 +2835,7 @@ def format_backend_reply_items(reply_items, backend_action=""):
         return ""
     if len(clean) == 1:
         return clean[0][1]
-    if backend_action in {"query_member_line", "query_login_device_ip", "query_same_ip_device", "query_venue_turnover", "configure_rebate"}:
+    if backend_action in {"query_member_line", "query_login_device_ip", "query_same_ip_device", "disable_login_device", "query_venue_turnover", "configure_rebate"}:
         return "\n".join(text for _target, text in clean)
     if backend_action != "urge_settlement":
         return "\n".join(f"{target}：{text}" for target, text in clean)
@@ -2866,7 +2910,7 @@ def humanize_backend_failure_detail(detail, action=""):
             transport = http_match.group(0) if http_match else ""
         suffix = "，".join([item for item in (host_label, transport) if item])
         return f"{label}：{suffix}"[:120] if suffix else label
-    if "TG发送失败" in compact or "send_telegram" in compact or "未配置催结算TG群" in compact:
+    if "TG发送失败" in compact or "send_telegram" in compact or re.search(r"未配置.*TG群", compact):
         return "TG发送失败"
     if "超时" in compact or "timeout" in compact.lower():
         return "后台处理超时"
@@ -2901,6 +2945,13 @@ async def execute_backend_unlock_step(step, rule, event, source_text, target_cli
     if backend_action == "configure_rebate":
         ai_parse = parse_fixed_configure_rebate(source_text or "")
         target_value = str(ai_parse.get("target") or "").strip()
+        target_values = [target_value] if target_value else []
+    elif backend_action == "disable_login_device":
+        ai_parse = parse_fixed_disable_login_device(source_text or "")
+        fallback_target = extract_backend_target(source_text or "", step)
+        if fallback_target and not is_likely_agent_member(fallback_target):
+            fallback_target = ""
+        target_value = str(ai_parse.get("target") or "").strip() or (fallback_target or "")
         target_values = [target_value] if target_value else []
     elif backend_action in {"urge_settlement", "query_ticket_cancel_reason"}:
         target_values = extract_backend_order_nos(source_text or "", (step or {}).get("member_pattern", ""))
@@ -3017,6 +3068,8 @@ def command_action_label(action):
         return "查登录设备/IP"
     if action == "query_same_ip_device":
         return "查同IP/设备"
+    if action == "disable_login_device":
+        return "禁用设备申请"
     if action == "query_venue_turnover":
         return "查场馆流水锁定"
     if action == "configure_rebate":
@@ -3092,7 +3145,7 @@ def build_ai_agent_plan_prompt(text, rule_name="", previous_error=""):
 - 催结算只处理“未结算/一直不结算/催促结算/催结算/结算回滚”等要求推进结算的消息；结算回滚不是已结算。
 - 注单取消/失败/无效原因必须使用 query_ticket_cancel_reason，不要使用 urge_settlement。
 - 只要消息包含“取消原因、无效原因、失败原因、投注失败、注单取消、无效、取消、失败”，即使同时出现“催”，也使用 query_ticket_cancel_reason。
-- 查线/登录设备/查同IP设备可以把多个会员放 members，把消息里的合营代码放 agent_codes；查代理线 line_mode 填 agent。
+- 查线/登录设备/查同IP设备可以把多个会员放 members，把消息里的合营代码放 agent_codes；禁用设备优先取“会员账号：xxx”；查代理线 line_mode 填 agent。
 - 查询场馆流水 target/member 填会员账号，venue 填场馆名，例如 米兰体育。
 - 配置返水 venue 填场馆名，game 填游戏名；site 只在明确 6站/JN 或 9站/ML 时填写 6001/9001。
 - private_reply 只有明确要求私发/私聊/发我时才为 true。
@@ -3154,6 +3207,10 @@ def normalize_agent_task_action(action):
         "查同IP": "query_same_ip_device",
         "查同ip": "query_same_ip_device",
         "查同设备": "query_same_ip_device",
+        "disable_device": "disable_login_device",
+        "disable_login_device_apply": "disable_login_device",
+        "禁用设备": "disable_login_device",
+        "申请禁用设备": "disable_login_device",
         "venue_turnover": "query_venue_turnover",
         "venue_turnover_lock": "query_venue_turnover",
         "query_venue_turnover_lock": "query_venue_turnover",
@@ -3217,7 +3274,7 @@ def sanitize_agent_task(raw_task):
         target = str(raw_task.get("game") or target or "配置返水").strip()
         if not target:
             return None
-    elif action in {"query_member_line", "query_login_device_ip", "query_same_ip_device", "query_venue_turnover"}:
+    elif action in {"query_member_line", "query_login_device_ip", "query_same_ip_device", "disable_login_device", "query_venue_turnover"}:
         if not members and member and re.fullmatch(BACKEND_UNLOCK_ACCOUNT_PATTERN, member):
             members = [member]
         target = (members[0] if members else (member or target).lower())
@@ -3292,6 +3349,19 @@ def agent_plan_fallback(text):
             "agent_codes": agent_codes,
             "source_text": source_text,
             "site": site,
+        }))
+
+    if re.search(r"申请禁用设备|禁用设备", source_text, flags=re.IGNORECASE):
+        parsed = parse_fixed_disable_login_device(source_text)
+        member = parsed.get("member") or (members[0] if members else "")
+        add_task(sanitize_agent_task({
+            "action": "disable_login_device",
+            "member": member,
+            "target": member,
+            "members": [member] if member else [],
+            "source_text": source_text,
+            "site": parsed.get("site") or site,
+            "reason": parsed.get("reason") or "",
         }))
 
     if re.search(r"登录设备|设备\s*ip|ip\s*在哪|IP\s*在哪", source_text, flags=re.IGNORECASE) and members:
@@ -3483,7 +3553,7 @@ def format_agent_task_summary(task):
     action = str((task or {}).get("action") or "")
     target = str((task or {}).get("target") or "")
     members = (task or {}).get("members") or []
-    if members and action in {"query_member_line", "query_login_device_ip", "query_same_ip_device"}:
+    if members and action in {"query_member_line", "query_login_device_ip", "query_same_ip_device", "disable_login_device"}:
         target = "、".join(members[:6]) + ("..." if len(members) > 6 else "")
     fields = (task or {}).get("data_fields") or []
     extra = f" ({'、'.join(fields)})" if fields else ""
@@ -4080,13 +4150,17 @@ async def send_command_telegram_message(account_name, target, text, cmd=None):
     body = format_caption(text)
     if not body:
         raise RuntimeError("Telegram 消息为空")
+    action = normalize_backend_action((cmd or {}).get("action") or (cmd or {}).get("backend_action") or "")
+    action_label = command_action_label(action)
+    event_kind = "settlement_urge" if action == "urge_settlement" else "backend_telegram"
+    message_label = "催结算消息" if action == "urge_settlement" else f"{action_label}消息"
     sent = await target_client.send_message(peer, body)
     save_settlement_tg_bridge(target_name, sent, {**(cmd or {}), "text": body})
     record_runtime_event(
-        "settlement_urge",
+        event_kind,
         "success",
-        f"催结算消息已发送：{peer}",
-        rule={"id": str((cmd or {}).get("id") or "__settlement_urge__"), "name": str((cmd or {}).get("rule") or "催结算")},
+        f"{message_label}已发送：{peer}",
+        rule={"id": str((cmd or {}).get("id") or f"__{action or 'backend_telegram'}__"), "name": str((cmd or {}).get("rule") or action_label)},
         target_account=target_name,
         action_count=1,
     )
@@ -4560,6 +4634,7 @@ SETTINGS_HTML = """
                                                     <option value="query_member_line">查线</option>
                                                     <option value="query_login_device_ip">查登录设备/IP</option>
                                                     <option value="query_same_ip_device">查同 IP/设备</option>
+                                                    <option value="disable_login_device">禁用设备申请</option>
                                                     <option value="query_venue_turnover">查场馆流水锁定</option>
                                                     <option value="configure_rebate">配置返水</option>
                                                     <option value="urge_settlement">催结算</option>
@@ -5549,12 +5624,16 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             sent = future.result(timeout=30)
             return jsonify({"ok": True, "message_id": getattr(sent, "id", None)})
         except Exception as e:
-            logger.error(f"❌ [BackendUnlock] 催结算 TG 发送失败: id={cmd_id or '-'} account={account or MAIN_NAME} target={target or '-'} err={e}")
+            action = normalize_backend_action(data.get("action") or data.get("backend_action") or "")
+            action_label = command_action_label(action)
+            event_kind = "settlement_urge" if action == "urge_settlement" else "backend_telegram"
+            message_label = "催结算消息" if action == "urge_settlement" else f"{action_label}消息"
+            logger.error(f"❌ [BackendUnlock] {message_label} TG 发送失败: id={cmd_id or '-'} account={account or MAIN_NAME} target={target or '-'} err={e}")
             record_runtime_event(
-                "settlement_urge",
+                event_kind,
                 "failed",
-                f"催结算消息发送失败：{e}",
-                rule={"id": cmd_id or "__settlement_urge__", "name": str(data.get("rule") or "催结算")},
+                f"{message_label}发送失败：{e}",
+                rule={"id": cmd_id or f"__{action or 'backend_telegram'}__", "name": str(data.get("rule") or action_label)},
                 target_account=account or MAIN_NAME,
             )
             return jsonify({"ok": False, "error": str(e)}), 500

@@ -29,6 +29,7 @@ const SITE_BACKEND_PATHS = {
   memberGameTotalInfoUrl: '/central/admin/site/admin/v1/user/game/totalInfo2',
   memberFinanceTotalAmountUrl: '/central/admin/site/admin/v1/user/finance/totalAmount2',
   loginLogUrl: '/central/admin/fd/admin/v1/risk/loginLog',
+  bulletFrameLogUrl: '/central/admin/fd/admin/v1/risk/bulletFrameLog',
   gameWalletListUrl: '/central/admin/game/admin/v1/user/game/list',
   gameTransferOutUrl: '/central/admin/game/admin/v1/user/game/transferOut',
   gameTransferIntoUrl: '/central/admin/game/admin/v1/user/game/transferInto',
@@ -99,6 +100,7 @@ const MERCHANT_URGE_MATCH_LIMIT = 2;
 const MERCHANT_URGE_MATCH_TTL_MS = 24 * 60 * 60 * 1000;
 const MERCHANT_URGE_BATCH_WAIT_MS = 6000;
 const MERCHANT_URGE_BATCH_POLL_MS = 150;
+const DEFAULT_DISABLE_DEVICE_TG_TARGET = '-1003511979135';
 const merchantUrgeTelegramBatches = new Map();
 const SITE_PROFILES = {
   '9001': {
@@ -884,6 +886,7 @@ function commandLabel(action) {
   if (action === 'query_member_line') return '查线';
   if (action === 'query_login_device_ip') return '查登录设备/IP';
   if (action === 'query_same_ip_device') return '查同IP/设备';
+  if (action === 'disable_login_device') return '禁用设备申请';
   if (action === 'query_venue_turnover') return '查场馆流水锁定';
   if (action === 'configure_rebate') return '配置返水';
   if (action === 'merchant_order_statistics') return '场馆注单查询';
@@ -945,7 +948,7 @@ function friendlyErrorReason(err, action = '', label = '') {
   if (/Failed to fetch|Load failed|请求失败|HTTP\s*[45]\d\d|接口.*失败|查询.*失败/.test(text)) {
     return compactRequestFailureReason(text, action);
   }
-  if (/未配置催结算TG群|TG发送失败|telegram|send_telegram/i.test(text)) return 'TG发送失败';
+  if (/未配置.*TG群|TG发送失败|telegram|send_telegram/i.test(text)) return 'TG发送失败';
   if (/等待后台回执超时|超时|timeout/i.test(text)) return '后台处理超时';
   return text.split('\n')[0].slice(0, 120);
 }
@@ -986,6 +989,8 @@ function normalizeCommandAction(action, cmd = {}) {
     query_device_ip: 'query_login_device_ip',
     same_ip_device: 'query_same_ip_device',
     query_same_device_ip: 'query_same_ip_device',
+    disable_device: 'disable_login_device',
+    disable_login_device_apply: 'disable_login_device',
     venue_turnover: 'query_venue_turnover',
     venue_turnover_lock: 'query_venue_turnover',
     query_venue_turnover_lock: 'query_venue_turnover',
@@ -1000,6 +1005,8 @@ function normalizeCommandAction(action, cmd = {}) {
     '查同IP': 'query_same_ip_device',
     '查同ip': 'query_same_ip_device',
     '查同设备': 'query_same_ip_device',
+    '禁用设备': 'disable_login_device',
+    '申请禁用设备': 'disable_login_device',
     '查场馆流水': 'query_venue_turnover',
     '流水锁定': 'query_venue_turnover',
     '配置返水': 'configure_rebate',
@@ -1012,7 +1019,7 @@ function normalizeCommandAction(action, cmd = {}) {
   };
   const normalized = aliases[raw] || raw;
   if (hasMerchantCommandHint(cmd) && (raw === '' || raw === 'unlock_sms')) return 'merchant_order_statistics';
-  return ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg', 'member_data_overview', 'query_member_line', 'query_login_device_ip', 'query_same_ip_device', 'query_venue_turnover', 'configure_rebate', 'merchant_order_statistics', 'urge_settlement', 'query_ticket_cancel_reason', 'venue_display_control'].includes(normalized)
+  return ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg', 'member_data_overview', 'query_member_line', 'query_login_device_ip', 'query_same_ip_device', 'disable_login_device', 'query_venue_turnover', 'configure_rebate', 'merchant_order_statistics', 'urge_settlement', 'query_ticket_cancel_reason', 'venue_display_control'].includes(normalized)
     ? normalized
     : 'unlock_sms';
 }
@@ -1030,6 +1037,7 @@ function isSupportedCommandAction(action, cmd = {}) {
     'query_member_line',
     'query_login_device_ip',
     'query_same_ip_device',
+    'disable_login_device',
     'query_venue_turnover',
     'configure_rebate',
     'merchant_order_statistics',
@@ -1051,6 +1059,8 @@ function isSupportedCommandAction(action, cmd = {}) {
     'query_device_ip',
     'same_ip_device',
     'query_same_device_ip',
+    'disable_device',
+    'disable_login_device_apply',
     'venue_turnover',
     'venue_turnover_lock',
     'query_venue_turnover_lock',
@@ -1065,6 +1075,8 @@ function isSupportedCommandAction(action, cmd = {}) {
     '查同IP',
     '查同ip',
     '查同设备',
+    '禁用设备',
+    '申请禁用设备',
     '查场馆流水',
     '流水锁定',
     '配置返水',
@@ -1831,6 +1843,98 @@ async function runQuerySameIpDeviceCommand(config, cmd, targetValue) {
   const replyText = lines.join('\n');
   await setStatus({ state: 'success', message: `同IP/设备查询完成：${members.length}人`, detail: replyText });
   await ack(config, cmd, 'reply_origin', `同IP/设备查询完成：${members.length}人`, { reply_text: replyText, stop_actions: true });
+}
+
+async function queryBulletFrameLogs(config, uuid) {
+  if (!config.bulletFrameLogUrl) throw new Error('设备关联接口未配置');
+  const cleanUuid = String(uuid || '').trim();
+  if (!cleanUuid) throw new Error('登录记录缺少设备UUID');
+  const pageSize = 50;
+  const list = [];
+  for (let pageNum = 1; pageNum <= 5; pageNum += 1) {
+    await setStatus({ state: 'running', message: `查询同设备关联 ${cleanUuid}` });
+    const result = await postJson(config.bulletFrameLogUrl, config.headers, {
+      pageNum,
+      pageSize,
+      ifNeedTag: 1,
+      uuid: cleanUuid
+    });
+    if (!apiOk(result.res, result.data)) {
+      throw new Error(`查询同设备关联失败 HTTP ${result.res.status}: ${result.text.slice(0, 300)}`);
+    }
+    const data = ((result.data || {}).data || {});
+    list.push(...(Array.isArray(data.list) ? data.list : []));
+    const pages = Math.max(1, Number(data.pages || 1));
+    if (pageNum >= pages) break;
+  }
+  return list;
+}
+
+function commandSiteLabel(cmd = {}, fallbackSite = '') {
+  const source = commandSourceText(cmd).replace(/\s+/g, '').toLowerCase();
+  const hint = String(cmd.backend_site || cmd.site || commandAiParse(cmd).site || fallbackSite || '').trim().toLowerCase();
+  if (source.includes('jn站') || source.includes('6站') || hint === '6' || hint === '6001' || hint === 'jn') return 'jn站';
+  return 'ml站';
+}
+
+function disableDeviceReason(cmd = {}) {
+  const match = commandSourceText(cmd).match(/禁用原因\s*[:：]\s*([^\r\n]+)/i);
+  return String((match && match[1]) || cmd.disable_reason || commandAiParse(cmd).reason || '广告引流').trim() || '广告引流';
+}
+
+function disableDeviceFlag(cmd = {}) {
+  const match = commandSourceText(cmd).match(/设备号禁用\s*[:：]\s*([^\r\n]+)/i);
+  return String((match && match[1]) || cmd.disable_device_flag || '是').trim() || '是';
+}
+
+function disableDeviceTelegramText(cmd = {}, memberName = '', uuid = '') {
+  return [
+    commandSiteLabel(cmd, actionSite('disable_login_device', cmd)),
+    '申请禁用设备',
+    `会员账号： ${memberName}`,
+    `设备号禁用：${disableDeviceFlag(cmd)}`,
+    `禁用原因： ${disableDeviceReason(cmd)}`,
+    String(uuid || '').trim()
+  ].filter((line) => line !== '').join('\n');
+}
+
+function relatedDeviceAccounts(items = [], memberName = '') {
+  const current = cleanMemberToken(memberName);
+  const seen = new Set();
+  const accounts = [];
+  for (const item of items || []) {
+    const name = cleanMemberToken(item && item.name);
+    if (!name || name === current || seen.has(name) || !isLikelyBackendMember(name)) continue;
+    seen.add(name);
+    accounts.push(name);
+  }
+  return accounts;
+}
+
+async function runDisableLoginDeviceCommand(config, cmd, targetValue) {
+  if (!config.loginLogUrl) throw new Error('登录日志接口未配置');
+  if (!config.bulletFrameLogUrl) throw new Error('设备关联接口未配置');
+  const memberName = commandMembers(cmd, targetValue)[0] || cleanMemberToken(targetValue);
+  if (!memberName || !isLikelyBackendMember(memberName)) throw new Error('未提取到会员账号');
+  const logs = await queryLoginLogs(config, memberName, 360);
+  const latest = logs.find((item) => String(item.uuid || '').trim())
+    || logs.find((item) => cleanMemberToken(item.name) === memberName);
+  const uuid = String((latest && latest.uuid) || '').trim();
+  if (!uuid) throw new Error(`${memberName} 未找到可用设备UUID`);
+  const deviceLogs = await queryBulletFrameLogs(config, uuid);
+  const accounts = relatedDeviceAccounts(deviceLogs, memberName);
+  const replyText = accounts.length ? `${accounts.join('、')} 已反馈。` : '无关联，已反馈。';
+  const telegramText = disableDeviceTelegramText(cmd, memberName, uuid);
+  const telegramTarget = String(cmd.telegram_target || cmd.forward_to || DEFAULT_DISABLE_DEVICE_TG_TARGET);
+  await sendTelegramMessageFromCommand(
+    config,
+    { ...cmd, action: 'disable_login_device', telegram_target: telegramTarget },
+    telegramText,
+    { action: 'disable_login_device', targetLabel: '禁用设备TG群' }
+  );
+  const msg = `禁用设备申请已反馈：${memberName} ${uuid}`;
+  await setStatus({ state: 'success', message: msg, detail: `${replyText}\n${telegramText}` });
+  await ack(config, cmd, 'reply_origin', msg, { reply_text: replyText, stop_actions: true });
 }
 
 function normalizeVenueName(value) {
@@ -2671,15 +2775,17 @@ async function recordTelegramUrgeMatchIds(matchIds = []) {
   await chrome.storage.local.set({ [MERCHANT_URGE_MATCH_STATS_KEY]: stats });
 }
 
-async function sendTelegramFromCommand(config, cmd, text) {
+async function sendTelegramMessageFromCommand(config, cmd, text, options = {}) {
   const target = String(cmd.telegram_target || cmd.forward_to || '').trim();
-  if (!target) throw new Error('未配置催结算TG群');
+  const targetLabel = String(options.targetLabel || 'TG目标群');
+  if (!target) throw new Error(`未配置${targetLabel}`);
+  const action = String(options.action || cmd.action || 'urge_settlement').trim() || 'urge_settlement';
   const res = await fetch(`${config.botBase}/api/cmd/send_telegram?secret=${encodeURIComponent(config.cmdSecret)}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       id: cmd.id,
-      action: 'urge_settlement',
+      action,
       rule: cmd.rule || '',
       chat_id: cmd.chat_id || cmd.source_chat_id || '',
       message_id: cmd.message_id || cmd.source_message_id || '',
@@ -2696,6 +2802,13 @@ async function sendTelegramFromCommand(config, cmd, text) {
     throw new Error(data.error || `TG发送失败 HTTP ${res.status}`);
   }
   return data;
+}
+
+async function sendTelegramFromCommand(config, cmd, text) {
+  return sendTelegramMessageFromCommand(config, cmd, text, {
+    action: 'urge_settlement',
+    targetLabel: '催结算TG群'
+  });
 }
 
 function commandArrayValue(cmd = {}, ...keys) {
@@ -3680,7 +3793,7 @@ async function runBackendCommand(config, cmd) {
     ? (cmd.orderNo || cmd.order_no || cmd.target_value || cmd.member_name || '')
     : (cmd.target_value || cmd.member_name || '');
   const label = commandLabel(action);
-  if (!String(rawValue || '').trim() && ['member_data_overview', 'query_member_line', 'query_login_device_ip', 'query_same_ip_device', 'query_venue_turnover'].includes(action)) {
+  if (!String(rawValue || '').trim() && ['member_data_overview', 'query_member_line', 'query_login_device_ip', 'query_same_ip_device', 'disable_login_device', 'query_venue_turnover'].includes(action)) {
     rawValue = commandMembers(cmd, '')[0] || '';
   }
   const targetValue = action === 'add_proxy_whitelist' || action === 'merchant_order_statistics' || action === 'urge_settlement' || action === 'query_ticket_cancel_reason'
@@ -3731,6 +3844,10 @@ async function runBackendCommand(config, cmd) {
     }
     if (action === 'query_same_ip_device') {
       await runQuerySameIpDeviceCommand(config, cmd, targetValue);
+      return;
+    }
+    if (action === 'disable_login_device') {
+      await runDisableLoginDeviceCommand(config, cmd, targetValue);
       return;
     }
     if (action === 'query_venue_turnover') {

@@ -1318,6 +1318,7 @@
                                                     <option value="query_member_line">查线</option>
                                                     <option value="query_login_device_ip">查登录设备/IP</option>
                                                     <option value="query_same_ip_device">查同 IP/设备</option>
+                                                    <option value="disable_login_device">禁用设备申请</option>
                                                     <option value="query_venue_turnover">查场馆流水锁定</option>
                                                     <option value="configure_rebate">配置返水</option>
                                                     <option value="urge_settlement">催结算</option>
@@ -1374,7 +1375,7 @@
                                         <div class="field-card backend-grid" v-if="step.type === 'agent_orchestrator'">
                                             <div class="field full">
                                                 <label>Agent 流程</label>
-                                                <span class="hint">自动拆解消息，只允许调用现有能力：查数据、催结算、取消/失败原因、查线、查设备/IP、查同IP设备、查场馆流水、配置返水、短信/验证码限制、登录密码试错限制、代理 IP 加白、迁移米兰。不支持的诉求不会编结果。</span>
+                                                <span class="hint">自动拆解消息，只允许调用现有能力：查数据、催结算、取消/失败原因、查线、查设备/IP、查同IP设备、禁用设备、查场馆流水、配置返水、短信/验证码限制、登录密码试错限制、代理 IP 加白、迁移米兰。不支持的诉求不会编结果。</span>
                                             </div>
                                             <div class="field">
                                                 <label>TG 催结算群</label>
@@ -1552,6 +1553,7 @@
                                                         <option value="query_member_line">查线</option>
                                                         <option value="query_login_device_ip">查登录设备/IP</option>
                                                         <option value="query_same_ip_device">查同 IP/设备</option>
+                                                        <option value="disable_login_device">禁用设备申请</option>
                                                         <option value="query_venue_turnover">查场馆流水锁定</option>
                                                         <option value="configure_rebate">配置返水</option>
                                                         <option value="urge_settlement">催结算</option>
@@ -2915,6 +2917,7 @@ createApp({
             query_member_line: "查线",
             query_login_device_ip: "查设备IP",
             query_same_ip_device: "查同IP设备",
+            disable_login_device: "禁用设备",
             query_venue_turnover: "流水锁定",
             configure_rebate: "配置返水",
             merchant_order_statistics: "查注单",
