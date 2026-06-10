@@ -2762,10 +2762,12 @@ def queue_backend_unlock_command(target_value, rule, event, action="unlock_sms",
         if unlock_value:
             command["value"] = unlock_value
     if action == "disable_login_device":
+        step_account = str((step or {}).get("telegram_account") or "").strip()
+        telegram_account = resolve_client_name(step_account) or step_account or monitor_rule_account_name(rule)
         command.update({
             "backend_site": ai_parse.get("site") or agent_site_hint_from_text(command.get("source_text") or "") or "9001",
             "telegram_target": str((step or {}).get("forward_to") or DEFAULT_DISABLE_DEVICE_TG_TARGET).strip() or DEFAULT_DISABLE_DEVICE_TG_TARGET,
-            "telegram_account": str((step or {}).get("telegram_account") or "").strip(),
+            "telegram_account": telegram_account,
             "disable_reason": str(ai_parse.get("reason") or extract_disable_device_reason(command.get("source_text") or "") or "").strip(),
         })
     enqueue_pending_command(command)
