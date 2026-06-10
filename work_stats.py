@@ -37,6 +37,14 @@ def env_int(name, default):
 WORK_STATS_FETCH_RETRIES = max(1, env_int("WORK_STATS_FETCH_RETRIES", 8))
 WORK_STATS_SYNC_RETRIES = max(1, env_int("WORK_STATS_SYNC_RETRIES", 3))
 WORK_STATS_RETRY_SECONDS = max(1, env_int("WORK_STATS_RETRY_SECONDS", 45))
+MANUAL_WORKLOAD_GROUP = (os.environ.get("WORK_STATS_MANUAL_GROUP") or "YY5-HTPZ 记录").strip()
+MANUAL_WORKLOAD_WORKER = (os.environ.get("WORK_STATS_MANUAL_WORKER") or "ARATAKITO").strip()
+MANUAL_WORKLOAD_ROW_OCCURRENCE = max(1, env_int("WORK_STATS_MANUAL_ROW_OCCURRENCE", 3))
+MANUAL_WORKLOAD_SCAN_LIMIT = max(50, env_int("WORK_STATS_MANUAL_SCAN_LIMIT", 800))
+MANUAL_WORKLOAD_DIALOG_LIMIT = max(50, env_int("WORK_STATS_MANUAL_DIALOG_LIMIT", 500))
+MANUAL_WORKLOAD_AUTO_HOUR = min(23, max(0, env_int("WORK_STATS_MANUAL_AUTO_HOUR", 4)))
+MANUAL_WORKLOAD_AUTO_MINUTE = min(59, max(0, env_int("WORK_STATS_MANUAL_AUTO_MINUTE", 45)))
+MANUAL_WORKLOAD_AUTO_ENABLED = str(os.environ.get("WORK_STATS_MANUAL_AUTO_ENABLED", "1")).strip().lower() not in ("0", "false", "no", "off")
 WORK_STATS_AUTO_STATE = {
     "enabled": False,
     "status": "未启动",
@@ -50,6 +58,25 @@ WORK_STATS_AUTO_STATE = {
     "last_sync_msg": "",
     "updated_at": "",
 }
+MANUAL_WORKLOAD_AUTO_STATE = {
+    "enabled": False,
+    "status": "未启动",
+    "source_group": MANUAL_WORKLOAD_GROUP,
+    "worker": MANUAL_WORKLOAD_WORKER,
+    "row_occurrence": MANUAL_WORKLOAD_ROW_OCCURRENCE,
+    "next_run": "",
+    "last_started": "",
+    "last_finished": "",
+    "last_target_day": "",
+    "last_total": 0,
+    "last_chat_id": "",
+    "last_chat_title": "",
+    "last_message_id": "",
+    "last_message_link": "",
+    "last_error": "",
+    "last_sync_msg": "",
+    "updated_at": "",
+}
 
 def bj_now_text():
     return datetime.now(BJ_TZ).strftime("%Y-%m-%d %H:%M:%S")
@@ -57,6 +84,10 @@ def bj_now_text():
 def update_auto_state(**kwargs):
     WORK_STATS_AUTO_STATE.update(kwargs)
     WORK_STATS_AUTO_STATE["updated_at"] = bj_now_text()
+
+def update_manual_workload_state(**kwargs):
+    MANUAL_WORKLOAD_AUTO_STATE.update(kwargs)
+    MANUAL_WORKLOAD_AUTO_STATE["updated_at"] = bj_now_text()
 
 def mask_url(url):
     if not url:
@@ -210,6 +241,271 @@ async def sync_data_for_auto(day, month, year, stats_data):
             await asyncio.sleep(WORK_STATS_RETRY_SECONDS)
     return False, last_msg
 
+def _message_bj_datetime(message_date):
+    if not message_date:
+        return datetime.now(BJ_TZ)
+    if message_date.tzinfo is None:
+        return message_date.replace(tzinfo=timezone.utc).astimezone(BJ_TZ)
+    return message_date.astimezone(BJ_TZ)
+
+def _strip_export_prefix(line):
+    text = (line or "").strip()
+    if not text:
+        return ""
+    # Telegram export lines look like: [2026/6/3 10:34] sender: 6.1 ARATAKITO
+    if text.startswith("[") and "]" in text:
+        after_time = text.split("]", 1)[1].strip()
+        if ":" in after_time:
+            return after_time.split(":", 1)[1].strip()
+        return after_time
+    return text
+
+def _is_export_message_header(line):
+    return bool(re.match(r"^\[\d{4}/\d{1,2}/\d{1,2}\s+\d{1,2}:\d{2}\]", (line or "").strip()))
+
+def _parse_workload_date(line, fallback_dt):
+    text = _strip_export_prefix(line)
+    patterns = (
+        re.compile(r"(?:(?P<year>\d{4})[./年-]\s*)?(?P<month>\d{1,2})\s*[./]\s*(?P<day>\d{1,2})"),
+        re.compile(r"(?:(?P<year>\d{4})年\s*)?(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*日?"),
+    )
+    fallback = fallback_dt or datetime.now(BJ_TZ)
+    for pattern in patterns:
+        match = pattern.search(text)
+        if not match:
+            continue
+        year = int(match.group("year") or fallback.year)
+        month = int(match.group("month"))
+        day = int(match.group("day"))
+        try:
+            parsed = datetime(year, month, day, tzinfo=BJ_TZ)
+        except ValueError:
+            continue
+        if not match.group("year") and (parsed - fallback).days > 180:
+            try:
+                parsed = datetime(year - 1, month, day, tzinfo=BJ_TZ)
+            except ValueError:
+                pass
+        return parsed.date()
+    return None
+
+def _looks_like_worker_header(line, worker, fallback_dt):
+    text = _strip_export_prefix(line)
+    if not text or worker.lower() not in text.lower():
+        return False
+    return _parse_workload_date(text, fallback_dt) is not None
+
+def _normalize_workload_line(line):
+    text = (line or "").strip()
+    if not text:
+        return ""
+    translate = str.maketrans({
+        "＋": "+",
+        "＊": "*",
+        "×": "*",
+        "ｘ": "x",
+        "Ｘ": "X",
+        "　": " ",
+        "（": "(",
+        "）": ")",
+        "【": "[",
+        "】": "]",
+        "，": ",",
+        "：": ":",
+    })
+    text = text.translate(translate)
+    text = re.sub(r"\([^)]*\)", " ", text)
+    text = re.sub(r"\[[^\]]*\]", " ", text)
+    return text
+
+def _format_quantity(value):
+    try:
+        if float(value).is_integer():
+            return int(value)
+    except Exception:
+        pass
+    return value
+
+def calculate_manual_workload_total(lines):
+    total = 0.0
+    details = []
+    product_re = re.compile(r"(?<![A-Za-z0-9])(\d+(?:\.\d+)?)\s*[*xX]\s*(\d+(?:\.\d+)?)(?![A-Za-z0-9\u4e00-\u9fff])")
+    number_re = re.compile(r"(?<![A-Za-z0-9])(\d+(?:\.\d+)?)(?![A-Za-z0-9\u4e00-\u9fff])")
+
+    for raw_line in lines:
+        line = _normalize_workload_line(raw_line)
+        if not line:
+            continue
+        line_total = 0.0
+
+        def replace_product(match):
+            nonlocal line_total
+            value = float(match.group(1)) * float(match.group(2))
+            line_total += value
+            return " "
+
+        line = product_re.sub(replace_product, line)
+        for match in number_re.finditer(line):
+            line_total += float(match.group(1))
+
+        if line_total:
+            total += line_total
+            details.append({
+                "line": raw_line.strip(),
+                "total": _format_quantity(line_total),
+            })
+
+    return _format_quantity(total), details
+
+def parse_manual_workload_entries(text, message_date=None, worker=None):
+    worker = (worker or MANUAL_WORKLOAD_WORKER or "").strip()
+    if not text or not worker:
+        return []
+    fallback_dt = _message_bj_datetime(message_date)
+    lines = str(text).splitlines()
+    entries = []
+    idx = 0
+
+    while idx < len(lines):
+        line = lines[idx]
+        if not _looks_like_worker_header(line, worker, fallback_dt):
+            idx += 1
+            continue
+
+        work_date = _parse_workload_date(line, fallback_dt)
+        body_lines = []
+        idx += 1
+        while idx < len(lines):
+            current = lines[idx]
+            if _is_export_message_header(current) or _looks_like_worker_header(current, worker, fallback_dt):
+                break
+            body_lines.append(current)
+            idx += 1
+
+        total, details = calculate_manual_workload_total(body_lines)
+        if details:
+            entries.append({
+                "worker": worker,
+                "date": work_date.isoformat() if work_date else "",
+                "day": work_date.day if work_date else "",
+                "month": work_date.month if work_date else "",
+                "year": work_date.year if work_date else "",
+                "total": total,
+                "details": details,
+                "raw_text": "\n".join([line] + body_lines).strip(),
+            })
+
+    return entries
+
+def _normalize_dialog_name(value):
+    return re.sub(r"\s+", "", str(value or "").strip().lower())
+
+async def resolve_manual_workload_group(client, group_ref=None):
+    target = str(group_ref or MANUAL_WORKLOAD_GROUP or "").strip()
+    if not target:
+        raise RuntimeError("未配置 WORK_STATS_MANUAL_GROUP")
+    if re.fullmatch(r"-?\d+", target):
+        return int(target), target
+
+    target_norm = _normalize_dialog_name(target)
+    partial_match = None
+    try:
+        async for dialog in client.iter_dialogs(limit=MANUAL_WORKLOAD_DIALOG_LIMIT):
+            name = getattr(dialog, "name", None) or getattr(getattr(dialog, "entity", None), "title", None) or ""
+            name_norm = _normalize_dialog_name(name)
+            if not name_norm:
+                continue
+            if name_norm == target_norm:
+                return dialog.id, name
+            if not partial_match and target_norm in name_norm:
+                partial_match = (dialog.id, name)
+    except Exception as e:
+        raise RuntimeError(f"读取 Telegram 群列表失败: {e}")
+
+    if partial_match:
+        return partial_match
+    raise RuntimeError(f"未找到群组：{target}，请确认监听账号已加入该群，或把群 ID 填到 WORK_STATS_MANUAL_GROUP")
+
+def build_tg_message_link(chat_id, message_id):
+    try:
+        chat_text = str(int(chat_id))
+    except Exception:
+        chat_text = str(chat_id or "")
+    if chat_text.startswith("-100"):
+        return f"https://t.me/c/{chat_text[4:]}/{message_id}"
+    return ""
+
+async def find_latest_manual_workload_entry(client, group_ref=None, worker=None, limit=None):
+    chat_id, chat_title = await resolve_manual_workload_group(client, group_ref)
+    worker = (worker or MANUAL_WORKLOAD_WORKER).strip()
+    scan_limit = int(limit or MANUAL_WORKLOAD_SCAN_LIMIT)
+
+    async for message in client.iter_messages(chat_id, limit=scan_limit):
+        text = getattr(message, "text", None) or getattr(message, "raw_text", None) or ""
+        if not text or worker.lower() not in text.lower():
+            continue
+        entries = parse_manual_workload_entries(text, getattr(message, "date", None), worker=worker)
+        if not entries:
+            continue
+        entry = entries[0]
+        entry.update({
+            "chat_id": chat_id,
+            "chat_title": chat_title,
+            "message_id": getattr(message, "id", ""),
+            "message_date": _message_bj_datetime(getattr(message, "date", None)).strftime("%Y-%m-%d %H:%M:%S"),
+            "message_link": build_tg_message_link(chat_id, getattr(message, "id", "")),
+        })
+        return entry
+    raise RuntimeError(f"最近 {scan_limit} 条消息里没有找到 {worker} 工作量记录")
+
+def sync_manual_workload_via_script(entry):
+    date_text = str(entry.get("date") or "")
+    payload = {
+        "worker": entry.get("worker") or MANUAL_WORKLOAD_WORKER,
+        "name": entry.get("worker") or MANUAL_WORKLOAD_WORKER,
+        "row_occurrence": MANUAL_WORKLOAD_ROW_OCCURRENCE,
+        "date": date_text,
+        "day": entry.get("day"),
+        "month": entry.get("month"),
+        "year": entry.get("year"),
+        "total": entry.get("total"),
+        "quantity": entry.get("total"),
+        "source_group": entry.get("chat_title") or MANUAL_WORKLOAD_GROUP,
+        "source_group_id": entry.get("chat_id"),
+        "message_id": entry.get("message_id"),
+        "message_date": entry.get("message_date"),
+        "message_link": entry.get("message_link"),
+        "details": entry.get("details") or [],
+        "raw_text": entry.get("raw_text") or "",
+    }
+    data, status = call_gas("sync_manual_workload", payload, timeout=25)
+    if not data:
+        return False, status
+    if data.get("success"):
+        return True, data.get("msg") or status
+    return False, "GAS返回错误: " + str(data.get("msg") or data)
+
+async def sync_manual_workload_for_auto(entry):
+    last_msg = ""
+    for attempt in range(1, WORK_STATS_SYNC_RETRIES + 1):
+        success, msg = await run_blocking(sync_manual_workload_via_script, entry)
+        if success:
+            if attempt > 1:
+                logger.info(f"✅ ARATAKITO 工作量同步重试成功: 第 {attempt}/{WORK_STATS_SYNC_RETRIES} 次")
+            return True, msg
+        last_msg = msg
+        logger.error(f"❌ ARATAKITO 工作量同步失败({attempt}/{WORK_STATS_SYNC_RETRIES}): {msg}")
+        if attempt < WORK_STATS_SYNC_RETRIES:
+            await asyncio.sleep(WORK_STATS_RETRY_SECONDS)
+    return False, last_msg
+
+async def run_manual_workload_once(client, sync=True):
+    entry = await find_latest_manual_workload_entry(client)
+    if not sync:
+        return True, "仅扫描，未同步", entry
+    success, msg = await sync_manual_workload_for_auto(entry)
+    return success, msg, entry
+
 # 3. 扫描函数：自动任务和手动页面共用同一套逻辑
 async def scan_work_stats(client, start_time, end_time, keywords, result_queue=None, include_matches=False):
     stats = {kw: {'promo': 0, 'assist': 0} for kw in keywords}
@@ -342,6 +638,77 @@ async def daily_scheduler(client):
         except Exception as e:
             logger.error(f"❌ 调度器错误: {e}")
             update_auto_state(status="调度器错误", last_finished=bj_now_text(), last_error=str(e))
+            await asyncio.sleep(60)
+
+async def manual_workload_scheduler(client):
+    if not MANUAL_WORKLOAD_AUTO_ENABLED:
+        update_manual_workload_state(enabled=False, status="已关闭")
+        logger.info("⏸️ ARATAKITO 工作量自动同步已关闭 (WORK_STATS_MANUAL_AUTO_ENABLED=0)")
+        return
+
+    logger.info(
+        f"⏰ ARATAKITO 工作量自动同步已启动 "
+        f"(目标: 每天北京时间 {MANUAL_WORKLOAD_AUTO_HOUR:02d}:{MANUAL_WORKLOAD_AUTO_MINUTE:02d})"
+    )
+    update_manual_workload_state(enabled=True, status="等待执行")
+    last_run_date = None
+
+    while True:
+        try:
+            now = datetime.now(BJ_TZ)
+            today_str = now.strftime("%Y-%m-%d")
+            target_date = now + timedelta(days=1) if last_run_date == today_str else now
+            target = target_date.replace(
+                hour=MANUAL_WORKLOAD_AUTO_HOUR,
+                minute=MANUAL_WORKLOAD_AUTO_MINUTE,
+                second=random.randint(0, 59),
+                microsecond=0,
+            )
+            if now >= target:
+                target = (now + timedelta(days=1)).replace(
+                    hour=MANUAL_WORKLOAD_AUTO_HOUR,
+                    minute=MANUAL_WORKLOAD_AUTO_MINUTE,
+                    second=random.randint(0, 59),
+                    microsecond=0,
+                )
+
+            update_manual_workload_state(status="等待执行", next_run=target.strftime("%Y-%m-%d %H:%M:%S"), last_error="")
+            await asyncio.sleep((target - now).total_seconds())
+
+            logger.info("🤖 开始执行 ARATAKITO 工作量自动同步...")
+            update_manual_workload_state(
+                status="执行中",
+                last_started=bj_now_text(),
+                last_finished="",
+                last_total=0,
+                last_error="",
+                last_sync_msg="",
+            )
+            success, msg, entry = await run_manual_workload_once(client, sync=True)
+            state_payload = {
+                "last_finished": bj_now_text(),
+                "last_target_day": entry.get("date", ""),
+                "last_total": entry.get("total", 0),
+                "last_chat_id": str(entry.get("chat_id", "")),
+                "last_chat_title": entry.get("chat_title", ""),
+                "last_message_id": str(entry.get("message_id", "")),
+                "last_message_link": entry.get("message_link", ""),
+                "last_sync_msg": msg,
+            }
+            if success:
+                logger.info(f"✅ ARATAKITO 工作量同步成功: {entry.get('date')} -> {entry.get('total')} | {msg}")
+                update_manual_workload_state(status="同步成功", last_error="", **state_payload)
+            else:
+                logger.error(f"❌ ARATAKITO 工作量同步失败: {msg}")
+                update_manual_workload_state(status="同步失败", last_error=msg, **state_payload)
+
+            last_run_date = datetime.now(BJ_TZ).strftime("%Y-%m-%d")
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"❌ ARATAKITO 工作量调度器错误: {e}")
+            update_manual_workload_state(status="调度器错误", last_finished=bj_now_text(), last_error=str(e))
             await asyncio.sleep(60)
 
 # ==========================================
@@ -683,6 +1050,7 @@ async def perform_scan(client, start_time, end_time, keywords, result_queue):
 def init_stats_blueprint(app, client, bot_loop, _unused_args=None):
     if bot_loop and client:
         bot_loop.create_task(daily_scheduler(client))
+        bot_loop.create_task(manual_workload_scheduler(client))
 
     @app.route('/tool/work_stats')
     def work_stats_view():
@@ -725,6 +1093,61 @@ def init_stats_blueprint(app, client, bot_loop, _unused_args=None):
             "retry_seconds": WORK_STATS_RETRY_SECONDS,
         })
         return json.dumps(payload, ensure_ascii=False), 200, {'Content-Type': 'application/json; charset=utf-8'}
+
+    @app.route('/api/manual_workload_auto_status')
+    def manual_workload_auto_status():
+        url, source = get_gas_url_status()
+        payload = dict(MANUAL_WORKLOAD_AUTO_STATE)
+        payload.update({
+            "gas_configured": bool(url),
+            "gas_source": source,
+            "gas_url": mask_url(url),
+            "scan_limit": MANUAL_WORKLOAD_SCAN_LIMIT,
+            "dialog_limit": MANUAL_WORKLOAD_DIALOG_LIMIT,
+            "auto_hour": MANUAL_WORKLOAD_AUTO_HOUR,
+            "auto_minute": MANUAL_WORKLOAD_AUTO_MINUTE,
+            "sync_action": "sync_manual_workload",
+        })
+        return json.dumps(payload, ensure_ascii=False), 200, {'Content-Type': 'application/json; charset=utf-8'}
+
+    @app.route('/api/manual_workload_scan', methods=['GET', 'POST'])
+    def manual_workload_scan():
+        sync = str(request.values.get("sync", "1")).strip().lower() not in ("0", "false", "no", "off")
+        update_manual_workload_state(
+            status="手动执行中",
+            last_started=bj_now_text(),
+            last_finished="",
+            last_error="",
+            last_sync_msg="",
+        )
+        try:
+            future = asyncio.run_coroutine_threadsafe(run_manual_workload_once(client, sync=sync), bot_loop)
+            success, msg, entry = future.result(timeout=180)
+            payload = {
+                "success": success,
+                "msg": msg,
+                "synced": bool(sync and success),
+                "entry": entry,
+            }
+            state_payload = {
+                "last_finished": bj_now_text(),
+                "last_target_day": entry.get("date", ""),
+                "last_total": entry.get("total", 0),
+                "last_chat_id": str(entry.get("chat_id", "")),
+                "last_chat_title": entry.get("chat_title", ""),
+                "last_message_id": str(entry.get("message_id", "")),
+                "last_message_link": entry.get("message_link", ""),
+                "last_sync_msg": msg,
+            }
+            if success:
+                update_manual_workload_state(status="手动成功", last_error="", **state_payload)
+            else:
+                update_manual_workload_state(status="手动失败", last_error=msg, **state_payload)
+            return json.dumps(payload, ensure_ascii=False), 200, {'Content-Type': 'application/json; charset=utf-8'}
+        except Exception as e:
+            msg = str(e)
+            update_manual_workload_state(status="手动失败", last_finished=bj_now_text(), last_error=msg)
+            return json.dumps({"success": False, "msg": msg}, ensure_ascii=False), 500, {'Content-Type': 'application/json; charset=utf-8'}
 
     @app.route('/api/work_stats_stream')
     def work_stats_stream():
