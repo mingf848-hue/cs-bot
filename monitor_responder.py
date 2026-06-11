@@ -74,6 +74,7 @@ system_cs_prefixes = []
 service_started_at = datetime.now(BJ_TZ)
 runtime_stats_lock = threading.Lock()
 runtime_stats = {"records": [], "daily": {}}
+current_config_lock = threading.RLock()
 ALBUM_REPLY_DEDUP_LIMIT = 5000
 album_reply_dedup_queue = deque()
 album_reply_dedup_keys = set()
@@ -1509,6 +1510,25 @@ def get_account_summaries():
         })
     return accounts
 
+def build_monitor_status_payload(account_name=None):
+    account = str(account_name or MAIN_NAME).strip() or MAIN_NAME
+    with current_config_lock:
+        global_enabled = bool(current_config.get("enabled", True))
+        per_account = normalize_account_monitor_enabled(current_config.get("account_monitor_enabled", {}))
+        account_enabled = bool(per_account.get(account, True))
+        per_account_payload = clone_config_data(per_account)
+    return {
+        "server_time": now_bj().isoformat(),
+        "main_account": MAIN_NAME,
+        "account": account,
+        "enabled": global_enabled,
+        "global_enabled": global_enabled,
+        "account_enabled": account_enabled,
+        "effective_enabled": bool(global_enabled and account_enabled),
+        "account_monitor_enabled": per_account_payload,
+        "accounts": get_account_summaries()
+    }
+
 def build_monitor_runtime_stats(limit=160):
     now = now_bj()
     today = now.strftime("%Y-%m-%d")
@@ -1847,6 +1867,65 @@ async def is_monitor_own_account(client, event, other_cs_ids):
             pass
 
     return False
+
+async def get_listener_self_user_id(client, account_name):
+    account = str(account_name or MAIN_NAME).strip() or MAIN_NAME
+    if account in client_user_ids:
+        return client_user_ids.get(account)
+    try:
+        me = await client.get_me()
+        if me:
+            client_user_ids[account] = me.id
+            return me.id
+    except Exception:
+        return None
+    return None
+
+def parse_saved_monitor_toggle_command(text):
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if compact == "开":
+        return True
+    if compact == "关":
+        return False
+    return None
+
+async def is_saved_messages_event(client, account_name, event):
+    self_user_id = await get_listener_self_user_id(client, account_name)
+    if not self_user_id:
+        return False
+    try:
+        return int(getattr(event, "chat_id", 0) or 0) == int(self_user_id)
+    except Exception:
+        return str(getattr(event, "chat_id", "") or "") == str(self_user_id)
+
+async def handle_saved_monitor_toggle_command(client, account_name, event):
+    desired = parse_saved_monitor_toggle_command(getattr(event, "raw_text", None) or getattr(event, "text", ""))
+    if desired is None:
+        return False
+    if not await is_saved_messages_event(client, account_name, event):
+        return False
+
+    success, msg = save_account_monitor_effective_enabled(account_name, desired)
+    if not success:
+        logger.error(f"❌ [MonitorControl] {account_name} 收藏夹开关失败: {msg}")
+        return True
+
+    try:
+        await client.delete_messages(event.chat_id, [event.id])
+    except Exception as e:
+        logger.warning(f"⚠️ [MonitorControl] {account_name} 收藏夹指令删除失败 Msg={getattr(event, 'id', '-')}: {e}")
+
+    record_runtime_event(
+        "monitor_toggle",
+        "success",
+        f"收藏夹指令已{'开启' if desired else '关闭'}监听",
+        rule={"id": "__monitor_saved_toggle__", "name": "收藏夹监听开关"},
+        event=event,
+        sender_name=account_name,
+        target_account=account_name,
+    )
+    logger.info(f"🎚️ [MonitorControl] {account_name} 收藏夹指令已{'开启' if desired else '关闭'}监听")
+    return True
 
 async def is_monitor_sender_cs(client, event, other_cs_ids, sender_obj=None):
     if await is_monitor_own_account(client, event, other_cs_ids):
@@ -2390,23 +2469,49 @@ def normalize_account_monitor_enabled(raw=None):
 
 def is_account_monitor_enabled(account_name):
     account = str(account_name or MAIN_NAME).strip() or MAIN_NAME
-    per_account = current_config.get("account_monitor_enabled", {})
-    if not isinstance(per_account, dict):
-        return True
-    return bool(per_account.get(account, True))
+    with current_config_lock:
+        per_account = current_config.get("account_monitor_enabled", {})
+        if not isinstance(per_account, dict):
+            return True
+        return bool(per_account.get(account, True))
 
 def save_account_monitor_enabled(account_name, enabled):
     global current_config
     account = str(account_name or MAIN_NAME).strip() or MAIN_NAME
     try:
-        current_config["account_monitor_enabled"] = normalize_account_monitor_enabled(current_config.get("account_monitor_enabled", {}))
-        current_config["account_monitor_enabled"][account] = bool(enabled)
-        if not persist_current_config():
-            return False, "配置持久化失败"
+        with current_config_lock:
+            updated_config = clone_config_data(current_config)
+            updated_config["account_monitor_enabled"] = normalize_account_monitor_enabled(updated_config.get("account_monitor_enabled", {}))
+            updated_config["account_monitor_enabled"][account] = bool(enabled)
+            success, msg = persist_config_data(updated_config)
+            if not success:
+                return False, msg or "配置持久化失败"
+            current_config = updated_config
         logger.info(f"💾 [Monitor] {account} 监听状态已更新: {'开启' if enabled else '暂停'}")
         return True, ""
     except Exception as e:
         logger.error(f"❌ [Monitor] {account} 监听状态保存失败: {e}")
+        return False, str(e)
+
+def save_account_monitor_effective_enabled(account_name, enabled):
+    global current_config
+    account = str(account_name or MAIN_NAME).strip() or MAIN_NAME
+    desired_effective = bool(enabled)
+    try:
+        with current_config_lock:
+            updated_config = clone_config_data(current_config)
+            updated_config["account_monitor_enabled"] = normalize_account_monitor_enabled(updated_config.get("account_monitor_enabled", {}))
+            updated_config["account_monitor_enabled"][account] = desired_effective
+            if desired_effective:
+                updated_config["enabled"] = True
+            success, msg = persist_config_data(updated_config)
+            if not success:
+                return False, msg or "配置持久化失败"
+            current_config = updated_config
+        logger.info(f"💾 [Monitor] {account} 监听生效状态已更新: {'开启' if desired_effective else '关闭'}")
+        return True, ""
+    except Exception as e:
+        logger.error(f"❌ [Monitor] {account} 监听生效状态保存失败: {e}")
         return False, str(e)
 AGENT_CAPABILITIES = [
     {
@@ -3944,6 +4049,39 @@ def load_config(system_cs_prefixes):
     current_config["rules"] = clean_rules
     current_config["resources"] = normalize_monitor_resources(current_config.get("resources", {}), clean_rules, system_cs_prefixes)
 
+def persist_config_data(config_data):
+    try:
+        serialized_config = json.dumps(config_data, ensure_ascii=False)
+        if redis_client:
+            try:
+                if not redis_client.set(REDIS_KEY, serialized_config):
+                    return False, "Redis 保存失败"
+                saved_raw = redis_client.get(REDIS_KEY)
+                if isinstance(saved_raw, bytes):
+                    saved_raw = saved_raw.decode("utf-8")
+                if saved_raw != serialized_config:
+                    return False, "Redis 保存校验失败"
+            except Exception as e:
+                logger.error(f"❌ [Monitor] Redis 保存失败: {e}")
+                return False, f"Redis 保存失败: {e}"
+
+        tmp_file = f"{CONFIG_FILE}.tmp"
+        with open(tmp_file, 'w', encoding='utf-8') as f:
+            json.dump(config_data, f, indent=4, ensure_ascii=False)
+        os.replace(tmp_file, CONFIG_FILE)
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                saved_file = json.load(f)
+            if saved_file != config_data:
+                return False, "本地配置保存校验失败"
+        except Exception as e:
+            logger.error(f"❌ [Monitor] 本地配置保存校验失败: {e}")
+            return False, f"本地配置保存校验失败: {e}"
+        return True, ""
+    except Exception as e:
+        logger.error(f"❌ [Monitor] 配置持久化失败: {e}")
+        return False, str(e)
+
 def save_config(new_config):
     global current_config
     try:
@@ -4031,30 +4169,11 @@ def save_config(new_config):
         new_config["rules"] = clean_rules
         new_config["resources"] = normalize_monitor_resources(new_config.get("resources", {}), clean_rules, system_cs_prefixes)
         
-        serialized_config = json.dumps(new_config, ensure_ascii=False)
-        if redis_client:
-            try: 
-                if not redis_client.set(REDIS_KEY, serialized_config):
-                    return False, "Redis 保存失败"
-                saved_raw = redis_client.get(REDIS_KEY)
-                if saved_raw != serialized_config:
-                    return False, "Redis 保存校验失败"
-            except Exception as e:
-                logger.error(f"❌ [Monitor] Redis 保存失败: {e}")
-                return False, f"Redis 保存失败: {e}"
-        
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(new_config, f, indent=4, ensure_ascii=False)
-        try:
-            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                saved_file = json.load(f)
-            if saved_file.get("rules") != new_config.get("rules"):
-                return False, "本地配置保存校验失败"
-        except Exception as e:
-            logger.error(f"❌ [Monitor] 本地配置保存校验失败: {e}")
-            return False, f"本地配置保存校验失败: {e}"
-        
-        current_config = new_config
+        with current_config_lock:
+            success, msg = persist_config_data(new_config)
+            if not success:
+                return False, msg or "配置持久化失败"
+            current_config = new_config
         logger.info(f"💾 [Monitor] 配置已更新并保存")
         return True, "保存成功"
     except Exception as e:
@@ -4171,18 +4290,14 @@ async def send_command_telegram_message(account_name, target, text, cmd=None):
 def save_monitor_enabled(enabled):
     global current_config
     try:
-        current_config["enabled"] = bool(enabled)
-        if redis_client:
-            try:
-                redis_client.set(REDIS_KEY, json.dumps(current_config, ensure_ascii=False))
-            except Exception as e:
-                logger.error(f"❌ [Monitor] Redis 保存监听状态失败: {e}")
-                return False, str(e)
-
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(current_config, f, indent=4, ensure_ascii=False)
-
-        logger.info(f"💾 [Monitor] 监听状态已更新: {'开启' if current_config['enabled'] else '暂停'}")
+        with current_config_lock:
+            updated_config = clone_config_data(current_config)
+            updated_config["enabled"] = bool(enabled)
+            success, msg = persist_config_data(updated_config)
+            if not success:
+                return False, msg or "配置持久化失败"
+            current_config = updated_config
+        logger.info(f"💾 [Monitor] 监听状态已更新: {'开启' if bool(enabled) else '暂停'}")
         return True, ""
     except Exception as e:
         logger.error(f"❌ [Monitor] 监听状态保存失败: {e}")
@@ -4190,11 +4305,9 @@ def save_monitor_enabled(enabled):
 
 def persist_current_config():
     try:
-        if redis_client:
-            redis_client.set(REDIS_KEY, json.dumps(current_config, ensure_ascii=False))
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(current_config, f, indent=4, ensure_ascii=False)
-        return True
+        with current_config_lock:
+            success, _ = persist_config_data(current_config)
+            return success
     except Exception as e:
         logger.error(f"❌ [Monitor] 配置持久化失败: {e}")
         return False
@@ -5445,7 +5558,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @app.route('/tool/monitor_settings_json')
     def monitor_settings_json():
-        data = current_config.copy()
+        with current_config_lock:
+            data = clone_config_data(current_config)
         data["available_accounts"] = [k for k in global_clients.keys() if k != MAIN_NAME]
         data["main_account"] = MAIN_NAME
         data["accounts"] = get_account_summaries()
@@ -5459,11 +5573,19 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             limit = 160
         return jsonify(build_monitor_runtime_stats(limit=limit))
 
+    @app.route('/api/monitor_status')
+    def monitor_status_api():
+        account = str(request.args.get("account") or "").strip()
+        return jsonify(build_monitor_status_payload(account or MAIN_NAME))
+
     @app.route('/api/monitor_settings', methods=['POST'])
     def update_monitor_settings():
         success, msg = save_config(request.get_json(silent=True) or {})
-        data = current_config.copy() if success else {}
-        if success:
+        return_config = str(request.args.get("return_config", "1")).strip().lower() not in ("0", "false", "no", "off")
+        data = {}
+        if success and return_config:
+            with current_config_lock:
+                data = clone_config_data(current_config)
             data["available_accounts"] = [k for k in global_clients.keys() if k != MAIN_NAME]
             data["main_account"] = MAIN_NAME
             data["accounts"] = get_account_summaries()
@@ -5497,7 +5619,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         target_account = raw.get("target_account") if isinstance(raw, dict) else ""
         import_config, resolved_account = build_account_import_config(candidate, target_account)
         success, msg = save_config(import_config)
-        data = current_config.copy() if success else {}
+        with current_config_lock:
+            data = clone_config_data(current_config) if success else {}
         if success:
             data["available_accounts"] = [k for k in global_clients.keys() if k != MAIN_NAME]
             data["main_account"] = MAIN_NAME
@@ -5513,29 +5636,38 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @app.route('/api/monitor_toggle', methods=['POST'])
     def update_monitor_toggle():
+        global current_config
         data = request.get_json(silent=True) or {}
         account = str(data.get("account") or "").strip()
         enabled = data.get("enabled")
+        effective_enabled = data.get("effective_enabled")
         if account:
-            if enabled is None:
-                enabled = not is_account_monitor_enabled(account)
-            success, msg = save_account_monitor_enabled(account, bool(enabled))
-            return jsonify({
+            if effective_enabled is not None:
+                success, msg = save_account_monitor_effective_enabled(account, bool(effective_enabled))
+            else:
+                if enabled is None:
+                    enabled = not build_monitor_status_payload(account).get("effective_enabled", True)
+                    effective_enabled = enabled
+                if effective_enabled is not None and bool(effective_enabled):
+                    success, msg = save_account_monitor_effective_enabled(account, True)
+                else:
+                    success, msg = save_account_monitor_enabled(account, bool(enabled))
+            payload = build_monitor_status_payload(account)
+            payload.update({
                 "success": success,
-                "enabled": is_account_monitor_enabled(account),
-                "account": account,
-                "account_monitor_enabled": current_config.get("account_monitor_enabled", {}),
                 "msg": msg if not success else ""
             })
+            return jsonify(payload)
         if enabled is None:
-            enabled = not current_config.get("enabled", True)
+            with current_config_lock:
+                enabled = not bool(current_config.get("enabled", True))
         success, msg = save_monitor_enabled(bool(enabled))
-        return jsonify({
+        payload = build_monitor_status_payload(MAIN_NAME)
+        payload.update({
             "success": success,
-            "enabled": current_config.get("enabled", True),
-            "account_monitor_enabled": current_config.get("account_monitor_enabled", {}),
             "msg": msg if not success else ""
         })
+        return jsonify(payload)
 
     @app.route('/api/cmd/poll')
     def cmd_poll():
@@ -6289,6 +6421,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     async def multi_rule_handler(event, listener_client=None, listener_account=None):
         listener_client = listener_client or client
         listener_account = listener_account or MAIN_NAME
+        if await handle_saved_monitor_toggle_command(listener_client, listener_account, event):
+            return
         if event.text == "/debug": await event.reply("Monitor Debug: Alive v78 (Full Source)"); return
         if not current_config.get("enabled", True): return
         if not is_account_monitor_enabled(listener_account): return

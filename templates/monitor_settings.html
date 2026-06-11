@@ -81,6 +81,8 @@
         }
 
         svg { width: 18px; height: 18px; display: block; }
+        .spin { animation: spin .8s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
         .app-shell { min-height: 100vh; display: grid; grid-template-columns: 256px minmax(0, 1fr); }
 
         .sidebar {
@@ -651,6 +653,7 @@
         .flow-top { display: grid; grid-template-columns: minmax(165px, .36fr) minmax(0, 1fr); gap: 12px; }
         .step-actions { display: grid; gap: 6px; }
         .step-menu { width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; color: #536078; }
+        .step-menu svg { pointer-events: none; }
         .step-menu:hover { background: #f2f5fb; }
         .step-drag { cursor: grab; color: #7a8498; }
         .step-drag:active { cursor: grabbing; }
@@ -987,10 +990,10 @@
 
         <main class="main">
             <header class="topbar">
-                <button class="env-pill" @click="toggleMonitorEnabled" :disabled="ui.togglingMonitor" :title="`控制 ${ui.ruleAccount} 的ZD监听`">
+                <button class="env-pill" @click="toggleMonitorEnabled" :disabled="ui.togglingMonitor" :aria-busy="ui.togglingMonitor ? 'true' : 'false'" :aria-pressed="isCurrentAccountMonitorActive ? 'true' : 'false'" :title="monitorButtonTitle">
                     <span class="status-dot" :style="{background: isCurrentAccountMonitorActive ? 'var(--green)' : 'var(--red)'}"></span>
-                    <span>{{ ui.togglingMonitor ? '切换中' : (isCurrentAccountMonitorActive ? `${ui.ruleAccount}监听开` : `${ui.ruleAccount}监听关`) }}</span>
-                    <i data-lucide="chevron-down"></i>
+                    <span>{{ monitorButtonText }}</span>
+                    <i :data-lucide="ui.togglingMonitor ? 'loader-2' : 'power'" :class="{spin: ui.togglingMonitor}"></i>
                 </button>
                 <button class="env-pill ai-pill" :class="isCurrentAiPrivateEnabled ? 'on' : 'off'" @click="toggleCurrentAiPrivateReply" :disabled="ui.saving" :title="`控制 ${ui.ruleAccount} 的私聊 AI 回复`">
                     <i data-lucide="bot"></i>
@@ -1092,7 +1095,7 @@
                         </div>
                     </div>
                     <div class="rule-list">
-                        <div v-for="rule in filteredRules" :key="rule.id" class="rule-card" :class="{selected: currentRule && currentRule.id === rule.id}" role="button" tabindex="0" @click="selectRule(rule)" @keydown.enter.prevent="selectRule(rule)" @keydown.space.prevent="selectRule(rule)">
+                        <div v-for="rule in filteredRules" :key="rule.id" class="rule-card" :class="{selected: currentRule && currentRule.id === rule.id}" role="button" tabindex="0" @click="selectRuleFromCard($event, rule)" @keydown.enter.prevent="selectRule(rule)" @keydown.space.prevent="selectRule(rule)">
                             <div class="drag-dots"><span></span><span></span><span></span></div>
                             <div>
                                 <div class="rule-name">{{ rule.name || '未命名规则' }}</div>
@@ -1100,9 +1103,9 @@
                             <div class="rule-actions">
                                 <span class="status-badge" :class="ruleStatus(rule).kind">{{ ruleStatus(rule).text }}</span>
                                 <div class="rule-buttons">
-                                    <button type="button" class="step-menu" @click.stop="duplicateRule(rule)" aria-label="复制规则" title="复制规则"><i data-lucide="copy"></i></button>
-                                    <button type="button" class="step-menu" @click.stop="removeRule(rule)" aria-label="删除规则" title="删除规则"><i data-lucide="trash-2"></i></button>
-                                    <button type="button" class="switch" :class="{on: rule.enabled}" :disabled="ui.saving" :aria-pressed="rule.enabled ? 'true' : 'false'" :title="rule.enabled ? '停用并保存' : '启用并保存'" @click.stop="toggleRuleEnabled(rule)"></button>
+                                    <button type="button" class="step-menu" @pointerdown.stop @click.stop.prevent="duplicateRule(rule)" aria-label="复制规则" title="复制规则"><i data-lucide="copy"></i></button>
+                                    <button type="button" class="step-menu" @pointerdown.stop @click.stop.prevent="removeRule(rule.id)" aria-label="删除规则" title="删除规则"><i data-lucide="trash-2"></i></button>
+                                    <button type="button" class="switch" :class="{on: rule.enabled}" :disabled="ui.saving" :aria-pressed="rule.enabled ? 'true' : 'false'" :title="rule.enabled ? '停用并保存' : '启用并保存'" @pointerdown.stop @click.stop.prevent="toggleRuleEnabled(rule)"></button>
                                 </div>
                             </div>
                         </div>
@@ -2210,6 +2213,7 @@ createApp({
         });
         const available_accounts = reactive([]);
         const importFileInput = ref(null);
+        const monitorToggle = reactive({ requestId: 0, account: "", desired: null });
         const ui = reactive({
             page: "dashboard",
             selectedId: "",
@@ -2226,9 +2230,6 @@ createApp({
             togglingMonitor: false
         });
         const stepDrag = reactive({ scope: "", from: -1, over: -1 });
-        let suppressAutoSave = false;
-        let autoSaveReady = false;
-        let autoSaveTimer = null;
         const toast = reactive({ show: false, msg: "", type: "success" });
         const formatDateTimeLocal = (date) => {
             const pad = value => String(value).padStart(2, "0");
@@ -2264,9 +2265,15 @@ createApp({
         ];
         const defaultFailureNotifyText = "后台自动处理失败，请人工核查。\n规则：{rule}\n动作：{action}\n目标：{target}\n状态：{status}\n原因：{reason}";
 
-        const refreshIcons = () => nextTick(() => {
-            if (window.lucide) window.lucide.createIcons({ attrs: { "stroke-width": 1.8 } });
-        });
+        let refreshIconsQueued = false;
+        const refreshIcons = () => {
+            if (refreshIconsQueued) return;
+            refreshIconsQueued = true;
+            nextTick(() => {
+                refreshIconsQueued = false;
+                if (window.lucide) window.lucide.createIcons({ attrs: { "stroke-width": 1.8 } });
+            });
+        };
 
         const showToast = (msg, type = "success") => {
             toast.msg = msg;
@@ -2460,7 +2467,23 @@ createApp({
             return !!config.account_monitor_enabled[name];
         };
         const isCurrentAccountMonitorEnabled = computed(() => ensureAccountMonitorEnabled(ui.ruleAccount));
-        const isCurrentAccountMonitorActive = computed(() => !!config.enabled && isCurrentAccountMonitorEnabled.value);
+        const isCurrentAccountMonitorActive = computed(() => {
+            if (ui.togglingMonitor && monitorToggle.account === ui.ruleAccount && monitorToggle.desired !== null) {
+                return !!monitorToggle.desired;
+            }
+            return !!config.enabled && isCurrentAccountMonitorEnabled.value;
+        });
+        const monitorButtonText = computed(() => {
+            if (ui.togglingMonitor && monitorToggle.account === ui.ruleAccount) {
+                return monitorToggle.desired ? `正在开启${ui.ruleAccount}监听` : `正在关闭${ui.ruleAccount}监听`;
+            }
+            if (!config.enabled) return "全局监听关";
+            return isCurrentAccountMonitorEnabled.value ? `${ui.ruleAccount}监听开` : `${ui.ruleAccount}监听关`;
+        });
+        const monitorButtonTitle = computed(() => {
+            if (!config.enabled) return `点击开启全局监听和 ${ui.ruleAccount} 监听`;
+            return isCurrentAccountMonitorEnabled.value ? `关闭 ${ui.ruleAccount} 的 ZD 监听` : `开启 ${ui.ruleAccount} 的 ZD 监听`;
+        });
         const toggleAiPrivateAccount = (account) => {
             const item = ensureAiPrivateAccountConfig(account);
             item.enabled = !item.enabled;
@@ -2541,37 +2564,57 @@ createApp({
         };
 
         const applyConfigData = (data = {}) => {
-            suppressAutoSave = true;
-            try {
-                config.enabled = data.enabled ?? true;
-                config.account_monitor_enabled = (data.account_monitor_enabled && typeof data.account_monitor_enabled === "object") ? data.account_monitor_enabled : {};
-                config.approval_keywords = Array.isArray(data.approval_keywords) ? data.approval_keywords : ["同意", "批准", "ok"];
-                config.schedule = data.schedule || { active: false, start: "09:00", end: "21:00" };
-                config.resources = hydrateResources(data.resources || {});
-                config.ai_private_reply = hydrateAiPrivateReply(data.ai_private_reply || {});
-                config.scheduled_messages = (data.scheduled_messages || []).map(hydrateScheduledMessage);
-                config.scheduled_backend_actions = (data.scheduled_backend_actions || []).map(hydrateScheduledBackendAction);
-                config.rules = (data.rules || []).map(hydrateRule);
-                identity.mainAccount = data.main_account || identity.mainAccount;
-                available_accounts.splice(0, available_accounts.length, ...((data.available_accounts || [])));
-                if (Array.isArray(data.accounts) && data.accounts.length) {
-                    runtime.accounts.splice(0, runtime.accounts.length, ...data.accounts);
-                }
-                accountFilterOptions.value.forEach(ensureAiPrivateAccountConfig);
-                accountFilterOptions.value.forEach(ensureAccountMonitorEnabled);
-                ui.ruleAccount = accountFilterOptions.value.includes(ui.ruleAccount) ? ui.ruleAccount : mainAccount.value;
-                const visibleRules = rulesForSelectedAccount.value;
-                if (!ui.selectedId || !visibleRules.some(rule => rule.id === ui.selectedId)) {
-                    ui.selectedId = visibleRules[0]?.id || "";
-                }
-                syncRawTexts(currentRule.value);
-                refreshIcons();
-            } finally {
-                nextTick(() => {
-                    suppressAutoSave = false;
-                    autoSaveReady = true;
-                });
+            config.enabled = data.enabled ?? true;
+            config.account_monitor_enabled = (data.account_monitor_enabled && typeof data.account_monitor_enabled === "object") ? data.account_monitor_enabled : {};
+            config.approval_keywords = Array.isArray(data.approval_keywords) ? data.approval_keywords : ["同意", "批准", "ok"];
+            config.schedule = data.schedule || { active: false, start: "09:00", end: "21:00" };
+            config.resources = hydrateResources(data.resources || {});
+            config.ai_private_reply = hydrateAiPrivateReply(data.ai_private_reply || {});
+            config.scheduled_messages = (data.scheduled_messages || []).map(hydrateScheduledMessage);
+            config.scheduled_backend_actions = (data.scheduled_backend_actions || []).map(hydrateScheduledBackendAction);
+            config.rules = (data.rules || []).map(hydrateRule);
+            identity.mainAccount = data.main_account || identity.mainAccount;
+            available_accounts.splice(0, available_accounts.length, ...((data.available_accounts || [])));
+            if (Array.isArray(data.accounts) && data.accounts.length) {
+                runtime.accounts.splice(0, runtime.accounts.length, ...data.accounts);
             }
+            accountFilterOptions.value.forEach(ensureAiPrivateAccountConfig);
+            accountFilterOptions.value.forEach(ensureAccountMonitorEnabled);
+            ui.ruleAccount = accountFilterOptions.value.includes(ui.ruleAccount) ? ui.ruleAccount : mainAccount.value;
+            const visibleRules = rulesForSelectedAccount.value;
+            if (!ui.selectedId || !visibleRules.some(rule => rule.id === ui.selectedId)) {
+                ui.selectedId = visibleRules[0]?.id || "";
+            }
+            syncRawTexts(currentRule.value);
+            refreshIcons();
+        };
+
+        const applyMonitorStatus = (data = {}, options = {}) => {
+            if (!data || typeof data !== "object") return;
+            if (options.fromHeartbeat && ui.togglingMonitor) return;
+            const globalEnabled = data.global_enabled ?? data.enabled;
+            if (globalEnabled !== undefined) config.enabled = !!globalEnabled;
+            if (data.account_monitor_enabled && typeof data.account_monitor_enabled === "object") {
+                config.account_monitor_enabled = data.account_monitor_enabled;
+            } else if (data.account) {
+                ensureAccountMonitorEnabled(data.account);
+                if (data.account_enabled !== undefined) {
+                    config.account_monitor_enabled[data.account] = !!data.account_enabled;
+                }
+            }
+            if (data.main_account) {
+                identity.mainAccount = data.main_account;
+                runtime.main_account = data.main_account;
+            }
+            if (data.server_time) runtime.server_time = data.server_time;
+            if (Array.isArray(data.accounts)) {
+                runtime.accounts.splice(0, runtime.accounts.length, ...data.accounts);
+                const main = data.main_account || identity.mainAccount;
+                const extras = data.accounts.map(item => String(item?.name || "").trim()).filter(name => name && name !== main);
+                available_accounts.splice(0, available_accounts.length, ...extras);
+            }
+            accountFilterOptions.value.forEach(ensureAccountMonitorEnabled);
+            if (!accountFilterOptions.value.includes(ui.ruleAccount)) ui.ruleAccount = mainAccount.value;
         };
 
         const loadConfig = async () => {
@@ -2625,18 +2668,11 @@ createApp({
 
         const refreshStatus = async () => {
             try {
-                const res = await fetch("/tool/monitor_settings_json");
+                const accountParam = encodeURIComponent(ui.ruleAccount || mainAccount.value);
+                const res = await fetch(`/api/monitor_status?account=${accountParam}`);
                 const data = await res.json();
-                if (data.enabled !== undefined) config.enabled = data.enabled;
-                if (data.account_monitor_enabled && typeof data.account_monitor_enabled === "object") config.account_monitor_enabled = data.account_monitor_enabled;
-                if (data.main_account) identity.mainAccount = data.main_account;
-                available_accounts.splice(0, available_accounts.length, ...((data.available_accounts || [])));
-                if (Array.isArray(data.accounts) && data.accounts.length) {
-                    runtime.accounts.splice(0, runtime.accounts.length, ...data.accounts);
-                }
-                refreshIcons();
+                applyMonitorStatus(data, { fromHeartbeat: true });
             } catch (e) {}
-            await loadRuntimeStats(true);
         };
 
         const mainAccount = computed(() => runtime.main_account || identity.mainAccount || "主账号");
@@ -2655,7 +2691,8 @@ createApp({
             const query = ui.ruleQuery.trim().toLowerCase();
             const rows = rulesForSelectedAccount.value.filter(rule => {
                 const status = ruleStatus(rule).kind || "running";
-                const statusOk = ui.statusFilter === "all" || ui.statusFilter === status;
+                if (ui.statusFilter !== "all" && ui.statusFilter !== status) return false;
+                if (!query) return true;
                 const hay = [
                     rule.name,
                     ruleActionSummary(rule),
@@ -2664,7 +2701,7 @@ createApp({
                     ...(rule.file_extensions || []),
                     ...((rule.replies || []).map(step => [stepTitle(step), step.backend_action, step.text, step.forward_to].filter(Boolean).join(" ")))
                 ].join(" ").toLowerCase();
-                return statusOk && (!query || hay.includes(query));
+                return hay.includes(query);
             });
             return rows.slice().sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "zh-CN"));
         });
@@ -2672,9 +2709,15 @@ createApp({
         const stats = computed(() => {
             const scopedRules = rulesForSelectedAccount.value;
             const total = scopedRules.length;
-            const running = scopedRules.filter(rule => (ruleStatus(rule).kind || "running") === "running").length;
-            const disabled = scopedRules.filter(rule => ruleStatus(rule).kind === "disabled").length;
-            const draft = scopedRules.filter(rule => ruleStatus(rule).kind === "draft").length;
+            let running = 0;
+            let disabled = 0;
+            let draft = 0;
+            scopedRules.forEach(rule => {
+                const status = ruleStatus(rule).kind || "running";
+                if (status === "draft") draft += 1;
+                else if (status === "disabled") disabled += 1;
+                else running += 1;
+            });
             const today = Number(runtime.today.total || 0);
             const success = Number(runtime.today.success || 0);
             const failed = Number(runtime.today.failed || 0);
@@ -2712,11 +2755,17 @@ createApp({
             refreshIcons();
         };
 
+        const selectRuleFromCard = (event, rule) => {
+            if (event?.target?.closest?.("button,a,input,select,textarea,summary,label")) return;
+            selectRule(rule);
+        };
+
         const onRuleAccountChange = () => {
             const firstRule = rulesForSelectedAccount.value[0] || null;
             ui.selectedId = firstRule?.id || "";
             syncRawTexts(firstRule);
             if (ui.page !== "rules") ui.page = "rules";
+            refreshStatus();
             refreshIcons();
         };
 
@@ -2750,11 +2799,18 @@ createApp({
             refreshIcons();
         };
 
-        const removeRule = (rule) => {
+        const removeRule = (ruleOrId) => {
+            const ruleId = typeof ruleOrId === "object" ? ruleOrId?.id : ruleOrId;
+            if (!ruleId) return;
             if (!confirm("确定删除此规则？")) return;
-            const index = config.rules.findIndex(item => item.id === rule.id);
-            if (index >= 0) config.rules.splice(index, 1);
-            ui.selectedId = config.rules[Math.max(0, index - 1)]?.id || config.rules[0]?.id || "";
+            const scopedIndex = rulesForSelectedAccount.value.findIndex(item => item.id === ruleId);
+            const index = config.rules.findIndex(item => item.id === ruleId);
+            if (index < 0) return;
+            config.rules.splice(index, 1);
+            const visibleRules = rulesForSelectedAccount.value;
+            const nextIndex = Math.min(Math.max(0, scopedIndex - 1), Math.max(0, visibleRules.length - 1));
+            ui.selectedId = visibleRules[nextIndex]?.id || "";
+            syncRawTexts(currentRule.value);
             refreshIcons();
         };
 
@@ -3147,14 +3203,15 @@ createApp({
             const successMessage = options.successMessage || "配置已保存";
             ui.saving = true;
             try {
-                const res = await fetch("/api/monitor_settings", {
+                const returnConfig = options.returnConfig === true;
+                const res = await fetch(`/api/monitor_settings?return_config=${returnConfig ? "1" : "0"}`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify(config)
                 });
                 const json = await res.json();
                 if (json.success) {
-                    if (json.config) applyConfigData(json.config);
+                    if (returnConfig && json.config) applyConfigData(json.config);
                     if (!silent) showToast(successMessage);
                     return true;
                 }
@@ -3233,12 +3290,6 @@ createApp({
             }
         };
 
-        const scheduleAutoSave = () => {
-            if (!autoSaveReady || suppressAutoSave || ui.saving) return;
-            ui.autoSaving = false;
-            clearTimeout(autoSaveTimer);
-        };
-
         const toggleRuleEnabled = async (rule) => {
             const previous = !!rule.enabled;
             rule.enabled = !previous;
@@ -3251,32 +3302,47 @@ createApp({
         };
 
         const toggleMonitorEnabled = async () => {
+            if (ui.togglingMonitor) return;
             const account = ui.ruleAccount || mainAccount.value;
-            const previous = ensureAccountMonitorEnabled(account);
-            const nextEnabled = !previous;
-            config.account_monitor_enabled[account] = nextEnabled;
+            const previousGlobal = !!config.enabled;
+            const previousAccountMap = { ...(config.account_monitor_enabled || {}) };
+            const previousAccountEnabled = ensureAccountMonitorEnabled(account);
+            const previousEffective = !!previousGlobal && previousAccountEnabled;
+            const nextEffective = !previousEffective;
+            const requestId = monitorToggle.requestId + 1;
+            monitorToggle.requestId = requestId;
+            monitorToggle.account = account;
+            monitorToggle.desired = nextEffective;
+            if (!config.account_monitor_enabled || typeof config.account_monitor_enabled !== "object") config.account_monitor_enabled = {};
+            config.account_monitor_enabled[account] = nextEffective;
+            if (nextEffective) config.enabled = true;
             ui.autoSaving = true;
             ui.togglingMonitor = true;
+            refreshIcons();
             try {
                 const res = await fetch("/api/monitor_toggle", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ account, enabled: nextEnabled })
+                    body: JSON.stringify({ account, effective_enabled: nextEffective })
                 });
                 const json = await res.json();
+                if (monitorToggle.requestId !== requestId) return;
                 if (!json.success) throw new Error(json.msg || "切换失败");
-                if (json.account_monitor_enabled && typeof json.account_monitor_enabled === "object") {
-                    config.account_monitor_enabled = json.account_monitor_enabled;
-                } else {
-                    config.account_monitor_enabled[account] = !!json.enabled;
-                }
-                showToast(`${account}监听已${config.account_monitor_enabled[account] ? "开启" : "暂停"}`);
+                applyMonitorStatus(json);
+                showToast(`${account}监听已${json.effective_enabled ? "开启" : "关闭"}`);
             } catch (e) {
-                config.account_monitor_enabled[account] = previous;
+                if (monitorToggle.requestId === requestId) {
+                    config.enabled = previousGlobal;
+                    config.account_monitor_enabled = previousAccountMap;
+                }
                 showToast(`监听切换失败：${e.message || "网络错误"}`, "error");
             } finally {
-                ui.autoSaving = false;
-                ui.togglingMonitor = false;
+                if (monitorToggle.requestId === requestId) {
+                    ui.autoSaving = false;
+                    ui.togglingMonitor = false;
+                    monitorToggle.account = "";
+                    monitorToggle.desired = null;
+                }
             }
             refreshIcons();
         };
@@ -3341,12 +3407,12 @@ createApp({
         watch(() => [ui.activeTab, ui.showOps, config.rules.length, ui.selectedId], refreshIcons);
         watch(() => [ui.page, ui.recordFilter, ui.recordQuery, ui.ruleQuery, ui.statusFilter, ui.ruleAccount], refreshIcons);
         watch(currentRule, refreshIcons);
-        watch(config, scheduleAutoSave, { deep: true });
         onMounted(() => {
             document.documentElement.dataset.theme = "light";
             try { localStorage.removeItem("monitorTheme"); } catch (e) {}
             loadAll();
             setInterval(refreshStatus, 3000);
+            setInterval(() => loadRuntimeStats(true), 15000);
             document.addEventListener("click", closeSelectMenus);
             refreshIcons();
         });
@@ -3357,10 +3423,10 @@ createApp({
             currentRule, filteredRules, stats, previewSteps, estimatedTotal,
             mainAccount, accountFilterOptions, avatarText, lastRefreshText, selectedRuleStats, currentRuleRecords,
             aiPrivateAccountConfig, isCurrentAiPrivateEnabled, toggleCurrentAiPrivateReply, toggleAiPrivateAccount,
-            isCurrentAccountMonitorEnabled, isCurrentAccountMonitorActive, ensureAccountMonitorEnabled,
+            isCurrentAccountMonitorEnabled, isCurrentAccountMonitorActive, monitorButtonText, monitorButtonTitle, ensureAccountMonitorEnabled,
             filteredRecords, hourlyBars, compactHourlyBars, topRules, accountRows, resourceCards,
             resourceGroupOptions, senderPrefixOptions, selectedGroupNames, selectedPrefixNames,
-            loadConfig, loadRuntimeStats, loadAll, saveConfig, exportConfig, triggerImportConfig, importConfigFile, toggleRuleEnabled, toggleMonitorEnabled, selectRule, setPage, addRule, duplicateRule, removeRule, ruleStatus,
+            loadConfig, loadRuntimeStats, loadAll, saveConfig, exportConfig, triggerImportConfig, importConfigFile, toggleRuleEnabled, toggleMonitorEnabled, selectRule, selectRuleFromCard, setPage, addRule, duplicateRule, removeRule, ruleStatus,
             onRuleAccountChange, showFailedRecords, showRuleHelp,
             addGroupResource, removeGroupResource, addPrefixResource, removePrefixResource, isSelected, toggleListValue, toggleStringValue,
             addScheduledMessage, removeScheduledMessage, addScheduledBackendAction, removeScheduledBackendAction, formatScheduleLastSent,
