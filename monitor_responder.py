@@ -2130,7 +2130,7 @@ def prune_pending_unmatched_messages(now=None):
                 pending_unmatched_messages.pop(oldest_chat, None)
             total -= 1
 
-def remember_unmatched_message(event, sender_name=""):
+def remember_unmatched_message(event, sender_name="", related_msg_ids=None):
     chat_id = getattr(event, "chat_id", None)
     msg_id = getattr(event, "id", None)
     if not chat_id or not msg_id or getattr(event, "is_reply", False):
@@ -2139,16 +2139,33 @@ def remember_unmatched_message(event, sender_name=""):
     message = getattr(event, "message", None)
     if not text and not getattr(message, "file", None):
         return
+    grouped_id = getattr(message, "grouped_id", None)
+    related_ids = {msg_id}
+    if related_msg_ids:
+        related_ids.update(int(x) for x in related_msg_ids if x)
     prune_pending_unmatched_messages()
     with pending_unmatched_lock:
         pending_unmatched_messages.setdefault(chat_id, {})[msg_id] = {
             "message": message,
             "sender_name": sender_name,
             "sender_id": getattr(event, "sender_id", None),
+            "grouped_id": grouped_id,
+            "related_msg_ids": sorted(related_ids),
             "text": text,
             "ts": time.time(),
         }
     logger.info(f"🕓 [Unmatched] 已暂存未命中消息 Chat={chat_id} Msg={msg_id} Sender={sender_name}")
+
+def merge_pending_unmatched_related_ids(chat_id, msg_id, related_msg_ids):
+    if not chat_id or not msg_id or not related_msg_ids:
+        return
+    with pending_unmatched_lock:
+        item = (pending_unmatched_messages.get(chat_id) or {}).get(msg_id)
+        if not item:
+            return
+        merged = set(item.get("related_msg_ids") or [])
+        merged.update(int(x) for x in related_msg_ids if x)
+        item["related_msg_ids"] = sorted(merged)
 
 def discard_pending_unmatched_message(chat_id, msg_id):
     with pending_unmatched_lock:
@@ -2218,9 +2235,12 @@ def format_unmatched_handoff_notice(rule, pending_event, trigger_event, sender_n
         lines.insert(4, f"消息链接：{link}")
     return "\n".join(lines)
 
-async def pending_message_has_reply(client, chat_id, msg_id, before_msg_id):
+async def pending_message_has_reply(client, chat_id, msg_id, before_msg_id, related_msg_ids=None):
+    target_ids = {int(x) for x in (related_msg_ids or [msg_id]) if x}
+    if not target_ids:
+        return False
     try:
-        kwargs = {"min_id": msg_id, "limit": 80}
+        kwargs = {"min_id": min(target_ids), "limit": 80}
         if before_msg_id:
             kwargs["max_id"] = before_msg_id
         history = await client.get_messages(chat_id, **kwargs)
@@ -2230,7 +2250,7 @@ async def pending_message_has_reply(client, chat_id, msg_id, before_msg_id):
     for msg in history:
         if getattr(msg, "id", None) == msg_id:
             continue
-        if msg_id in get_message_reply_target_ids(msg):
+        if target_ids.intersection(get_message_reply_target_ids(msg)):
             return True
     return False
 
@@ -6204,11 +6224,18 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             logger.warning(f"⚠️ [Unmatched] 回扫上方消息跳过 Chat={chat_id} Msg={trigger_msg_id}: 读取账号未连接")
             return
         try:
-            history = await history_client.get_messages(chat_id, max_id=trigger_msg_id, limit=8)
+            history = list(await history_client.get_messages(chat_id, max_id=trigger_msg_id, limit=8) or [])
         except Exception as e:
             logger.warning(f"⚠️ [Unmatched] 回扫上方消息失败 Chat={chat_id} Msg={trigger_msg_id}: {e}")
             return
-        for message in reversed(list(history or [])):
+        grouped_related_ids = {}
+        for message in history:
+            grouped_id = getattr(message, "grouped_id", None)
+            msg_id = getattr(message, "id", None)
+            if grouped_id and msg_id:
+                grouped_related_ids.setdefault(grouped_id, set()).add(msg_id)
+
+        for message in reversed(history):
             msg_id = getattr(message, "id", None)
             if not msg_id:
                 continue
@@ -6223,10 +6250,18 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             with pending_unmatched_lock:
                 already_pending = msg_id in (pending_unmatched_messages.get(chat_id) or {})
             if already_pending:
+                grouped_id = getattr(message, "grouped_id", None)
+                if grouped_id:
+                    merge_pending_unmatched_related_ids(chat_id, msg_id, grouped_related_ids.get(grouped_id))
                 continue
             unmatched, history_sender_name = await message_is_unmatched_for_monitor(message, analysis_client=history_client)
             if unmatched:
-                remember_unmatched_message(MessageEventView(message), history_sender_name)
+                grouped_id = getattr(message, "grouped_id", None)
+                remember_unmatched_message(
+                    MessageEventView(message),
+                    history_sender_name,
+                    related_msg_ids=grouped_related_ids.get(grouped_id) if grouped_id else None
+                )
 
     async def handle_pending_unmatched_messages(target_client, target_name, rule, trigger_event, step=None):
         chat_id = getattr(trigger_event, "chat_id", None)
@@ -6242,12 +6277,21 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         wait_text = format_caption(str((step or {}).get("text") or os.environ.get("ZD_UNMATCHED_WAIT_TEXT", "稍等")).strip() or "稍等")
         notify_target = unmatched_handoff_target(rule, step=step)
         action_total = 0
+        grouped_candidate_ids = {}
+        for candidate_msg_id, candidate_item in candidates:
+            grouped_id = candidate_item.get("grouped_id") or getattr(candidate_item.get("message"), "grouped_id", None)
+            if grouped_id and candidate_msg_id:
+                grouped_candidate_ids.setdefault(grouped_id, set()).add(candidate_msg_id)
         for msg_id, item in candidates:
             message = item.get("message")
             if not message:
                 continue
-            if await pending_message_has_reply(target_client, chat_id, msg_id, None):
-                logger.info(f"↪️ [Unmatched] Msg={msg_id} 已有人引用回复，跳过补回复")
+            related_msg_ids = set(item.get("related_msg_ids") or [msg_id])
+            grouped_id = item.get("grouped_id") or getattr(message, "grouped_id", None)
+            if grouped_id:
+                related_msg_ids.update(grouped_candidate_ids.get(grouped_id, set()))
+            if await pending_message_has_reply(target_client, chat_id, msg_id, None, related_msg_ids=related_msg_ids):
+                logger.info(f"↪️ [Unmatched] Msg={msg_id} 关联消息 {sorted(related_msg_ids)} 已有人引用回复，跳过补回复")
                 continue
 
             pending_event = MessageEventView(message)
