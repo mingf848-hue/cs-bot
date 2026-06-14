@@ -14,6 +14,8 @@ import socket
 import signal
 import urllib.parse
 import atexit
+import shutil
+import subprocess
 from collections import deque, defaultdict
 from datetime import datetime, timedelta, timezone
 from threading import Thread, Lock
@@ -30,10 +32,10 @@ from telegram_accounts import (
 )
 from telegram_login import TelegramLoginManager
 from telegram_proxy import (
+    build_sing_box_config_from_trojan_json,
     parse_telegram_proxy_url,
     telegram_proxy_client_kwargs,
     trojan_node_summary,
-    TrojanSocksProxyRuntime,
 )
 from telethon.errors import (
     AuthKeyDuplicatedError,
@@ -1082,13 +1084,26 @@ def get_telegram_proxy_config():
 
 def stop_telegram_proxy_process():
     global telegram_proxy_process
-    runtime = telegram_proxy_process
+    process = telegram_proxy_process
+    if not process or process.poll() is not None:
+        return
     try:
-        if runtime:
-            runtime.stop()
+        process.terminate()
+        process.wait(timeout=5)
     except Exception:
-        pass
-    telegram_proxy_process = None
+        try:
+            process.kill()
+        except Exception:
+            pass
+
+def _relay_telegram_proxy_logs(process):
+    stream = process.stdout
+    if not stream:
+        return
+    for line in iter(stream.readline, ""):
+        line = str(line or "").strip()
+        if line:
+            logger.info(f"🌐 [Proxy] sing-box: {line}")
 
 def start_telegram_proxy_runtime():
     global telegram_proxy_process
@@ -1096,23 +1111,45 @@ def start_telegram_proxy_runtime():
     if not config.get("enabled") or config.get("mode") != "trojan_json":
         return
 
+    binary = shutil.which(os.environ.get("SING_BOX_BIN", "sing-box"))
+    if not binary:
+        os.environ.pop("TG_PROXY_URL", None)
+        logger.error("❌ [Proxy] 未找到 sing-box，Trojan JSON 代理未启动")
+        return
+
     listen_port = normalize_proxy_listen_port(config.get("listen_port"))
-    runtime = TrojanSocksProxyRuntime(
+    sing_box_config = build_sing_box_config_from_trojan_json(
         config.get("trojan_json"),
         listen_host=TELEGRAM_PROXY_LISTEN_HOST,
         listen_port=listen_port,
-        logger=logger,
     )
+    config_file = data_path("telegram_sing_box_config.json")
+    config_dir = os.path.dirname(config_file)
+    if config_dir:
+        os.makedirs(config_dir, exist_ok=True)
+    with open(config_file, "w", encoding="utf-8") as f:
+        json.dump(sing_box_config, f, ensure_ascii=False)
     try:
-        runtime.start()
-    except Exception as e:
-        os.environ.pop("TG_PROXY_URL", None)
-        logger.error(f"❌ [Proxy] 内置 Trojan SOCKS5 启动失败: {e}")
-        return
-    telegram_proxy_process = runtime
+        os.chmod(config_file, 0o600)
+    except Exception:
+        pass
+
+    telegram_proxy_process = subprocess.Popen(
+        [binary, "run", "-c", config_file],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
     atexit.register(stop_telegram_proxy_process)
+    Thread(target=_relay_telegram_proxy_logs, args=(telegram_proxy_process,), name="telegram-sing-box-log", daemon=True).start()
+    time.sleep(1.0)
+    if telegram_proxy_process.poll() is not None:
+        os.environ.pop("TG_PROXY_URL", None)
+        logger.error(f"❌ [Proxy] sing-box 启动失败，退出码: {telegram_proxy_process.returncode}")
+        return
     os.environ["TG_PROXY_URL"] = telegram_proxy_url_for_listen_port(listen_port)
-    logger.info(f"✅ [Proxy] Trojan 节点已通过内置代理转为本地 SOCKS5: {os.environ['TG_PROXY_URL']}")
+    logger.info(f"✅ [Proxy] Trojan 节点已转为本地 SOCKS5: {os.environ['TG_PROXY_URL']}")
 
 def save_telegram_proxy_config(raw_config):
     global TELEGRAM_PROXY_CONFIG, TELEGRAM_PROXY_CONFIG_SOURCE
