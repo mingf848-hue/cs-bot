@@ -28,6 +28,7 @@ from telegram_accounts import (
     runtime_status_payload,
 )
 from telegram_login import TelegramLoginManager
+from telegram_proxy import parse_telegram_proxy_url, telegram_proxy_client_kwargs
 from telethon.errors import (
     AuthKeyDuplicatedError,
     PasswordHashInvalidError,
@@ -965,6 +966,97 @@ def save_telegram_device_config(raw_config):
         TELEGRAM_DEVICE_CONFIG = dict(config)
         TELEGRAM_DEVICE_CONFIG_SOURCE = " + ".join(saved_targets)
     apply_telegram_device_env(config)
+    return config, saved_targets
+
+TELEGRAM_PROXY_CONFIG_REDIS_KEY = "telegram_proxy_config_v1"
+TELEGRAM_PROXY_CONFIG_FILE = data_path("telegram_proxy_config.json")
+telegram_proxy_config_lock = Lock()
+
+def normalize_bool(value):
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on", "开", "开启", "启用")
+
+def normalize_telegram_proxy_config(raw_config=None, strict=False):
+    raw_config = raw_config if isinstance(raw_config, dict) else {}
+    proxy_url = str(raw_config.get("proxy_url") or raw_config.get("url") or os.environ.get("TG_PROXY_URL", "") or "").strip()
+    enabled = normalize_bool(raw_config.get("enabled", bool(proxy_url)))
+    if proxy_url:
+        proxy_url = proxy_url.replace(" ", "")
+        parse_telegram_proxy_url(proxy_url)
+    if enabled and not proxy_url:
+        if strict:
+            raise ValueError("启用代理时代理地址不能为空")
+        enabled = False
+    return {"enabled": enabled, "proxy_url": proxy_url}
+
+def apply_telegram_proxy_env(config):
+    if config.get("enabled") and config.get("proxy_url"):
+        os.environ["TG_PROXY_URL"] = str(config.get("proxy_url") or "").strip()
+    else:
+        os.environ.pop("TG_PROXY_URL", None)
+
+def load_telegram_proxy_config():
+    client = get_wait_alert_redis_client()
+    if client:
+        try:
+            raw = _decode_store_value(client.get(TELEGRAM_PROXY_CONFIG_REDIS_KEY)).strip()
+            if raw:
+                return normalize_telegram_proxy_config(json.loads(raw)), "Redis"
+        except Exception as e:
+            logger.warning(f"⚠️ [Proxy] Redis 代理配置读取失败，尝试文件/环境变量: {e}")
+
+    try:
+        if os.path.exists(TELEGRAM_PROXY_CONFIG_FILE):
+            with open(TELEGRAM_PROXY_CONFIG_FILE, "r", encoding="utf-8") as f:
+                return normalize_telegram_proxy_config(json.load(f)), "文件"
+    except Exception as e:
+        logger.warning(f"⚠️ [Proxy] 文件代理配置读取失败，回退环境变量: {e}")
+
+    return normalize_telegram_proxy_config(), "环境变量/默认"
+
+TELEGRAM_PROXY_CONFIG, TELEGRAM_PROXY_CONFIG_SOURCE = load_telegram_proxy_config()
+apply_telegram_proxy_env(TELEGRAM_PROXY_CONFIG)
+
+def get_telegram_proxy_config():
+    with telegram_proxy_config_lock:
+        return dict(TELEGRAM_PROXY_CONFIG), TELEGRAM_PROXY_CONFIG_SOURCE
+
+def save_telegram_proxy_config(raw_config):
+    global TELEGRAM_PROXY_CONFIG, TELEGRAM_PROXY_CONFIG_SOURCE
+    config = normalize_telegram_proxy_config(raw_config, strict=True)
+    payload = json.dumps(config, ensure_ascii=False)
+    saved_targets = []
+
+    client = get_wait_alert_redis_client()
+    if client:
+        try:
+            client.set(TELEGRAM_PROXY_CONFIG_REDIS_KEY, payload)
+            saved_targets.append("Redis")
+        except Exception as e:
+            logger.warning(f"⚠️ [Proxy] Redis 代理配置保存失败，继续尝试文件: {e}")
+
+    try:
+        config_dir = os.path.dirname(TELEGRAM_PROXY_CONFIG_FILE)
+        if config_dir:
+            os.makedirs(config_dir, exist_ok=True)
+        with open(TELEGRAM_PROXY_CONFIG_FILE, "w", encoding="utf-8") as f:
+            f.write(payload)
+        try:
+            os.chmod(TELEGRAM_PROXY_CONFIG_FILE, 0o600)
+        except Exception:
+            pass
+        saved_targets.append("文件")
+    except Exception as e:
+        logger.warning(f"⚠️ [Proxy] 文件代理配置保存失败: {e}")
+
+    if not saved_targets:
+        raise RuntimeError("代理配置保存失败：Redis 和文件都不可用")
+
+    with telegram_proxy_config_lock:
+        TELEGRAM_PROXY_CONFIG = dict(config)
+        TELEGRAM_PROXY_CONFIG_SOURCE = " + ".join(saved_targets)
+    apply_telegram_proxy_env(config)
     return config, saved_targets
 
 MAIN_SESSION_FILE = data_path("telegram_session_string.txt")
@@ -2652,6 +2744,8 @@ TELEGRAM_ACCOUNTS_HTML = """
         .field input:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(21,94,239,.12)}
         .device-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px}
         .device-note{font-size:12px;color:var(--muted);line-height:1.5}
+        .check-row{display:flex;align-items:center;gap:9px;font-size:13px;font-weight:850;color:#344054;margin:2px 0 12px}
+        .check-row input{width:16px;height:16px}
         .status{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:850;border-radius:999px;padding:3px 8px}
         .dot{width:8px;height:8px;border-radius:50%;background:#9ca3af;display:inline-block}
         .status.on{color:#027a48;background:#ecfdf3}.status.on .dot{background:#12b76a}
@@ -2712,6 +2806,26 @@ TELEGRAM_ACCOUNTS_HTML = """
         </div>
     </section>
     <section>
+        <div class="section-title">
+            <h2>Telegram 代理</h2>
+            <span id="proxy-source" class="meta">加载中...</span>
+        </div>
+        <form id="proxy-form" onsubmit="saveProxyConfig(event)">
+            <label class="check-row" for="proxy_enabled">
+                <input id="proxy_enabled" name="enabled" type="checkbox">
+                启用代理
+            </label>
+            <div class="field">
+                <label for="proxy_url">代理 URL</label>
+                <input id="proxy_url" name="proxy_url" maxlength="300" autocomplete="off" placeholder="socks5://127.0.0.1:1080">
+            </div>
+        </form>
+        <div class="device-actions">
+            <button id="proxy-save" type="submit" form="proxy-form">保存代理设置</button>
+            <span class="device-note">支持 socks5/socks4/http；Trojan 节点需先转成本地 SOCKS5。</span>
+        </div>
+    </section>
+    <section>
         <div class="section-title"><h2>主账号</h2></div>
         <div id="main-account" class="empty">加载中...</div>
     </section>
@@ -2750,6 +2864,7 @@ async function loadAccounts(){
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || '加载失败');
     renderDeviceConfig(data.device_config || {}, data.device_config_source || '');
+    renderProxyConfig(data.proxy_config || {}, data.proxy_config_source || '');
 
     const main = document.getElementById('main-account');
     main.className = 'row';
@@ -2802,6 +2917,12 @@ function renderDeviceConfig(config, source){
     document.getElementById('device-source').textContent = source ? '来源：' + source : '未保存';
 }
 
+function renderProxyConfig(config, source){
+    document.getElementById('proxy_enabled').checked = !!config.enabled;
+    setInputValue('proxy_url', config.proxy_url);
+    document.getElementById('proxy-source').textContent = source ? '来源：' + source : '未保存';
+}
+
 function readDeviceConfigForm(){
     return {
         device_model: document.getElementById('device_model').value.trim(),
@@ -2809,6 +2930,13 @@ function readDeviceConfigForm(){
         app_version: document.getElementById('app_version').value.trim(),
         lang_code: document.getElementById('lang_code').value.trim(),
         system_lang_code: document.getElementById('system_lang_code').value.trim()
+    };
+}
+
+function readProxyConfigForm(){
+    return {
+        enabled: document.getElementById('proxy_enabled').checked,
+        proxy_url: document.getElementById('proxy_url').value.trim()
     };
 }
 
@@ -2826,6 +2954,27 @@ async function saveDeviceConfig(event){
         if (!res.ok || !data.ok) throw new Error(data.error || '保存失败');
         renderDeviceConfig(data.device_config || {}, data.device_config_source || '');
         showMsg('设备设置已保存，服务正在自动重载，所有账号重连后生效。', 'ok');
+    } catch (e) {
+        showMsg(e.message, 'err');
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+async function saveProxyConfig(event){
+    if (event) event.preventDefault();
+    const btn = document.getElementById('proxy-save');
+    btn.disabled = true;
+    try {
+        const res = await fetch('/api/telegram_accounts/proxy', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({token: tokenValue(), proxy_config: readProxyConfigForm()})
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || '保存失败');
+        renderProxyConfig(data.proxy_config || {}, data.proxy_config_source || '');
+        showMsg('代理设置已保存，服务正在自动重载，所有账号重连后生效。', 'ok');
     } catch (e) {
         showMsg(e.message, 'err');
     } finally {
@@ -2947,12 +3096,15 @@ def api_telegram_accounts():
         }
         main_payload.update(account_runtime_status_payload(main_name, runtime_statuses))
         device_config, device_config_source = get_telegram_device_config()
+        proxy_config, proxy_config_source = get_telegram_proxy_config()
         return jsonify({
             "ok": True,
             "main": main_payload,
             "extra_accounts": extra_accounts,
             "device_config": device_config,
             "device_config_source": device_config_source,
+            "proxy_config": proxy_config,
+            "proxy_config_source": proxy_config_source,
         })
     except PermissionError as e:
         return jsonify({"ok": False, "error": str(e)}), 403
@@ -2984,6 +3136,32 @@ def api_telegram_device_config():
         return jsonify({"ok": False, "error": str(e)}), 403
     except Exception as e:
         return jsonify({"ok": False, "error": f"保存设备配置失败: {e}"}), 500
+
+@app.route('/api/telegram_accounts/proxy', methods=['GET', 'POST'])
+def api_telegram_proxy_config():
+    try:
+        if request.method == 'GET':
+            telegram_login_require_token({"token": request.args.get("token", "")})
+            config, source = get_telegram_proxy_config()
+            return jsonify({"ok": True, "proxy_config": config, "proxy_config_source": source})
+
+        data = request.get_json(silent=True) or {}
+        telegram_login_require_token(data)
+        raw_config = data.get("proxy_config") if isinstance(data.get("proxy_config"), dict) else {}
+        config, saved_targets = save_telegram_proxy_config(raw_config)
+        logger.info(f"🌐 [Proxy] Telegram 代理配置已更新 | 启用: {bool(config.get('enabled'))} | 保存到: {', '.join(saved_targets)}")
+        restart_scheduled = schedule_session_restart("Telegram 代理配置")
+        return jsonify({
+            "ok": True,
+            "proxy_config": config,
+            "proxy_config_source": " + ".join(saved_targets),
+            "saved_targets": saved_targets,
+            "restart_scheduled": restart_scheduled,
+        })
+    except PermissionError as e:
+        return jsonify({"ok": False, "error": str(e)}), 403
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"保存代理配置失败: {e}"}), 500
 
 @app.route('/api/telegram_accounts/extra/<path:account_name>', methods=['DELETE'])
 def api_delete_extra_telegram_account(account_name):
@@ -5533,7 +5711,8 @@ client = TelegramClient(
     build_main_string_session(),
     API_ID, 
     API_HASH,
-    **telegram_device_client_kwargs()
+    **telegram_device_client_kwargs(),
+    **telegram_proxy_client_kwargs()
 )
 
 telegram_runtime_lock = TelegramRuntimeLock(

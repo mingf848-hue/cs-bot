@@ -5,6 +5,7 @@ from threading import Lock, Thread
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+from telegram_proxy import telegram_proxy_client_kwargs
 
 
 class TelegramLoginManager:
@@ -37,6 +38,7 @@ class TelegramLoginManager:
             system_version=os.environ.get("TG_SYSTEM_VERSION", "Windows 10 x64"),
             lang_code=os.environ.get("TG_LANG_CODE", "zh-hans"),
             system_lang_code=os.environ.get("TG_SYSTEM_LANG_CODE", "zh-hans"),
+            **telegram_proxy_client_kwargs(),
         )
 
     def cleanup_locked(self):

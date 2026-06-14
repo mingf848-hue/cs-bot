@@ -18,6 +18,7 @@ from flask import request, jsonify, Response, render_template_string
 from telethon import events, TelegramClient, functions
 from telethon.sessions import StringSession
 from telethon.errors import AuthKeyDuplicatedError
+from telegram_proxy import telegram_proxy_client_kwargs
 from monitor_rules import (
     monitor_rule_account_name as resolve_monitor_rule_account_name,
     random_delay_from_step,
@@ -6038,7 +6039,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     api_id, 
                     api_hash, 
                     loop=bot_loop,
-                    **telegram_device_client_kwargs()
+                    **telegram_device_client_kwargs(),
+                    **telegram_proxy_client_kwargs()
                 )
                 
                 global_clients[acc_name] = extra_client
