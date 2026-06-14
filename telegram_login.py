@@ -33,7 +33,7 @@ class TelegramLoginManager:
             api_id,
             api_hash,
             device_model=os.environ.get("TG_DEVICE_MODEL", "VMware20,1"),
-            app_version=os.environ.get("TG_APP_VERSION", "6.6.3 x64"),
+            app_version=os.environ.get("TG_APP_VERSION", "6.7.5 x64"),
             system_version=os.environ.get("TG_SYSTEM_VERSION", "Windows 10 x64"),
             lang_code=os.environ.get("TG_LANG_CODE", "zh-hans"),
             system_lang_code=os.environ.get("TG_SYSTEM_LANG_CODE", "zh-hans"),

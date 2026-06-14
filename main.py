@@ -855,6 +855,118 @@ def persist_wait_alert_config(signatures, routes):
         logger.warning(f"⚠️ [WaitAlert] Redis 配置保存失败: {e}")
         return False, wait_alert_store_status
 
+TELEGRAM_DEVICE_CONFIG_REDIS_KEY = "telegram_device_config_v1"
+TELEGRAM_DEVICE_CONFIG_FILE = data_path("telegram_device_config.json")
+TELEGRAM_DEVICE_FIELDS = (
+    ("device_model", "设备名称", "TG_DEVICE_MODEL", "VMware20,1", 120),
+    ("system_version", "系统版本", "TG_SYSTEM_VERSION", "Windows 10 x64", 120),
+    ("app_version", "应用版本", "TG_APP_VERSION", "6.7.5 x64", 80),
+    ("lang_code", "语言代码", "TG_LANG_CODE", "zh-hans", 32),
+    ("system_lang_code", "系统语言代码", "TG_SYSTEM_LANG_CODE", "zh-hans", 32),
+)
+telegram_device_config_lock = Lock()
+
+def default_telegram_device_config():
+    config = {}
+    for key, _label, env_name, default, _max_len in TELEGRAM_DEVICE_FIELDS:
+        value = str(os.environ.get(env_name, default) or default).strip()
+        config[key] = value or default
+    return config
+
+def normalize_telegram_device_config(raw_config=None, strict=False):
+    defaults = default_telegram_device_config()
+    raw_config = raw_config if isinstance(raw_config, dict) else {}
+    clean = {}
+    for key, label, _env_name, _default, max_len in TELEGRAM_DEVICE_FIELDS:
+        value = raw_config.get(key, defaults[key])
+        value = str(value if value is not None else "").strip()
+        if not value:
+            if strict:
+                raise ValueError(f"{label}不能为空")
+            value = defaults[key]
+        if len(value) > max_len:
+            if strict:
+                raise ValueError(f"{label}不能超过 {max_len} 个字符")
+            value = value[:max_len]
+        clean[key] = value
+    return clean
+
+def apply_telegram_device_env(config):
+    for key, _label, env_name, _default, _max_len in TELEGRAM_DEVICE_FIELDS:
+        os.environ[env_name] = str(config.get(key) or "").strip()
+
+def _decode_store_value(raw):
+    if raw is None:
+        return ""
+    return raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+
+def load_telegram_device_config():
+    client = get_wait_alert_redis_client()
+    if client:
+        try:
+            raw = _decode_store_value(client.get(TELEGRAM_DEVICE_CONFIG_REDIS_KEY)).strip()
+            if raw:
+                return normalize_telegram_device_config(json.loads(raw)), "Redis"
+        except Exception as e:
+            logger.warning(f"⚠️ [Device] Redis 设备配置读取失败，尝试文件/环境变量: {e}")
+
+    try:
+        if os.path.exists(TELEGRAM_DEVICE_CONFIG_FILE):
+            with open(TELEGRAM_DEVICE_CONFIG_FILE, "r", encoding="utf-8") as f:
+                return normalize_telegram_device_config(json.load(f)), "文件"
+    except Exception as e:
+        logger.warning(f"⚠️ [Device] 文件设备配置读取失败，回退环境变量: {e}")
+
+    return normalize_telegram_device_config(), "环境变量/默认"
+
+TELEGRAM_DEVICE_CONFIG, TELEGRAM_DEVICE_CONFIG_SOURCE = load_telegram_device_config()
+apply_telegram_device_env(TELEGRAM_DEVICE_CONFIG)
+
+def get_telegram_device_config():
+    with telegram_device_config_lock:
+        return dict(TELEGRAM_DEVICE_CONFIG), TELEGRAM_DEVICE_CONFIG_SOURCE
+
+def telegram_device_client_kwargs():
+    config, _source = get_telegram_device_config()
+    return dict(config)
+
+def save_telegram_device_config(raw_config):
+    global TELEGRAM_DEVICE_CONFIG, TELEGRAM_DEVICE_CONFIG_SOURCE
+    config = normalize_telegram_device_config(raw_config, strict=True)
+    payload = json.dumps(config, ensure_ascii=False)
+    saved_targets = []
+
+    client = get_wait_alert_redis_client()
+    if client:
+        try:
+            client.set(TELEGRAM_DEVICE_CONFIG_REDIS_KEY, payload)
+            saved_targets.append("Redis")
+        except Exception as e:
+            logger.warning(f"⚠️ [Device] Redis 设备配置保存失败，继续尝试文件: {e}")
+
+    try:
+        config_dir = os.path.dirname(TELEGRAM_DEVICE_CONFIG_FILE)
+        if config_dir:
+            os.makedirs(config_dir, exist_ok=True)
+        with open(TELEGRAM_DEVICE_CONFIG_FILE, "w", encoding="utf-8") as f:
+            f.write(payload)
+        try:
+            os.chmod(TELEGRAM_DEVICE_CONFIG_FILE, 0o600)
+        except Exception:
+            pass
+        saved_targets.append("文件")
+    except Exception as e:
+        logger.warning(f"⚠️ [Device] 文件设备配置保存失败: {e}")
+
+    if not saved_targets:
+        raise RuntimeError("设备配置保存失败：Redis 和文件都不可用")
+
+    with telegram_device_config_lock:
+        TELEGRAM_DEVICE_CONFIG = dict(config)
+        TELEGRAM_DEVICE_CONFIG_SOURCE = " + ".join(saved_targets)
+    apply_telegram_device_env(config)
+    return config, saved_targets
+
 MAIN_SESSION_FILE = data_path("telegram_session_string.txt")
 EXTRA_SESSIONS_FILE = data_path("telegram_extra_sessions.json")
 session_store = SessionStore(get_wait_alert_redis_client, MAIN_SESSION_FILE, EXTRA_SESSIONS_FILE, logger)
@@ -913,7 +1025,7 @@ def save_account_session(account_type, account_name, session_string):
     os.environ["EXTRA_SESSION_STRINGS"] = format_extra_session_items(merged_sessions)
     return saved_targets
 
-def schedule_session_restart():
+def schedule_session_restart(reason="账号配置"):
     global session_restart_scheduled
     with session_apply_lock:
         if session_restart_scheduled:
@@ -922,7 +1034,7 @@ def schedule_session_restart():
 
     def restart_later():
         time.sleep(1.5)
-        logger.warning("🔄 [Session] 已保存新的 SESSION_STRING，正在自动重载进程...")
+        logger.warning(f"🔄 [Session] 已保存{reason}，正在自动重载进程...")
         telegram_runtime_lock.request_stop()
         release_telegram_runtime_lock()
         os.execv(sys.executable, [sys.executable] + sys.argv)
@@ -941,7 +1053,7 @@ def finish_telegram_login(flow_id, flow, session_string):
         run_telegram_login_coro(flow["client"].disconnect(), timeout=10)
     except Exception:
         pass
-    restart_scheduled = schedule_session_restart()
+    restart_scheduled = schedule_session_restart("新的 SESSION_STRING")
     return {
         "ok": True,
         "session_string": session_string,
@@ -2533,6 +2645,13 @@ TELEGRAM_ACCOUNTS_HTML = """
         .name-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
         .name{font-weight:850;font-size:14px;word-break:break-word}
         .meta{font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5;word-break:break-word}
+        .device-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:4px}
+        .field{display:flex;flex-direction:column;gap:6px}
+        .field label{font-size:12px;font-weight:850;color:#344054}
+        .field input{width:100%;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--text);padding:9px 10px;font-size:14px;line-height:1.3;outline:none}
+        .field input:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(21,94,239,.12)}
+        .device-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px}
+        .device-note{font-size:12px;color:var(--muted);line-height:1.5}
         .status{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:850;border-radius:999px;padding:3px 8px}
         .dot{width:8px;height:8px;border-radius:50%;background:#9ca3af;display:inline-block}
         .status.on{color:#027a48;background:#ecfdf3}.status.on .dot{background:#12b76a}
@@ -2547,7 +2666,7 @@ TELEGRAM_ACCOUNTS_HTML = """
         .msg.ok{background:#ecfdf3;color:#027a48;border-color:#abefc6}
         .hidden{display:none}
         .empty{font-size:13px;color:var(--muted);padding:10px 0}
-        @media(max-width:640px){body{padding:14px}.page-head{display:block}.top-actions{margin-top:12px}.row{grid-template-columns:1fr}.actions{justify-content:flex-start}section{padding:14px}}
+        @media(max-width:640px){body{padding:14px}.page-head{display:block}.top-actions{margin-top:12px}.row{grid-template-columns:1fr}.actions{justify-content:flex-start}.device-form{grid-template-columns:1fr}section{padding:14px}}
     </style>
 </head>
 <body>
@@ -2560,6 +2679,38 @@ TELEGRAM_ACCOUNTS_HTML = """
         <div class="top-actions"><a class="btn primary" id="login-link" href="/telegram-login">新增/更新账号</a></div>
     </div>
     <div id="msg" class="msg hidden"></div>
+    <section>
+        <div class="section-title">
+            <h2>登录设备</h2>
+            <span id="device-source" class="meta">加载中...</span>
+        </div>
+        <form id="device-form" class="device-form" onsubmit="saveDeviceConfig(event)">
+            <div class="field">
+                <label for="device_model">设备名称</label>
+                <input id="device_model" name="device_model" maxlength="120" autocomplete="off" required placeholder="VMware20,1">
+            </div>
+            <div class="field">
+                <label for="system_version">系统版本</label>
+                <input id="system_version" name="system_version" maxlength="120" autocomplete="off" required placeholder="Windows 10 x64">
+            </div>
+            <div class="field">
+                <label for="app_version">应用版本</label>
+                <input id="app_version" name="app_version" maxlength="80" autocomplete="off" required placeholder="6.7.5 x64">
+            </div>
+            <div class="field">
+                <label for="lang_code">语言代码</label>
+                <input id="lang_code" name="lang_code" maxlength="32" autocomplete="off" required placeholder="zh-hans">
+            </div>
+            <div class="field">
+                <label for="system_lang_code">系统语言代码</label>
+                <input id="system_lang_code" name="system_lang_code" maxlength="32" autocomplete="off" required placeholder="zh-hans">
+            </div>
+        </form>
+        <div class="device-actions">
+            <button id="device-save" type="submit" form="device-form">保存设备设置</button>
+            <span class="device-note">保存后自动重载，所有账号重连后使用新设备信息。</span>
+        </div>
+    </section>
     <section>
         <div class="section-title"><h2>主账号</h2></div>
         <div id="main-account" class="empty">加载中...</div>
@@ -2598,6 +2749,8 @@ async function loadAccounts(){
     const res = await fetch('/api/telegram_accounts?token=' + encodeURIComponent(tokenValue()));
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || '加载失败');
+    renderDeviceConfig(data.device_config || {}, data.device_config_source || '');
+
     const main = document.getElementById('main-account');
     main.className = 'row';
     main.innerHTML = `<div><div class="name-line"><span class="name">${escapeHtml(data.main.name)}</span>${statusBadge(data.main)}</div><div class="meta">${escapeHtml(metaText(data.main))}</div></div><div class="actions"><span class="meta">主账号</span></div>`;
@@ -2633,6 +2786,51 @@ function metaText(acc){
     if (acc.user_id) parts.push('ID：' + acc.user_id);
     if (acc.monitor_enabled !== undefined && acc.monitor_enabled !== null) parts.push('ZD监听：' + (acc.monitor_enabled ? '开' : '关'));
     return parts.join(' | ');
+}
+
+function setInputValue(id, value){
+    const el = document.getElementById(id);
+    if (el) el.value = value || '';
+}
+
+function renderDeviceConfig(config, source){
+    setInputValue('device_model', config.device_model);
+    setInputValue('system_version', config.system_version);
+    setInputValue('app_version', config.app_version);
+    setInputValue('lang_code', config.lang_code);
+    setInputValue('system_lang_code', config.system_lang_code);
+    document.getElementById('device-source').textContent = source ? '来源：' + source : '未保存';
+}
+
+function readDeviceConfigForm(){
+    return {
+        device_model: document.getElementById('device_model').value.trim(),
+        system_version: document.getElementById('system_version').value.trim(),
+        app_version: document.getElementById('app_version').value.trim(),
+        lang_code: document.getElementById('lang_code').value.trim(),
+        system_lang_code: document.getElementById('system_lang_code').value.trim()
+    };
+}
+
+async function saveDeviceConfig(event){
+    if (event) event.preventDefault();
+    const btn = document.getElementById('device-save');
+    btn.disabled = true;
+    try {
+        const res = await fetch('/api/telegram_accounts/device', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({token: tokenValue(), device_config: readDeviceConfigForm()})
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || '保存失败');
+        renderDeviceConfig(data.device_config || {}, data.device_config_source || '');
+        showMsg('设备设置已保存，服务正在自动重载，所有账号重连后生效。', 'ok');
+    } catch (e) {
+        showMsg(e.message, 'err');
+    } finally {
+        btn.disabled = false;
+    }
 }
 
 async function deleteExtra(btn){
@@ -2748,15 +2946,44 @@ def api_telegram_accounts():
             "has_session": bool(SESSION_STRING),
         }
         main_payload.update(account_runtime_status_payload(main_name, runtime_statuses))
+        device_config, device_config_source = get_telegram_device_config()
         return jsonify({
             "ok": True,
             "main": main_payload,
             "extra_accounts": extra_accounts,
+            "device_config": device_config,
+            "device_config_source": device_config_source,
         })
     except PermissionError as e:
         return jsonify({"ok": False, "error": str(e)}), 403
     except Exception as e:
         return jsonify({"ok": False, "error": f"读取账号失败: {e}"}), 500
+
+@app.route('/api/telegram_accounts/device', methods=['GET', 'POST'])
+def api_telegram_device_config():
+    try:
+        if request.method == 'GET':
+            telegram_login_require_token({"token": request.args.get("token", "")})
+            config, source = get_telegram_device_config()
+            return jsonify({"ok": True, "device_config": config, "device_config_source": source})
+
+        data = request.get_json(silent=True) or {}
+        telegram_login_require_token(data)
+        raw_config = data.get("device_config") if isinstance(data.get("device_config"), dict) else data
+        config, saved_targets = save_telegram_device_config(raw_config)
+        logger.info(f"📱 [Device] Telegram 登录设备配置已更新 | 保存到: {', '.join(saved_targets)}")
+        restart_scheduled = schedule_session_restart("登录设备配置")
+        return jsonify({
+            "ok": True,
+            "device_config": config,
+            "device_config_source": " + ".join(saved_targets),
+            "saved_targets": saved_targets,
+            "restart_scheduled": restart_scheduled,
+        })
+    except PermissionError as e:
+        return jsonify({"ok": False, "error": str(e)}), 403
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"保存设备配置失败: {e}"}), 500
 
 @app.route('/api/telegram_accounts/extra/<path:account_name>', methods=['DELETE'])
 def api_delete_extra_telegram_account(account_name):
@@ -2767,7 +2994,7 @@ def api_delete_extra_telegram_account(account_name):
         if not deleted:
             return jsonify({"ok": False, "error": "副账号不存在"}), 404
         logger.info(f"🗑️ [Session] 已删除副账号 SESSION_STRING: {account_name} | 保存到: {', '.join(saved_targets)}")
-        restart_scheduled = schedule_session_restart()
+        restart_scheduled = schedule_session_restart("账号 session 变更")
         return jsonify({"ok": True, "deleted": account_name, "saved_targets": saved_targets, "restart_scheduled": restart_scheduled})
     except PermissionError as e:
         return jsonify({"ok": False, "error": str(e)}), 403
@@ -5306,11 +5533,7 @@ client = TelegramClient(
     build_main_string_session(),
     API_ID, 
     API_HASH,
-    device_model="VMware20,1", 
-    app_version="6.7.5 x64",      
-    system_version="Windows 10 x64",
-    lang_code="zh-hans",
-    system_lang_code="zh-hans"
+    **telegram_device_client_kwargs()
 )
 
 telegram_runtime_lock = TelegramRuntimeLock(

@@ -48,6 +48,15 @@ if DATA_DIR:
 def data_path(filename):
     return os.path.join(DATA_DIR, filename) if DATA_DIR else filename
 
+def telegram_device_client_kwargs():
+    return {
+        "device_model": os.environ.get("TG_DEVICE_MODEL", "VMware20,1"),
+        "system_version": os.environ.get("TG_SYSTEM_VERSION", "Windows 10 x64"),
+        "app_version": os.environ.get("TG_APP_VERSION", "6.7.5 x64"),
+        "lang_code": os.environ.get("TG_LANG_CODE", "zh-hans"),
+        "system_lang_code": os.environ.get("TG_SYSTEM_LANG_CODE", "zh-hans"),
+    }
+
 CONFIG_FILE = data_path("monitor_config_v2.json")
 REDIS_KEY = "monitor_config"
 RUNTIME_STATS_FILE = data_path("monitor_runtime_stats.json")
@@ -6029,11 +6038,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     api_id, 
                     api_hash, 
                     loop=bot_loop,
-                    device_model="VMware20,1",
-                    system_version="Windows 10 x64",
-                    app_version="6.6.3 x64",
-                    lang_code="zh-hans",
-                    system_lang_code="zh-hans"
+                    **telegram_device_client_kwargs()
                 )
                 
                 global_clients[acc_name] = extra_client
