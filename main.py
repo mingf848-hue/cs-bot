@@ -2822,7 +2822,7 @@ TELEGRAM_ACCOUNTS_HTML = """
         </form>
         <div class="device-actions">
             <button id="proxy-save" type="submit" form="proxy-form">保存代理设置</button>
-            <span class="device-note">支持 socks5/socks4/http；Trojan 节点需先转成本地 SOCKS5。</span>
+            <span class="device-note">支持 socks5/socks4/http 外部代理地址。</span>
         </div>
     </section>
     <section>

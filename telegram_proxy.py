@@ -19,7 +19,7 @@ def parse_telegram_proxy_url(proxy_url):
     scheme = (parsed.scheme or "").lower()
     proxy_type = SUPPORTED_PROXY_SCHEMES.get(scheme)
     if not proxy_type:
-        raise ValueError("代理只支持 socks5/socks4/http，Trojan/Vmess/Vless 需要先转成本地 SOCKS5")
+        raise ValueError("代理只支持 socks5/socks4/http")
     if not parsed.hostname or not parsed.port:
         raise ValueError("代理地址格式应为 socks5://host:port 或 http://host:port")
 
