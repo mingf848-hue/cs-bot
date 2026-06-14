@@ -13,9 +13,6 @@ import secrets
 import socket
 import signal
 import urllib.parse
-import atexit
-import shutil
-import subprocess
 from collections import deque, defaultdict
 from datetime import datetime, timedelta, timezone
 from threading import Thread, Lock
@@ -31,12 +28,7 @@ from telegram_accounts import (
     runtime_status_payload,
 )
 from telegram_login import TelegramLoginManager
-from telegram_proxy import (
-    build_sing_box_config_from_trojan_json,
-    parse_telegram_proxy_url,
-    telegram_proxy_client_kwargs,
-    trojan_node_summary,
-)
+from telegram_proxy import parse_telegram_proxy_url, telegram_proxy_client_kwargs
 from telethon.errors import (
     AuthKeyDuplicatedError,
     PasswordHashInvalidError,
@@ -978,57 +970,15 @@ def save_telegram_device_config(raw_config):
 
 TELEGRAM_PROXY_CONFIG_REDIS_KEY = "telegram_proxy_config_v1"
 TELEGRAM_PROXY_CONFIG_FILE = data_path("telegram_proxy_config.json")
-TELEGRAM_PROXY_LISTEN_HOST = "127.0.0.1"
-TELEGRAM_PROXY_DEFAULT_LISTEN_PORT = int(os.environ.get("TG_TROJAN_SOCKS_PORT", "1080") or "1080")
 telegram_proxy_config_lock = Lock()
-telegram_proxy_process = None
 
 def normalize_bool(value):
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in ("1", "true", "yes", "on", "开", "开启", "启用")
 
-def normalize_proxy_listen_port(value=None):
-    try:
-        port = int(value or TELEGRAM_PROXY_DEFAULT_LISTEN_PORT)
-    except Exception as exc:
-        raise ValueError("本地 SOCKS5 端口不正确") from exc
-    if port <= 0 or port > 65535:
-        raise ValueError("本地 SOCKS5 端口不正确")
-    return port
-
-def telegram_proxy_url_for_listen_port(port):
-    return f"socks5://{TELEGRAM_PROXY_LISTEN_HOST}:{int(port)}"
-
 def normalize_telegram_proxy_config(raw_config=None, strict=False):
     raw_config = raw_config if isinstance(raw_config, dict) else {}
-    mode = str(raw_config.get("mode") or "").strip().lower()
-    if mode not in ("url", "trojan_json"):
-        mode = "trojan_json" if raw_config.get("trojan_json") else "url"
-
-    if mode == "trojan_json":
-        listen_port = normalize_proxy_listen_port(raw_config.get("listen_port"))
-        trojan_json = raw_config.get("trojan_json")
-        if isinstance(trojan_json, dict):
-            trojan_json = json.dumps(trojan_json, ensure_ascii=False)
-        trojan_json = str(trojan_json or "").strip()
-        enabled = normalize_bool(raw_config.get("enabled", bool(trojan_json)))
-        if trojan_json:
-            summary = trojan_node_summary(trojan_json)
-        else:
-            summary = str(raw_config.get("trojan_summary") or "").strip()
-            if enabled and strict:
-                raise ValueError("启用 Trojan JSON 时节点 JSON 不能为空")
-        proxy_url = telegram_proxy_url_for_listen_port(listen_port) if enabled and trojan_json else ""
-        return {
-            "enabled": enabled and bool(trojan_json),
-            "mode": "trojan_json",
-            "proxy_url": proxy_url,
-            "trojan_json": trojan_json,
-            "trojan_summary": summary,
-            "listen_port": listen_port,
-        }
-
     proxy_url = str(raw_config.get("proxy_url") or raw_config.get("url") or os.environ.get("TG_PROXY_URL", "") or "").strip()
     enabled = normalize_bool(raw_config.get("enabled", bool(proxy_url)))
     if proxy_url:
@@ -1038,17 +988,7 @@ def normalize_telegram_proxy_config(raw_config=None, strict=False):
         if strict:
             raise ValueError("启用代理时代理地址不能为空")
         enabled = False
-    return {"enabled": enabled, "mode": "url", "proxy_url": proxy_url, "trojan_json": "", "trojan_summary": "", "listen_port": TELEGRAM_PROXY_DEFAULT_LISTEN_PORT}
-
-def public_telegram_proxy_config(config):
-    return {
-        "enabled": bool(config.get("enabled")),
-        "mode": config.get("mode") or "url",
-        "proxy_url": config.get("proxy_url") or "",
-        "trojan_summary": config.get("trojan_summary") or "",
-        "has_trojan_json": bool(config.get("trojan_json")),
-        "listen_port": config.get("listen_port") or TELEGRAM_PROXY_DEFAULT_LISTEN_PORT,
-    }
+    return {"enabled": enabled, "proxy_url": proxy_url}
 
 def apply_telegram_proxy_env(config):
     if config.get("enabled") and config.get("proxy_url"):
@@ -1081,75 +1021,6 @@ apply_telegram_proxy_env(TELEGRAM_PROXY_CONFIG)
 def get_telegram_proxy_config():
     with telegram_proxy_config_lock:
         return dict(TELEGRAM_PROXY_CONFIG), TELEGRAM_PROXY_CONFIG_SOURCE
-
-def stop_telegram_proxy_process():
-    global telegram_proxy_process
-    process = telegram_proxy_process
-    if not process or process.poll() is not None:
-        return
-    try:
-        process.terminate()
-        process.wait(timeout=5)
-    except Exception:
-        try:
-            process.kill()
-        except Exception:
-            pass
-
-def _relay_telegram_proxy_logs(process):
-    stream = process.stdout
-    if not stream:
-        return
-    for line in iter(stream.readline, ""):
-        line = str(line or "").strip()
-        if line:
-            logger.info(f"🌐 [Proxy] sing-box: {line}")
-
-def start_telegram_proxy_runtime():
-    global telegram_proxy_process
-    config, _source = get_telegram_proxy_config()
-    if not config.get("enabled") or config.get("mode") != "trojan_json":
-        return
-
-    binary = shutil.which(os.environ.get("SING_BOX_BIN", "sing-box"))
-    if not binary:
-        os.environ.pop("TG_PROXY_URL", None)
-        logger.error("❌ [Proxy] 未找到 sing-box，Trojan JSON 代理未启动")
-        return
-
-    listen_port = normalize_proxy_listen_port(config.get("listen_port"))
-    sing_box_config = build_sing_box_config_from_trojan_json(
-        config.get("trojan_json"),
-        listen_host=TELEGRAM_PROXY_LISTEN_HOST,
-        listen_port=listen_port,
-    )
-    config_file = data_path("telegram_sing_box_config.json")
-    config_dir = os.path.dirname(config_file)
-    if config_dir:
-        os.makedirs(config_dir, exist_ok=True)
-    with open(config_file, "w", encoding="utf-8") as f:
-        json.dump(sing_box_config, f, ensure_ascii=False)
-    try:
-        os.chmod(config_file, 0o600)
-    except Exception:
-        pass
-
-    telegram_proxy_process = subprocess.Popen(
-        [binary, "run", "-c", config_file],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    atexit.register(stop_telegram_proxy_process)
-    Thread(target=_relay_telegram_proxy_logs, args=(telegram_proxy_process,), name="telegram-sing-box-log", daemon=True).start()
-    time.sleep(1.0)
-    if telegram_proxy_process.poll() is not None:
-        os.environ.pop("TG_PROXY_URL", None)
-        logger.error(f"❌ [Proxy] sing-box 启动失败，退出码: {telegram_proxy_process.returncode}")
-        return
-    os.environ["TG_PROXY_URL"] = telegram_proxy_url_for_listen_port(listen_port)
-    logger.info(f"✅ [Proxy] Trojan 节点已转为本地 SOCKS5: {os.environ['TG_PROXY_URL']}")
 
 def save_telegram_proxy_config(raw_config):
     global TELEGRAM_PROXY_CONFIG, TELEGRAM_PROXY_CONFIG_SOURCE
@@ -1187,8 +1058,6 @@ def save_telegram_proxy_config(raw_config):
         TELEGRAM_PROXY_CONFIG_SOURCE = " + ".join(saved_targets)
     apply_telegram_proxy_env(config)
     return config, saved_targets
-
-start_telegram_proxy_runtime()
 
 MAIN_SESSION_FILE = data_path("telegram_session_string.txt")
 EXTRA_SESSIONS_FILE = data_path("telegram_extra_sessions.json")
@@ -1259,7 +1128,6 @@ def schedule_session_restart(reason="账号配置"):
         time.sleep(1.5)
         logger.warning(f"🔄 [Session] 已保存{reason}，正在自动重载进程...")
         telegram_runtime_lock.request_stop()
-        stop_telegram_proxy_process()
         release_telegram_runtime_lock()
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
@@ -2872,9 +2740,8 @@ TELEGRAM_ACCOUNTS_HTML = """
         .device-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:4px}
         .field{display:flex;flex-direction:column;gap:6px}
         .field label{font-size:12px;font-weight:850;color:#344054}
-        .field input,.field select,.field textarea{width:100%;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--text);padding:9px 10px;font-size:14px;line-height:1.3;outline:none}
-        .field textarea{min-height:130px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;line-height:1.45}
-        .field input:focus,.field select:focus,.field textarea:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(21,94,239,.12)}
+        .field input{width:100%;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--text);padding:9px 10px;font-size:14px;line-height:1.3;outline:none}
+        .field input:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(21,94,239,.12)}
         .device-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px}
         .device-note{font-size:12px;color:var(--muted);line-height:1.5}
         .check-row{display:flex;align-items:center;gap:9px;font-size:13px;font-weight:850;color:#344054;margin:2px 0 12px}
@@ -2948,27 +2815,9 @@ TELEGRAM_ACCOUNTS_HTML = """
                 <input id="proxy_enabled" name="enabled" type="checkbox">
                 启用代理
             </label>
-            <div class="device-form">
-                <div class="field">
-                    <label for="proxy_mode">代理类型</label>
-                    <select id="proxy_mode" name="mode" onchange="updateProxyMode()">
-                        <option value="trojan_json">Trojan JSON</option>
-                        <option value="url">SOCKS/HTTP URL</option>
-                    </select>
-                </div>
-                <div class="field">
-                    <label for="proxy_listen_port">本地 SOCKS5 端口</label>
-                    <input id="proxy_listen_port" name="listen_port" maxlength="5" inputmode="numeric" autocomplete="off" placeholder="1080">
-                </div>
-            </div>
-            <div id="proxy-url-box" class="field">
+            <div class="field">
                 <label for="proxy_url">代理 URL</label>
                 <input id="proxy_url" name="proxy_url" maxlength="300" autocomplete="off" placeholder="socks5://127.0.0.1:1080">
-            </div>
-            <div id="trojan-json-box" class="field">
-                <label for="trojan_json">Trojan JSON</label>
-                <textarea id="trojan_json" name="trojan_json" autocomplete="off" placeholder="粘贴小飞机导出的 Trojan 节点 JSON"></textarea>
-                <div id="trojan-summary" class="meta">未保存 Trojan 节点</div>
             </div>
         </form>
         <div class="device-actions">
@@ -3070,22 +2919,8 @@ function renderDeviceConfig(config, source){
 
 function renderProxyConfig(config, source){
     document.getElementById('proxy_enabled').checked = !!config.enabled;
-    setInputValue('proxy_mode', config.mode || 'url');
     setInputValue('proxy_url', config.proxy_url);
-    setInputValue('proxy_listen_port', config.listen_port || '1080');
-    setInputValue('trojan_json', '');
-    const summary = config.trojan_summary || '';
-    document.getElementById('trojan-summary').textContent = summary ? ('已保存：' + summary) : '未保存 Trojan 节点';
-    document.getElementById('trojan_json').placeholder = config.has_trojan_json ? '已保存 Trojan JSON；不修改可留空，重新粘贴可替换' : '粘贴小飞机导出的 Trojan 节点 JSON';
     document.getElementById('proxy-source').textContent = source ? '来源：' + source : '未保存';
-    updateProxyMode();
-}
-
-function updateProxyMode(){
-    const mode = document.getElementById('proxy_mode').value || 'url';
-    document.getElementById('proxy-url-box').classList.toggle('hidden', mode !== 'url');
-    document.getElementById('trojan-json-box').classList.toggle('hidden', mode !== 'trojan_json');
-    document.getElementById('proxy_listen_port').disabled = mode !== 'trojan_json';
 }
 
 function readDeviceConfigForm(){
@@ -3101,10 +2936,7 @@ function readDeviceConfigForm(){
 function readProxyConfigForm(){
     return {
         enabled: document.getElementById('proxy_enabled').checked,
-        mode: document.getElementById('proxy_mode').value || 'url',
-        proxy_url: document.getElementById('proxy_url').value.trim(),
-        trojan_json: document.getElementById('trojan_json').value.trim(),
-        listen_port: document.getElementById('proxy_listen_port').value.trim() || '1080'
+        proxy_url: document.getElementById('proxy_url').value.trim()
     };
 }
 
@@ -3271,7 +3103,7 @@ def api_telegram_accounts():
             "extra_accounts": extra_accounts,
             "device_config": device_config,
             "device_config_source": device_config_source,
-            "proxy_config": public_telegram_proxy_config(proxy_config),
+            "proxy_config": proxy_config,
             "proxy_config_source": proxy_config_source,
         })
     except PermissionError as e:
@@ -3311,26 +3143,17 @@ def api_telegram_proxy_config():
         if request.method == 'GET':
             telegram_login_require_token({"token": request.args.get("token", "")})
             config, source = get_telegram_proxy_config()
-            return jsonify({"ok": True, "proxy_config": public_telegram_proxy_config(config), "proxy_config_source": source})
+            return jsonify({"ok": True, "proxy_config": config, "proxy_config_source": source})
 
         data = request.get_json(silent=True) or {}
         telegram_login_require_token(data)
         raw_config = data.get("proxy_config") if isinstance(data.get("proxy_config"), dict) else {}
-        current_config, _source = get_telegram_proxy_config()
-        if (
-            str(raw_config.get("mode") or "").strip().lower() == "trojan_json"
-            and not str(raw_config.get("trojan_json") or "").strip()
-            and current_config.get("mode") == "trojan_json"
-            and current_config.get("trojan_json")
-        ):
-            raw_config = dict(raw_config)
-            raw_config["trojan_json"] = current_config.get("trojan_json")
         config, saved_targets = save_telegram_proxy_config(raw_config)
         logger.info(f"🌐 [Proxy] Telegram 代理配置已更新 | 启用: {bool(config.get('enabled'))} | 保存到: {', '.join(saved_targets)}")
         restart_scheduled = schedule_session_restart("Telegram 代理配置")
         return jsonify({
             "ok": True,
-            "proxy_config": public_telegram_proxy_config(config),
+            "proxy_config": config,
             "proxy_config_source": " + ".join(saved_targets),
             "saved_targets": saved_targets,
             "restart_scheduled": restart_scheduled,
