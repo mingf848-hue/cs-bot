@@ -2552,7 +2552,7 @@ function ticketFollowConfigCandidates(baseConfig, cmd = {}, venues = []) {
   });
   const matched = configs.filter((item) => venues.some((venue) => merchantConfigMatchesVenue(item, venue)));
   const selected = matched.length && (venues.length === 1 || matched.length === configs.length) ? matched : configs;
-  return selected.slice(0, 1).map((item, index) => ({
+  return selected.map((item, index) => ({
     config: item,
     label: ticketFollowConfigLabel(item, index)
   }));
@@ -2611,18 +2611,21 @@ async function runTicketFollowCommand(config, cmd, targetValue) {
   let sentCount = 0;
   let successQueries = 0;
   const queryDetails = [];
+  const resolvedMembers = new Set();
 
   for (const candidate of candidates) {
     const venueConfig = candidate.config;
     const venueLabel = candidate.label;
     for (const memberId of memberIds) {
+      if (resolvedMembers.has(memberId)) continue;
       try {
         const queryResult = await queryTicketFollowOrders(venueConfig, cmd, memberId, venueLabel);
         const orders = queryResult.orders
           .sort((a, b) => ticketFollowOrderSortValue(a) - ticketFollowOrderSortValue(b));
         successQueries += 1;
         queriedCount += orders.length;
-        queryDetails.push(`${memberId}:total${queryResult.totalCount}/未结算${orders.length}`);
+        queryDetails.push(`${memberId}@${venueLabel}:total${queryResult.totalCount}/未结算${orders.length}`);
+        if (queryResult.totalCount > 0 || orders.length) resolvedMembers.add(memberId);
         const baselineKey = ticketFollowBaselineKey(cmd, venueLabel, memberId);
         if (!seen[baselineKey]) {
           const now = Date.now();
