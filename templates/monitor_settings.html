@@ -1952,12 +1952,68 @@
                     <div class="panel-head">
                         <div class="panel-title"><i data-lucide="send"></i>定时任务</div>
                         <div class="toolbar">
+                            <button class="tiny-btn" @click="addTicketFollowTask"><i data-lucide="plus"></i>新增跟单</button>
                             <button class="tiny-btn" @click="addScheduledBackendAction"><i data-lucide="plus"></i>新增后台操作</button>
                             <button class="tiny-btn" @click="addScheduledMessage"><i data-lucide="plus"></i>新增发送</button>
                             <button class="primary-btn" @click="saveConfig" :disabled="ui.saving"><i data-lucide="check"></i>{{ ui.saving ? '保存中' : '保存定时任务' }}</button>
                         </div>
                     </div>
                     <div class="page-body">
+                        <div class="subhead">注单跟单</div>
+                        <div class="schedule-list">
+                            <article class="schedule-card" v-for="(item, index) in config.ticket_follow_tasks" :key="item.id" :class="{off: !item.enabled}">
+                                <div class="schedule-head">
+                                    <input class="input" v-model="item.name" placeholder="任务名称">
+                                    <button type="button" class="switch" :class="{on: item.enabled}" :aria-pressed="item.enabled ? 'true' : 'false'" @click="item.enabled = !item.enabled"></button>
+                                    <button class="icon-btn" @click="removeTicketFollowTask(index)" aria-label="删除注单跟单"><i data-lucide="trash-2"></i></button>
+                                </div>
+                                <div class="schedule-options">
+                                    <div class="field">
+                                        <label>查询间隔</label>
+                                        <input class="input" type="number" min="1" max="120" v-model.number="item.interval_minutes">
+                                    </div>
+                                    <div class="field">
+                                        <label>查询天数</label>
+                                        <input class="input" type="number" min="1" max="30" v-model.number="item.lookback_days">
+                                    </div>
+                                    <div class="field">
+                                        <label>发送账号</label>
+                                        <select class="select" v-model="item.telegram_account">
+                                            <option value="">主账号（默认）</option>
+                                            <option v-for="acc in available_accounts" :key="acc" :value="acc">{{ acc }}</option>
+                                        </select>
+                                    </div>
+                                    <div class="field">
+                                        <label>上次执行</label>
+                                        <input class="input" :value="item.last_run_at ? formatScheduleLastSent(item.last_run_at) : '未执行'" readonly>
+                                    </div>
+                                    <div class="field">
+                                        <label>监控场馆</label>
+                                        <div class="check-row">
+                                            <label class="inline-check"><input class="checkbox" type="checkbox" value="冠名体育" v-model="item.venues">冠名体育</label>
+                                            <label class="inline-check"><input class="checkbox" type="checkbox" value="熊猫体育" v-model="item.venues">熊猫体育</label>
+                                        </div>
+                                    </div>
+                                    <div class="field">
+                                        <label>推送飞机号</label>
+                                        <input class="input" v-model="item.telegram_target" placeholder="-1001234567890 / 用户ID">
+                                    </div>
+                                </div>
+                                <div class="schedule-fields">
+                                    <div class="field full">
+                                        <label>会员ID</label>
+                                        <textarea class="textarea" :value="listToString(item.member_ids)" @input="setList($event, item, 'member_ids', true)" placeholder="534351204255309222&#10;534351204255309223"></textarea>
+                                    </div>
+                                </div>
+                                <div class="schedule-meta">
+                                    <span>{{ item.enabled ? '已启用' : '已停用' }}</span>
+                                    <span>{{ (item.venues || []).join(' / ') || '未选场馆' }}</span>
+                                    <span>{{ (item.member_ids || []).length }} 个会员</span>
+                                    <span>{{ item.last_detail || '等待执行' }}</span>
+                                </div>
+                            </article>
+                            <div v-if="!config.ticket_follow_tasks.length" class="empty-state">暂无注单跟单任务</div>
+                        </div>
                         <div class="subhead">定时后台操作</div>
                         <div class="schedule-list">
                             <article class="schedule-card" v-for="(item, index) in config.scheduled_backend_actions" :key="item.id" :class="{off: !item.enabled}">
@@ -2192,6 +2248,7 @@ createApp({
             resources: { groups: [], sender_prefixes: [] },
             ai_private_reply: { accounts: {} },
             scheduled_messages: [],
+            ticket_follow_tasks: [],
             scheduled_backend_actions: [],
             rules: []
         });
@@ -2391,6 +2448,22 @@ createApp({
             last_sent_at: item.last_sent_at || ""
         });
 
+        const hydrateTicketFollowTask = (item = {}) => ({
+            id: item.id || `ticket_follow_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+            name: item.name || "注单跟单",
+            enabled: item.enabled ?? false,
+            venues: Array.isArray(item.venues) && item.venues.length ? item.venues : ["冠名体育", "熊猫体育"],
+            member_ids: Array.isArray(item.member_ids) ? item.member_ids : [],
+            telegram_target: item.telegram_target || "",
+            telegram_account: item.telegram_account || "",
+            interval_minutes: Number(item.interval_minutes || 5),
+            lookback_days: Number(item.lookback_days || 2),
+            page_size: Number(item.page_size || 200),
+            last_run_at: item.last_run_at || "",
+            last_status: item.last_status || "",
+            last_detail: item.last_detail || ""
+        });
+
         const hydrateScheduledBackendAction = (item = {}) => ({
             id: item.id || `backend_schedule_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
             name: item.name || "定时后台操作",
@@ -2571,6 +2644,7 @@ createApp({
             config.resources = hydrateResources(data.resources || {});
             config.ai_private_reply = hydrateAiPrivateReply(data.ai_private_reply || {});
             config.scheduled_messages = (data.scheduled_messages || []).map(hydrateScheduledMessage);
+            config.ticket_follow_tasks = (data.ticket_follow_tasks || []).map(hydrateTicketFollowTask);
             config.scheduled_backend_actions = (data.scheduled_backend_actions || []).map(hydrateScheduledBackendAction);
             config.rules = (data.rules || []).map(hydrateRule);
             identity.mainAccount = data.main_account || identity.mainAccount;
@@ -2825,6 +2899,20 @@ createApp({
         const removeScheduledMessage = (index) => {
             if (!confirm("确定删除此定时发送任务？")) return;
             config.scheduled_messages.splice(index, 1);
+            refreshIcons();
+        };
+
+        const addTicketFollowTask = () => {
+            config.ticket_follow_tasks.push(hydrateTicketFollowTask({
+                name: `注单跟单 #${config.ticket_follow_tasks.length + 1}`,
+                enabled: true
+            }));
+            refreshIcons();
+        };
+
+        const removeTicketFollowTask = (index) => {
+            if (!confirm("确定删除此注单跟单任务？")) return;
+            config.ticket_follow_tasks.splice(index, 1);
             refreshIcons();
         };
 
@@ -3429,7 +3517,7 @@ createApp({
             loadConfig, loadRuntimeStats, loadAll, saveConfig, exportConfig, triggerImportConfig, importConfigFile, toggleRuleEnabled, toggleMonitorEnabled, selectRule, selectRuleFromCard, setPage, addRule, duplicateRule, removeRule, ruleStatus,
             onRuleAccountChange, showFailedRecords, showRuleHelp,
             addGroupResource, removeGroupResource, addPrefixResource, removePrefixResource, isSelected, toggleListValue, toggleStringValue,
-            addScheduledMessage, removeScheduledMessage, addScheduledBackendAction, removeScheduledBackendAction, formatScheduleLastSent,
+            addScheduledMessage, removeScheduledMessage, addTicketFollowTask, removeTicketFollowTask, addScheduledBackendAction, removeScheduledBackendAction, formatScheduleLastSent,
             keywordsRaw,
             listToString, setList, setIntList, splitInline, shortGroups, primaryKeyword, ruleActionSummary, stepCount,
             addStep, duplicateStep, removeStep, normalizeStep, displayDelay, setDefaultFailureNotify,

@@ -463,6 +463,9 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = (os.environ.get("GEMINI_MODEL") or "gemini-3.5-flash").strip() or "gemini-3.5-flash"
 ZD_RULE_MAX_CONCURRENT = int_env("ZD_RULE_MAX_CONCURRENT", 12, 1, 100)
 BACKEND_COMMAND_TIMEOUT = float_env("BACKEND_COMMAND_TIMEOUT", 240, 30.0, 900.0)
+DEFAULT_TICKET_FOLLOW_INTERVAL_MINUTES = int_env("TICKET_FOLLOW_INTERVAL_MINUTES", 5, 1, 120)
+DEFAULT_TICKET_FOLLOW_LOOKBACK_DAYS = int_env("TICKET_FOLLOW_LOOKBACK_DAYS", 2, 1, 30)
+DEFAULT_TICKET_FOLLOW_PAGE_SIZE = int_env("TICKET_FOLLOW_PAGE_SIZE", 200, 20, 500)
 
 GEMINI_API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
 DEFAULT_AI_PRIVATE_REPLY_PROMPT = """
@@ -2416,6 +2419,7 @@ DEFAULT_CONFIG = {
         "accounts": {}
     },
     "scheduled_messages": [],
+    "ticket_follow_tasks": [],
     "scheduled_backend_actions": [
         {
             "id": "default_sgcp_maintenance",
@@ -2471,6 +2475,7 @@ current_config = DEFAULT_CONFIG.copy()
 rule_timers = {}
 scheduled_message_runs = {}
 scheduled_backend_action_runs = {}
+ticket_follow_task_runs = {}
 active_rule_tasks = set()
 rule_task_semaphore = None
 VALID_REPLY_TYPES = {"text", "edit_prev", "forward", "copy_file", "amount_logic", "preempt_check", "scan_nearby_missed", "notify_user", "backend_unlock", "agent_orchestrator"}
@@ -2479,7 +2484,7 @@ BACKEND_UNLOCK_ACTIONS = {
         "send_site_inner_msg", "member_data_overview", "query_member_line",
         "query_login_device_ip", "query_same_ip_device", "query_venue_turnover",
         "disable_login_device", "configure_rebate", "urge_settlement", "query_ticket_cancel_reason",
-        "venue_display_control", "agent_existing"
+        "venue_display_control", "ticket_follow", "agent_existing"
 }
 AGENT_EXECUTABLE_ACTIONS = {
     "unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan",
@@ -2744,6 +2749,11 @@ def normalize_backend_action(action):
         "venue_display": "venue_display_control",
         "双赢彩票维护": "venue_display_control",
         "双赢彩票启用": "venue_display_control",
+        "follow_ticket": "ticket_follow",
+        "ticket_following": "ticket_follow",
+        "follow_bet": "ticket_follow",
+        "注单跟单": "ticket_follow",
+        "跟单": "ticket_follow",
     }
     action = aliases.get(action, action)
     return action if action in BACKEND_UNLOCK_ACTIONS else "unlock_sms"
@@ -3016,13 +3026,13 @@ def humanize_backend_failure_detail(detail, action=""):
     if "6站未登录" in compact:
         return "6站未登录"
     if "未登录" in compact:
-        if action in {"urge_settlement", "merchant_order_statistics", "query_ticket_cancel_reason"}:
+        if action in {"urge_settlement", "merchant_order_statistics", "query_ticket_cancel_reason", "ticket_follow"}:
             return "场馆登录失效"
         return "后台未登录"
     if "扩展已重新加载" in compact or "拓展已重新加载" in compact or "刷新对应后台页面" in compact or "登录态同步" in compact:
         return "拓展未同步登录态"
     if "Failed to fetch" in compact or "Load failed" in compact or "请求失败" in compact or re.search(r"HTTP\s*[45]\d\d", compact):
-        label = "场馆接口请求失败" if action in {"urge_settlement", "merchant_order_statistics", "query_ticket_cancel_reason"} or "api-merchant-backstage" in compact else "后台接口请求失败"
+        label = "场馆接口请求失败" if action in {"urge_settlement", "merchant_order_statistics", "query_ticket_cancel_reason", "ticket_follow"} or "api-merchant-backstage" in compact else "后台接口请求失败"
         host_label = ""
         url_match = re.search(r"https?://([^\s/:。；]+)(/[^\s。；]*)?", compact)
         if url_match:
@@ -3217,6 +3227,8 @@ def command_action_label(action):
         return "注单取消/失败原因"
     if action == "venue_display_control":
         return "场馆上下架"
+    if action == "ticket_follow":
+        return "注单跟单"
     return "短信/验证码限制"
 
 def member_data_private_requested(text):
@@ -3961,6 +3973,98 @@ def merge_scheduled_backend_action_runtime_fields(items):
             item["last_run_at"] = old.get("last_run_at", "")
     return items
 
+def ensure_ticket_follow_task_id(item):
+    if not item.get("id"):
+        item["id"] = f"ticket_follow_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+    return item["id"]
+
+def normalize_ticket_follow_venue(value):
+    text = str(value or "").strip()
+    compact = text.replace(" ", "").lower()
+    if compact in {"naming", "named", "guanming", "gm"} or "冠名" in text:
+        return "冠名体育"
+    if compact in {"panda", "xm", "xiongmao"} or "熊猫" in text or "panda" in compact:
+        return "熊猫体育"
+    return text if text in {"冠名体育", "熊猫体育"} else ""
+
+def normalize_ticket_follow_venues(raw):
+    if isinstance(raw, str):
+        raw = re.split(r"[\s,，;；/]+", raw)
+    if not isinstance(raw, list):
+        raw = ["冠名体育", "熊猫体育"]
+    venues = []
+    for item in raw:
+        venue = normalize_ticket_follow_venue(item)
+        if venue and venue not in venues:
+            venues.append(venue)
+    return venues or ["冠名体育", "熊猫体育"]
+
+def normalize_ticket_follow_member_ids(raw):
+    member_ids = []
+    seen = set()
+    for item in split_config_items(raw, split_commas=True):
+        for matched in re.findall(r"\d{6,24}", str(item or "")):
+            if matched in seen:
+                continue
+            seen.add(matched)
+            member_ids.append(matched)
+    return member_ids
+
+def normalize_ticket_follow_tasks(raw_items):
+    if not isinstance(raw_items, list):
+        raw_items = []
+    clean_items = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        ensure_ticket_follow_task_id(item)
+        member_ids = normalize_ticket_follow_member_ids(
+            item.get("member_ids") or item.get("memberIds") or item.get("user_ids") or item.get("userIds") or item.get("userId") or item.get("target")
+        )
+        try:
+            interval_minutes = int(item.get("interval_minutes") or item.get("intervalMinutes") or DEFAULT_TICKET_FOLLOW_INTERVAL_MINUTES)
+        except Exception:
+            interval_minutes = DEFAULT_TICKET_FOLLOW_INTERVAL_MINUTES
+        try:
+            lookback_days = int(item.get("lookback_days") or item.get("lookbackDays") or DEFAULT_TICKET_FOLLOW_LOOKBACK_DAYS)
+        except Exception:
+            lookback_days = DEFAULT_TICKET_FOLLOW_LOOKBACK_DAYS
+        try:
+            page_size = int(item.get("page_size") or item.get("pageSize") or DEFAULT_TICKET_FOLLOW_PAGE_SIZE)
+        except Exception:
+            page_size = DEFAULT_TICKET_FOLLOW_PAGE_SIZE
+        clean_items.append({
+            "id": str(item["id"]),
+            "name": str(item.get("name") or "注单跟单").strip(),
+            "enabled": bool(item.get("enabled", False)),
+            "venues": normalize_ticket_follow_venues(item.get("venues") or item.get("venue")),
+            "member_ids": member_ids,
+            "telegram_target": str(item.get("telegram_target") or item.get("telegramTarget") or item.get("target_chat_id") or "").strip(),
+            "telegram_account": str(item.get("telegram_account") or item.get("telegramAccount") or "").strip(),
+            "interval_minutes": max(1, min(120, interval_minutes)),
+            "lookback_days": max(1, min(30, lookback_days)),
+            "page_size": max(20, min(500, page_size)),
+            "last_run_at": str(item.get("last_run_at") or "").strip(),
+            "last_status": str(item.get("last_status") or "").strip(),
+            "last_detail": str(item.get("last_detail") or "").strip(),
+        })
+    return clean_items
+
+def merge_ticket_follow_runtime_fields(items):
+    existing = {
+        str(item.get("id")): item
+        for item in current_config.get("ticket_follow_tasks", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    for item in items:
+        old = existing.get(str(item.get("id")))
+        if not old:
+            continue
+        for key in ("last_run_at", "last_status", "last_detail"):
+            if old.get(key) and not item.get(key):
+                item[key] = old.get(key, "")
+    return items
+
 # [v78] 全局 Redis 初始化函数 (Main.py 可见)
 def init_redis_connection():
     global redis_client
@@ -4024,6 +4128,7 @@ def load_config(system_cs_prefixes):
         current_config["schedule"] = DEFAULT_CONFIG["schedule"]
     current_config["ai_private_reply"] = normalize_ai_private_reply_config(current_config.get("ai_private_reply", {}))
     current_config["scheduled_messages"] = normalize_scheduled_messages(current_config.get("scheduled_messages", []))
+    current_config["ticket_follow_tasks"] = normalize_ticket_follow_tasks(current_config.get("ticket_follow_tasks", []))
     current_config["scheduled_backend_actions"] = normalize_scheduled_backend_actions(
         current_config.get("scheduled_backend_actions", []),
         include_defaults="scheduled_backend_actions" not in current_config,
@@ -4129,6 +4234,9 @@ def save_config(new_config):
 
         new_config["scheduled_messages"] = merge_scheduled_message_runtime_fields(
             normalize_scheduled_messages(new_config.get("scheduled_messages", []))
+        )
+        new_config["ticket_follow_tasks"] = merge_ticket_follow_runtime_fields(
+            normalize_ticket_follow_tasks(new_config.get("ticket_follow_tasks", []))
         )
         new_config["scheduled_backend_actions"] = merge_scheduled_backend_action_runtime_fields(
             normalize_scheduled_backend_actions(
@@ -4303,8 +4411,8 @@ async def send_command_telegram_message(account_name, target, text, cmd=None):
         raise RuntimeError("Telegram 消息为空")
     action = normalize_backend_action((cmd or {}).get("action") or (cmd or {}).get("backend_action") or "")
     action_label = command_action_label(action)
-    event_kind = "settlement_urge" if action == "urge_settlement" else "backend_telegram"
-    message_label = "催结算消息" if action == "urge_settlement" else f"{action_label}消息"
+    event_kind = "settlement_urge" if action == "urge_settlement" else ("ticket_follow" if action == "ticket_follow" else "backend_telegram")
+    message_label = "催结算消息" if action == "urge_settlement" else ("跟单消息" if action == "ticket_follow" else f"{action_label}消息")
     sent = await target_client.send_message(peer, body)
     save_settlement_tg_bridge(target_name, sent, {**(cmd or {}), "text": body})
     record_runtime_event(
@@ -5427,6 +5535,107 @@ async def run_scheduled_backend_action_job(item):
         raise RuntimeError(f"{job_name}失败：{detail}")
     return result
 
+def queue_ticket_follow_command(item, now):
+    job_id = ensure_ticket_follow_task_id(item)
+    member_ids = normalize_ticket_follow_member_ids(item.get("member_ids", []))
+    cmd_id = f"ticket_follow_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+    telegram_account = resolve_client_name(str(item.get("telegram_account") or "").strip()) or str(item.get("telegram_account") or "").strip()
+    command = {
+        "id": cmd_id,
+        "action": "ticket_follow",
+        "backend_site": "merchant",
+        "member_name": ",".join(member_ids[:3]) + ("..." if len(member_ids) > 3 else ""),
+        "target_value": ",".join(member_ids),
+        "member_ids": member_ids,
+        "venues": normalize_ticket_follow_venues(item.get("venues")),
+        "telegram_target": str(item.get("telegram_target") or "").strip(),
+        "telegram_account": telegram_account,
+        "interval_minutes": int(item.get("interval_minutes") or DEFAULT_TICKET_FOLLOW_INTERVAL_MINUTES),
+        "lookback_days": int(item.get("lookback_days") or DEFAULT_TICKET_FOLLOW_LOOKBACK_DAYS),
+        "pageSize": int(item.get("page_size") or DEFAULT_TICKET_FOLLOW_PAGE_SIZE),
+        "page_size": int(item.get("page_size") or DEFAULT_TICKET_FOLLOW_PAGE_SIZE),
+        "source": "ticket_follow",
+        "rule": item.get("name") or job_id,
+        "ticket_follow_task_id": job_id,
+        "queued_at": now.isoformat(),
+    }
+    enqueue_pending_command(command)
+    return cmd_id
+
+async def run_ticket_follow_task_job(item):
+    job_id = ensure_ticket_follow_task_id(item)
+    job_name = item.get("name") or job_id
+    started = time.time()
+    now = datetime.now(BJ_TZ)
+    member_ids = normalize_ticket_follow_member_ids(item.get("member_ids", []))
+    target = str(item.get("telegram_target") or "").strip()
+    if not member_ids:
+        raise RuntimeError("未配置会员ID")
+    if not target:
+        raise RuntimeError("未配置推送飞机号")
+    cmd_id = queue_ticket_follow_command(item, now)
+    logger.info(f"🎫 [TicketFollow] 已下发跟单查询: {job_name} members={len(member_ids)} id={cmd_id}")
+    result = await wait_backend_command_result(cmd_id, timeout=BACKEND_COMMAND_TIMEOUT)
+    ok = backend_result_ok(result)
+    detail = str((result or {}).get("reply_text") or (result or {}).get("detail") or "")
+    if not detail:
+        detail = "注单跟单查询完成" if ok else "注单跟单查询失败"
+    item["last_run_at"] = now.isoformat()
+    item["last_status"] = "success" if ok else "failed"
+    item["last_detail"] = detail[:500]
+    record_runtime_event(
+        "ticket_follow",
+        "success" if ok else "failed",
+        detail,
+        rule={"id": job_id, "name": job_name},
+        target_account=item.get("telegram_account") or MAIN_NAME,
+        action_count=int((result or {}).get("sent_count") or 0),
+        duration_ms=(time.time() - started) * 1000
+    )
+    if not ok:
+        raise RuntimeError(f"{job_name}失败：{detail}")
+    return result
+
+async def run_ticket_follow_tasks_job():
+    while True:
+        try:
+            await asyncio.sleep(20)
+            now = datetime.now(BJ_TZ)
+            changed = False
+            for item in list(current_config.get("ticket_follow_tasks", [])):
+                job_id = ensure_ticket_follow_task_id(item)
+                try:
+                    if not item.get("enabled", False):
+                        continue
+                    interval = max(60, int(item.get("interval_minutes") or DEFAULT_TICKET_FOLLOW_INTERVAL_MINUTES) * 60)
+                    last_run_ts = float(ticket_follow_task_runs.get(job_id) or 0)
+                    last_run_at = parse_bj_datetime(item.get("last_run_at"))
+                    if last_run_at:
+                        last_run_ts = max(last_run_ts, last_run_at.timestamp())
+                    if last_run_ts and time.time() - last_run_ts < interval:
+                        continue
+                    ticket_follow_task_runs[job_id] = time.time()
+                    await run_ticket_follow_task_job(item)
+                    changed = True
+                except Exception as e:
+                    ticket_follow_task_runs[job_id] = time.time()
+                    item["last_run_at"] = now.isoformat()
+                    item["last_status"] = "failed"
+                    item["last_detail"] = str(e)[:500]
+                    record_runtime_event(
+                        "ticket_follow",
+                        "failed",
+                        f"注单跟单失败：{e}",
+                        rule={"id": item.get("id") or "__ticket_follow__", "name": item.get("name") or "注单跟单"},
+                        target_account=item.get("telegram_account") or MAIN_NAME,
+                    )
+                    changed = True
+                    logger.error(f"❌ [TicketFollow] 执行失败: {e}")
+            if changed:
+                persist_current_config()
+        except Exception as e:
+            logger.error(f"❌ [TicketFollow] Error: {e}")
+
 async def run_scheduled_backend_actions_job():
     while True:
         try:
@@ -5556,6 +5765,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         bot_loop.create_task(run_schedule_job())
         bot_loop.create_task(run_scheduled_messages_job())
         bot_loop.create_task(run_scheduled_backend_actions_job())
+        bot_loop.create_task(run_ticket_follow_tasks_job())
 
     @app.route('/zd')
     def monitor_settings_page(): 
@@ -5722,6 +5932,13 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         reply_text = str(data.get("reply_text") or "")
         stop_actions = bool(data.get("stop_actions"))
         if cmd_id:
+            metric_fields = {}
+            for metric_key in ("sent_count", "new_count", "baseline_count", "queried_count"):
+                if metric_key in data:
+                    try:
+                        metric_fields[metric_key] = int(data.get(metric_key) or 0)
+                    except Exception:
+                        metric_fields[metric_key] = 0
             with backend_command_lock:
                 pending_command_leases.pop(cmd_id, None)
                 previous_progress = backend_command_progress.get(cmd_id, {})
@@ -5732,6 +5949,7 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
                     "reply_text": reply_text,
                     "stop_actions": stop_actions,
                     "acked_at": now_bj().isoformat(),
+                    **metric_fields,
                 }
                 backend_command_progress[cmd_id] = {
                     **previous_progress,
@@ -5790,8 +6008,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         except Exception as e:
             action = normalize_backend_action(data.get("action") or data.get("backend_action") or "")
             action_label = command_action_label(action)
-            event_kind = "settlement_urge" if action == "urge_settlement" else "backend_telegram"
-            message_label = "催结算消息" if action == "urge_settlement" else f"{action_label}消息"
+            event_kind = "settlement_urge" if action == "urge_settlement" else ("ticket_follow" if action == "ticket_follow" else "backend_telegram")
+            message_label = "催结算消息" if action == "urge_settlement" else ("跟单消息" if action == "ticket_follow" else f"{action_label}消息")
             logger.error(f"❌ [BackendUnlock] {message_label} TG 发送失败: id={cmd_id or '-'} account={account or MAIN_NAME} target={target or '-'} err={e}")
             record_runtime_event(
                 event_kind,

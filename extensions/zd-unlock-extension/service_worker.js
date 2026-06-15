@@ -96,6 +96,7 @@ const MAX_ACTIVE_BACKEND_COMMANDS = 4;
 const COMMAND_POLL_WAIT_SECONDS = 5;
 const COMMAND_POLL_ALARM_MINUTES = 0.25;
 const MERCHANT_URGE_MATCH_STATS_KEY = 'merchantUrgeMatchStatsV1';
+const TICKET_FOLLOW_SEEN_KEY = 'ticketFollowSeenOrdersV1';
 const MERCHANT_URGE_MATCH_LIMIT = 2;
 const MERCHANT_URGE_MATCH_TTL_MS = 24 * 60 * 60 * 1000;
 const MERCHANT_URGE_BATCH_WAIT_MS = 6000;
@@ -180,6 +181,7 @@ function siteFromCommand(action, cmd = {}) {
     || action === 'venue_order_statistics'
     || action === 'merchant_order_query'
     || action === 'venue_order_query'
+    || action === 'ticket_follow'
     || hint === '3'
     || hint === 'merchant'
     || hint === 'venue'
@@ -893,6 +895,7 @@ function commandLabel(action) {
   if (action === 'urge_settlement') return '催结算';
   if (action === 'query_ticket_cancel_reason') return '注单取消/失败原因';
   if (action === 'venue_display_control') return '场馆上下架';
+  if (action === 'ticket_follow') return '注单跟单';
   return '短信/验证码解锁';
 }
 
@@ -905,7 +908,7 @@ function compactRequestFailureReason(text, action = '') {
   const raw = String(text || '').replace(/\s+/g, ' ');
   const urlMatch = raw.match(/https?:\/\/[^\s。；]+/);
   let endpoint = '';
-  let label = action === 'urge_settlement' || action === 'merchant_order_statistics' || action === 'query_ticket_cancel_reason' ? '场馆接口请求失败' : '后台接口请求失败';
+  let label = action === 'urge_settlement' || action === 'merchant_order_statistics' || action === 'query_ticket_cancel_reason' || action === 'ticket_follow' ? '场馆接口请求失败' : '后台接口请求失败';
   if (urlMatch) {
     try {
       const parsed = new URL(urlMatch[0].replace(/[),，。；]+$/, ''));
@@ -941,7 +944,7 @@ function friendlyErrorReason(err, action = '', label = '') {
   if (/9站未登录|9001未登录/.test(text)) return '9站未登录';
   if (/6站未登录|6001未登录/.test(text)) return '6站未登录';
   if (/未登录/.test(text)) {
-    if (action === 'urge_settlement' || action === 'merchant_order_statistics' || action === 'query_ticket_cancel_reason') return '场馆登录失效';
+    if (action === 'urge_settlement' || action === 'merchant_order_statistics' || action === 'query_ticket_cancel_reason' || action === 'ticket_follow') return '场馆登录失效';
     return `${label || '后台'}未登录`;
   }
   if (/扩展已重新加载|拓展已重新加载|刷新对应后台页面|登录态同步|后台页面已刷新/.test(text)) return '拓展未同步登录态';
@@ -978,6 +981,9 @@ function normalizeCommandAction(action, cmd = {}) {
     venue_maintenance: 'venue_display_control',
     venue_enable: 'venue_display_control',
     venue_display: 'venue_display_control',
+    follow_ticket: 'ticket_follow',
+    ticket_following: 'ticket_follow',
+    follow_bet: 'ticket_follow',
     data_overview: 'member_data_overview',
     query_member_data: 'member_data_overview',
     member_data_query: 'member_data_overview',
@@ -1015,11 +1021,13 @@ function normalizeCommandAction(action, cmd = {}) {
     '取消原因': 'query_ticket_cancel_reason',
     '失败原因': 'query_ticket_cancel_reason',
     '无效原因': 'query_ticket_cancel_reason',
-    '投注失败': 'query_ticket_cancel_reason'
+    '投注失败': 'query_ticket_cancel_reason',
+    '注单跟单': 'ticket_follow',
+    '跟单': 'ticket_follow'
   };
   const normalized = aliases[raw] || raw;
   if (hasMerchantCommandHint(cmd) && (raw === '' || raw === 'unlock_sms')) return 'merchant_order_statistics';
-  return ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg', 'member_data_overview', 'query_member_line', 'query_login_device_ip', 'query_same_ip_device', 'disable_login_device', 'query_venue_turnover', 'configure_rebate', 'merchant_order_statistics', 'urge_settlement', 'query_ticket_cancel_reason', 'venue_display_control'].includes(normalized)
+  return ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg', 'member_data_overview', 'query_member_line', 'query_login_device_ip', 'query_same_ip_device', 'disable_login_device', 'query_venue_turnover', 'configure_rebate', 'merchant_order_statistics', 'urge_settlement', 'query_ticket_cancel_reason', 'venue_display_control', 'ticket_follow'].includes(normalized)
     ? normalized
     : 'unlock_sms';
 }
@@ -1092,12 +1100,18 @@ function isSupportedCommandAction(action, cmd = {}) {
     'venue_maintenance',
     'venue_enable',
     'venue_display',
+    'ticket_follow',
+    'follow_ticket',
+    'ticket_following',
+    'follow_bet',
     '催结算',
     '注单取消原因',
     '取消原因',
     '失败原因',
     '无效原因',
-    '投注失败'
+    '投注失败',
+    '注单跟单',
+    '跟单'
   ].includes(raw);
 }
 
@@ -2341,6 +2355,319 @@ function orderStatusLabel(status) {
   if (value === 1) return '已结算';
   if (value === 2) return '已取消';
   return `状态${status}`;
+}
+
+function normalizeTicketFollowVenueLabel(value) {
+  const raw = String(value || '').trim();
+  const compact = raw.replace(/\s+/g, '').toLowerCase();
+  if (!raw) return '';
+  if (raw.includes('冠名') || ['naming', 'named', 'guanming', 'gm'].includes(compact)) return '冠名体育';
+  if (raw.includes('熊猫') || compact.includes('panda') || ['xiongmao', 'xm'].includes(compact)) return '熊猫体育';
+  return raw;
+}
+
+function ticketFollowVenueTerms(value) {
+  const label = normalizeTicketFollowVenueLabel(value);
+  if (label === '冠名体育') return ['冠名体育', '冠名', 'naming', 'guanming'];
+  if (label === '熊猫体育') return ['熊猫体育', '熊猫', 'panda', 'xiongmao'];
+  return label ? [label] : [];
+}
+
+function ticketFollowVenues(cmd = {}) {
+  const raw = cmd.venues || cmd.venue_names || cmd.venueNames || cmd.venue || cmd.merchant_name || cmd.merchantName || [];
+  const source = Array.isArray(raw) ? raw : String(raw || '').split(/[，,;；/\s]+/);
+  const venues = [];
+  for (const item of source) {
+    const venue = normalizeTicketFollowVenueLabel(item);
+    if (venue && !venues.includes(venue)) venues.push(venue);
+  }
+  return venues.length ? venues : ['冠名体育', '熊猫体育'];
+}
+
+function ticketFollowMemberIds(cmd = {}, fallbackTarget = '') {
+  const raw = cmd.member_ids || cmd.memberIds || cmd.user_ids || cmd.userIds || cmd.userId || cmd.user_id || fallbackTarget || cmd.target_value || cmd.member_name || '';
+  const source = Array.isArray(raw) ? raw.join(',') : String(raw || '');
+  return [...new Set((source.match(/\d{6,24}/g) || []))];
+}
+
+function ticketFollowTaskId(cmd = {}) {
+  return String(cmd.ticket_follow_task_id || cmd.task_id || cmd.schedule_id || cmd.id || 'ticket_follow').trim();
+}
+
+function ticketFollowScopeKey(cmd = {}, venue = '', memberId = '') {
+  return [
+    ticketFollowTaskId(cmd),
+    normalizeTicketFollowVenueLabel(venue),
+    String(memberId || '').trim()
+  ].join('|');
+}
+
+function ticketFollowOrderNo(order = {}) {
+  return String(order.orderNo || order.order_no || order.id || '').trim();
+}
+
+function ticketFollowOrderKey(cmd = {}, venue = '', memberId = '', order = {}) {
+  return `${ticketFollowScopeKey(cmd, venue, memberId)}|${ticketFollowOrderNo(order)}`;
+}
+
+function ticketFollowBaselineKey(cmd = {}, venue = '', memberId = '') {
+  return `baseline|${ticketFollowScopeKey(cmd, venue, memberId)}`;
+}
+
+async function loadTicketFollowSeen() {
+  const stored = await chrome.storage.local.get([TICKET_FOLLOW_SEEN_KEY]);
+  const value = stored[TICKET_FOLLOW_SEEN_KEY];
+  return value && typeof value === 'object' ? value : {};
+}
+
+function pruneTicketFollowSeen(seen = {}) {
+  const entries = Object.entries(seen);
+  if (entries.length <= 12000) return seen;
+  return Object.fromEntries(
+    entries
+      .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))
+      .slice(0, 10000)
+  );
+}
+
+async function saveTicketFollowSeen(seen = {}) {
+  await chrome.storage.local.set({ [TICKET_FOLLOW_SEEN_KEY]: pruneTicketFollowSeen(seen) });
+}
+
+function ticketFollowDateRange(cmd = {}) {
+  const now = new Date();
+  const lookbackDays = Math.max(1, Math.min(30, Number(cmd.lookback_days || cmd.lookbackDays || 2) || 2));
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (lookbackDays - 1), 0, 0, 0);
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+  return {
+    startTime: String(cmd.startTime || cmd.start_time || formatDateTime(start)),
+    endTime: String(cmd.endTime || cmd.end_time || formatDateTime(end))
+  };
+}
+
+function merchantTicketFollowBody(cmd = {}, userId = '', pageNum = 1) {
+  const { startTime, endTime } = ticketFollowDateRange(cmd);
+  return {
+    filter: String(cmd.filter || '1'),
+    userId: String(userId || '').trim(),
+    databaseSwitch: Number(cmd.databaseSwitch ?? cmd.database_switch ?? 1),
+    userIdList: Array.isArray(cmd.userIdList) ? cmd.userIdList : [],
+    startTime,
+    endTime,
+    pageNum,
+    fromAppointment: Number(cmd.fromAppointment ?? cmd.from_appointment ?? 0),
+    pageSize: Number(cmd.pageSize || cmd.page_size || 200),
+    accountTag: Number(cmd.accountTag ?? cmd.account_tag ?? 0)
+  };
+}
+
+function ticketFollowOrderIsUnsettled(order = {}) {
+  if (order.orderStatus !== undefined && order.orderStatus !== null && order.orderStatus !== '') {
+    return Number(order.orderStatus) === 0;
+  }
+  const details = orderDetails(order);
+  if (details.length) {
+    return details.some((detail) => detailIsUnsettled(detail, order) && !detailIsCanceled(detail) && !detailIsBetFailed(detail));
+  }
+  return order.settleTime == null && order.settleTimeStr == null && order.settleAmount == null;
+}
+
+function cleanTicketFollowUserName(order = {}) {
+  const raw = String(order.userName || order.fakeName || order.memberName || order.uid || '').trim();
+  const withoutMerchant = raw.replace(/^\d+_/, '');
+  const masked = withoutMerchant.replace(/^\*+/, '');
+  return masked || withoutMerchant || raw || String(order.uid || '').trim();
+}
+
+function ticketFollowAmountText(order = {}, detail = {}) {
+  const value = order.localBetAmount ?? order.orderAmountTotal ?? order.productAmountTotal ?? detail.localBetAmount ?? detail.betAmount ?? 0;
+  const num = Number(value || 0);
+  const amount = Number.isFinite(num)
+    ? (Number.isInteger(num) ? String(num) : num.toFixed(2).replace(/\.?0+$/, ''))
+    : String(value || '0');
+  const currency = String(order.localCurrency || order.currencyCode || detail.localCurrency || '').trim();
+  const suffix = !currency || /RMB|CNY|人民币|1/.test(currency) ? '元' : currency;
+  return `${amount}${suffix}`;
+}
+
+function ticketFollowBetTimeText(order = {}) {
+  const text = String(order.createTimeStr || order.betTimeStr || order.create_time_str || '').trim();
+  const matched = text.match(/\d{4}[-/](\d{2})[-/](\d{2})\s+(\d{2}:\d{2}:\d{2})/);
+  if (matched) return `${matched[1]}-${matched[2]} ${matched[3]}`;
+  const ms = parseBeijingTime(order.createTime || order.betTime || order.create_time);
+  if (!ms) return text || '-';
+  const dt = new Date(ms);
+  return `${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())} ${pad2(dt.getHours())}:${pad2(dt.getMinutes())}:${pad2(dt.getSeconds())}`;
+}
+
+function ticketFollowOdds(detail = {}) {
+  return String(detail.oddFinally || detail.oddsValue || (detail.oddsInternational && detail.oddsInternational.eu) || '').trim();
+}
+
+function ticketFollowDetailBlock(detail = {}) {
+  const match = String(detail.matchInfo || [detail.homeName, detail.awayName].filter(Boolean).join(' v ') || '').trim();
+  const sport = String(detail.sportName || '').trim();
+  const tournament = String(detail.tournamentName || detail.matchName || '').trim();
+  const play = String(detail.playName || detail.originalPlay || '').trim();
+  const option = String(detail.playOptionName || detail.optionValue || detail.playOptions || detail.marketValue || '').trim();
+  const odds = ticketFollowOdds(detail);
+  return [
+    match,
+    [sport, tournament].filter(Boolean).join(' / '),
+    `${[play, option].filter(Boolean).join(' ')}${odds ? `    @${odds}` : ''}`.trim()
+  ].filter(Boolean).join('\n');
+}
+
+function ticketFollowMessage(order = {}) {
+  const details = orderDetails(order);
+  const displayDetails = (details.length ? details : [{}]).slice(0, 4);
+  const detailBlocks = displayDetails.map(ticketFollowDetailBlock).filter(Boolean);
+  const firstDetail = displayDetails[0] || {};
+  return [
+    cleanTicketFollowUserName(order),
+    ...detailBlocks,
+    ticketFollowAmountText(order, firstDetail),
+    `下注时间：${ticketFollowBetTimeText(order)}`
+  ].filter(Boolean).join('\n');
+}
+
+function merchantConfigMatchesVenue(config = {}, venue = '') {
+  const terms = ticketFollowVenueTerms(venue).map((item) => normalizeText(item)).filter(Boolean);
+  if (!terms.length) return true;
+  const label = normalizeText(config.pageAuthLabel || merchantAuthLabel(config) || '');
+  return terms.some((term) => label.includes(term));
+}
+
+function ticketFollowConfigsForVenue(baseConfig, cmd = {}, venue = '') {
+  const configs = authConfigsForAction(baseConfig, 'ticket_follow', {
+    ...cmd,
+    venue_name: venue,
+    merchant_name: venue
+  });
+  const matched = configs.filter((item) => merchantConfigMatchesVenue(item, venue));
+  if (!matched.length) throw new Error(`${venue}未登录或未捕获登录态`);
+  return matched;
+}
+
+async function queryTicketFollowOrders(config, cmd = {}, memberId = '', venue = '') {
+  if (!config.merchantTicketListUrl) throw new Error('场馆注单列表接口未配置');
+  const headers = merchantHeaders(config, cmd);
+  const venueLabel = config.pageAuthLabel || merchantAuthLabel(config);
+  const pageSize = Math.max(20, Math.min(500, Number(cmd.pageSize || cmd.page_size || 200) || 200));
+  const maxPages = Math.max(1, Math.min(5, Number(cmd.max_pages || cmd.maxPages || 3) || 3));
+  const orders = [];
+  for (let pageNum = 1; pageNum <= maxPages; pageNum += 1) {
+    await setStatus({ state: 'running', message: `跟单查询 ${venue} ${memberId} 第${pageNum}页` });
+    const ticketUrl = merchantUrl(config.merchantTicketListUrl);
+    const ticket = await postJson(ticketUrl, headers, merchantTicketFollowBody({ ...cmd, pageSize }, memberId, pageNum));
+    if (!merchantApiOk(ticket)) {
+      const err = merchantHttpError('跟单查询注单失败', ticketUrl, ticket);
+      if (merchantAuthFailed(ticket)) {
+        err.code = 'merchant_auth_failed';
+        err.venueLabel = venueLabel;
+      }
+      throw err;
+    }
+    const list = merchantList(ticket.data).filter(ticketFollowOrderIsUnsettled);
+    orders.push(...list);
+    const total = Number((((ticket.data || {}).data || {}).total) || 0);
+    if (!total || pageNum * pageSize >= total) break;
+  }
+  return orders;
+}
+
+function ticketFollowOrderSortValue(order = {}) {
+  return Number(order.createTime || order.modifyTime || order.id || 0) || 0;
+}
+
+async function runTicketFollowCommand(config, cmd, targetValue) {
+  const memberIds = ticketFollowMemberIds(cmd, targetValue);
+  const venues = ticketFollowVenues(cmd);
+  if (!memberIds.length) throw new Error('注单跟单未配置会员ID');
+  if (!String(cmd.telegram_target || cmd.forward_to || '').trim()) throw new Error('注单跟单未配置推送飞机号');
+
+  const seen = await loadTicketFollowSeen();
+  const errors = [];
+  let touchedSeen = false;
+  let queriedCount = 0;
+  let baselineCount = 0;
+  let newCount = 0;
+  let sentCount = 0;
+  let successQueries = 0;
+
+  for (const venue of venues) {
+    let venueConfig;
+    try {
+      venueConfig = ticketFollowConfigsForVenue(config, cmd, venue)[0];
+    } catch (err) {
+      errors.push(`${venue}: ${friendlyErrorReason(err, 'ticket_follow', '注单跟单')}`);
+      continue;
+    }
+
+    for (const memberId of memberIds) {
+      try {
+        const orders = (await queryTicketFollowOrders(venueConfig, cmd, memberId, venue))
+          .sort((a, b) => ticketFollowOrderSortValue(a) - ticketFollowOrderSortValue(b));
+        successQueries += 1;
+        queriedCount += orders.length;
+        const baselineKey = ticketFollowBaselineKey(cmd, venue, memberId);
+        if (!seen[baselineKey]) {
+          const now = Date.now();
+          seen[baselineKey] = now;
+          for (const order of orders) {
+            const orderKey = ticketFollowOrderKey(cmd, venue, memberId, order);
+            if (ticketFollowOrderNo(order)) seen[orderKey] = now;
+          }
+          baselineCount += orders.length;
+          touchedSeen = true;
+          continue;
+        }
+
+        for (const order of orders) {
+          const orderNo = ticketFollowOrderNo(order);
+          if (!orderNo) continue;
+          const orderKey = ticketFollowOrderKey(cmd, venue, memberId, order);
+          if (seen[orderKey]) continue;
+          newCount += 1;
+          try {
+            await sendTelegramMessageFromCommand(venueConfig, { ...cmd, action: 'ticket_follow', orderNo, target_value: orderNo }, ticketFollowMessage(order), {
+              action: 'ticket_follow',
+              targetLabel: '跟单飞机号'
+            });
+            seen[orderKey] = Date.now();
+            touchedSeen = true;
+            sentCount += 1;
+            await sleep(250);
+          } catch (err) {
+            errors.push(`${venue} ${memberId} ${orderNo}: ${friendlyErrorReason(err, 'ticket_follow', '注单跟单')}`);
+          }
+        }
+      } catch (err) {
+        errors.push(`${venue} ${memberId}: ${friendlyErrorReason(err, 'ticket_follow', '注单跟单')}`);
+      }
+    }
+  }
+
+  if (touchedSeen) await saveTicketFollowSeen(seen);
+  if (!successQueries && errors.length) throw new Error(errors.slice(0, 3).join('；'));
+
+  const detailParts = [
+    `查询${successQueries}/${venues.length * memberIds.length}`,
+    `未结算${queriedCount}`,
+    `新增${newCount}`,
+    `推送${sentCount}`
+  ];
+  if (baselineCount) detailParts.push(`基线${baselineCount}`);
+  if (errors.length) detailParts.push(`异常：${errors.slice(0, 2).join('；')}`);
+  const detail = `注单跟单完成：${detailParts.join('，')}`;
+  const status = newCount > sentCount ? 'failed' : 'success';
+  await setStatus({ state: status === 'failed' ? 'error' : (errors.length ? 'warning' : 'success'), message: detail });
+  await ack(config, cmd, status, detail, {
+    sent_count: sentCount,
+    new_count: newCount,
+    baseline_count: baselineCount,
+    queried_count: queriedCount
+  });
 }
 
 function failureRiskText(order = {}, detail = {}) {
@@ -3789,14 +4116,17 @@ async function runTicketCancelReasonCommandWithFallback(configs, cmd, orderNo) {
 
 async function runBackendCommand(config, cmd) {
   const action = normalizeCommandAction(cmd.action, cmd);
-  let rawValue = action === 'merchant_order_statistics' || action === 'urge_settlement' || action === 'query_ticket_cancel_reason'
+  let rawValue = action === 'merchant_order_statistics' || action === 'urge_settlement' || action === 'query_ticket_cancel_reason' || action === 'ticket_follow'
     ? (cmd.orderNo || cmd.order_no || cmd.target_value || cmd.member_name || '')
     : (cmd.target_value || cmd.member_name || '');
   const label = commandLabel(action);
   if (!String(rawValue || '').trim() && ['member_data_overview', 'query_member_line', 'query_login_device_ip', 'query_same_ip_device', 'disable_login_device', 'query_venue_turnover'].includes(action)) {
     rawValue = commandMembers(cmd, '')[0] || '';
   }
-  const targetValue = action === 'add_proxy_whitelist' || action === 'merchant_order_statistics' || action === 'urge_settlement' || action === 'query_ticket_cancel_reason'
+  if (!String(rawValue || '').trim() && action === 'ticket_follow') {
+    rawValue = ticketFollowMemberIds(cmd, '')[0] || '';
+  }
+  const targetValue = action === 'add_proxy_whitelist' || action === 'merchant_order_statistics' || action === 'urge_settlement' || action === 'query_ticket_cancel_reason' || action === 'ticket_follow'
     ? String(rawValue).trim()
     : String(rawValue).trim().toLowerCase();
   if (!targetValue) {
@@ -3819,6 +4149,10 @@ async function runBackendCommand(config, cmd) {
     }
     if (action === 'venue_display_control') {
       await runVenueDisplayControlCommand(config, cmd, targetValue);
+      return;
+    }
+    if (action === 'ticket_follow') {
+      await runTicketFollowCommand(config, cmd, targetValue);
       return;
     }
     config = configForAction(config, action, cmd);
