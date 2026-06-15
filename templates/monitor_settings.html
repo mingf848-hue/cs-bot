@@ -1995,7 +1995,7 @@
                                 <div class="schedule-fields">
                                     <div class="field full">
                                         <label>会员ID</label>
-                                        <textarea class="textarea" :value="listToString(item.member_ids)" @input="setList($event, item, 'member_ids', true)" placeholder="534351204255309222&#10;412933542932856832"></textarea>
+                                        <textarea class="textarea" v-model="item.member_ids_text" @input="syncTicketFollowMemberIds(item)" placeholder="534351204255309222&#10;412933542932856832"></textarea>
                                     </div>
                                 </div>
                                 <div class="schedule-meta">
@@ -2441,21 +2441,27 @@ createApp({
             last_sent_at: item.last_sent_at || ""
         });
 
-        const hydrateTicketFollowTask = (item = {}) => ({
-            id: item.id || `ticket_follow_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
-            name: item.name || "注单跟单",
-            enabled: item.enabled ?? false,
-            venues: Array.isArray(item.venues) && item.venues.length ? item.venues.slice(0, 1) : ["冠名体育"],
-            member_ids: Array.isArray(item.member_ids) ? item.member_ids : splitInline(item.member_ids || item.userId || ""),
-            telegram_target: item.telegram_target || "",
-            telegram_account: item.telegram_account || "",
-            interval_minutes: Number(item.interval_minutes || 5),
-            lookback_days: Number(item.lookback_days || 2),
-            page_size: Number(item.page_size || 200),
-            last_run_at: item.last_run_at || "",
-            last_status: item.last_status || "",
-            last_detail: item.last_detail || ""
-        });
+        const hydrateTicketFollowTask = (item = {}) => {
+            const memberIds = Array.isArray(item.member_ids)
+                ? ticketFollowMemberIdsFromText(item.member_ids.join("\n"))
+                : ticketFollowMemberIdsFromText(item.member_ids || item.userId || "");
+            return {
+                id: item.id || `ticket_follow_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+                name: item.name || "注单跟单",
+                enabled: item.enabled ?? false,
+                venues: Array.isArray(item.venues) && item.venues.length ? item.venues.slice(0, 1) : ["冠名体育"],
+                member_ids: memberIds,
+                member_ids_text: item.member_ids_text || listToString(memberIds),
+                telegram_target: item.telegram_target || "",
+                telegram_account: item.telegram_account || "",
+                interval_minutes: Number(item.interval_minutes || 5),
+                lookback_days: Number(item.lookback_days || 2),
+                page_size: Number(item.page_size || 200),
+                last_run_at: item.last_run_at || "",
+                last_status: item.last_status || "",
+                last_detail: item.last_detail || ""
+            };
+        };
 
         const hydrateScheduledBackendAction = (item = {}) => ({
             id: item.id || `backend_schedule_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
@@ -2794,6 +2800,13 @@ createApp({
 
         const splitInline = (text) => String(text || "").split(/[\r\n,，]+/).map(s => s.trim()).filter(Boolean);
         const listToString = (list) => (list || []).join("\n");
+        const ticketFollowMemberIdsFromText = (text) => [...new Set((String(text || "").match(/\d{6,24}/g) || []))];
+        const syncTicketFollowMemberIds = (item) => {
+            if (!item) return [];
+            const source = item.member_ids_text !== undefined ? item.member_ids_text : listToString(item.member_ids);
+            item.member_ids = ticketFollowMemberIdsFromText(source);
+            return item.member_ids;
+        };
         const setList = (event, rule, key, comma = false) => {
             const val = event.target.value || "";
             rule[key] = comma ? splitInline(val) : val.split(/[\r\n]+/).map(s => s.trim()).filter(Boolean);
@@ -3284,6 +3297,7 @@ createApp({
             const successMessage = options.successMessage || "配置已保存";
             ui.saving = true;
             try {
+                config.ticket_follow_tasks.forEach(syncTicketFollowMemberIds);
                 const returnConfig = options.returnConfig === true;
                 const res = await fetch(`/api/monitor_settings?return_config=${returnConfig ? "1" : "0"}`, {
                     method: "POST",
@@ -3512,7 +3526,7 @@ createApp({
             addGroupResource, removeGroupResource, addPrefixResource, removePrefixResource, isSelected, toggleListValue, toggleStringValue,
             addScheduledMessage, removeScheduledMessage, addTicketFollowTask, removeTicketFollowTask, addScheduledBackendAction, removeScheduledBackendAction, formatScheduleLastSent,
             keywordsRaw,
-            listToString, setList, setIntList, splitInline, shortGroups, primaryKeyword, ruleActionSummary, stepCount,
+            listToString, setList, setIntList, splitInline, syncTicketFollowMemberIds, shortGroups, primaryKeyword, ruleActionSummary, stepCount,
             addStep, duplicateStep, removeStep, normalizeStep, displayDelay, setDefaultFailureNotify,
             startStepDrag, overStepDrag, dropStepDrag, endStepDrag, isStepDragScope, isStepDragging, isStepDropTarget,
             amountPart, setAmountPart, amountLowLines, setAmountLowLines,
