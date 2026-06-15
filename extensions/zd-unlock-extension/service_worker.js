@@ -2566,6 +2566,8 @@ async function queryTicketFollowOrders(config, cmd = {}, memberId = '', venue = 
   const pageSize = Math.max(20, Math.min(500, Number(cmd.pageSize || cmd.page_size || 200) || 200));
   const maxPages = Math.max(1, Math.min(5, Number(cmd.max_pages || cmd.maxPages || 3) || 3));
   const orders = [];
+  let totalCount = 0;
+  let rawCount = 0;
   for (let pageNum = 1; pageNum <= maxPages; pageNum += 1) {
     await setStatus({ state: 'running', message: `跟单查询 ${venue} ${memberId} 第${pageNum}页` });
     const ticketUrl = merchantUrl(ticketListUrl);
@@ -2578,12 +2580,15 @@ async function queryTicketFollowOrders(config, cmd = {}, memberId = '', venue = 
       }
       throw err;
     }
-    const list = merchantList(ticket.data).filter(ticketFollowOrderIsUnsettled);
+    const rawList = merchantList(ticket.data);
+    const list = rawList.filter(ticketFollowOrderIsUnsettled);
+    rawCount += rawList.length;
     orders.push(...list);
     const total = Number((((ticket.data || {}).data || {}).total) || 0);
+    totalCount = Math.max(totalCount, total || rawList.length);
     if (!total || pageNum * pageSize >= total) break;
   }
-  return orders;
+  return { orders, totalCount, rawCount };
 }
 
 function ticketFollowOrderSortValue(order = {}) {
@@ -2605,16 +2610,19 @@ async function runTicketFollowCommand(config, cmd, targetValue) {
   let newCount = 0;
   let sentCount = 0;
   let successQueries = 0;
+  const queryDetails = [];
 
   for (const candidate of candidates) {
     const venueConfig = candidate.config;
     const venueLabel = candidate.label;
     for (const memberId of memberIds) {
       try {
-        const orders = (await queryTicketFollowOrders(venueConfig, cmd, memberId, venueLabel))
+        const queryResult = await queryTicketFollowOrders(venueConfig, cmd, memberId, venueLabel);
+        const orders = queryResult.orders
           .sort((a, b) => ticketFollowOrderSortValue(a) - ticketFollowOrderSortValue(b));
         successQueries += 1;
         queriedCount += orders.length;
+        queryDetails.push(`${memberId}:total${queryResult.totalCount}/未结算${orders.length}`);
         const baselineKey = ticketFollowBaselineKey(cmd, venueLabel, memberId);
         if (!seen[baselineKey]) {
           const now = Date.now();
@@ -2664,6 +2672,7 @@ async function runTicketFollowCommand(config, cmd, targetValue) {
     `推送${sentCount}`
   ];
   if (baselineCount) detailParts.push(`基线${baselineCount}`);
+  if (queryDetails.length) detailParts.push(`明细${queryDetails.slice(0, 3).join('；')}${queryDetails.length > 3 ? '...' : ''}`);
   if (errors.length) detailParts.push(`异常：${errors.slice(0, 2).join('；')}`);
   const detail = `注单跟单完成：${detailParts.join('，')}`;
   const status = newCount > sentCount ? 'failed' : 'success';
