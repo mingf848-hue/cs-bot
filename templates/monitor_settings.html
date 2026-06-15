@@ -1982,10 +1982,10 @@
                                     </div>
                                     <div class="field">
                                         <label>监控场馆</label>
-                                        <div class="check-row">
-                                            <label class="inline-check"><input class="checkbox" type="checkbox" value="冠名体育" v-model="item.venues">冠名体育</label>
-                                            <label class="inline-check"><input class="checkbox" type="checkbox" value="熊猫体育" v-model="item.venues">熊猫体育</label>
-                                        </div>
+                                        <select class="select" :value="(item.venues || [])[0] || '冠名体育'" @change="item.venues = [$event.target.value]">
+                                            <option value="冠名体育">冠名体育</option>
+                                            <option value="熊猫体育">熊猫体育</option>
+                                        </select>
                                     </div>
                                     <div class="field">
                                         <label>推送飞机号</label>
@@ -1995,13 +1995,13 @@
                                 <div class="schedule-fields">
                                     <div class="field full">
                                         <label>会员ID</label>
-                                        <textarea class="textarea" :value="listToString(item.member_ids)" @input="setList($event, item, 'member_ids', true)" placeholder="534351204255309222&#10;534351204255309223"></textarea>
+                                        <input class="input" :value="(item.member_ids || [])[0] || ''" @input="item.member_ids = splitInline($event.target.value).slice(0, 1)" placeholder="534351204255309222">
                                     </div>
                                 </div>
                                 <div class="schedule-meta">
                                     <span>{{ item.enabled ? '已启用' : '已停用' }}</span>
                                     <span>{{ (item.venues || []).join(' / ') || '未选场馆' }}</span>
-                                    <span>{{ (item.member_ids || []).length }} 个会员</span>
+                                    <span>{{ (item.member_ids || [])[0] || '未填会员ID' }}</span>
                                     <span>{{ item.last_detail || '等待执行' }}</span>
                                 </div>
                             </article>
@@ -2445,8 +2445,8 @@ createApp({
             id: item.id || `ticket_follow_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
             name: item.name || "注单跟单",
             enabled: item.enabled ?? false,
-            venues: Array.isArray(item.venues) && item.venues.length ? item.venues : ["冠名体育", "熊猫体育"],
-            member_ids: Array.isArray(item.member_ids) ? item.member_ids : [],
+            venues: Array.isArray(item.venues) && item.venues.length ? item.venues.slice(0, 1) : ["冠名体育"],
+            member_ids: Array.isArray(item.member_ids) ? item.member_ids.slice(0, 1) : splitInline(item.member_ids || item.userId || "").slice(0, 1),
             telegram_target: item.telegram_target || "",
             telegram_account: item.telegram_account || "",
             interval_minutes: Number(item.interval_minutes || 5),

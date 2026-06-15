@@ -227,6 +227,7 @@ function profileForAuthOrigin(profile, auth) {
   const host = authHost(auth);
   const authHosts = profile.authHosts || [profile.host];
   if (!host || !authHosts.includes(host) || host === profile.host) return profile;
+  if (profile.host === 'api-merchant-backstage.dbsportxxxwo8.com') return profile;
   const rewritten = { ...profile, host };
   for (const [key, value] of Object.entries(profile)) {
     if (!key.endsWith('Url') || typeof value !== 'string') continue;
@@ -2381,13 +2382,13 @@ function ticketFollowVenues(cmd = {}) {
     const venue = normalizeTicketFollowVenueLabel(item);
     if (venue && !venues.includes(venue)) venues.push(venue);
   }
-  return venues.length ? venues : ['冠名体育', '熊猫体育'];
+  return venues.length ? venues.slice(0, 1) : ['冠名体育'];
 }
 
 function ticketFollowMemberIds(cmd = {}, fallbackTarget = '') {
   const raw = cmd.member_ids || cmd.memberIds || cmd.user_ids || cmd.userIds || cmd.userId || cmd.user_id || fallbackTarget || cmd.target_value || cmd.member_name || '';
   const source = Array.isArray(raw) ? raw.join(',') : String(raw || '');
-  return [...new Set((source.match(/\d{6,24}/g) || []))];
+  return [...new Set((source.match(/\d{6,24}/g) || []))].slice(0, 1);
 }
 
 function ticketFollowTaskId(cmd = {}) {
@@ -2550,14 +2551,15 @@ function ticketFollowConfigCandidates(baseConfig, cmd = {}, venues = []) {
   });
   const matched = configs.filter((item) => venues.some((venue) => merchantConfigMatchesVenue(item, venue)));
   const selected = matched.length && (venues.length === 1 || matched.length === configs.length) ? matched : configs;
-  return selected.map((item, index) => ({
+  return selected.slice(0, 1).map((item, index) => ({
     config: item,
     label: ticketFollowConfigLabel(item, index)
   }));
 }
 
 async function queryTicketFollowOrders(config, cmd = {}, memberId = '', venue = '') {
-  if (!config.merchantTicketListUrl) throw new Error('场馆注单列表接口未配置');
+  const ticketListUrl = DEFAULT_CONFIG.merchantTicketListUrl;
+  if (!ticketListUrl) throw new Error('场馆注单列表接口未配置');
   const headers = merchantHeaders(config, cmd);
   const venueLabel = config.pageAuthLabel || merchantAuthLabel(config);
   const pageSize = Math.max(20, Math.min(500, Number(cmd.pageSize || cmd.page_size || 200) || 200));
@@ -2565,7 +2567,7 @@ async function queryTicketFollowOrders(config, cmd = {}, memberId = '', venue = 
   const orders = [];
   for (let pageNum = 1; pageNum <= maxPages; pageNum += 1) {
     await setStatus({ state: 'running', message: `跟单查询 ${venue} ${memberId} 第${pageNum}页` });
-    const ticketUrl = merchantUrl(config.merchantTicketListUrl);
+    const ticketUrl = merchantUrl(ticketListUrl);
     const ticket = await postJson(ticketUrl, headers, merchantTicketFollowBody({ ...cmd, pageSize }, memberId, pageNum));
     if (!merchantApiOk(ticket)) {
       const err = merchantHttpError('跟单查询注单失败', ticketUrl, ticket);

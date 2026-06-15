@@ -3991,24 +3991,23 @@ def normalize_ticket_follow_venues(raw):
     if isinstance(raw, str):
         raw = re.split(r"[\s,，;；/]+", raw)
     if not isinstance(raw, list):
-        raw = ["冠名体育", "熊猫体育"]
+        raw = ["冠名体育"]
     venues = []
     for item in raw:
         venue = normalize_ticket_follow_venue(item)
         if venue and venue not in venues:
             venues.append(venue)
-    return venues or ["冠名体育", "熊猫体育"]
+    return venues[:1] or ["冠名体育"]
 
 def normalize_ticket_follow_member_ids(raw):
-    member_ids = []
     seen = set()
     for item in split_config_items(raw, split_commas=True):
         for matched in re.findall(r"\d{6,24}", str(item or "")):
             if matched in seen:
                 continue
             seen.add(matched)
-            member_ids.append(matched)
-    return member_ids
+            return [matched]
+    return []
 
 def normalize_ticket_follow_tasks(raw_items):
     if not isinstance(raw_items, list):
@@ -5551,13 +5550,14 @@ async def run_scheduled_backend_action_job(item):
 def queue_ticket_follow_command(item, now):
     job_id = ensure_ticket_follow_task_id(item)
     member_ids = normalize_ticket_follow_member_ids(item.get("member_ids", []))
+    member_id = member_ids[0] if member_ids else ""
     cmd_id = f"ticket_follow_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
     command = {
         "id": cmd_id,
         "action": "ticket_follow",
         "backend_site": "merchant",
-        "member_name": ",".join(member_ids[:3]) + ("..." if len(member_ids) > 3 else ""),
-        "target_value": ",".join(member_ids),
+        "member_name": member_id,
+        "target_value": member_id,
         "member_ids": member_ids,
         "venues": normalize_ticket_follow_venues(item.get("venues")),
         "telegram_target": str(item.get("telegram_target") or "").strip(),
