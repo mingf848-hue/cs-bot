@@ -1977,13 +1977,6 @@
                                         <input class="input" type="number" min="1" max="30" v-model.number="item.lookback_days">
                                     </div>
                                     <div class="field">
-                                        <label>发送账号</label>
-                                        <select class="select" v-model="item.telegram_account">
-                                            <option value="">主账号（默认）</option>
-                                            <option v-for="acc in available_accounts" :key="acc" :value="acc">{{ acc }}</option>
-                                        </select>
-                                    </div>
-                                    <div class="field">
                                         <label>上次执行</label>
                                         <input class="input" :value="item.last_run_at ? formatScheduleLastSent(item.last_run_at) : '未执行'" readonly>
                                     </div>

@@ -4397,12 +4397,6 @@ def build_account_import_config(candidate, target_account=""):
     return merged, target_account
 
 async def send_command_telegram_message(account_name, target, text, cmd=None):
-    target_name = str(account_name or "").strip() or MAIN_NAME
-    if target_name not in global_clients:
-        raise RuntimeError(f"发送账号不存在或未注册：{target_name}")
-    target_client = global_clients[target_name]
-    if not client_is_connected(target_client):
-        raise RuntimeError(f"发送账号未连接：{target_name}")
     peer = parse_peer_target(target)
     if peer is None:
         raise RuntimeError("未配置 Telegram 目标群")
@@ -4413,6 +4407,25 @@ async def send_command_telegram_message(account_name, target, text, cmd=None):
     action_label = command_action_label(action)
     event_kind = "settlement_urge" if action == "urge_settlement" else ("ticket_follow" if action == "ticket_follow" else "backend_telegram")
     message_label = "催结算消息" if action == "urge_settlement" else ("跟单消息" if action == "ticket_follow" else f"{action_label}消息")
+
+    if action == "ticket_follow":
+        sent = await send_bot_notice(peer, body, delete_button=False)
+        record_runtime_event(
+            event_kind,
+            "success",
+            f"{message_label}已通过 Bot 发送：{peer}",
+            rule={"id": str((cmd or {}).get("id") or "__ticket_follow__"), "name": str((cmd or {}).get("rule") or action_label)},
+            target_account="Telegram Bot",
+            action_count=1,
+        )
+        return sent
+
+    target_name = str(account_name or "").strip() or MAIN_NAME
+    if target_name not in global_clients:
+        raise RuntimeError(f"发送账号不存在或未注册：{target_name}")
+    target_client = global_clients[target_name]
+    if not client_is_connected(target_client):
+        raise RuntimeError(f"发送账号未连接：{target_name}")
     sent = await target_client.send_message(peer, body)
     save_settlement_tg_bridge(target_name, sent, {**(cmd or {}), "text": body})
     record_runtime_event(
@@ -5539,7 +5552,6 @@ def queue_ticket_follow_command(item, now):
     job_id = ensure_ticket_follow_task_id(item)
     member_ids = normalize_ticket_follow_member_ids(item.get("member_ids", []))
     cmd_id = f"ticket_follow_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
-    telegram_account = resolve_client_name(str(item.get("telegram_account") or "").strip()) or str(item.get("telegram_account") or "").strip()
     command = {
         "id": cmd_id,
         "action": "ticket_follow",
@@ -5549,7 +5561,7 @@ def queue_ticket_follow_command(item, now):
         "member_ids": member_ids,
         "venues": normalize_ticket_follow_venues(item.get("venues")),
         "telegram_target": str(item.get("telegram_target") or "").strip(),
-        "telegram_account": telegram_account,
+        "telegram_account": "",
         "interval_minutes": int(item.get("interval_minutes") or DEFAULT_TICKET_FOLLOW_INTERVAL_MINUTES),
         "lookback_days": int(item.get("lookback_days") or DEFAULT_TICKET_FOLLOW_LOOKBACK_DAYS),
         "pageSize": int(item.get("page_size") or DEFAULT_TICKET_FOLLOW_PAGE_SIZE),
@@ -5588,7 +5600,7 @@ async def run_ticket_follow_task_job(item):
         "success" if ok else "failed",
         detail,
         rule={"id": job_id, "name": job_name},
-        target_account=item.get("telegram_account") or MAIN_NAME,
+        target_account="Telegram Bot",
         action_count=int((result or {}).get("sent_count") or 0),
         duration_ms=(time.time() - started) * 1000
     )
@@ -5627,7 +5639,7 @@ async def run_ticket_follow_tasks_job():
                         "failed",
                         f"注单跟单失败：{e}",
                         rule={"id": item.get("id") or "__ticket_follow__", "name": item.get("name") or "注单跟单"},
-                        target_account=item.get("telegram_account") or MAIN_NAME,
+                        target_account="Telegram Bot",
                     )
                     changed = True
                     logger.error(f"❌ [TicketFollow] 执行失败: {e}")
@@ -6004,7 +6016,10 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         )
         try:
             sent = future.result(timeout=30)
-            return jsonify({"ok": True, "message_id": getattr(sent, "id", None)})
+            message_id = getattr(sent, "id", None)
+            if message_id is None and isinstance(sent, dict):
+                message_id = ((sent.get("result") or {}).get("message_id"))
+            return jsonify({"ok": True, "message_id": message_id})
         except Exception as e:
             action = normalize_backend_action(data.get("action") or data.get("backend_action") or "")
             action_label = command_action_label(action)
