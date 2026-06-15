@@ -2450,6 +2450,7 @@ function merchantTicketFollowBody(cmd = {}, userId = '', pageNum = 1) {
   const { startTime, endTime } = ticketFollowDateRange(cmd);
   return {
     filter: String(cmd.filter || '1'),
+    orderStatusList: Array.isArray(cmd.orderStatusList) ? cmd.orderStatusList : [0],
     userId: String(userId || '').trim(),
     databaseSwitch: Number(cmd.databaseSwitch ?? cmd.database_switch ?? 1),
     userIdList: Array.isArray(cmd.userIdList) ? cmd.userIdList : [],
