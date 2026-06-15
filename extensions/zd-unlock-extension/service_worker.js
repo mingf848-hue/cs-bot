@@ -2538,15 +2538,22 @@ function merchantConfigMatchesVenue(config = {}, venue = '') {
   return terms.some((term) => label.includes(term));
 }
 
-function ticketFollowConfigsForVenue(baseConfig, cmd = {}, venue = '') {
+function ticketFollowConfigLabel(config = {}, index = 0) {
+  return String(config.pageAuthLabel || merchantAuthLabel(config) || `场馆账号${index + 1}`).trim() || `场馆账号${index + 1}`;
+}
+
+function ticketFollowConfigCandidates(baseConfig, cmd = {}, venues = []) {
   const configs = authConfigsForAction(baseConfig, 'ticket_follow', {
     ...cmd,
-    venue_name: venue,
-    merchant_name: venue
+    venue_name: venues.join(' '),
+    merchant_name: venues.join(' ')
   });
-  const matched = configs.filter((item) => merchantConfigMatchesVenue(item, venue));
-  if (!matched.length) throw new Error(`${venue}未登录或未捕获登录态`);
-  return matched;
+  const matched = configs.filter((item) => venues.some((venue) => merchantConfigMatchesVenue(item, venue)));
+  const selected = matched.length && (venues.length === 1 || matched.length === configs.length) ? matched : configs;
+  return selected.map((item, index) => ({
+    config: item,
+    label: ticketFollowConfigLabel(item, index)
+  }));
 }
 
 async function queryTicketFollowOrders(config, cmd = {}, memberId = '', venue = '') {
@@ -2588,6 +2595,7 @@ async function runTicketFollowCommand(config, cmd, targetValue) {
 
   const seen = await loadTicketFollowSeen();
   const errors = [];
+  const candidates = ticketFollowConfigCandidates(config, cmd, venues);
   let touchedSeen = false;
   let queriedCount = 0;
   let baselineCount = 0;
@@ -2595,27 +2603,21 @@ async function runTicketFollowCommand(config, cmd, targetValue) {
   let sentCount = 0;
   let successQueries = 0;
 
-  for (const venue of venues) {
-    let venueConfig;
-    try {
-      venueConfig = ticketFollowConfigsForVenue(config, cmd, venue)[0];
-    } catch (err) {
-      errors.push(`${venue}: ${friendlyErrorReason(err, 'ticket_follow', '注单跟单')}`);
-      continue;
-    }
-
+  for (const candidate of candidates) {
+    const venueConfig = candidate.config;
+    const venueLabel = candidate.label;
     for (const memberId of memberIds) {
       try {
-        const orders = (await queryTicketFollowOrders(venueConfig, cmd, memberId, venue))
+        const orders = (await queryTicketFollowOrders(venueConfig, cmd, memberId, venueLabel))
           .sort((a, b) => ticketFollowOrderSortValue(a) - ticketFollowOrderSortValue(b));
         successQueries += 1;
         queriedCount += orders.length;
-        const baselineKey = ticketFollowBaselineKey(cmd, venue, memberId);
+        const baselineKey = ticketFollowBaselineKey(cmd, venueLabel, memberId);
         if (!seen[baselineKey]) {
           const now = Date.now();
           seen[baselineKey] = now;
           for (const order of orders) {
-            const orderKey = ticketFollowOrderKey(cmd, venue, memberId, order);
+            const orderKey = ticketFollowOrderKey(cmd, venueLabel, memberId, order);
             if (ticketFollowOrderNo(order)) seen[orderKey] = now;
           }
           baselineCount += orders.length;
@@ -2626,7 +2628,7 @@ async function runTicketFollowCommand(config, cmd, targetValue) {
         for (const order of orders) {
           const orderNo = ticketFollowOrderNo(order);
           if (!orderNo) continue;
-          const orderKey = ticketFollowOrderKey(cmd, venue, memberId, order);
+          const orderKey = ticketFollowOrderKey(cmd, venueLabel, memberId, order);
           if (seen[orderKey]) continue;
           newCount += 1;
           try {
@@ -2639,11 +2641,11 @@ async function runTicketFollowCommand(config, cmd, targetValue) {
             sentCount += 1;
             await sleep(250);
           } catch (err) {
-            errors.push(`${venue} ${memberId} ${orderNo}: ${friendlyErrorReason(err, 'ticket_follow', '注单跟单')}`);
+            errors.push(`${venueLabel} ${memberId} ${orderNo}: ${friendlyErrorReason(err, 'ticket_follow', '注单跟单')}`);
           }
         }
       } catch (err) {
-        errors.push(`${venue} ${memberId}: ${friendlyErrorReason(err, 'ticket_follow', '注单跟单')}`);
+        errors.push(`${venueLabel} ${memberId}: ${friendlyErrorReason(err, 'ticket_follow', '注单跟单')}`);
       }
     }
   }
@@ -2652,7 +2654,7 @@ async function runTicketFollowCommand(config, cmd, targetValue) {
   if (!successQueries && errors.length) throw new Error(errors.slice(0, 3).join('；'));
 
   const detailParts = [
-    `查询${successQueries}/${venues.length * memberIds.length}`,
+    `查询${successQueries}/${candidates.length * memberIds.length}`,
     `未结算${queriedCount}`,
     `新增${newCount}`,
     `推送${sentCount}`
