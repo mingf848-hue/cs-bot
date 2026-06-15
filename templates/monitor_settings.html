@@ -1995,13 +1995,13 @@
                                 <div class="schedule-fields">
                                     <div class="field full">
                                         <label>会员ID</label>
-                                        <input class="input" :value="(item.member_ids || [])[0] || ''" @input="item.member_ids = splitInline($event.target.value).slice(0, 1)" placeholder="534351204255309222">
+                                        <textarea class="textarea" :value="listToString(item.member_ids)" @input="setList($event, item, 'member_ids', true)" placeholder="534351204255309222&#10;412933542932856832"></textarea>
                                     </div>
                                 </div>
                                 <div class="schedule-meta">
                                     <span>{{ item.enabled ? '已启用' : '已停用' }}</span>
                                     <span>{{ (item.venues || []).join(' / ') || '未选场馆' }}</span>
-                                    <span>{{ (item.member_ids || [])[0] || '未填会员ID' }}</span>
+                                    <span>{{ (item.member_ids || []).length }} 个会员</span>
                                     <span>{{ item.last_detail || '等待执行' }}</span>
                                 </div>
                             </article>
@@ -2446,7 +2446,7 @@ createApp({
             name: item.name || "注单跟单",
             enabled: item.enabled ?? false,
             venues: Array.isArray(item.venues) && item.venues.length ? item.venues.slice(0, 1) : ["冠名体育"],
-            member_ids: Array.isArray(item.member_ids) ? item.member_ids.slice(0, 1) : splitInline(item.member_ids || item.userId || "").slice(0, 1),
+            member_ids: Array.isArray(item.member_ids) ? item.member_ids : splitInline(item.member_ids || item.userId || ""),
             telegram_target: item.telegram_target || "",
             telegram_account: item.telegram_account || "",
             interval_minutes: Number(item.interval_minutes || 5),

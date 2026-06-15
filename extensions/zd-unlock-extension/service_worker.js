@@ -2388,7 +2388,7 @@ function ticketFollowVenues(cmd = {}) {
 function ticketFollowMemberIds(cmd = {}, fallbackTarget = '') {
   const raw = cmd.member_ids || cmd.memberIds || cmd.user_ids || cmd.userIds || cmd.userId || cmd.user_id || fallbackTarget || cmd.target_value || cmd.member_name || '';
   const source = Array.isArray(raw) ? raw.join(',') : String(raw || '');
-  return [...new Set((source.match(/\d{6,24}/g) || []))].slice(0, 1);
+  return [...new Set((source.match(/\d{6,24}/g) || []))];
 }
 
 function ticketFollowTaskId(cmd = {}) {
@@ -2657,6 +2657,7 @@ async function runTicketFollowCommand(config, cmd, targetValue) {
   if (!successQueries && errors.length) throw new Error(errors.slice(0, 3).join('；'));
 
   const detailParts = [
+    `会员${memberIds.length}`,
     `查询${successQueries}/${candidates.length * memberIds.length}`,
     `未结算${queriedCount}`,
     `新增${newCount}`,
