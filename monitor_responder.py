@@ -90,6 +90,11 @@ album_reply_dedup_queue = deque()
 album_reply_dedup_keys = set()
 PENDING_UNMATCHED_TTL_SECONDS = 180
 PENDING_UNMATCHED_LIMIT = 500
+UNMATCHED_HANDOFF_SKIP_USERNAME_PREFIXES = tuple(
+    item.strip().lstrip("@").lower()
+    for item in re.split(r"[\s,，;；]+", os.environ.get("ZD_UNMATCHED_SKIP_USERNAME_PREFIXES", "ML_YYZB"))
+    if item.strip().lstrip("@")
+)
 pending_unmatched_lock = threading.RLock()
 pending_unmatched_messages = {}
 try:
@@ -226,6 +231,21 @@ def get_sender_name(sender):
     if uname:
         return f"{fullname} (@{uname})".strip()
     return fullname or "Unknown"
+
+def sender_username_value(sender_obj=None, sender_name=""):
+    username = (getattr(sender_obj, "username", None) or "").strip().lstrip("@").lower()
+    if username:
+        return username
+    text = str(sender_name or "").strip()
+    raw_text = text.lstrip("@")
+    if re.fullmatch(r"[A-Za-z0-9_]{3,}", raw_text):
+        return raw_text.lower()
+    match = re.search(r"@([A-Za-z0-9_]{3,})", text)
+    return match.group(1).strip().lower() if match else ""
+
+def should_skip_unmatched_handoff_sender(sender_obj=None, sender_name=""):
+    username = sender_username_value(sender_obj, sender_name)
+    return bool(username and any(username.startswith(prefix) for prefix in UNMATCHED_HANDOFF_SKIP_USERNAME_PREFIXES))
 
 def now_bj():
     return datetime.now(BJ_TZ)
@@ -2148,6 +2168,10 @@ def remember_unmatched_message(event, sender_name="", related_msg_ids=None):
     msg_id = getattr(event, "id", None)
     if not chat_id or not msg_id or getattr(event, "is_reply", False):
         return
+    sender_obj = getattr(event, "sender", None)
+    if should_skip_unmatched_handoff_sender(sender_obj, sender_name):
+        logger.info(f"🛡️ [Unmatched] 发送者 username 被排除，跳过暂存 Chat={chat_id} Msg={msg_id} Sender={sender_name}")
+        return
     text = getattr(event, "raw_text", None) or getattr(event, "text", "") or ""
     message = getattr(event, "message", None)
     if not text and not getattr(message, "file", None):
@@ -2161,6 +2185,7 @@ def remember_unmatched_message(event, sender_name="", related_msg_ids=None):
         pending_unmatched_messages.setdefault(chat_id, {})[msg_id] = {
             "message": message,
             "sender_name": sender_name,
+            "sender_username": sender_username_value(sender_obj, sender_name),
             "sender_id": getattr(event, "sender_id", None),
             "grouped_id": grouped_id,
             "related_msg_ids": sorted(related_ids),
@@ -6442,6 +6467,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             sender = await message.get_sender()
         except Exception:
             sender = None
+        if should_skip_unmatched_handoff_sender(sender):
+            logger.info(f"🛡️ [Unmatched] 回扫消息发送者 username 被排除，跳过 Chat={event_view.chat_id} Msg={event_view.id} Sender={get_sender_name(sender)}")
+            return False, get_sender_name(sender)
 
         content_mismatch = False
         for check_rule in current_config.get("rules", []):
@@ -6536,6 +6564,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
             pending_event = MessageEventView(message)
             sender_name = item.get("sender_name") or ""
+            if should_skip_unmatched_handoff_sender(sender_name=sender_name) or should_skip_unmatched_handoff_sender(sender_name=item.get("sender_username") or ""):
+                logger.info(f"🛡️ [Unmatched] 待补回复消息发送者 username 被排除，跳过 Chat={chat_id} Msg={msg_id} Sender={sender_name}")
+                continue
             started = time.time()
             try:
                 await target_client.send_message(chat_id, wait_text, reply_to=msg_id)
