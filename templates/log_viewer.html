@@ -405,7 +405,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-prima
   </div>
 </div>
 <script>
-let groups=[];let allLogs=[];let parsedLogs=[];let messageIndex=new Map();let relationIndex=new Map();let visibleCount=80;let activeChatId=null;let activeChatName='全部消息';let activeMode='all';let ctxTarget=null;let logStream=null;let discussionSource=null;let loadSeq=0;
+let groups=[];let allLogs=[];let parsedLogs=[];let messageIndex=new Map();let relationIndex=new Map();let visibleCount=80;let activeChatId=null;let activeChatName='全部消息';let activeMode='all';let ctxTarget=null;let logStream=null;let discussionSource=null;let loadSeq=0;let hasMoreLogs=true;let loadingOlder=false;const PAGE_SIZE=300;
 const colors=['#6bb8ff','#ff8a65','#ba68c8','#4db6ac','#ffd54f','#7986cb','#f06292','#81c784'];
 function hcol(s){let h=0;for(const c of String(s||''))h=(h*31+c.charCodeAt(0))|0;return colors[Math.abs(h)%colors.length];}
 function escH(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -449,11 +449,11 @@ async function loadMessages(){
   const seq=++loadSeq;
   if(logStream){logStream.close();logStream=null;}
   const el=document.getElementById('messages');el.innerHTML='<div class="empty-placeholder">加载中…</div>';
-  const url='/log_db?limit=300&mode='+encodeURIComponent(activeMode)+(activeChatId?'&chat_id='+activeChatId:'');
+  const url='/log_db?limit='+PAGE_SIZE+'&mode='+encodeURIComponent(activeMode)+(activeChatId?'&chat_id='+activeChatId:'');
   try{
     const rows=await fetch(url).then(r=>r.json());
     if(seq!==loadSeq)return;
-    allLogs=filterRowsForMode(rows);visibleCount=80;updateSub('实时同步中');render();renderGroups();scrollBottom();startStream();
+    allLogs=filterRowsForMode(rows);hasMoreLogs=rows.length>=PAGE_SIZE;loadingOlder=false;visibleCount=80;updateSub('实时同步中');render();renderGroups();scrollBottom();startStream();
   }
   catch(e){if(seq===loadSeq)el.innerHTML='<div class="empty-placeholder">加载失败</div>';}
 }
@@ -501,7 +501,8 @@ function render(){
   prepareLogState();
   const start=Math.max(0,parsedLogs.length-visibleCount);
   const logs=parsedLogs.slice(start);let html='<div class="messages-container">';
-  if(start>0)html+=`<div class="local-action-message"><span><button onclick="showMoreMessages()" style="color:white;font-weight:700">加载更早记录</button></span></div>`;
+  if(start>0||hasMoreLogs)html+=`<div class="local-action-message"><span><button onclick="showMoreMessages()" style="color:white;font-weight:700" ${loadingOlder?'disabled':''}>${loadingOlder?'加载中…':'加载更早记录'}</button></span></div>`;
+  else html+=`<div class="local-action-message"><span>已经到最早记录</span></div>`;
   let lastDate='',lastSender='',lastType='';
   logs.forEach((e,localIdx)=>{const i=start+localIdx;const next=parsedLogs[i+1];const d=fmtDate(e.ts);if(d!==lastDate){html+=`<div class="date"><span>${d}</span></div>`;lastDate=d;lastSender='';lastType='';}
     const type=e.msg_type||'sys';const first=lastSender!==e.sn||lastType!==type;const last=!next||(next.msg_type||'sys')!==type||next.sn!==e.sn;lastSender=e.sn;lastType=type;html+=renderEntry(e,i,first,last);});
@@ -516,7 +517,36 @@ function renderRows(rows, options={}){
   allLogs=oldLogs;parsedLogs=oldParsed;messageIndex=oldMessage;relationIndex=oldRelation;
   return html+'</div>';
 }
-function showMoreMessages(){const m=document.getElementById('messages');const oldHeight=m.scrollHeight;visibleCount=Math.min(parsedLogs.length,visibleCount+80);render();m.scrollTop=m.scrollHeight-oldHeight;}
+function oldestLoadedTs(){
+  return allLogs.reduce((min,row)=>row&&row.ts?Math.min(min,row.ts):min,Infinity);
+}
+function mergeOlderRows(rows){
+  const seen=new Set(allLogs.map(rowKey));
+  const older=[];
+  rows.forEach(row=>{const key=rowKey(row);if(!seen.has(key)){seen.add(key);older.push(row);}});
+  allLogs=older.concat(allLogs);
+  allLogs.sort((a,b)=>(a.ts||0)-(b.ts||0));
+}
+async function showMoreMessages(){
+  const m=document.getElementById('messages');const oldHeight=m.scrollHeight;
+  if(visibleCount<parsedLogs.length){
+    visibleCount=Math.min(parsedLogs.length,visibleCount+80);render();m.scrollTop=m.scrollHeight-oldHeight;return;
+  }
+  if(!hasMoreLogs||loadingOlder)return;
+  loadingOlder=true;render();m.scrollTop=m.scrollHeight-oldHeight;
+  const before=oldestLoadedTs();
+  const params=new URLSearchParams({limit:String(PAGE_SIZE),mode:activeMode});
+  if(activeChatId)params.set('chat_id',activeChatId);
+  if(Number.isFinite(before))params.set('before_ts',String(before));
+  try{
+    const rows=await fetch('/log_db?'+params.toString()).then(r=>r.json());
+    mergeOlderRows(filterRowsForMode(rows));hasMoreLogs=rows.length>=PAGE_SIZE;visibleCount=Math.min(parsedLogs.length+80,visibleCount+80);
+  }catch(e){
+    updateSub('加载更早记录失败',true);
+  }finally{
+    loadingOlder=false;render();m.scrollTop=m.scrollHeight-oldHeight;
+  }
+}
 function appendVisibleRow(index){
   prepareLogState();
   const container=document.querySelector('#messages .messages-container');

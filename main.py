@@ -372,23 +372,25 @@ def mark_message_snapshot_deleted(chat_id, message_id):
     except Exception:
         pass
 
-def _snapshot_rows(chat_id=None, limit=600):
+def _snapshot_rows(chat_id=None, limit=600, before_ts=None):
     with sqlite3.connect(CHAT_LOG_DB) as conn:
         conn.row_factory = sqlite3.Row
+        where = []
+        params = []
         if chat_id:
-            rows = conn.execute(
-                """SELECT chat_id, message_id, first_ts, last_ts, sender_id, sender_name,
-                          sender_role, text, msg_type, reply_to_msg_id, grouped_id, is_deleted
-                   FROM chat_message_snapshots WHERE chat_id=? ORDER BY first_ts DESC LIMIT ?""",
-                (chat_id, limit)
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """SELECT chat_id, message_id, first_ts, last_ts, sender_id, sender_name,
-                          sender_role, text, msg_type, reply_to_msg_id, grouped_id, is_deleted
-                   FROM chat_message_snapshots ORDER BY first_ts DESC LIMIT ?""",
-                (limit,)
-            ).fetchall()
+            where.append("chat_id=?")
+            params.append(chat_id)
+        if before_ts:
+            where.append("first_ts < ?")
+            params.append(float(before_ts))
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        params.append(limit)
+        rows = conn.execute(
+            f"""SELECT chat_id, message_id, first_ts, last_ts, sender_id, sender_name,
+                      sender_role, text, msg_type, reply_to_msg_id, grouped_id, is_deleted
+               FROM chat_message_snapshots {where_sql} ORDER BY first_ts DESC LIMIT ?""",
+            tuple(params)
+        ).fetchall()
     result = []
     for r in rows:
         row = dict(r)
@@ -412,7 +414,7 @@ def _snapshot_rows(chat_id=None, limit=600):
         })
     return list(reversed(result))
 
-def _audit_rows(chat_id=None, limit=600, event_type=None):
+def _audit_rows(chat_id=None, limit=600, event_type=None, before_ts=None):
     with sqlite3.connect(CHAT_LOG_DB) as conn:
         conn.row_factory = sqlite3.Row
         where = [
@@ -433,6 +435,9 @@ def _audit_rows(chat_id=None, limit=600, event_type=None):
         if event_type:
             where.append("event_type=?")
             params.append(event_type)
+        if before_ts:
+            where.append("ts < ?")
+            params.append(float(before_ts))
         where_sql = " AND ".join(where)
         params.append(limit)
         rows = conn.execute(
@@ -450,35 +455,40 @@ def _audit_rows(chat_id=None, limit=600, event_type=None):
         result.append(item)
     return list(reversed(result))
 
-def _chat_event_rows(chat_id=None, limit=600, mode="all"):
+def _chat_event_rows(chat_id=None, limit=600, mode="all", before_ts=None):
     if mode == "context":
-        return _snapshot_rows(chat_id=chat_id, limit=limit)
+        return _snapshot_rows(chat_id=chat_id, limit=limit, before_ts=before_ts)
     if mode == "audit":
-        return _audit_rows(chat_id=chat_id, limit=limit)
+        return _audit_rows(chat_id=chat_id, limit=limit, before_ts=before_ts)
     if mode == "edit":
-        return _audit_rows(chat_id=chat_id, limit=limit, event_type="edit")
+        return _audit_rows(chat_id=chat_id, limit=limit, event_type="edit", before_ts=before_ts)
     if mode == "delete":
-        return _audit_rows(chat_id=chat_id, limit=limit, event_type="delete")
+        return _audit_rows(chat_id=chat_id, limit=limit, event_type="delete", before_ts=before_ts)
 
-    audit_limit = max(1, limit // 2)
-    context_limit = max(1, limit - audit_limit)
-    data = _snapshot_rows(chat_id=chat_id, limit=context_limit) + _audit_rows(chat_id=chat_id, limit=audit_limit)
+    data = (
+        _snapshot_rows(chat_id=chat_id, limit=limit, before_ts=before_ts)
+        + _audit_rows(chat_id=chat_id, limit=limit, before_ts=before_ts)
+    )
     data.sort(key=lambda row: (row.get("ts") or 0, str(row.get("id") or "")))
     return data[-limit:]
 
-def _legacy_chat_log_rows(chat_id=None, limit=600):
+def _legacy_chat_log_rows(chat_id=None, limit=600, before_ts=None):
     with sqlite3.connect(CHAT_LOG_DB) as conn:
         conn.row_factory = sqlite3.Row
+        where = []
+        params = []
         if chat_id:
-            rows = conn.execute(
-                "SELECT ts, chat_id, msg_type, raw FROM chat_logs WHERE chat_id=? ORDER BY ts DESC LIMIT ?",
-                (chat_id, limit)
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT ts, chat_id, msg_type, raw FROM chat_logs ORDER BY ts DESC LIMIT ?",
-                (limit,)
-            ).fetchall()
+            where.append("chat_id=?")
+            params.append(chat_id)
+        if before_ts:
+            where.append("ts < ?")
+            params.append(float(before_ts))
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        params.append(limit)
+        rows = conn.execute(
+            f"SELECT ts, chat_id, msg_type, raw FROM chat_logs {where_sql} ORDER BY ts DESC LIMIT ?",
+            tuple(params)
+        ).fetchall()
     return [{"source": "legacy", "ts": r["ts"], "chat_id": r["chat_id"], "msg_type": r["msg_type"], "raw": r["raw"]} for r in reversed(rows)]
 
 def _flow_rows(chat_id, message_id, window_seconds=0, limit=300):
@@ -3272,10 +3282,11 @@ def log_db():
     if mode not in {"all", "audit", "edit", "delete", "context"}:
         mode = "all"
     limit = min(request.args.get('limit', 600, type=int), 2000)
+    before_ts = request.args.get('before_ts', type=float)
     try:
-        data = _chat_event_rows(chat_id=chat_id, limit=limit, mode=mode)
+        data = _chat_event_rows(chat_id=chat_id, limit=limit, mode=mode, before_ts=before_ts)
         if not data and mode == "all":
-            data = _legacy_chat_log_rows(chat_id=chat_id, limit=limit)
+            data = _legacy_chat_log_rows(chat_id=chat_id, limit=limit, before_ts=before_ts)
         return jsonify(data)
     except Exception as e:
         return jsonify([])
