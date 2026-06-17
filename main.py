@@ -154,6 +154,7 @@ def _init_db():
             sender_name TEXT,
             text TEXT,
             old_text TEXT,
+            original_ts REAL,
             sender_role TEXT NOT NULL DEFAULT 'user',
             msg_type TEXT NOT NULL DEFAULT '文本',
             raw TEXT NOT NULL,
@@ -162,6 +163,10 @@ def _init_db():
         )""")
         try:
             conn.execute("ALTER TABLE chat_events ADD COLUMN sender_role TEXT NOT NULL DEFAULT 'user'")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE chat_events ADD COLUMN original_ts REAL")
         except sqlite3.OperationalError:
             pass
         conn.execute("""CREATE TABLE IF NOT EXISTS chat_message_snapshots (
@@ -246,7 +251,7 @@ def _broadcast_chat_event(row):
 
 def record_chat_event(event_type, chat_id, message_id, sender_id=None, sender_name=None,
                       text="", old_text="", msg_type="文本", ts=None, raw=None,
-                      reply_to_msg_id=None, grouped_id=None, sender_role="user", broadcast=True):
+                      reply_to_msg_id=None, grouped_id=None, sender_role="user", original_ts=None, broadcast=True):
     if not chat_id or not message_id:
         return None
     ts = float(ts or time.time())
@@ -269,6 +274,7 @@ def record_chat_event(event_type, chat_id, message_id, sender_id=None, sender_na
         "sender_name": sender_name or "Unknown",
         "text": safe_text,
         "old_text": safe_old_text,
+        "original_ts": original_ts,
         "sender_role": sender_role or "user",
         "msg_type": msg_type or "文本",
         "raw": raw,
@@ -281,12 +287,12 @@ def record_chat_event(event_type, chat_id, message_id, sender_id=None, sender_na
                 cur = conn.execute(
                     """INSERT OR IGNORE INTO chat_events(
                         event_uid, ts, chat_id, message_id, event_type, sender_id, sender_name,
-                        text, old_text, sender_role, msg_type, raw, reply_to_msg_id, grouped_id
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        text, old_text, original_ts, sender_role, msg_type, raw, reply_to_msg_id, grouped_id
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         _event_uid(event_type, chat_id, message_id, ts), ts, chat_id, message_id,
                         event_type, sender_id, row["sender_name"], safe_text, safe_old_text,
-                        row["sender_role"], row["msg_type"], raw, reply_to_msg_id, grouped_id
+                        original_ts, row["sender_role"], row["msg_type"], raw, reply_to_msg_id, grouped_id
                     )
                 )
                 conn.commit()
@@ -418,32 +424,35 @@ def _audit_rows(chat_id=None, limit=600, event_type=None, before_ts=None):
     with sqlite3.connect(CHAT_LOG_DB) as conn:
         conn.row_factory = sqlite3.Row
         where = [
-            "event_type IN ('edit', 'delete')",
+            "e.event_type IN ('edit', 'delete')",
             """(
-                event_type!='edit'
+                e.event_type!='edit'
                 OR (
-                    COALESCE(TRIM(old_text),'')!=''
-                    AND COALESCE(TRIM(old_text),'')!='[非文本/空]'
-                    AND COALESCE(TRIM(old_text),'')!=COALESCE(TRIM(text),'')
+                    COALESCE(TRIM(e.old_text),'')!=''
+                    AND COALESCE(TRIM(e.old_text),'')!='[非文本/空]'
+                    AND COALESCE(TRIM(e.old_text),'')!=COALESCE(TRIM(e.text),'')
                 )
             )"""
         ]
         params = []
         if chat_id:
-            where.append("chat_id=?")
+            where.append("e.chat_id=?")
             params.append(chat_id)
         if event_type:
-            where.append("event_type=?")
+            where.append("e.event_type=?")
             params.append(event_type)
         if before_ts:
-            where.append("ts < ?")
+            where.append("e.ts < ?")
             params.append(float(before_ts))
         where_sql = " AND ".join(where)
         params.append(limit)
         rows = conn.execute(
-            f"""SELECT id, ts, chat_id, message_id, event_type, sender_id, sender_name,
-                      text, old_text, sender_role, msg_type, raw, reply_to_msg_id, grouped_id
-               FROM chat_events WHERE {where_sql} ORDER BY ts DESC, id DESC LIMIT ?""",
+            f"""SELECT e.id, e.ts, e.chat_id, e.message_id, e.event_type, e.sender_id, e.sender_name,
+                      e.text, e.old_text, COALESCE(e.original_ts, s.first_ts) AS original_ts,
+                      e.sender_role, e.msg_type, e.raw, e.reply_to_msg_id, e.grouped_id
+               FROM chat_events e
+               LEFT JOIN chat_message_snapshots s ON s.chat_id=e.chat_id AND s.message_id=e.message_id
+               WHERE {where_sql} ORDER BY e.ts DESC, e.id DESC LIMIT ?""",
             tuple(params)
         ).fetchall()
     result = []
@@ -491,6 +500,174 @@ def _legacy_chat_log_rows(chat_id=None, limit=600, before_ts=None):
         ).fetchall()
     return [{"source": "legacy", "ts": r["ts"], "chat_id": r["chat_id"], "msg_type": r["msg_type"], "raw": r["raw"]} for r in reversed(rows)]
 
+def _search_log_rows(query, chat_id=None, limit=200, mode="all"):
+    query = (query or "").strip()
+    if not query:
+        return []
+    like = f"%{query}%"
+    rows = []
+    with sqlite3.connect(CHAT_LOG_DB) as conn:
+        conn.row_factory = sqlite3.Row
+        if mode in ("all", "context"):
+            where = ["(COALESCE(text,'') LIKE ? OR COALESCE(sender_name,'') LIKE ?)"]
+            params = [like, like]
+            if chat_id:
+                where.append("chat_id=?")
+                params.append(chat_id)
+            params.append(limit)
+            snapshots = conn.execute(
+                f"""SELECT chat_id, message_id, first_ts, last_ts, sender_id, sender_name,
+                          sender_role, text, msg_type, reply_to_msg_id, grouped_id, is_deleted
+                   FROM chat_message_snapshots
+                   WHERE {" AND ".join(where)}
+                   ORDER BY first_ts DESC LIMIT ?""",
+                tuple(params)
+            ).fetchall()
+            for r in snapshots:
+                row = dict(r)
+                rows.append({
+                    "id": f"ctx:{row['chat_id']}:{row['message_id']}",
+                    "source": "context",
+                    "ts": row["first_ts"],
+                    "chat_id": row["chat_id"],
+                    "message_id": row["message_id"],
+                    "event_type": "new",
+                    "sender_id": row["sender_id"],
+                    "sender_name": row["sender_name"] or "Unknown",
+                    "text": row["text"] or "",
+                    "old_text": "",
+                    "original_ts": row["first_ts"],
+                    "sender_role": row["sender_role"] or "user",
+                    "msg_type": row["msg_type"] or "文本",
+                    "raw": f"[MSG] Msg={row['message_id']} | [{row['chat_id']}] {row['sender_name'] or 'Unknown'}: {row['text'] or ''} [{row['msg_type'] or '文本'}]",
+                    "reply_to_msg_id": row["reply_to_msg_id"],
+                    "grouped_id": row["grouped_id"],
+                    "is_deleted": row["is_deleted"] or 0,
+                })
+
+        if mode in ("all", "audit", "edit", "delete"):
+            where = [
+                "(COALESCE(e.text,'') LIKE ? OR COALESCE(e.old_text,'') LIKE ? OR COALESCE(e.sender_name,'') LIKE ?)",
+                "e.event_type IN ('edit', 'delete')",
+                """(
+                    e.event_type!='edit'
+                    OR (
+                        COALESCE(TRIM(e.old_text),'')!=''
+                        AND COALESCE(TRIM(e.old_text),'')!='[非文本/空]'
+                        AND COALESCE(TRIM(e.old_text),'')!=COALESCE(TRIM(e.text),'')
+                    )
+                )"""
+            ]
+            params = [like, like, like]
+            if chat_id:
+                where.append("e.chat_id=?")
+                params.append(chat_id)
+            if mode in ("edit", "delete"):
+                where.append("e.event_type=?")
+                params.append(mode)
+            params.append(limit)
+            audits = conn.execute(
+                f"""SELECT e.id, e.ts, e.chat_id, e.message_id, e.event_type, e.sender_id, e.sender_name,
+                          e.text, e.old_text, COALESCE(e.original_ts, s.first_ts) AS original_ts,
+                          e.sender_role, e.msg_type, e.raw, e.reply_to_msg_id, e.grouped_id
+                   FROM chat_events e
+                   LEFT JOIN chat_message_snapshots s ON s.chat_id=e.chat_id AND s.message_id=e.message_id
+                   WHERE {" AND ".join(where)}
+                   ORDER BY e.ts DESC, e.id DESC LIMIT ?""",
+                tuple(params)
+            ).fetchall()
+            for r in audits:
+                item = dict(r)
+                item["source"] = "audit"
+                rows.append(item)
+
+    rows.sort(key=lambda row: (row.get("ts") or 0, str(row.get("id") or "")))
+    return rows[-limit:]
+
+def _day_start_ts(date_text):
+    day = datetime.strptime(date_text, "%Y-%m-%d")
+    return day.replace(tzinfo=timezone(timedelta(hours=8))).timestamp()
+
+def _rows_from_ts(start_ts, chat_id=None, limit=1000, mode="all"):
+    rows = []
+    with sqlite3.connect(CHAT_LOG_DB) as conn:
+        conn.row_factory = sqlite3.Row
+        if mode in ("all", "context"):
+            where = ["first_ts >= ?"]
+            params = [float(start_ts)]
+            if chat_id:
+                where.append("chat_id=?")
+                params.append(chat_id)
+            params.append(limit)
+            snapshots = conn.execute(
+                f"""SELECT chat_id, message_id, first_ts, last_ts, sender_id, sender_name,
+                          sender_role, text, msg_type, reply_to_msg_id, grouped_id, is_deleted
+                   FROM chat_message_snapshots
+                   WHERE {" AND ".join(where)}
+                   ORDER BY first_ts ASC LIMIT ?""",
+                tuple(params)
+            ).fetchall()
+            for r in snapshots:
+                row = dict(r)
+                rows.append({
+                    "id": f"ctx:{row['chat_id']}:{row['message_id']}",
+                    "source": "context",
+                    "ts": row["first_ts"],
+                    "chat_id": row["chat_id"],
+                    "message_id": row["message_id"],
+                    "event_type": "new",
+                    "sender_id": row["sender_id"],
+                    "sender_name": row["sender_name"] or "Unknown",
+                    "text": row["text"] or "",
+                    "old_text": "",
+                    "original_ts": row["first_ts"],
+                    "sender_role": row["sender_role"] or "user",
+                    "msg_type": row["msg_type"] or "文本",
+                    "raw": f"[MSG] Msg={row['message_id']} | [{row['chat_id']}] {row['sender_name'] or 'Unknown'}: {row['text'] or ''} [{row['msg_type'] or '文本'}]",
+                    "reply_to_msg_id": row["reply_to_msg_id"],
+                    "grouped_id": row["grouped_id"],
+                    "is_deleted": row["is_deleted"] or 0,
+                })
+
+        if mode in ("all", "audit", "edit", "delete"):
+            where = [
+                "e.ts >= ?",
+                "e.event_type IN ('edit', 'delete')",
+                """(
+                    e.event_type!='edit'
+                    OR (
+                        COALESCE(TRIM(e.old_text),'')!=''
+                        AND COALESCE(TRIM(e.old_text),'')!='[非文本/空]'
+                        AND COALESCE(TRIM(e.old_text),'')!=COALESCE(TRIM(e.text),'')
+                    )
+                )"""
+            ]
+            params = [float(start_ts)]
+            if chat_id:
+                where.append("e.chat_id=?")
+                params.append(chat_id)
+            if mode in ("edit", "delete"):
+                where.append("e.event_type=?")
+                params.append(mode)
+            params.append(limit)
+            audits = conn.execute(
+                f"""SELECT e.id, e.ts, e.chat_id, e.message_id, e.event_type, e.sender_id, e.sender_name,
+                          e.text, e.old_text, COALESCE(e.original_ts, s.first_ts) AS original_ts,
+                          e.sender_role, e.msg_type, e.raw, e.reply_to_msg_id, e.grouped_id
+                   FROM chat_events e
+                   LEFT JOIN chat_message_snapshots s ON s.chat_id=e.chat_id AND s.message_id=e.message_id
+                   WHERE {" AND ".join(where)}
+                   ORDER BY e.ts ASC, e.id ASC LIMIT ?""",
+                tuple(params)
+            ).fetchall()
+            for r in audits:
+                item = dict(r)
+                item["source"] = "audit"
+                rows.append(item)
+
+    rows.sort(key=lambda row: (row.get("ts") or 0, str(row.get("id") or "")))
+    return rows[:limit]
+
 def _flow_rows(chat_id, message_id, window_seconds=0, limit=300):
     if not chat_id or not message_id:
         return []
@@ -523,16 +700,18 @@ def _flow_rows(chat_id, message_id, window_seconds=0, limit=300):
         snapshot_params.append(limit)
         snapshots = conn.execute(snapshot_sql, tuple(snapshot_params)).fetchall()
 
-        audit_sql = """SELECT id, ts, chat_id, message_id, event_type, sender_id, sender_name,
-                              text, old_text, sender_role, msg_type, raw, reply_to_msg_id, grouped_id
-                       FROM chat_events
-                       WHERE chat_id=? AND event_type IN ('edit', 'delete')
-                         AND (message_id=? OR reply_to_msg_id=?"""
+        audit_sql = """SELECT e.id, e.ts, e.chat_id, e.message_id, e.event_type, e.sender_id, e.sender_name,
+                              e.text, e.old_text, COALESCE(e.original_ts, s.first_ts) AS original_ts,
+                              e.sender_role, e.msg_type, e.raw, e.reply_to_msg_id, e.grouped_id
+                       FROM chat_events e
+                       LEFT JOIN chat_message_snapshots s ON s.chat_id=e.chat_id AND s.message_id=e.message_id
+                       WHERE e.chat_id=? AND e.event_type IN ('edit', 'delete')
+                         AND (e.message_id=? OR e.reply_to_msg_id=?"""
         audit_params = [chat_id, message_id, message_id]
         if parent_id:
-            audit_sql += " OR message_id=?"
+            audit_sql += " OR e.message_id=?"
             audit_params.append(parent_id)
-        audit_sql += ") ORDER BY ts DESC, id DESC LIMIT ?"
+        audit_sql += ") ORDER BY e.ts DESC, e.id DESC LIMIT ?"
         audit_params.append(limit)
         audits = conn.execute(audit_sql, tuple(audit_params)).fetchall()
 
@@ -581,6 +760,20 @@ def get_last_stored_message_text(chat_id, message_id):
         return row[0] if row else ""
     except Exception:
         return ""
+
+def get_message_snapshot_info(chat_id, message_id):
+    try:
+        with sqlite3.connect(CHAT_LOG_DB) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """SELECT first_ts, last_ts, sender_id, sender_name, text, msg_type, sender_role,
+                          reply_to_msg_id, grouped_id
+                   FROM chat_message_snapshots WHERE chat_id=? AND message_id=? LIMIT 1""",
+                (chat_id, message_id)
+            ).fetchone()
+            return dict(row) if row else {}
+    except Exception:
+        return {}
 
 _CHAT_ID_RE = re.compile(r'\[(-100\d+)\]')
 _MSG_TYPE_MAP = [
@@ -3281,7 +3474,7 @@ def log_db():
     mode = (request.args.get('mode') or 'all').lower()
     if mode not in {"all", "audit", "edit", "delete", "context"}:
         mode = "all"
-    limit = min(request.args.get('limit', 600, type=int), 2000)
+    limit = min(request.args.get('limit', 600, type=int), 5000)
     before_ts = request.args.get('before_ts', type=float)
     try:
         data = _chat_event_rows(chat_id=chat_id, limit=limit, mode=mode, before_ts=before_ts)
@@ -3289,6 +3482,35 @@ def log_db():
             data = _legacy_chat_log_rows(chat_id=chat_id, limit=limit, before_ts=before_ts)
         return jsonify(data)
     except Exception as e:
+        return jsonify([])
+
+@app.route('/log_search')
+def log_search():
+    chat_id = request.args.get('chat_id', type=int)
+    q = (request.args.get('q') or '').strip()
+    mode = (request.args.get('mode') or 'all').lower()
+    if mode not in {"all", "audit", "edit", "delete", "context"}:
+        mode = "all"
+    limit = min(max(request.args.get('limit', 300, type=int), 1), 1000)
+    try:
+        return jsonify(_search_log_rows(q, chat_id=chat_id, limit=limit, mode=mode))
+    except Exception as e:
+        logger.error(f"❌ log_search 查询失败: {e}")
+        return jsonify([])
+
+@app.route('/log_day')
+def log_day():
+    chat_id = request.args.get('chat_id', type=int)
+    date_text = (request.args.get('date') or '').strip()
+    mode = (request.args.get('mode') or 'all').lower()
+    if mode not in {"all", "audit", "edit", "delete", "context"}:
+        mode = "all"
+    limit = min(max(request.args.get('limit', 1000, type=int), 1), 5000)
+    try:
+        start_ts = _day_start_ts(date_text)
+        return jsonify(_rows_from_ts(start_ts, chat_id=chat_id, limit=limit, mode=mode))
+    except Exception as e:
+        logger.error(f"❌ log_day 查询失败: {e}")
         return jsonify([])
 
 @app.route('/log_stream')
@@ -5754,8 +5976,11 @@ async def handler_deleted(event):
     for msg_id in event.deleted_ids:
         deleted_info = {'name': '未知', 'text': '未知'}
         deleted_info = msg_content_cache.get((event.chat_id, msg_id), deleted_info)
+        snapshot_info = get_message_snapshot_info(event.chat_id, msg_id)
+        if deleted_info['name'] == '未知' and snapshot_info.get("sender_name"):
+            deleted_info['name'] = snapshot_info.get("sender_name")
         if deleted_info['text'] == '未知':
-            stored_text = get_last_stored_message_text(event.chat_id, msg_id)
+            stored_text = snapshot_info.get("text") or get_last_stored_message_text(event.chat_id, msg_id)
             if stored_text:
                 deleted_info['text'] = stored_text
 
@@ -5768,6 +5993,7 @@ async def handler_deleted(event):
             text=deleted_info['text'],
             old_text=deleted_info['text'],
             msg_type="删除",
+            original_ts=snapshot_info.get("first_ts"),
             raw=f"[DELETED] Msg={msg_id} | [{event.chat_id}] {deleted_info['name']}: {deleted_info['text']}"
         )
 

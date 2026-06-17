@@ -105,11 +105,17 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-prima
 .HeaderActions { display: flex; align-items: center; gap: .25rem; }
 .stream-dot { width: .625rem; height: .625rem; border-radius: 50%; background: #35b56a; box-shadow: 0 0 0 .1875rem rgba(53,181,106,.14); display: inline-block; margin-right: .375rem; }
 .stream-dot.reconnecting { background: #dd962a; box-shadow: 0 0 0 .1875rem rgba(221,150,42,.16); }
-.filter-tabs { display: flex; gap: .375rem; padding: .5rem .75rem; background: rgba(255,255,255,.86); border-bottom: 1px solid var(--color-borders); overflow-x: auto; scrollbar-width: none; }
+.filter-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: .375rem; padding: .5rem .75rem; background: rgba(255,255,255,.86); border-bottom: 1px solid var(--color-borders); overflow-x: auto; scrollbar-width: none; }
 .filter-tabs::-webkit-scrollbar { display: none; }
 .filter-tab { min-height: 2.25rem; padding: 0 .8125rem; border-radius: 1.125rem; color: var(--color-text-secondary); font-weight: 600; font-size: .875rem; white-space: nowrap; border: 1px solid transparent; transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease; }
 .filter-tab:hover { background: var(--color-chat-hover); color: var(--color-text); }
 .filter-tab.active { color: var(--color-primary); background: #e8f3ff; border-color: #c8e3ff; }
+.message-search { flex: 1 1 16rem; min-width: 13rem; max-width: 26rem; margin-left: .375rem; }
+.date-jump { flex: 0 0 11rem; min-width: 10rem; }
+.date-jump input { color-scheme: light; }
+.message-search-actions { display: flex; align-items: center; gap: .25rem; }
+.message-search-button { min-width: 2.25rem; height: 2.25rem; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: var(--color-text-secondary); }
+.message-search-button:hover { background: var(--color-chat-hover); color: var(--color-text); }
 .input-search {
   flex: 1;
   height: 2.5rem;
@@ -196,6 +202,12 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-prima
 .edit-side { padding: .5rem .625rem; border-radius: .625rem; background: rgba(255,255,255,.18); }
 .edit-label { display: block; margin-bottom: .25rem; font-size: .6875rem; font-weight: 700; opacity: .9; }
 .audit-time { display: block; margin-top: .375rem; font-size: .75rem; opacity: .9; text-align: center; }
+.delete-audit-card { min-width: min(28rem, 92vw); display: grid; gap: .5rem; }
+.delete-audit-text { padding: .5rem .625rem; border-radius: .625rem; background: rgba(255,255,255,.16); overflow-wrap: anywhere; }
+.delete-time-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+.delete-time-item { padding: .4375rem .5rem; border-radius: .625rem; background: rgba(255,255,255,.14); text-align: center; }
+.delete-time-label { display: block; margin-bottom: .125rem; font-size: .6875rem; font-weight: 800; opacity: .9; }
+.delete-time-value { display: block; font-size: .75rem; opacity: .95; }
 .Message {
   --background-color: var(--color-background);
   --hover-color: var(--color-reply-hover);
@@ -348,12 +360,15 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-prima
   .MiddleHeader .Avatar { width: 2.375rem; height: 2.375rem; }
   .HeaderActions .Button { width: 2.75rem; height: 2.75rem; }
   .filter-tabs { padding: .4375rem .5rem; }
+  .message-search { flex-basis: 100%; order: 2; max-width: none; }
+  .date-jump { flex: 1 1 10rem; order: 3; }
   .messages-container { padding: 0 .5rem; }
   .Message { padding-left: 2.875rem; margin-bottom: .25rem; }
   .Message.own { padding-right: .25rem; }
   .message-content-wrapper { max-width: min(var(--max-width), calc(100vw - 4.5rem)); }
   .local-action-message > span, .date > span { max-width: 92%; }
   .edit-audit-grid { grid-template-columns: 1fr; }
+  .delete-time-grid { grid-template-columns: 1fr; }
   .reply-text { max-width: 14rem; }
 }
 </style>
@@ -386,6 +401,13 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-prima
         <button class="filter-tab" data-mode="delete" onclick="setMode('delete')">删除</button>
         <button class="filter-tab" data-mode="edit" onclick="setMode('edit')">编辑</button>
         <button class="filter-tab" data-mode="context" onclick="setMode('context')">消息快照</button>
+        <label class="input-search message-search"><span>⌕</span><input id="messageSearch" placeholder="搜索消息或昵称" autocomplete="off"></label>
+        <label class="input-search date-jump"><span>📅</span><input id="dateJump" type="date" title="跳转到当天 00:00"></label>
+        <span class="message-search-actions">
+          <button class="message-search-button" onclick="searchLogs()" title="搜索">⌕</button>
+          <button class="message-search-button" onclick="jumpToDate()" title="跳转日期">↵</button>
+          <button class="message-search-button" onclick="clearLogSearch()" title="清除搜索">×</button>
+        </span>
       </nav>
       <section class="MessageList custom-scroll" id="messages"></section>
     </div>
@@ -405,13 +427,14 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-prima
   </div>
 </div>
 <script>
-let groups=[];let allLogs=[];let parsedLogs=[];let messageIndex=new Map();let relationIndex=new Map();let visibleCount=80;let activeChatId=null;let activeChatName='全部消息';let activeMode='all';let ctxTarget=null;let logStream=null;let discussionSource=null;let loadSeq=0;let hasMoreLogs=true;let loadingOlder=false;const PAGE_SIZE=300;
+let groups=[];let allLogs=[];let parsedLogs=[];let messageIndex=new Map();let relationIndex=new Map();let visibleCount=500;let activeChatId=null;let activeChatName='全部消息';let activeMode='all';let ctxTarget=null;let logStream=null;let discussionSource=null;let loadSeq=0;let hasMoreLogs=true;let loadingOlder=false;let searchActive=false;let searchQuery='';let dateJumpActive=false;let dateJumpValue='';const PAGE_SIZE=2000;const DAY_PAGE_SIZE=5000;const INITIAL_VISIBLE=500;const LOAD_STEP=500;const SEARCH_LIMIT=1000;
 const colors=['#6bb8ff','#ff8a65','#ba68c8','#4db6ac','#ffd54f','#7986cb','#f06292','#81c784'];
 function hcol(s){let h=0;for(const c of String(s||''))h=(h*31+c.charCodeAt(0))|0;return colors[Math.abs(h)%colors.length];}
 function escH(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function stripDate(raw){return String(raw||'').replace(/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+/,'').trim();}
 function fmtTime(ts){return ts?new Date(ts*1000).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}):'';}
 function fmtDate(ts){return ts?new Date(ts*1000).toLocaleDateString('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'long',day:'numeric'}):'';}
+function fmtDateTime(ts){return ts?new Date(ts*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}):'未知';}
 function briefText(s){const text=String(s||'').replace(/\s+/g,' ').trim();return text.length>72?text.slice(0,72)+'…':text;}
 function mk(chatId,msgId){return `${chatId||''}:${msgId||''}`;}
 function closeLeftColumn(){document.getElementById('Main').classList.remove('left-column-open');}
@@ -437,7 +460,7 @@ function renderGroups(){
 function selectGroup(id,name){closeDiscussion(false);closeFlow();activeChatId=id;activeChatName=decodeURIComponent(name||'全部消息');closeLeftColumn();updateHead();loadMessages();renderGroups();}
 function updateHead(){document.getElementById('headTitle').textContent=activeChatName;document.getElementById('headAvatar').textContent=(activeChatName||'L').charAt(0).toUpperCase();document.getElementById('headAvatar').style.background=hcol(activeChatName);}
 function updateSub(text,reconnecting=false){document.getElementById('headSubText').textContent=text;document.getElementById('streamDot').classList.toggle('reconnecting',!!reconnecting);}
-function setMode(mode){closeDiscussion(false);activeMode=mode;document.querySelectorAll('.filter-tab').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));loadMessages();}
+function setMode(mode){closeDiscussion(false);activeMode=mode;document.querySelectorAll('.filter-tab').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));if(searchActive)searchLogs();else if(dateJumpActive)jumpToDate();else loadMessages();}
 function filterRowsForMode(rows){
   if(activeMode==='edit')return rows.filter(r=>r.event_type==='edit');
   if(activeMode==='delete')return rows.filter(r=>r.event_type==='delete');
@@ -447,13 +470,16 @@ function filterRowsForMode(rows){
 }
 async function loadMessages(){
   const seq=++loadSeq;
+  searchActive=false;searchQuery='';dateJumpActive=false;dateJumpValue='';
+  const searchInput=document.getElementById('messageSearch');if(searchInput)searchInput.value='';
+  const dateInput=document.getElementById('dateJump');if(dateInput)dateInput.value='';
   if(logStream){logStream.close();logStream=null;}
   const el=document.getElementById('messages');el.innerHTML='<div class="empty-placeholder">加载中…</div>';
   const url='/log_db?limit='+PAGE_SIZE+'&mode='+encodeURIComponent(activeMode)+(activeChatId?'&chat_id='+activeChatId:'');
   try{
     const rows=await fetch(url).then(r=>r.json());
     if(seq!==loadSeq)return;
-    allLogs=filterRowsForMode(rows);hasMoreLogs=rows.length>=PAGE_SIZE;loadingOlder=false;visibleCount=80;updateSub('实时同步中');render();renderGroups();scrollBottom();startStream();
+    allLogs=filterRowsForMode(rows);hasMoreLogs=rows.length>=PAGE_SIZE;loadingOlder=false;visibleCount=INITIAL_VISIBLE;updateSub('实时同步中');render();renderGroups();scrollBottom();startStream();
   }
   catch(e){if(seq===loadSeq)el.innerHTML='<div class="empty-placeholder">加载失败</div>';}
 }
@@ -497,11 +523,13 @@ function prepareLogState(){
 }
 function render(){
   const el=document.getElementById('messages');
-  if(!allLogs.length){el.innerHTML='<div class="empty-placeholder">暂无消息</div>';return;}
+  if(!allLogs.length){el.innerHTML=`<div class="empty-placeholder">${searchActive?'没有匹配记录':dateJumpActive?'所选日期之后没有记录':'暂无消息'}</div>`;return;}
   prepareLogState();
   const start=Math.max(0,parsedLogs.length-visibleCount);
   const logs=parsedLogs.slice(start);let html='<div class="messages-container">';
-  if(start>0||hasMoreLogs)html+=`<div class="local-action-message"><span><button onclick="showMoreMessages()" style="color:white;font-weight:700" ${loadingOlder?'disabled':''}>${loadingOlder?'加载中…':'加载更早记录'}</button></span></div>`;
+  if(searchActive)html+=`<div class="local-action-message"><span>搜索结果 ${parsedLogs.length} 条</span></div>`;
+  else if(dateJumpActive)html+=`<div class="local-action-message"><span>${escH(dateJumpValue)} 00:00 起 · ${parsedLogs.length} 条</span></div>`;
+  else if(start>0||hasMoreLogs)html+=`<div class="local-action-message"><span><button onclick="showMoreMessages()" style="color:white;font-weight:700" ${loadingOlder?'disabled':''}>${loadingOlder?'加载中…':'加载更早记录'}</button></span></div>`;
   else html+=`<div class="local-action-message"><span>已经到最早记录</span></div>`;
   let lastDate='',lastSender='',lastType='';
   logs.forEach((e,localIdx)=>{const i=start+localIdx;const next=parsedLogs[i+1];const d=fmtDate(e.ts);if(d!==lastDate){html+=`<div class="date"><span>${d}</span></div>`;lastDate=d;lastSender='';lastType='';}
@@ -530,7 +558,7 @@ function mergeOlderRows(rows){
 async function showMoreMessages(){
   const m=document.getElementById('messages');const oldHeight=m.scrollHeight;
   if(visibleCount<parsedLogs.length){
-    visibleCount=Math.min(parsedLogs.length,visibleCount+80);render();m.scrollTop=m.scrollHeight-oldHeight;return;
+    visibleCount=Math.min(parsedLogs.length,visibleCount+LOAD_STEP);render();m.scrollTop=m.scrollHeight-oldHeight;return;
   }
   if(!hasMoreLogs||loadingOlder)return;
   loadingOlder=true;render();m.scrollTop=m.scrollHeight-oldHeight;
@@ -540,7 +568,7 @@ async function showMoreMessages(){
   if(Number.isFinite(before))params.set('before_ts',String(before));
   try{
     const rows=await fetch('/log_db?'+params.toString()).then(r=>r.json());
-    mergeOlderRows(filterRowsForMode(rows));hasMoreLogs=rows.length>=PAGE_SIZE;visibleCount=Math.min(parsedLogs.length+80,visibleCount+80);
+    mergeOlderRows(filterRowsForMode(rows));hasMoreLogs=rows.length>=PAGE_SIZE;visibleCount=Math.min(parsedLogs.length+LOAD_STEP,visibleCount+LOAD_STEP);
   }catch(e){
     updateSub('加载更早记录失败',true);
   }finally{
@@ -560,7 +588,7 @@ function appendVisibleRow(index){
 function renderEntry(e,i,first,last){
   const type=e.msg_type||'sys';const id='msg-'+i;
   if(type==='audit')return `<div class="local-action-message audit" id="${id}" oncontextmenu="showCtx(event,${i})"><span>${renderEditAudit(e)}</span></div>`;
-  if(type==='deleted')return `<div class="local-action-message deleted" id="${id}" oncontextmenu="showCtx(event,${i})"><span>🗑️ ${escH(e.tx)}<span class="audit-time">${escH(e.time)}</span></span></div>`;
+  if(type==='deleted')return `<div class="local-action-message deleted" id="${id}" oncontextmenu="showCtx(event,${i})"><span>${renderDeleteAudit(e)}</span></div>`;
   if(type==='alert')return `<div class="local-action-message ${type}" id="${id}" oncontextmenu="showCtx(event,${i})"><span>${escH(e.tx)}</span></div>`;
   const own=type==='cs';const name=e.sn||'用户';const color=hcol(name);const title=(!own&&first&&e.sn)?`<div class="message-title" style="color:${color}">${escH(e.sn)}</div>`:'';const avatar=own?'':`<div class="Avatar" style="background:${color}">${escH(name.charAt(0).toUpperCase())}</div>`;
   const reply=renderReplyPreview(e);const flow=flowCount(e);const badge=flow>1?`<button class="flow-badge" title="消息流 ${flow} 条" onclick="openFlowForIndex(${i});event.stopPropagation()">${flow}</button>`:'';
@@ -575,6 +603,16 @@ function renderEditAudit(e){
       <div class="edit-side"><span class="edit-label">编辑后</span>${escH(e.text||'[空]')}</div>
     </div>
     <span class="audit-time">${escH(e.time)}</span>
+  </div>`;
+}
+function renderDeleteAudit(e){
+  const sendTs=e.original_ts||null;
+  return `<div class="delete-audit-card">
+    <div class="delete-audit-text">🗑️ ${escH(e.tx||'未知内容')}</div>
+    <div class="delete-time-grid">
+      <div class="delete-time-item"><span class="delete-time-label">消息发送时间：</span><span class="delete-time-value">${escH(fmtDateTime(sendTs))}</span></div>
+      <div class="delete-time-item"><span class="delete-time-label">删除时间：</span><span class="delete-time-value">${escH(fmtDateTime(e.ts))}</span></div>
+    </div>
   </div>`;
 }
 function rowDetail(p){
@@ -663,8 +701,49 @@ async function reportBug(type){
   lines.push('-- 时间窗口 (±5分钟) --');allLogs.filter(r=>Math.abs((r.ts||0)-cTs)<=300).forEach(r=>{const p=parseLog(r);lines.push('['+p.time+'] '+rowDetail(p));});
   navigator.clipboard.writeText(lines.join('\n')).then(()=>alert('已复制 ['+type+'] 详情'));document.getElementById('ctxMenu').classList.remove('open');
 }
+async function searchLogs(){
+  const input=document.getElementById('messageSearch');const q=(input&&input.value||'').trim();
+  if(!q){clearLogSearch();return;}
+  const seq=++loadSeq;searchActive=true;searchQuery=q;dateJumpActive=false;dateJumpValue='';loadingOlder=false;hasMoreLogs=false;closeDiscussion(false);closeFlow();
+  const dateInput=document.getElementById('dateJump');if(dateInput)dateInput.value='';
+  if(logStream){logStream.close();logStream=null;}
+  const el=document.getElementById('messages');el.innerHTML='<div class="empty-placeholder">搜索中…</div>';
+  const params=new URLSearchParams({q,mode:activeMode,limit:String(SEARCH_LIMIT)});
+  if(activeChatId)params.set('chat_id',activeChatId);
+  try{
+    const rows=await fetch('/log_search?'+params.toString()).then(r=>r.json());
+    if(seq!==loadSeq)return;
+    allLogs=filterRowsForMode(rows);visibleCount=Math.max(INITIAL_VISIBLE,allLogs.length);updateSub(`搜索: ${q}`);render();scrollBottom();
+  }catch(e){
+    if(seq===loadSeq)el.innerHTML='<div class="empty-placeholder">搜索失败</div>';
+  }
+}
+async function jumpToDate(){
+  const input=document.getElementById('dateJump');const day=(input&&input.value||'').trim();
+  if(!day)return;
+  const seq=++loadSeq;searchActive=false;searchQuery='';dateJumpActive=true;dateJumpValue=day;loadingOlder=false;hasMoreLogs=false;closeDiscussion(false);closeFlow();
+  const searchInput=document.getElementById('messageSearch');if(searchInput)searchInput.value='';
+  if(logStream){logStream.close();logStream=null;}
+  const el=document.getElementById('messages');el.innerHTML='<div class="empty-placeholder">跳转中…</div>';
+  const params=new URLSearchParams({date:day,mode:activeMode,limit:String(DAY_PAGE_SIZE)});
+  if(activeChatId)params.set('chat_id',activeChatId);
+  try{
+    const rows=await fetch('/log_day?'+params.toString()).then(r=>r.json());
+    if(seq!==loadSeq)return;
+    allLogs=filterRowsForMode(rows);visibleCount=Math.max(INITIAL_VISIBLE,allLogs.length);updateSub(`${day} 00:00`);render();document.getElementById('messages').scrollTop=0;
+  }catch(e){
+    if(seq===loadSeq)el.innerHTML='<div class="empty-placeholder">日期跳转失败</div>';
+  }
+}
+function clearLogSearch(){
+  const input=document.getElementById('messageSearch');if(input)input.value='';
+  const dateInput=document.getElementById('dateJump');if(dateInput)dateInput.value='';
+  if(searchActive||dateJumpActive){loadMessages();}
+}
 function doSearch(){const term=(document.getElementById('sideSearch').value||'').toLowerCase().trim();if(!term)return;let found=false;Array.from(document.querySelectorAll('.Message')).reverse().forEach(row=>{if(row.textContent.toLowerCase().includes(term)){row.scrollIntoView({behavior:'smooth',block:'center'});found=true;return;}});}
 document.getElementById('sideSearch').addEventListener('keydown',e=>{if(e.key==='Enter')doSearch();});
+document.getElementById('messageSearch').addEventListener('keydown',e=>{if(e.key==='Enter')searchLogs();if(e.key==='Escape')clearLogSearch();});
+document.getElementById('dateJump').addEventListener('change',jumpToDate);
 function scrollBottom(){const m=document.getElementById('messages');m.scrollTop=m.scrollHeight;}
 function rowKey(row){return row.id?`id:${row.id}`:`${row.event_type||row.msg_type}:${row.chat_id}:${row.message_id}:${row.ts}:${row.raw}`;}
 function startStream(){
@@ -673,6 +752,7 @@ function startStream(){
   const url='/log_stream?'+params.toString();
   logStream=new EventSource(url);
   logStream.onmessage=ev=>{
+    if(searchActive||dateJumpActive)return;
     const row=JSON.parse(ev.data);
     if(activeChatId&&String(row.chat_id)!==String(activeChatId))return;
     const atBottom=document.getElementById('messages').scrollHeight-document.getElementById('messages').scrollTop-document.getElementById('messages').clientHeight<120;
@@ -680,7 +760,7 @@ function startStream(){
     if(allLogs.some(r=>rowKey(r)===key))return;
     allLogs.push(row);
     let pruned=false;
-    if(allLogs.length>500){allLogs.shift();pruned=true;}
+    if(allLogs.length>PAGE_SIZE*3){allLogs.shift();pruned=true;}
     updateSub('实时同步中');
     if(!discussionSource){
       if(pruned)render();
