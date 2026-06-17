@@ -28,6 +28,7 @@ const SITE_BACKEND_PATHS = {
   siteInnerMsgAddUrl: '/central/admin/site/admin/v1/operation/cmCfg/siteInnerMsg/add',
   memberGameTotalInfoUrl: '/central/admin/site/admin/v1/user/game/totalInfo2',
   memberFinanceTotalAmountUrl: '/central/admin/site/admin/v1/user/finance/totalAmount2',
+  gameRecordListUrl: '/central/admin/site/admin/v1/user/game/gameRecordList',
   loginLogUrl: '/central/admin/fd/admin/v1/risk/loginLog',
   bulletFrameLogUrl: '/central/admin/fd/admin/v1/risk/bulletFrameLog',
   gameWalletListUrl: '/central/admin/game/admin/v1/user/game/list',
@@ -892,6 +893,7 @@ function commandLabel(action) {
   if (action === 'disable_login_device') return '禁用设备申请';
   if (action === 'query_venue_turnover') return '查场馆流水锁定';
   if (action === 'configure_rebate') return '配置返水';
+  if (action === 'member_win_rate') return '查胜率';
   if (action === 'merchant_order_statistics') return '场馆注单查询';
   if (action === 'urge_settlement') return '催结算';
   if (action === 'query_ticket_cancel_reason') return '注单取消/失败原因';
@@ -985,6 +987,8 @@ function normalizeCommandAction(action, cmd = {}) {
     follow_ticket: 'ticket_follow',
     ticket_following: 'ticket_follow',
     follow_bet: 'ticket_follow',
+    win_rate: 'member_win_rate',
+    member_win_rate_query: 'member_win_rate',
     data_overview: 'member_data_overview',
     query_member_data: 'member_data_overview',
     member_data_query: 'member_data_overview',
@@ -1024,11 +1028,12 @@ function normalizeCommandAction(action, cmd = {}) {
     '无效原因': 'query_ticket_cancel_reason',
     '投注失败': 'query_ticket_cancel_reason',
     '注单跟单': 'ticket_follow',
-    '跟单': 'ticket_follow'
+    '跟单': 'ticket_follow',
+    '查胜率': 'member_win_rate'
   };
   const normalized = aliases[raw] || raw;
   if (hasMerchantCommandHint(cmd) && (raw === '' || raw === 'unlock_sms')) return 'merchant_order_statistics';
-  return ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg', 'member_data_overview', 'query_member_line', 'query_login_device_ip', 'query_same_ip_device', 'disable_login_device', 'query_venue_turnover', 'configure_rebate', 'merchant_order_statistics', 'urge_settlement', 'query_ticket_cancel_reason', 'venue_display_control', 'ticket_follow'].includes(normalized)
+  return ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg', 'member_data_overview', 'query_member_line', 'query_login_device_ip', 'query_same_ip_device', 'disable_login_device', 'query_venue_turnover', 'configure_rebate', 'member_win_rate', 'merchant_order_statistics', 'urge_settlement', 'query_ticket_cancel_reason', 'venue_display_control', 'ticket_follow'].includes(normalized)
     ? normalized
     : 'unlock_sms';
 }
@@ -1105,6 +1110,9 @@ function isSupportedCommandAction(action, cmd = {}) {
     'follow_ticket',
     'ticket_following',
     'follow_bet',
+    'win_rate',
+    'member_win_rate',
+    'member_win_rate_query',
     '催结算',
     '注单取消原因',
     '取消原因',
@@ -1112,7 +1120,8 @@ function isSupportedCommandAction(action, cmd = {}) {
     '无效原因',
     '投注失败',
     '注单跟单',
-    '跟单'
+    '跟单',
+    '查胜率'
   ].includes(raw);
 }
 
@@ -3487,6 +3496,189 @@ async function runMemberDataOverviewCommand(config, cmd, targetValue) {
   await ack(config, cmd, 'reply_origin', msg, { reply_text: replyText, stop_actions: true });
 }
 
+function winRateTargetsFromText(cmd = {}, fallbackTarget = '') {
+  const out = [];
+  const seen = new Set();
+  const add = (value) => {
+    const name = cleanMemberToken(value);
+    if (!name || seen.has(name) || !isLikelyBackendMember(name)) return;
+    seen.add(name);
+    out.push(name);
+  };
+  [
+    ...(Array.isArray(cmd.members) ? cmd.members : []),
+    fallbackTarget,
+    cmd.target_value,
+    cmd.member_name
+  ].forEach(add);
+  for (const match of commandSourceText(cmd).matchAll(/\b([a-zA-Z][a-zA-Z0-9._-]{2,31})\b/g)) {
+    add(match[1]);
+  }
+  return out.slice(0, 20);
+}
+
+function memberWinRateDateRange(cmd = {}) {
+  const text = commandSourceText(cmd).replace(/\s+/g, '');
+  const hasExplicitRange = /(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})|今天|今日|昨天|昨日|本月|上月|今年|本年|近|最近|\d+天内/.test(text);
+  if (hasExplicitRange || cmd.startAt || cmd.start_at || cmd.endAt || cmd.end_at) {
+    return memberDataOverviewDateRange(cmd);
+  }
+  const today = dateOnly(new Date());
+  return orderedDateRange(addDays(today, -1), today);
+}
+
+function numberOrZero(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : 0;
+}
+
+function gameRecordItems(data = {}) {
+  const root = (data || {}).data || {};
+  return Array.isArray(root.gameRecordList) ? root.gameRecordList
+    : Array.isArray(root.list) ? root.list
+      : [];
+}
+
+function gameRecordTotal(data = {}, fallbackCount = 0) {
+  const root = (data || {}).data || {};
+  for (const key of ['total', 'totalCount', 'count']) {
+    const value = Number(root[key]);
+    if (Number.isFinite(value) && value >= 0) return value;
+  }
+  return fallbackCount;
+}
+
+function isSettledBetRecord(record = {}) {
+  if (String(record.settleTime || '').trim()) return true;
+  const flag = Number(record.flag);
+  if (Number.isFinite(flag)) return flag === 1;
+  const net = Number(record.netAmount);
+  return Number.isFinite(net) && net !== 0;
+}
+
+async function queryOneMemberWinRate(config, cmd, memberName, range) {
+  if (!config.gameRecordListUrl) throw new Error('投注记录接口未配置');
+  const pageSize = Math.max(10, Math.min(500, Number(cmd.pageSize || cmd.page_size || 200) || 200));
+  const venueId = Number(cmd.venueId || cmd.venue_id || 28);
+  const bodyBase = {
+    venueId,
+    venueUsername: memberName,
+    flag: -1,
+    timeFlag: 0,
+    startAt: `${range.startAt} 00:00:00`,
+    endAt: `${range.endAt} 23:59:59`,
+    earlySettleFlag: 2,
+    isManySettled: 2,
+    betOpportunity: -1,
+    removeNonFs: 0,
+    siteId: Number(cmd.siteId || cmd.site_id || 9001),
+    gameRecordType: -1
+  };
+  let betCount = 0;
+  let winCount = 0;
+  let netAmount = 0;
+  let fetched = 0;
+  let expectedTotal = 0;
+  const maxPages = Math.max(1, Math.min(80, Number(cmd.max_pages || cmd.maxPages || 50) || 50));
+
+  for (let pageNum = 1; pageNum <= maxPages; pageNum += 1) {
+    await setStatus({ state: 'running', message: `查胜率 ${memberName} 第${pageNum}页` });
+    const query = await postJson(config.gameRecordListUrl, config.headers, {
+      pageNum,
+      pageSize,
+      ...bodyBase
+    });
+    if (!apiOk(query.res, query.data)) {
+      throw new Error(`查询投注记录失败 HTTP ${query.res.status}: ${query.text.slice(0, 300)}`);
+    }
+    const rows = gameRecordItems(query.data);
+    fetched += rows.length;
+    expectedTotal = gameRecordTotal(query.data, fetched);
+    for (const row of rows) {
+      if (!isSettledBetRecord(row)) continue;
+      const net = numberOrZero(row.netAmount);
+      betCount += 1;
+      if (net > 0) winCount += 1;
+      netAmount += net;
+    }
+    if (!rows.length || rows.length < pageSize || (expectedTotal && fetched >= expectedTotal)) break;
+  }
+
+  const winRate = betCount ? (winCount / betCount) * 100 : 0;
+  return {
+    memberName,
+    betCount,
+    winCount,
+    winRate,
+    netAmount
+  };
+}
+
+function formatPercent(value) {
+  const num = Number(value || 0);
+  return `${(Number.isFinite(num) ? num : 0).toFixed(2)}%`;
+}
+
+function memberWinRateReply(results = [], range = {}) {
+  const sorted = [...results].sort((a, b) => {
+    if (b.winRate !== a.winRate) return b.winRate - a.winRate;
+    if (b.betCount !== a.betCount) return b.betCount - a.betCount;
+    return b.netAmount - a.netAmount;
+  });
+  const best = sorted.find((item) => item.betCount > 0) || sorted[0];
+  const lines = [
+    `查胜率 ${range.startAt}~${range.endAt}`,
+    '口径：仅统计已结算注单，未结算不计入胜率',
+    best ? `最高：${best.memberName}，${best.betCount}场赢${best.winCount}场，胜率${formatPercent(best.winRate)}，净赢${formatMoney(best.netAmount)}` : '最高：无',
+    '',
+    '明细：'
+  ];
+  for (const item of sorted) {
+    lines.push(`${item.memberName}：下注${item.betCount}场，赢${item.winCount}场，胜率${formatPercent(item.winRate)}，净赢${formatMoney(item.netAmount)}`);
+  }
+  return lines.join('\n');
+}
+
+async function runMemberWinRateCommand(config, cmd, targetValue) {
+  const members = winRateTargetsFromText(cmd, targetValue);
+  if (!members.length) throw new Error('未提取到会员账号');
+  const range = memberWinRateDateRange(cmd);
+  const results = [];
+  const failures = [];
+  for (let index = 0; index < members.length; index += 1) {
+    const memberName = members[index];
+    await reportProgress(config, cmd, {
+      status: 'running',
+      message: `查胜率 ${memberName}`,
+      step: index + 1,
+      total: members.length,
+      success: results.length,
+      percent: Math.floor((index / members.length) * 100)
+    });
+    try {
+      results.push(await queryOneMemberWinRate(config, cmd, memberName, range));
+    } catch (err) {
+      failures.push(`${memberName}：${friendlyErrorReason(err, 'member_win_rate', '查胜率')}`);
+    }
+  }
+  if (!results.length) throw new Error(failures.join('；') || '未查询到胜率数据');
+  const replyText = [
+    memberWinRateReply(results, range),
+    failures.length ? `\n失败：\n${failures.join('\n')}` : ''
+  ].filter(Boolean).join('\n');
+  const msg = `查胜率完成：${results.length}/${members.length}`;
+  await reportProgress(config, cmd, {
+    status: 'success',
+    message: msg,
+    step: members.length,
+    total: members.length,
+    success: results.length,
+    percent: 100
+  });
+  await setStatus({ state: 'success', message: msg, detail: replyText });
+  await ack(config, cmd, 'reply_origin', msg, { reply_text: replyText, stop_actions: true });
+}
+
 function requireSixSiteAuth(config) {
   const site = String((config.headers && config.headers['x-api-site']) || '');
   const href = String((config.pageAuth && config.pageAuth.href) || '');
@@ -4138,7 +4330,7 @@ async function runBackendCommand(config, cmd) {
     ? (cmd.orderNo || cmd.order_no || cmd.target_value || cmd.member_name || '')
     : (cmd.target_value || cmd.member_name || '');
   const label = commandLabel(action);
-  if (!String(rawValue || '').trim() && ['member_data_overview', 'query_member_line', 'query_login_device_ip', 'query_same_ip_device', 'disable_login_device', 'query_venue_turnover'].includes(action)) {
+  if (!String(rawValue || '').trim() && ['member_data_overview', 'query_member_line', 'query_login_device_ip', 'query_same_ip_device', 'disable_login_device', 'query_venue_turnover', 'member_win_rate'].includes(action)) {
     rawValue = commandMembers(cmd, '')[0] || '';
   }
   if (!String(rawValue || '').trim() && action === 'ticket_follow') {
@@ -4184,6 +4376,10 @@ async function runBackendCommand(config, cmd) {
     }
     if (action === 'member_data_overview') {
       await runMemberDataOverviewCommand(config, cmd, targetValue);
+      return;
+    }
+    if (action === 'member_win_rate') {
+      await runMemberWinRateCommand(config, cmd, targetValue);
       return;
     }
     if (action === 'query_member_line') {

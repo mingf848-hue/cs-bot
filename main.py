@@ -840,12 +840,13 @@ except ImportError as e:
     init_stats_blueprint = None
 
 try:
-    from monitor_responder import init_monitor, queue_site_inner_message_command, wait_backend_command_result, get_backend_command_progress
+    from monitor_responder import init_monitor, queue_site_inner_message_command, queue_backend_command, wait_backend_command_result, get_backend_command_progress
     logger.info("✅ 自动回复模块 (monitor_responder) 导入成功")
 except ImportError as e:
     logger.error(f"❌ 自动回复模块导入失败: {e}")
     init_monitor = None
     queue_site_inner_message_command = None
+    queue_backend_command = None
     wait_backend_command_result = None
     get_backend_command_progress = None
 
@@ -4983,6 +4984,50 @@ def parse_site_message_request(text):
     raw = "\n".join(lines[:-1]).replace("，", ",")
     return parse_site_message_members(raw), strategy
 
+def parse_member_win_rate_request(text):
+    raw = str(text or "").strip()
+    if "查胜率" not in raw:
+        return []
+    clean = re.sub(r"查胜率", " ", raw, flags=re.IGNORECASE)
+    members = []
+    seen = set()
+    for item in re.findall(r"\b[A-Za-z][A-Za-z0-9._-]{2,31}\b", clean):
+        name = item.strip().lower()
+        if name in seen:
+            continue
+        if re.fullmatch(r"(vip|tg|bot|http|https|www|admin|query|win|rate)\d*", name, flags=re.I):
+            continue
+        seen.add(name)
+        members.append(name)
+    return members[:20]
+
+async def handle_member_win_rate_bot_request(message):
+    if not queue_backend_command or not wait_backend_command_result:
+        return "查胜率模块未加载，无法执行。"
+    text = str(message.get("text") or "")
+    members = parse_member_win_rate_request(text)
+    if not members:
+        return None
+    cmd_id = queue_backend_command(
+        "member_win_rate",
+        target_value=members[0],
+        source="telegram_bot_member_win_rate",
+        member_name=",".join(members[:5]) + ("..." if len(members) > 5 else ""),
+        members=members,
+        source_text=text,
+        chat_id=((message.get("chat") or {}).get("id")),
+        message_id=message.get("message_id"),
+    )
+    result = await wait_backend_command_result(cmd_id, timeout=300.0)
+    status = str((result or {}).get("status") or "timeout")
+    reply_text = str((result or {}).get("reply_text") or "").strip()
+    detail = str((result or {}).get("detail") or "无回执").strip()
+    if reply_text:
+        return reply_text
+    if status in {"success", "reply_origin"}:
+        return detail or "查胜率完成。"
+    return f"查胜率失败：{detail or status}"
+
 def zc_time_window_text(now=None):
     now = now or datetime.now(BEIJING_TZ)
     start_hour = (now.hour - 3) % 24
@@ -5314,6 +5359,8 @@ async def bot_command_polling_task():
                         }
                     else:
                         reply_result = parse_large_timeout_text(text)
+                        if not reply_result:
+                            reply_result = await handle_member_win_rate_bot_request(message)
                         if not reply_result:
                             reply_result = await handle_site_message_bot_request(message)
                     if not reply_result:

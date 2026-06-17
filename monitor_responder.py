@@ -2509,7 +2509,7 @@ BACKEND_UNLOCK_ACTIONS = {
         "send_site_inner_msg", "member_data_overview", "query_member_line",
         "query_login_device_ip", "query_same_ip_device", "query_venue_turnover",
         "disable_login_device", "configure_rebate", "urge_settlement", "query_ticket_cancel_reason",
-        "venue_display_control", "ticket_follow", "agent_existing"
+        "venue_display_control", "ticket_follow", "member_win_rate", "agent_existing"
 }
 AGENT_EXECUTABLE_ACTIONS = {
     "unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan",
@@ -2779,9 +2779,27 @@ def normalize_backend_action(action):
         "follow_bet": "ticket_follow",
         "注单跟单": "ticket_follow",
         "跟单": "ticket_follow",
+        "win_rate": "member_win_rate",
+        "member_win_rate_query": "member_win_rate",
+        "查胜率": "member_win_rate",
     }
     action = aliases.get(action, action)
     return action if action in BACKEND_UNLOCK_ACTIONS else "unlock_sms"
+
+def queue_backend_command(action, target_value="", source="bot_private", **extra):
+    action = normalize_backend_action(action)
+    cmd_id = f"backend_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+    command = {
+        "id": cmd_id,
+        "action": action,
+        "member_name": str(target_value or ""),
+        "target_value": str(target_value or ""),
+        "source": source,
+        "queued_at": now_bj().isoformat(),
+        **extra,
+    }
+    enqueue_pending_command(command)
+    return cmd_id
 
 def queue_site_inner_message_command(members, title=None, content=None, source="bot_private", strategy="sb"):
     clean_members = []
@@ -3254,6 +3272,8 @@ def command_action_label(action):
         return "场馆上下架"
     if action == "ticket_follow":
         return "注单跟单"
+    if action == "member_win_rate":
+        return "查胜率"
     return "短信/验证码限制"
 
 def member_data_private_requested(text):
