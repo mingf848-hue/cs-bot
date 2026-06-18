@@ -207,6 +207,7 @@ def _init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_events_ts ON chat_events(ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_events_message ON chat_events(chat_id, message_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_chat_ts ON chat_message_snapshots(chat_id, first_ts)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_reply ON chat_message_snapshots(chat_id, reply_to_msg_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON chat_message_snapshots(first_ts)")
         conn.execute("""INSERT OR IGNORE INTO chat_message_snapshots(
             chat_id, message_id, first_ts, last_ts, sender_id, sender_name, sender_role,
@@ -687,52 +688,96 @@ def _rows_from_ts(start_ts, chat_id=None, limit=1000, mode="all"):
     rows.sort(key=lambda row: (row.get("ts") or 0, str(row.get("id") or "")))
     return rows[:limit]
 
+def _message_parent_id(conn, chat_id, message_id):
+    row = conn.execute(
+        "SELECT reply_to_msg_id FROM chat_message_snapshots WHERE chat_id=? AND message_id=? LIMIT 1",
+        (chat_id, message_id)
+    ).fetchone()
+    if row and row["reply_to_msg_id"]:
+        return int(row["reply_to_msg_id"])
+    row = conn.execute(
+        """SELECT reply_to_msg_id FROM chat_events
+           WHERE chat_id=? AND message_id=? AND reply_to_msg_id IS NOT NULL
+           ORDER BY ts ASC, id ASC LIMIT 1""",
+        (chat_id, message_id)
+    ).fetchone()
+    return int(row["reply_to_msg_id"]) if row and row["reply_to_msg_id"] else None
+
+def _message_exists(conn, chat_id, message_id):
+    row = conn.execute(
+        "SELECT 1 FROM chat_message_snapshots WHERE chat_id=? AND message_id=? LIMIT 1",
+        (chat_id, message_id)
+    ).fetchone()
+    if row:
+        return True
+    row = conn.execute(
+        "SELECT 1 FROM chat_events WHERE chat_id=? AND message_id=? LIMIT 1",
+        (chat_id, message_id)
+    ).fetchone()
+    return bool(row)
+
+def _thread_root_message_id(conn, chat_id, message_id):
+    current = int(message_id)
+    seen = set()
+    for _ in range(80):
+        if current in seen:
+            break
+        seen.add(current)
+        parent_id = _message_parent_id(conn, chat_id, current)
+        if not parent_id or parent_id == current or not _message_exists(conn, chat_id, parent_id):
+            break
+        current = parent_id
+    return current
+
 def _flow_rows(chat_id, message_id, window_seconds=0, limit=300):
     if not chat_id or not message_id:
         return []
     message_id = int(message_id)
-    target_ts = None
-    parent_id = None
     rows = []
     with sqlite3.connect(CHAT_LOG_DB) as conn:
         conn.row_factory = sqlite3.Row
-        target = conn.execute(
-            """SELECT first_ts AS ts, reply_to_msg_id FROM chat_message_snapshots WHERE chat_id=? AND message_id=?
-               UNION ALL
-               SELECT ts, reply_to_msg_id FROM chat_events WHERE chat_id=? AND message_id=?
-               ORDER BY ts LIMIT 1""",
-            (chat_id, message_id, chat_id, message_id)
-        ).fetchone()
-        if target:
-            target_ts = float(target["ts"])
-            parent_id = target["reply_to_msg_id"]
+        root_id = _thread_root_message_id(conn, chat_id, message_id)
+        thread_ids = [
+            int(r["message_id"])
+            for r in conn.execute(
+                """WITH RECURSIVE thread(message_id) AS (
+                       VALUES(?)
+                       UNION
+                       SELECT s.message_id
+                       FROM chat_message_snapshots s
+                       JOIN thread t ON s.reply_to_msg_id=t.message_id
+                       WHERE s.chat_id=?
+                   )
+                   SELECT message_id FROM thread LIMIT ?""",
+                (root_id, chat_id, limit)
+            ).fetchall()
+        ]
+        if not thread_ids and _message_exists(conn, chat_id, root_id):
+            thread_ids = [root_id]
+        if not thread_ids:
+            return []
 
-        snapshot_sql = """SELECT chat_id, message_id, first_ts, last_ts, sender_id, sender_name,
-                                 sender_role, text, msg_type, reply_to_msg_id, grouped_id, is_deleted
-                          FROM chat_message_snapshots
-                          WHERE chat_id=? AND (message_id=? OR reply_to_msg_id=?"""
-        snapshot_params = [chat_id, message_id, message_id]
-        if parent_id:
-            snapshot_sql += " OR message_id=?"
-            snapshot_params.append(parent_id)
-        snapshot_sql += ") ORDER BY first_ts DESC LIMIT ?"
-        snapshot_params.append(limit)
-        snapshots = conn.execute(snapshot_sql, tuple(snapshot_params)).fetchall()
+        placeholders = ",".join("?" for _ in thread_ids)
+        snapshots = conn.execute(
+            f"""SELECT chat_id, message_id, first_ts, last_ts, sender_id, sender_name,
+                      sender_role, text, msg_type, reply_to_msg_id, grouped_id, is_deleted
+               FROM chat_message_snapshots
+               WHERE chat_id=? AND message_id IN ({placeholders})
+               ORDER BY first_ts ASC LIMIT ?""",
+            tuple([chat_id] + thread_ids + [limit])
+        ).fetchall()
 
-        audit_sql = """SELECT e.id, e.ts, e.chat_id, e.message_id, e.event_type, e.sender_id, e.sender_name,
-                              e.text, e.old_text, COALESCE(e.original_ts, s.first_ts) AS original_ts,
-                              e.sender_role, e.msg_type, e.raw, e.reply_to_msg_id, e.grouped_id
-                       FROM chat_events e
-                       LEFT JOIN chat_message_snapshots s ON s.chat_id=e.chat_id AND s.message_id=e.message_id
-                       WHERE e.chat_id=? AND e.event_type IN ('edit', 'delete')
-                         AND (e.message_id=? OR e.reply_to_msg_id=?"""
-        audit_params = [chat_id, message_id, message_id]
-        if parent_id:
-            audit_sql += " OR e.message_id=?"
-            audit_params.append(parent_id)
-        audit_sql += ") ORDER BY e.ts DESC, e.id DESC LIMIT ?"
-        audit_params.append(limit)
-        audits = conn.execute(audit_sql, tuple(audit_params)).fetchall()
+        audits = conn.execute(
+            f"""SELECT e.id, e.ts, e.chat_id, e.message_id, e.event_type, e.sender_id, e.sender_name,
+                      e.text, e.old_text, COALESCE(e.original_ts, s.first_ts) AS original_ts,
+                      e.sender_role, e.msg_type, e.raw, e.reply_to_msg_id, e.grouped_id
+               FROM chat_events e
+               LEFT JOIN chat_message_snapshots s ON s.chat_id=e.chat_id AND s.message_id=e.message_id
+               WHERE e.chat_id=? AND e.event_type IN ('edit', 'delete')
+                 AND e.message_id IN ({placeholders})
+               ORDER BY e.ts ASC, e.id ASC LIMIT ?""",
+            tuple([chat_id] + thread_ids + [limit])
+        ).fetchall()
 
     for r in snapshots:
         row = dict(r)
@@ -759,7 +804,7 @@ def _flow_rows(chat_id, message_id, window_seconds=0, limit=300):
         item["source"] = "audit"
         rows.append(item)
     rows.sort(key=lambda row: (row.get("ts") or 0, str(row.get("id") or "")))
-    return rows[-limit:]
+    return rows[:limit]
 
 def get_last_stored_message_text(chat_id, message_id):
     try:

@@ -427,7 +427,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-prima
   </div>
 </div>
 <script>
-let groups=[];let allLogs=[];let parsedLogs=[];let messageIndex=new Map();let relationIndex=new Map();let visibleCount=500;let activeChatId=null;let activeChatName='全部消息';let activeMode='all';let ctxTarget=null;let logStream=null;let discussionSource=null;let loadSeq=0;let hasMoreLogs=true;let loadingOlder=false;let searchActive=false;let searchQuery='';let dateJumpActive=false;let dateJumpValue='';const PAGE_SIZE=2000;const DAY_PAGE_SIZE=5000;const INITIAL_VISIBLE=500;const LOAD_STEP=500;const SEARCH_LIMIT=1000;
+let groups=[];let allLogs=[];let parsedLogs=[];let messageIndex=new Map();let relationIndex=new Map();let threadRootIndex=new Map();let threadReplyIndex=new Map();let visibleCount=500;let activeChatId=null;let activeChatName='全部消息';let activeMode='all';let ctxTarget=null;let logStream=null;let discussionSource=null;let loadSeq=0;let hasMoreLogs=true;let loadingOlder=false;let searchActive=false;let searchQuery='';let dateJumpActive=false;let dateJumpValue='';const PAGE_SIZE=2000;const DAY_PAGE_SIZE=5000;const INITIAL_VISIBLE=500;const LOAD_STEP=500;const SEARCH_LIMIT=1000;
 const colors=['#6bb8ff','#ff8a65','#ba68c8','#4db6ac','#ffd54f','#7986cb','#f06292','#81c784'];
 function hcol(s){let h=0;for(const c of String(s||''))h=(h*31+c.charCodeAt(0))|0;return colors[Math.abs(h)%colors.length];}
 function escH(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -502,23 +502,25 @@ function prepareLogState(){
   parsedLogs=allLogs.map(parseLog);
   messageIndex=new Map();
   relationIndex=new Map();
+  threadRootIndex=new Map();
+  threadReplyIndex=new Map();
   parsedLogs.forEach((e,i)=>{
-    if(!e.msgId)return;
+    if(!e.msgId||e.source==='audit'||e.event_type==='edit'||e.event_type==='delete')return;
     const key=mk(e.chat_id,e.msgId);
     if(!messageIndex.has(key))messageIndex.set(key,[]);
     messageIndex.get(key).push(i);
-    if(!relationIndex.has(key))relationIndex.set(key,new Set());
-    relationIndex.get(key).add(i);
   });
   parsedLogs.forEach((e,i)=>{
-    if(!e.msgId||!e.reply_to_msg_id)return;
-    const childKey=mk(e.chat_id,e.msgId);
-    const parentKey=mk(e.chat_id,e.reply_to_msg_id);
-    if(!relationIndex.has(parentKey))relationIndex.set(parentKey,new Set());
-    relationIndex.get(parentKey).add(i);
-    if(!relationIndex.has(childKey))relationIndex.set(childKey,new Set());
-    const parentRows=messageIndex.get(parentKey)||[];
-    parentRows.forEach(idx=>relationIndex.get(childKey).add(idx));
+    if(!e.msgId||e.source==='audit'||e.event_type==='edit'||e.event_type==='delete')return;
+    const ownKey=mk(e.chat_id,e.msgId);
+    const rootKey=rootKeyForEntry(e);
+    threadRootIndex.set(ownKey,rootKey);
+    if(!relationIndex.has(rootKey))relationIndex.set(rootKey,new Set());
+    relationIndex.get(rootKey).add(i);
+    if(ownKey!==rootKey){
+      if(!threadReplyIndex.has(rootKey))threadReplyIndex.set(rootKey,new Set());
+      threadReplyIndex.get(rootKey).add(i);
+    }
   });
 }
 function render(){
@@ -537,12 +539,12 @@ function render(){
   el.innerHTML=html+'</div>';
 }
 function renderRows(rows, options={}){
-  const oldLogs=allLogs,oldParsed=parsedLogs,oldMessage=messageIndex,oldRelation=relationIndex;
+  const oldLogs=allLogs,oldParsed=parsedLogs,oldMessage=messageIndex,oldRelation=relationIndex,oldThreadRoot=threadRootIndex,oldThreadReply=threadReplyIndex;
   allLogs=rows||[];prepareLogState();
   const logs=parsedLogs;let html='<div class="messages-container">',lastDate='',lastSender='',lastType='';
   logs.forEach((e,i)=>{const next=logs[i+1];const d=fmtDate(e.ts);if(d!==lastDate){html+=`<div class="date"><span>${d}</span></div>`;lastDate=d;lastSender='';lastType='';}
     const type=e.msg_type||'sys';const first=lastSender!==e.sn||lastType!==type;const last=!next||(next.msg_type||'sys')!==type||next.sn!==e.sn;lastSender=e.sn;lastType=type;html+=renderEntry(e,i,first,last);});
-  allLogs=oldLogs;parsedLogs=oldParsed;messageIndex=oldMessage;relationIndex=oldRelation;
+  allLogs=oldLogs;parsedLogs=oldParsed;messageIndex=oldMessage;relationIndex=oldRelation;threadRootIndex=oldThreadRoot;threadReplyIndex=oldThreadReply;
   return html+'</div>';
 }
 function oldestLoadedTs(){
@@ -591,7 +593,7 @@ function renderEntry(e,i,first,last){
   if(type==='deleted')return `<div class="local-action-message deleted" id="${id}" oncontextmenu="showCtx(event,${i})"><span>${renderDeleteAudit(e)}</span></div>`;
   if(type==='alert')return `<div class="local-action-message ${type}" id="${id}" oncontextmenu="showCtx(event,${i})"><span>${escH(e.tx)}</span></div>`;
   const own=type==='cs';const name=e.sn||'用户';const color=hcol(name);const title=(!own&&first&&e.sn)?`<div class="message-title" style="color:${color}">${escH(e.sn)}</div>`:'';const avatar=own?'':`<div class="Avatar" style="background:${color}">${escH(name.charAt(0).toUpperCase())}</div>`;
-  const reply=renderReplyPreview(e);const flow=flowCount(e);const badge=flow>1?`<button class="flow-badge" title="消息流 ${flow} 条" onclick="openFlowForIndex(${i});event.stopPropagation()">${flow}</button>`:'';
+  const reply=renderReplyPreview(e);const flow=flowCount(e);const badge=flow>0?`<button class="flow-badge" title="Replies ${flow} 条" onclick="openFlowForIndex(${i});event.stopPropagation()">${flow}</button>`:'';
   return `<div class="Message ${own?'own':''} ${e.is_deleted?'deleted-context':''} ${first?'first-in-group':''} ${last?'last-in-group':''}" id="${id}" data-i="${i}">${avatar}<div class="message-content-wrapper"><div class="message-content text" oncontextmenu="showCtx(event,${i})"><div class="content-inner">${title}${reply}<div class="text-content">${escH(e.tx||'')}</div><span class="message-time">${escH(e.time)}${own?'<span class="message-status">✓✓</span>':''}</span>${badge}</div></div></div></div>`;
 }
 function renderEditAudit(e){
@@ -634,7 +636,28 @@ function renderReplyPreview(e){
     <div class="reply-text">${escH(text)}</div>
   </div>`;
 }
-function flowCount(e){return relatedRows(e).length;}
+function rootKeyForEntry(e){
+  if(!e||!e.msgId)return '';
+  let current=mk(e.chat_id,e.msgId);
+  const seen=new Set();
+  while(current&&!seen.has(current)){
+    seen.add(current);
+    const rows=messageIndex.get(current)||[];
+    const ref=rows.length?parsedLogs[rows[0]]:null;
+    if(!ref||!ref.reply_to_msg_id)break;
+    const parentKey=mk(ref.chat_id,ref.reply_to_msg_id);
+    if(!messageIndex.has(parentKey))break;
+    current=parentKey;
+  }
+  return current;
+}
+function flowCount(e){
+  if(e&&e.reply_to_msg_id)return 0;
+  const ownKey=mk(e.chat_id,e.msgId);
+  const rootKey=threadRootIndex.get(ownKey)||rootKeyForEntry(e);
+  if(!rootKey||ownKey!==rootKey)return 0;
+  return (threadReplyIndex.get(rootKey)||new Set()).size;
+}
 function jumpToMessage(chatId,msgId){
   const rows=messageIndex.get(mk(chatId,msgId))||[];
   const idx=rows.length?rows[0]:-1;
@@ -655,15 +678,23 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'){document.getElement
 function copyText(){if(ctxTarget)navigator.clipboard.writeText(ctxTarget.e.tx||ctxTarget.e.raw||'');document.getElementById('ctxMenu').classList.remove('open');}
 function relatedRows(e){
   const mid=String(e.msgId||'');if(!mid)return[];
-  const rows=Array.from(relationIndex.get(mk(e.chat_id,e.msgId))||[]);
+  const ownKey=mk(e.chat_id,e.msgId);
+  const rootKey=threadRootIndex.get(ownKey)||rootKeyForEntry(e);
+  const rows=Array.from(relationIndex.get(rootKey)||[]);
   return rows.map(i=>allLogs[i]).filter(Boolean);
 }
 async function fetchFlowRows(e){
   if(!e||!e.msgId||!e.chat_id)return relatedRows(e);
   try{
-    const rows=await fetch(`/log_flow?chat_id=${encodeURIComponent(e.chat_id)}&message_id=${encodeURIComponent(e.msgId)}&limit=500`).then(r=>r.json());
+    const rows=await fetch(`/log_flow?chat_id=${encodeURIComponent(e.chat_id)}&message_id=${encodeURIComponent(e.msgId)}&limit=800`).then(r=>r.json());
     return rows&&rows.length?rows:relatedRows(e);
   }catch(_){return relatedRows(e);}
+}
+function countThreadReplies(rows){
+  const parsed=(rows||[]).map(parseLog).filter(r=>r&&r.msgId&&r.source!=='audit'&&r.event_type!=='edit'&&r.event_type!=='delete');
+  if(!parsed.length)return 0;
+  const ids=new Set(parsed.map(r=>mk(r.chat_id,r.msgId)));
+  return parsed.filter(r=>r.reply_to_msg_id&&ids.has(mk(r.chat_id,r.reply_to_msg_id))).length;
 }
 function setDiscussionMode(on){
   document.querySelector('.messages-layout > .MiddleHeader').style.display=on?'none':'flex';
@@ -677,9 +708,10 @@ async function openDiscussion(){
   document.getElementById('discussionSub').textContent='加载中…';
   const avatarName=e.sn||'R';document.getElementById('discussionAvatar').textContent=avatarName.charAt(0).toUpperCase();document.getElementById('discussionAvatar').style.background=hcol(avatarName);
   const el=document.getElementById('messages');el.innerHTML='<div class="empty-placeholder">加载中…</div>';
-  const rows=await fetchFlowRows(e);document.getElementById('discussionSub').textContent=rows.length?rows.length+' 条直接关联记录':'没有直接回复';
+  const rows=await fetchFlowRows(e);const replyCount=countThreadReplies(rows);
+  document.getElementById('discussionSub').textContent=rows.length?replyCount+' 条 Replies · 完整消息流':'没有直接回复';
   el.innerHTML=rows.length?renderRows(rows):'<div class="empty-placeholder">没有直接回复</div>';
-  scrollBottom();
+  el.scrollTop=0;
 }
 function closeDiscussion(restore=true){
   const wasOpen=!!discussionSource;
@@ -691,7 +723,7 @@ async function openFlow(){
   if(!ctxTarget)return;const e=ctxTarget.e;document.getElementById('flowTitle').textContent='Replies';document.getElementById('flowSub').textContent='加载中…';
   const body=document.getElementById('flowBody');body.innerHTML='<div class="empty-placeholder" style="height:10rem">加载中…</div>';
   document.getElementById('RightColumn-wrapper').classList.add('open');document.getElementById('ctxMenu').classList.remove('open');
-  const rel=await fetchFlowRows(e);document.getElementById('flowSub').textContent=rel.length?rel.length+' 条直接关联记录':'没有直接回复';
+  const rel=await fetchFlowRows(e);document.getElementById('flowSub').textContent=rel.length?countThreadReplies(rel)+' 条 Replies · 完整消息流':'没有直接回复';
   body.innerHTML=rel.length?rel.map(r=>{const p=parseLog(r);return `<div class="flow-row ${p.msg_type||'sys'}"><div class="flow-time">${escH(p.time)} · ${escH(p.msg_type||p.event_type||'sys')}</div><div class="flow-text">${escH(rowDetail(p))}</div></div>`;}).join(''):'<div class="empty-placeholder" style="height:10rem">此条目没有可关联的 Msg ID</div>';
 }
 function closeFlow(){document.getElementById('RightColumn-wrapper').classList.remove('open');}
