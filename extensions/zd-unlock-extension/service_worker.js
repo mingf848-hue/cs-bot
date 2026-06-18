@@ -3728,6 +3728,14 @@ function withdrawStatusLabel(item = {}) {
   return stateInfo || '未知';
 }
 
+function withdrawApiErrorDetail(result = {}) {
+  const data = result.data || {};
+  const message = String(data.message || data.msg || data.error || '').trim();
+  const statusCode = data.status_code !== undefined ? `status_code ${data.status_code}` : '';
+  const text = String(result.text || '').replace(/\s+/g, ' ').slice(0, 300);
+  return [statusCode, message, text].filter(Boolean).join('：') || `HTTP ${result.res && result.res.status}`;
+}
+
 async function queryWithdrawTimeoutStatus(config, cmd, orderNo) {
   if (!config.fastDrawWithdrawHistoryUrl) throw new Error('提款记录接口未配置');
   const range = withdrawHistoryRange(cmd);
@@ -3748,7 +3756,7 @@ async function queryWithdrawTimeoutStatus(config, cmd, orderNo) {
     pageSize: 10
   });
   if (!apiOk(result.res, result.data)) {
-    throw new Error(`查询提款订单失败 HTTP ${result.res.status}: ${result.text.slice(0, 300)}`);
+    throw new Error(`查询提款订单失败 HTTP ${result.res.status}: ${withdrawApiErrorDetail(result)}`);
   }
   const list = ((((result.data || {}).data || {}).list) || []);
   const item = list.find((row) => String(row.billNo || '').toUpperCase() === orderNo)
@@ -3779,7 +3787,7 @@ async function runWithdrawTimeoutStatusCommand(config, cmd, targetValue) {
     try {
       output[orderNo] = await queryWithdrawTimeoutStatus(config, cmd, orderNo);
     } catch (err) {
-      failures.push(`${orderNo}: ${friendlyErrorReason(err, 'withdraw_timeout_status', '提款超时状态补全')}`);
+      failures.push(`${orderNo}: ${rawErrorText(err).replace(/\s+/g, ' ').slice(0, 220) || friendlyErrorReason(err, 'withdraw_timeout_status', '提款超时状态补全')}`);
     }
   }
   if (!Object.keys(output).length && failures.length) {
@@ -4461,7 +4469,7 @@ async function runBackendCommand(config, cmd) {
   if (!String(rawValue || '').trim() && action === 'ticket_follow') {
     rawValue = ticketFollowMemberIds(cmd, '')[0] || '';
   }
-  const targetValue = action === 'add_proxy_whitelist' || action === 'merchant_order_statistics' || action === 'urge_settlement' || action === 'query_ticket_cancel_reason' || action === 'ticket_follow'
+  const targetValue = action === 'add_proxy_whitelist' || action === 'merchant_order_statistics' || action === 'urge_settlement' || action === 'query_ticket_cancel_reason' || action === 'ticket_follow' || action === 'withdraw_timeout_status'
     ? String(rawValue).trim()
     : String(rawValue).trim().toLowerCase();
   if (!targetValue) {
