@@ -4870,36 +4870,58 @@ async def handle_withdraw_timeout_sheet_sync_bot_request(message):
     if not rows:
         return "没有需要同步的提款订单。"
 
-    orders = [str(row.get("orderNo") or "").strip() for row in rows]
-    cmd_id = queue_backend_command(
-        "withdraw_timeout_status",
-        target_value=orders[0],
-        source="telegram_bot_withdraw_timeout_sheet_sync",
-        member_name=",".join(orders[:5]) + ("..." if len(orders) > 5 else ""),
-        orders=orders,
-        source_text=message.get("text") or "",
-        chat_id=chat_id,
-        message_id=message.get("message_id"),
-    )
-    result, _progress_message_id = await wait_backend_result_with_simple_progress(
-        cmd_id,
-        chat_id,
-        "同步大额提款状态中",
-        len(orders),
-        timeout=300.0
-    )
-    reply_text = str((result or {}).get("reply_text") or "").strip()
-    if not reply_text:
-        return f"同步大额提款状态失败：{str((result or {}).get('detail') or '无回执')}"
-
-    try:
-        lookup = json.loads(reply_text)
-    except Exception as err:
-        return f"同步大额提款状态失败：后台返回无法解析：{err}"
-
-    updates = []
-    missing = []
+    direct_updates = []
+    rows_to_query = []
+    query_orders = []
+    seen_orders = set()
     for row in rows:
+        existing_completion_at = str(row.get("existingCompletionAt") or "").strip()
+        if row.get("skipQuery") and existing_completion_at:
+            direct_updates.append({
+                "row": row.get("row"),
+                "orderNo": row.get("orderNo"),
+                "completionAt": existing_completion_at,
+                "status": str(row.get("existingStatus") or "").strip(),
+            })
+            continue
+
+        rows_to_query.append(row)
+        order_no = str(row.get("orderNo") or "").strip().upper()
+        if order_no and order_no not in seen_orders:
+            seen_orders.add(order_no)
+            query_orders.append(order_no)
+
+    lookup = {}
+    if query_orders:
+        cmd_id = queue_backend_command(
+            "withdraw_timeout_status",
+            target_value=query_orders[0],
+            source="telegram_bot_withdraw_timeout_sheet_sync",
+            member_name=",".join(query_orders[:5]) + ("..." if len(query_orders) > 5 else ""),
+            orders=query_orders,
+            source_text=message.get("text") or "",
+            chat_id=chat_id,
+            message_id=message.get("message_id"),
+        )
+        result, _progress_message_id = await wait_backend_result_with_simple_progress(
+            cmd_id,
+            chat_id,
+            "同步大额提款状态中",
+            len(query_orders),
+            timeout=300.0
+        )
+        reply_text = str((result or {}).get("reply_text") or "").strip()
+        if not reply_text:
+            return f"同步大额提款状态失败：{str((result or {}).get('detail') or '无回执')}"
+
+        try:
+            lookup = json.loads(reply_text)
+        except Exception as err:
+            return f"同步大额提款状态失败：后台返回无法解析：{err}"
+
+    updates = list(direct_updates)
+    missing = []
+    for row in rows_to_query:
         order_no = str(row.get("orderNo") or "").strip().upper()
         item = lookup.get(order_no) or lookup.get(str(row.get("orderNo") or "").strip()) or {}
         completion_at = str(item.get("completion_at") or item.get("completionAt") or "").strip()
@@ -4926,6 +4948,8 @@ async def handle_withdraw_timeout_sheet_sync_bot_request(message):
     lines = [
         "同步大额提款状态完成",
         f"读取：{len(rows)}",
+        f"查询：{len(query_orders)}",
+        f"沿用已填：{len(direct_updates)}",
         f"回写：{len(updated)}",
     ]
     if missing:

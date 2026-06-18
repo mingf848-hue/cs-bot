@@ -76,29 +76,56 @@ function getPendingRows() {
     .getRange(CONFIG.headerRow + 1, 1, lastRow - CONFIG.headerRow, sheet.getLastColumn())
     .getValues();
   const rows = [];
-  const seen = {};
+  const completedByOrder = {};
   const cutoff = cutoffDate();
+
+  values.forEach((row) => {
+    const orderNo = normalizeOrderNo(row[col.orderNo - 1]);
+    const completionAt = cellText(row[col.completionAt - 1]);
+    if (!orderNo || !completionAt || completedByOrder[orderNo]) {
+      return;
+    }
+    completedByOrder[orderNo] = {
+      completionAt,
+      status: cellText(row[col.status - 1])
+    };
+  });
 
   values.forEach((row, index) => {
     const rowNumber = CONFIG.headerRow + 1 + index;
-    const orderNo = String(row[col.orderNo - 1] || '').trim();
+    const orderNo = normalizeOrderNo(row[col.orderNo - 1]);
     const withdrawAt = parseSheetDate(row[col.withdrawAt - 1]);
-    const completionAt = String(row[col.completionAt - 1] || '').trim();
-    const status = String(row[col.status - 1] || '').trim();
+    const completionAt = cellText(row[col.completionAt - 1]);
 
-    if (!orderNo || !withdrawAt || withdrawAt < cutoff || completionAt || status || seen[orderNo]) {
+    if (!orderNo || !withdrawAt || withdrawAt < cutoff || completionAt) {
       return;
     }
 
-    seen[orderNo] = true;
-    rows.push({
+    const item = {
       row: rowNumber,
       orderNo,
       withdrawAt: formatDateTime(withdrawAt)
-    });
+    };
+    if (completedByOrder[orderNo]) {
+      item.existingCompletionAt = completedByOrder[orderNo].completionAt;
+      item.existingStatus = completedByOrder[orderNo].status;
+      item.skipQuery = true;
+    }
+    rows.push(item);
   });
 
   return rows;
+}
+
+function normalizeOrderNo(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function cellText(value) {
+  if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime())) {
+    return formatDateTime(value);
+  }
+  return String(value || '').trim();
 }
 
 function cutoffDate() {
@@ -162,6 +189,12 @@ function updateRows(results) {
 
     if (!row || row <= CONFIG.headerRow) {
       skipped.push(item);
+      return;
+    }
+
+    const currentCompletionAt = cellText(sheet.getRange(row, col.completionAt).getValue());
+    if (currentCompletionAt) {
+      skipped.push(Object.assign({}, item, { reason: 'already_completed' }));
       return;
     }
 
