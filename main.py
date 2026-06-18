@@ -81,6 +81,9 @@ BOT_FREE_COMMANDS = [
     {"command": "winrate", "description": "查胜率：/winrate 账号1 账号2"},
     {"command": "sync_withdraw", "description": "同步大额提款状态到表格"},
     {"command": "withdraw_status", "description": "粘贴提款超时表格补全状态"},
+    {"command": "convert_order", "description": "转换存款/提款订单表格"},
+    {"command": "large_withdraw", "description": "转换大额提款超时格式"},
+    {"command": "site_msg", "description": "发送站内信：账号列表+类型"},
 ]
 BOT_INTERACTION_TTL_SECONDS = 30
 bot_interaction_states = {}
@@ -4424,8 +4427,11 @@ def format_start_command_reply(message):
         "3. /winrate 账号1 账号2：查胜率。",
         "4. /sync_withdraw：同步大额提款状态到 Google 表格。",
         "5. /withdraw_status：粘贴提款超时表格，补全订单完成时间和状态。",
-        "6. 打开网页面板的「稍等预警名单」，勾选要预警的稍等关键词。",
-        "7. 把要接收预警的人的 ID 填到对应关键词的接收人 Chat ID，保存后生效。",
+        "6. /convert_order：转换存款/提款订单表格。",
+        "7. /large_withdraw：转换大额提款超时格式。",
+        "8. /site_msg：发送站内信。",
+        "9. 打开网页面板的「稍等预警名单」，勾选要预警的稍等关键词。",
+        "10. 把要接收预警的人的 ID 填到对应关键词的接收人 Chat ID，保存后生效。",
         "",
         "注意：要私聊接收预警的人，必须先点过这个 Bot 的 Start。"
     ]
@@ -4452,6 +4458,15 @@ def format_help_command_reply():
         "/withdraw_status",
         "后面粘贴提款超时表格内容，机器人会补全订单完成时间和订单状态，并返回网页复制链接。",
         "",
+        "/convert_order",
+        "转换存款/提款订单表格。发送命令后按提示粘贴原始表格。",
+        "",
+        "/large_withdraw",
+        "转换大额提款超时格式。发送命令后按提示粘贴原始内容。",
+        "",
+        "/site_msg",
+        "发送站内信。格式：会员账号列表，最后一行写类型：sb、9zc、6zc、9ly、6ly。",
+        "",
         "/cancel",
         "退出当前等待流程。",
         "",
@@ -4466,6 +4481,32 @@ def format_winrate_usage():
 
 def format_withdraw_status_usage():
     return "请粘贴提款超时表格内容。\n\n机器人会补全订单完成时间和订单状态，并返回网页复制链接。\n30 秒内未发送会自动退出当前流程。"
+
+def format_order_convert_usage():
+    return "请粘贴存款/提款订单原始表格内容。\n\n机器人会转换成可复制的表格分列结果。\n30 秒内未发送会自动退出当前流程。"
+
+def format_large_withdraw_usage():
+    return "请粘贴大额提款超时原始内容。\n\n机器人会生成标准模板和表格分列两种格式。\n30 秒内未发送会自动退出当前流程。"
+
+def format_site_msg_usage():
+    return "\n".join([
+        "请发送站内信会员账号和类型。",
+        "",
+        "格式：",
+        "账号1",
+        "账号2",
+        "账号3",
+        "sb",
+        "",
+        "类型可选：",
+        "sb：存款温馨提示",
+        "9zc：9站新注册连续6条",
+        "6zc：6站新注册连续3条",
+        "9ly：9站老友集结",
+        "6ly：6站老友集结",
+        "",
+        "30 秒内未发送会自动退出当前流程。"
+    ])
 
 def parse_order_table_block(raw_lines):
     if len(raw_lines) < 4:
@@ -5246,10 +5287,11 @@ async def expire_bot_interaction_after(key, state_id, chat_id, thread_id):
     if not state or state.get("id") != state_id:
         return
     bot_interaction_states.pop(key, None)
+    label = bot_interaction_label(state.get("flow"))
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(
         None,
-        lambda: _bot_send_reply(chat_id, "30 秒内未收到数据，已退出当前流程。", message_thread_id=thread_id)
+        lambda: _bot_send_reply(chat_id, f"{label}流程 30 秒内未收到数据，已自动退出。", message_thread_id=thread_id)
     )
 
 def set_bot_interaction(message, flow):
@@ -5274,6 +5316,37 @@ def make_message_with_text(message, text):
     cloned["text"] = text
     return cloned
 
+def bot_interaction_label(flow):
+    return {
+        "winrate": "查胜率",
+        "withdraw_status": "提款超时状态补全",
+        "order_convert": "存款/提款表格转换",
+        "large_withdraw": "大额提款超时转换",
+        "site_msg": "站内信发送",
+    }.get(str(flow or ""), "当前")
+
+def bot_interaction_retry_text(flow):
+    return {
+        "winrate": "没识别到会员账号，请重新发送账号，一行一个账号。",
+        "withdraw_status": "没识别到提款超时表格，请重新粘贴包含“提款超时”和订单号的表格内容。",
+        "order_convert": "没识别到存款/提款订单表格，请重新粘贴原始表格内容。",
+        "large_withdraw": "没识别到大额提款超时内容，请重新粘贴原始内容。",
+        "site_msg": "没识别到站内信账号或类型，请重新发送账号列表，并在最后一行写 sb、9zc、6zc、9ly 或 6ly。",
+    }.get(str(flow or ""), "没识别到数据，请重新发送。")
+
+def build_order_convert_result(text):
+    withdrawal_text = parse_withdrawal_table_text(text)
+    if not withdrawal_text:
+        return None
+    copy_page_url = store_copy_page("存款/提款表格转换结果", [
+        {"title": "表格分列结果", "text": withdrawal_text}
+    ])
+    return {
+        "text": withdrawal_text,
+        "reply_markup": build_conversion_reply_markup(withdrawal_text, "复制整理结果", copy_page_url),
+        "copy_page_token": get_copy_page_token_from_url(copy_page_url),
+    }
+
 async def handle_bot_interaction_input(message, state):
     flow = str((state or {}).get("flow") or "")
     text = str(message.get("text") or "")
@@ -5284,14 +5357,35 @@ async def handle_bot_interaction_input(message, state):
             clear_bot_interaction(message)
             return result
         set_bot_interaction(message, "winrate")
-        return "没识别到会员账号，请重新发送账号，一行一个账号。"
+        return bot_interaction_retry_text(flow)
     if flow == "withdraw_status":
         result = await handle_withdraw_timeout_status_bot_request(message)
         if result:
             clear_bot_interaction(message)
             return result
         set_bot_interaction(message, "withdraw_status")
-        return "没识别到提款超时表格，请重新粘贴包含“提款超时”和订单号的表格内容。"
+        return bot_interaction_retry_text(flow)
+    if flow == "order_convert":
+        result = build_order_convert_result(text)
+        if result:
+            clear_bot_interaction(message)
+            return result
+        set_bot_interaction(message, "order_convert")
+        return bot_interaction_retry_text(flow)
+    if flow == "large_withdraw":
+        result = parse_large_timeout_text(text)
+        if result:
+            clear_bot_interaction(message)
+            return result
+        set_bot_interaction(message, "large_withdraw")
+        return bot_interaction_retry_text(flow)
+    if flow == "site_msg":
+        result = await handle_site_message_bot_request(message)
+        if result:
+            clear_bot_interaction(message)
+            return result
+        set_bot_interaction(message, "site_msg")
+        return bot_interaction_retry_text(flow)
     clear_bot_interaction(message)
     return None
 
@@ -5824,6 +5918,33 @@ async def bot_command_polling_task():
                             set_bot_interaction(message, "withdraw_status")
                             reply_result = format_withdraw_status_usage()
 
+                    elif is_bot_command(text, "convert_order"):
+                        clear_bot_interaction(message)
+                        payload = bot_command_payload(text, "convert_order")
+                        if payload:
+                            reply_result = build_order_convert_result(payload)
+                        if not reply_result:
+                            set_bot_interaction(message, "order_convert")
+                            reply_result = format_order_convert_usage()
+
+                    elif is_bot_command(text, "large_withdraw"):
+                        clear_bot_interaction(message)
+                        payload = bot_command_payload(text, "large_withdraw")
+                        if payload:
+                            reply_result = parse_large_timeout_text(payload)
+                        if not reply_result:
+                            set_bot_interaction(message, "large_withdraw")
+                            reply_result = format_large_withdraw_usage()
+
+                    elif is_bot_command(text, "site_msg"):
+                        clear_bot_interaction(message)
+                        payload = bot_command_payload(text, "site_msg")
+                        if payload:
+                            reply_result = await handle_site_message_bot_request(make_message_with_text(message, payload))
+                        if not reply_result:
+                            set_bot_interaction(message, "site_msg")
+                            reply_result = format_site_msg_usage()
+
                     elif is_withdraw_timeout_sheet_sync_command(text):
                         clear_bot_interaction(message)
                         reply_result = await handle_withdraw_timeout_sheet_sync_bot_request(message)
@@ -5837,16 +5958,7 @@ async def bot_command_polling_task():
                                 continue
                             reply_result = await handle_withdraw_timeout_status_bot_request(message)
                             if not reply_result:
-                                withdrawal_text = parse_withdrawal_table_text(text)
-                                if withdrawal_text:
-                                    copy_page_url = store_copy_page("存款/提款表格转换结果", [
-                                        {"title": "表格分列结果", "text": withdrawal_text}
-                                    ])
-                                    reply_result = {
-                                        "text": withdrawal_text,
-                                        "reply_markup": build_conversion_reply_markup(withdrawal_text, "复制整理结果", copy_page_url),
-                                        "copy_page_token": get_copy_page_token_from_url(copy_page_url),
-                                    }
+                                reply_result = build_order_convert_result(text)
                             if not reply_result:
                                 reply_result = parse_large_timeout_text(text)
                             if not reply_result:
