@@ -76,11 +76,14 @@ WITHDRAW_TIMEOUT_SHEET_TOKEN = os.environ.get("WITHDRAW_TIMEOUT_SHEET_TOKEN", ""
 BOT_FREE_COMMANDS = [
     {"command": "start", "description": "查看使用引导"},
     {"command": "help", "description": "查看中文指令用法"},
+    {"command": "cancel", "description": "退出当前等待流程"},
     {"command": "id", "description": "查看当前聊天和用户ID"},
     {"command": "winrate", "description": "查胜率：/winrate 账号1 账号2"},
     {"command": "sync_withdraw", "description": "同步大额提款状态到表格"},
     {"command": "withdraw_status", "description": "粘贴提款超时表格补全状态"},
 ]
+BOT_INTERACTION_TTL_SECONDS = 30
+bot_interaction_states = {}
 
 class BeijingFormatter(logging.Formatter):
     def converter(self, timestamp):
@@ -4449,6 +4452,9 @@ def format_help_command_reply():
         "/withdraw_status",
         "后面粘贴提款超时表格内容，机器人会补全订单完成时间和订单状态，并返回网页复制链接。",
         "",
+        "/cancel",
+        "退出当前等待流程。",
+        "",
         "/start",
         "查看 Bot 基础引导。",
         "",
@@ -4456,10 +4462,10 @@ def format_help_command_reply():
     ])
 
 def format_winrate_usage():
-    return "用法：\n/winrate 账号1 账号2 账号3\n\n也可以直接发送多行账号，最后一行写：查胜率"
+    return "请发送要查胜率的会员账号，一行一个账号。\n\n也可以一条消息里用空格分隔多个账号。\n30 秒内未发送会自动退出当前流程。"
 
 def format_withdraw_status_usage():
-    return "用法：\n/withdraw_status 后粘贴提款超时表格，或直接发送包含“提款超时”的表格内容。\n\n机器人会补全订单完成时间和订单状态，并返回网页复制链接。"
+    return "请粘贴提款超时表格内容。\n\n机器人会补全订单完成时间和订单状态，并返回网页复制链接。\n30 秒内未发送会自动退出当前流程。"
 
 def parse_order_table_block(raw_lines):
     if len(raw_lines) < 4:
@@ -5207,6 +5213,88 @@ def _handle_bot_callback_query(callback):
 def is_bot_command(text, command):
     return bool(re.match(rf"^/{re.escape(command)}(?:@[A-Za-z0-9_]+)?(?:\s|$)", str(text or "").strip(), re.IGNORECASE))
 
+def is_any_bot_command(text):
+    return bool(re.match(r"^/[A-Za-z0-9_]+(?:@[A-Za-z0-9_]+)?(?:\s|$)", str(text or "").strip()))
+
+def bot_command_payload(text, command):
+    return re.sub(rf"^/{re.escape(command)}(?:@[A-Za-z0-9_]+)?", "", str(text or "").strip(), flags=re.I).strip()
+
+def bot_interaction_key(message):
+    chat = message.get("chat") or {}
+    sender = message.get("from") or {}
+    chat_id = chat.get("id")
+    sender_id = sender.get("id") or chat_id
+    thread_id = message.get("message_thread_id") or ""
+    return f"{chat_id}:{sender_id}:{thread_id}"
+
+def clear_bot_interaction(message):
+    return bot_interaction_states.pop(bot_interaction_key(message), None)
+
+def get_bot_interaction(message):
+    key = bot_interaction_key(message)
+    state = bot_interaction_states.get(key)
+    if not state:
+        return None
+    if float(state.get("expires_at") or 0) <= time.time():
+        bot_interaction_states.pop(key, None)
+        return None
+    return state
+
+async def expire_bot_interaction_after(key, state_id, chat_id, thread_id):
+    await asyncio.sleep(BOT_INTERACTION_TTL_SECONDS)
+    state = bot_interaction_states.get(key)
+    if not state or state.get("id") != state_id:
+        return
+    bot_interaction_states.pop(key, None)
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None,
+        lambda: _bot_send_reply(chat_id, "30 秒内未收到数据，已退出当前流程。", message_thread_id=thread_id)
+    )
+
+def set_bot_interaction(message, flow):
+    chat = message.get("chat") or {}
+    chat_id = chat.get("id")
+    if chat_id is None:
+        return
+    key = bot_interaction_key(message)
+    state_id = secrets.token_hex(8)
+    thread_id = message.get("message_thread_id")
+    bot_interaction_states[key] = {
+        "id": state_id,
+        "flow": flow,
+        "chat_id": chat_id,
+        "thread_id": thread_id,
+        "expires_at": time.time() + BOT_INTERACTION_TTL_SECONDS,
+    }
+    asyncio.create_task(expire_bot_interaction_after(key, state_id, chat_id, thread_id))
+
+def make_message_with_text(message, text):
+    cloned = dict(message or {})
+    cloned["text"] = text
+    return cloned
+
+async def handle_bot_interaction_input(message, state):
+    flow = str((state or {}).get("flow") or "")
+    text = str(message.get("text") or "")
+    if flow == "winrate":
+        synthetic = make_message_with_text(message, f"{text}\n查胜率")
+        result = await handle_member_win_rate_bot_request(synthetic)
+        if result:
+            clear_bot_interaction(message)
+            return result
+        set_bot_interaction(message, "winrate")
+        return "没识别到会员账号，请重新发送账号，一行一个账号。"
+    if flow == "withdraw_status":
+        result = await handle_withdraw_timeout_status_bot_request(message)
+        if result:
+            clear_bot_interaction(message)
+            return result
+        set_bot_interaction(message, "withdraw_status")
+        return "没识别到提款超时表格，请重新粘贴包含“提款超时”和订单号的表格内容。"
+    clear_bot_interaction(message)
+    return None
+
 def parse_site_message_members(raw):
     members = []
     seen = set()
@@ -5702,39 +5790,69 @@ async def bot_command_polling_task():
                 copy_page_token = None
                 sent_message_id = None
                 if is_bot_command(text, "start"):
+                    clear_bot_interaction(message)
                     reply_text = format_start_command_reply(message)
                 elif is_bot_command(text, "help"):
+                    clear_bot_interaction(message)
                     reply_text = format_help_command_reply()
+                elif is_bot_command(text, "cancel"):
+                    existed = clear_bot_interaction(message)
+                    reply_text = "已退出当前流程。" if existed else "当前没有正在等待的流程。"
                 elif is_bot_command(text, "id"):
+                    clear_bot_interaction(message)
                     reply_text = format_id_command_reply(message)
                 else:
                     chat = message.get("chat", {})
-                    if chat.get("type") != "private":
-                        continue
-                    reply_result = await handle_withdraw_timeout_sheet_sync_bot_request(message)
-                    if not reply_result:
-                        reply_result = await handle_withdraw_timeout_status_bot_request(message)
-                    if not reply_result and is_bot_command(text, "withdraw_status"):
-                        reply_result = format_withdraw_status_usage()
-                    if not reply_result:
-                        withdrawal_text = parse_withdrawal_table_text(text)
-                        if withdrawal_text:
-                            copy_page_url = store_copy_page("存款/提款表格转换结果", [
-                                {"title": "表格分列结果", "text": withdrawal_text}
-                            ])
-                            reply_result = {
-                                "text": withdrawal_text,
-                                "reply_markup": build_conversion_reply_markup(withdrawal_text, "复制整理结果", copy_page_url),
-                                "copy_page_token": get_copy_page_token_from_url(copy_page_url),
-                            }
-                    if not reply_result:
-                        reply_result = parse_large_timeout_text(text)
-                    if not reply_result:
-                        reply_result = await handle_member_win_rate_bot_request(message)
-                    if not reply_result and is_bot_command(text, "winrate"):
-                        reply_result = format_winrate_usage()
-                    if not reply_result:
-                        reply_result = await handle_site_message_bot_request(message)
+                    explicit_command = is_any_bot_command(text)
+                    reply_result = None
+
+                    if is_bot_command(text, "winrate"):
+                        clear_bot_interaction(message)
+                        payload = bot_command_payload(text, "winrate")
+                        if payload:
+                            reply_result = await handle_member_win_rate_bot_request(make_message_with_text(message, f"{payload}\n查胜率"))
+                        if not reply_result:
+                            set_bot_interaction(message, "winrate")
+                            reply_result = format_winrate_usage()
+
+                    elif is_bot_command(text, "withdraw_status"):
+                        clear_bot_interaction(message)
+                        payload = bot_command_payload(text, "withdraw_status")
+                        if payload:
+                            reply_result = await handle_withdraw_timeout_status_bot_request(make_message_with_text(message, payload))
+                        if not reply_result:
+                            set_bot_interaction(message, "withdraw_status")
+                            reply_result = format_withdraw_status_usage()
+
+                    elif is_withdraw_timeout_sheet_sync_command(text):
+                        clear_bot_interaction(message)
+                        reply_result = await handle_withdraw_timeout_sheet_sync_bot_request(message)
+
+                    else:
+                        state = None if explicit_command else get_bot_interaction(message)
+                        if state:
+                            reply_result = await handle_bot_interaction_input(message, state)
+                        else:
+                            if chat.get("type") != "private":
+                                continue
+                            reply_result = await handle_withdraw_timeout_status_bot_request(message)
+                            if not reply_result:
+                                withdrawal_text = parse_withdrawal_table_text(text)
+                                if withdrawal_text:
+                                    copy_page_url = store_copy_page("存款/提款表格转换结果", [
+                                        {"title": "表格分列结果", "text": withdrawal_text}
+                                    ])
+                                    reply_result = {
+                                        "text": withdrawal_text,
+                                        "reply_markup": build_conversion_reply_markup(withdrawal_text, "复制整理结果", copy_page_url),
+                                        "copy_page_token": get_copy_page_token_from_url(copy_page_url),
+                                    }
+                            if not reply_result:
+                                reply_result = parse_large_timeout_text(text)
+                            if not reply_result:
+                                reply_result = await handle_member_win_rate_bot_request(message)
+                            if not reply_result:
+                                reply_result = await handle_site_message_bot_request(message)
                     if not reply_result:
                         continue
                     if isinstance(reply_result, dict):
