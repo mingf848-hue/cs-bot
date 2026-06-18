@@ -2,8 +2,10 @@ const CONFIG = {
   sheetName: 'JN/ML大额催促登记表',
   token: 'CHANGE_ME_TO_A_RANDOM_SECRET',
   headerRow: 1,
+  lookbackDays: 30,
   columns: {
     orderNo: '提款订单',
+    withdrawAt: '提款时间',
     completionAt: '订单完成时间',
     status: '订单状态'
   }
@@ -75,22 +77,77 @@ function getPendingRows() {
     .getValues();
   const rows = [];
   const seen = {};
+  const cutoff = cutoffDate();
 
   values.forEach((row, index) => {
     const rowNumber = CONFIG.headerRow + 1 + index;
     const orderNo = String(row[col.orderNo - 1] || '').trim();
+    const withdrawAt = parseSheetDate(row[col.withdrawAt - 1]);
     const completionAt = String(row[col.completionAt - 1] || '').trim();
     const status = String(row[col.status - 1] || '').trim();
 
-    if (!orderNo || completionAt || status || seen[orderNo]) {
+    if (!orderNo || !withdrawAt || withdrawAt < cutoff || completionAt || status || seen[orderNo]) {
       return;
     }
 
     seen[orderNo] = true;
-    rows.push({ row: rowNumber, orderNo });
+    rows.push({
+      row: rowNumber,
+      orderNo,
+      withdrawAt: formatDateTime(withdrawAt)
+    });
   });
 
   return rows;
+}
+
+function cutoffDate() {
+  const date = new Date();
+  date.setDate(date.getDate() - Number(CONFIG.lookbackDays || 30));
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
+function parseSheetDate(value) {
+  if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime())) {
+    return value;
+  }
+
+  const text = String(value || '').trim();
+  const match = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/);
+  if (!match) {
+    return null;
+  }
+
+  const date = new Date(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+    Number(match[4] || 0),
+    Number(match[5] || 0),
+    Number(match[6] || 0)
+  );
+  return isNaN(date.getTime()) ? null : date;
+}
+
+function formatDateTime(date) {
+  return [
+    date.getFullYear(),
+    '-',
+    pad2(date.getMonth() + 1),
+    '-',
+    pad2(date.getDate()),
+    ' ',
+    pad2(date.getHours()),
+    ':',
+    pad2(date.getMinutes()),
+    ':',
+    pad2(date.getSeconds())
+  ].join('');
+}
+
+function pad2(value) {
+  return String(value).padStart(2, '0');
 }
 
 function updateRows(results) {
