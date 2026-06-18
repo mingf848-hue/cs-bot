@@ -75,6 +75,7 @@ WITHDRAW_TIMEOUT_SHEET_URL = os.environ.get("WITHDRAW_TIMEOUT_SHEET_URL", "").st
 WITHDRAW_TIMEOUT_SHEET_TOKEN = os.environ.get("WITHDRAW_TIMEOUT_SHEET_TOKEN", "").strip()
 BOT_FREE_COMMANDS = [
     {"command": "start", "description": "查看使用引导"},
+    {"command": "help", "description": "查看中文指令用法"},
     {"command": "id", "description": "查看当前聊天和用户ID"},
     {"command": "winrate", "description": "查胜率：/winrate 账号1 账号2"},
     {"command": "sync_withdraw", "description": "同步大额提款状态到表格"},
@@ -4432,6 +4433,28 @@ def format_start_command_reply(message):
 
     return "\n".join(lines)
 
+def format_help_command_reply():
+    return "\n".join([
+        "机器人中文指令用法",
+        "",
+        "/id",
+        "查看当前聊天 ID、你的 Telegram ID；在群里回复别人消息发送 /id，可以查看对方 ID。",
+        "",
+        "/winrate 账号1 账号2 账号3",
+        "查询会员胜率。也可以直接发送多行会员账号，最后一行写“查胜率”。",
+        "",
+        "/sync_withdraw",
+        "读取 Google 表格「JN/ML大额催促登记表」里订单完成时间为空的提款订单，自动查询并回写订单完成时间、订单状态。",
+        "",
+        "/withdraw_status",
+        "后面粘贴提款超时表格内容，机器人会补全订单完成时间和订单状态，并返回网页复制链接。",
+        "",
+        "/start",
+        "查看 Bot 基础引导。",
+        "",
+        "提示：在输入框输入 /，Telegram 会弹出可用命令。"
+    ])
+
 def format_winrate_usage():
     return "用法：\n/winrate 账号1 账号2 账号3\n\n也可以直接发送多行账号，最后一行写：查胜率"
 
@@ -5680,6 +5703,8 @@ async def bot_command_polling_task():
                 sent_message_id = None
                 if is_bot_command(text, "start"):
                     reply_text = format_start_command_reply(message)
+                elif is_bot_command(text, "help"):
+                    reply_text = format_help_command_reply()
                 elif is_bot_command(text, "id"):
                     reply_text = format_id_command_reply(message)
                 else:

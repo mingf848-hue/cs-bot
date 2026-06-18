@@ -82,7 +82,7 @@ function getPendingRows() {
   values.forEach((row) => {
     const orderNo = normalizeOrderNo(row[col.orderNo - 1]);
     const completionAt = cellText(row[col.completionAt - 1]);
-    if (!orderNo || !completionAt || completedByOrder[orderNo]) {
+    if (!orderNo || !isCompletionDateTime(row[col.completionAt - 1]) || completedByOrder[orderNo]) {
       return;
     }
     completedByOrder[orderNo] = {
@@ -95,9 +95,8 @@ function getPendingRows() {
     const rowNumber = CONFIG.headerRow + 1 + index;
     const orderNo = normalizeOrderNo(row[col.orderNo - 1]);
     const withdrawAt = parseSheetDate(row[col.withdrawAt - 1]);
-    const completionAt = cellText(row[col.completionAt - 1]);
 
-    if (!orderNo || !withdrawAt || withdrawAt < cutoff || completionAt) {
+    if (!orderNo || !withdrawAt || withdrawAt < cutoff || isCompletionDateTime(row[col.completionAt - 1])) {
       return;
     }
 
@@ -126,6 +125,13 @@ function cellText(value) {
     return formatDateTime(value);
   }
   return String(value || '').trim();
+}
+
+function isCompletionDateTime(value) {
+  if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime())) {
+    return true;
+  }
+  return /^\d{4}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?$/.test(String(value || '').trim());
 }
 
 function cutoffDate() {
@@ -192,13 +198,13 @@ function updateRows(results) {
       return;
     }
 
-    const currentCompletionAt = cellText(sheet.getRange(row, col.completionAt).getValue());
-    if (currentCompletionAt) {
+    const currentCompletionAtValue = sheet.getRange(row, col.completionAt).getValue();
+    if (isCompletionDateTime(currentCompletionAtValue)) {
       skipped.push(Object.assign({}, item, { reason: 'already_completed' }));
       return;
     }
 
-    if (completionAt) {
+    if (completionAt && isCompletionDateTime(completionAt)) {
       sheet.getRange(row, col.completionAt).setValue(completionAt);
     }
     if (status) {
