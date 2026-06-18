@@ -83,6 +83,9 @@ BOT_FREE_COMMANDS = [
     {"command": "withdraw_status", "description": "粘贴提款超时表格补全状态"},
     {"command": "convert_order", "description": "转换存款/提款订单表格"},
     {"command": "large_withdraw", "description": "转换大额提款超时格式"},
+    {"command": "large_timeout", "description": "大额超时格式转换"},
+    {"command": "newreg_3h", "description": "三小时新注册站内信"},
+    {"command": "deposit_fail", "description": "存款失败站内信"},
     {"command": "site_msg", "description": "发送站内信：账号列表+类型"},
 ]
 BOT_INTERACTION_TTL_SECONDS = 30
@@ -4429,9 +4432,11 @@ def format_start_command_reply(message):
         "5. /withdraw_status：粘贴提款超时表格，补全订单完成时间和状态。",
         "6. /convert_order：转换存款/提款订单表格。",
         "7. /large_withdraw：转换大额提款超时格式。",
-        "8. /site_msg：发送站内信。",
-        "9. 打开网页面板的「稍等预警名单」，勾选要预警的稍等关键词。",
-        "10. 把要接收预警的人的 ID 填到对应关键词的接收人 Chat ID，保存后生效。",
+        "8. /newreg_3h：三小时新注册站内信。",
+        "9. /deposit_fail：存款失败站内信。",
+        "10. /site_msg：发送其它站内信。",
+        "11. 打开网页面板的「稍等预警名单」，勾选要预警的稍等关键词。",
+        "12. 把要接收预警的人的 ID 填到对应关键词的接收人 Chat ID，保存后生效。",
         "",
         "注意：要私聊接收预警的人，必须先点过这个 Bot 的 Start。"
     ]
@@ -4463,6 +4468,15 @@ def format_help_command_reply():
         "",
         "/large_withdraw",
         "转换大额提款超时格式。发送命令后按提示粘贴原始内容。",
+        "",
+        "/large_timeout",
+        "同 /large_withdraw，大额超时格式转换。",
+        "",
+        "/newreg_3h",
+        "三小时新注册站内信。发送命令后发送账号列表，最后一行写 9zc 或 6zc。",
+        "",
+        "/deposit_fail",
+        "存款失败站内信。发送命令后发送账号列表即可。",
         "",
         "/site_msg",
         "发送站内信。格式：会员账号列表，最后一行写类型：sb、9zc、6zc、9ly、6ly。",
@@ -4505,6 +4519,31 @@ def format_site_msg_usage():
         "9ly：9站老友集结",
         "6ly：6站老友集结",
         "",
+        "30 秒内未发送会自动退出当前流程。"
+    ])
+
+def format_newreg_3h_usage():
+    return "\n".join([
+        "请发送三小时新注册站内信会员账号。",
+        "",
+        "格式：",
+        "账号1",
+        "账号2",
+        "账号3",
+        "9zc",
+        "",
+        "最后一行类型：",
+        "9zc：9站/ML 新注册连续6条",
+        "6zc：6站/JN 新注册连续3条",
+        "",
+        "30 秒内未发送会自动退出当前流程。"
+    ])
+
+def format_deposit_fail_usage():
+    return "\n".join([
+        "请发送存款失败站内信会员账号，一行一个账号。",
+        "",
+        "机器人会按 sb 类型发送存款温馨提示站内信。",
         "30 秒内未发送会自动退出当前流程。"
     ])
 
@@ -5322,6 +5361,8 @@ def bot_interaction_label(flow):
         "withdraw_status": "提款超时状态补全",
         "order_convert": "存款/提款表格转换",
         "large_withdraw": "大额提款超时转换",
+        "newreg_3h": "三小时新注册站内信",
+        "deposit_fail": "存款失败站内信",
         "site_msg": "站内信发送",
     }.get(str(flow or ""), "当前")
 
@@ -5331,6 +5372,8 @@ def bot_interaction_retry_text(flow):
         "withdraw_status": "没识别到提款超时表格，请重新粘贴包含“提款超时”和订单号的表格内容。",
         "order_convert": "没识别到存款/提款订单表格，请重新粘贴原始表格内容。",
         "large_withdraw": "没识别到大额提款超时内容，请重新粘贴原始内容。",
+        "newreg_3h": "没识别到三小时新注册站内信数据，请发送账号列表，并在最后一行写 9zc 或 6zc。",
+        "deposit_fail": "没识别到存款失败站内信账号，请重新发送会员账号，一行一个账号。",
         "site_msg": "没识别到站内信账号或类型，请重新发送账号列表，并在最后一行写 sb、9zc、6zc、9ly 或 6ly。",
     }.get(str(flow or ""), "没识别到数据，请重新发送。")
 
@@ -5378,6 +5421,20 @@ async def handle_bot_interaction_input(message, state):
             clear_bot_interaction(message)
             return result
         set_bot_interaction(message, "large_withdraw")
+        return bot_interaction_retry_text(flow)
+    if flow == "newreg_3h":
+        result = await handle_site_message_bot_request(message)
+        if result:
+            clear_bot_interaction(message)
+            return result
+        set_bot_interaction(message, "newreg_3h")
+        return bot_interaction_retry_text(flow)
+    if flow == "deposit_fail":
+        result = await handle_site_message_bot_request(make_message_with_text(message, f"{text}\nsb"))
+        if result:
+            clear_bot_interaction(message)
+            return result
+        set_bot_interaction(message, "deposit_fail")
         return bot_interaction_retry_text(flow)
     if flow == "site_msg":
         result = await handle_site_message_bot_request(message)
@@ -5927,14 +5984,33 @@ async def bot_command_polling_task():
                             set_bot_interaction(message, "order_convert")
                             reply_result = format_order_convert_usage()
 
-                    elif is_bot_command(text, "large_withdraw"):
+                    elif is_bot_command(text, "large_withdraw") or is_bot_command(text, "large_timeout"):
                         clear_bot_interaction(message)
-                        payload = bot_command_payload(text, "large_withdraw")
+                        command_name = "large_withdraw" if is_bot_command(text, "large_withdraw") else "large_timeout"
+                        payload = bot_command_payload(text, command_name)
                         if payload:
                             reply_result = parse_large_timeout_text(payload)
                         if not reply_result:
                             set_bot_interaction(message, "large_withdraw")
                             reply_result = format_large_withdraw_usage()
+
+                    elif is_bot_command(text, "newreg_3h"):
+                        clear_bot_interaction(message)
+                        payload = bot_command_payload(text, "newreg_3h")
+                        if payload:
+                            reply_result = await handle_site_message_bot_request(make_message_with_text(message, payload))
+                        if not reply_result:
+                            set_bot_interaction(message, "newreg_3h")
+                            reply_result = format_newreg_3h_usage()
+
+                    elif is_bot_command(text, "deposit_fail"):
+                        clear_bot_interaction(message)
+                        payload = bot_command_payload(text, "deposit_fail")
+                        if payload:
+                            reply_result = await handle_site_message_bot_request(make_message_with_text(message, f"{payload}\nsb"))
+                        if not reply_result:
+                            set_bot_interaction(message, "deposit_fail")
+                            reply_result = format_deposit_fail_usage()
 
                     elif is_bot_command(text, "site_msg"):
                         clear_bot_interaction(message)

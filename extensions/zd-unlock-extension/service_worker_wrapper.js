@@ -23,10 +23,8 @@ importScripts('service_worker.js');
 
   function normalizeSettlementNoticeReply(text) {
     const raw = String(text || '').trim();
-    if (/因赛果不明确，?赛果将进一步核实，?确认后再进行结算，?造成不便之处，?敬请见谅！?/.test(raw)) {
-      return '因赛果不明确，注单暂时无法结算，需待定24小时，如24小时无法确定，所有受影响的注单一律视为无效，连串注单该场赛事相关盘口赔率以（1）计算，谢谢！';
-    }
-    return raw;
+    const replacement = '因赛果不明确，注单暂时无法结算，需待定24小时，如24小时无法确定，所有受影响的注单一律视为无效，连串注单该场赛事相关盘口赔率以（1）计算，谢谢！';
+    return raw.replace(/因赛果不明确，?赛果将进一步核实，?确认后再进行结算，?造成不便之处，?敬请见谅！?/g, replacement);
   }
 
   const originalScoreSettlementNotice = scoreSettlementNotice;
