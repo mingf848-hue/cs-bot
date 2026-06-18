@@ -73,6 +73,13 @@ BOT_COMMAND_POLL_CONFLICT_LOG_INTERVAL_SECONDS = 300
 bot_command_poll_conflict_last_log_at = 0.0
 WITHDRAW_TIMEOUT_SHEET_URL = os.environ.get("WITHDRAW_TIMEOUT_SHEET_URL", "").strip()
 WITHDRAW_TIMEOUT_SHEET_TOKEN = os.environ.get("WITHDRAW_TIMEOUT_SHEET_TOKEN", "").strip()
+BOT_FREE_COMMANDS = [
+    {"command": "start", "description": "查看使用引导"},
+    {"command": "id", "description": "查看当前聊天和用户ID"},
+    {"command": "winrate", "description": "查胜率：/winrate 账号1 账号2"},
+    {"command": "sync_withdraw", "description": "同步大额提款状态到表格"},
+    {"command": "withdraw_status", "description": "粘贴提款超时表格补全状态"},
+]
 
 class BeijingFormatter(logging.Formatter):
     def converter(self, timestamp):
@@ -4312,14 +4319,14 @@ def setup_bot_commands():
         resp = requests.get(get_url, timeout=20)
         data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
         commands = data.get("result", []) if resp.status_code == 200 and data.get("ok") else []
-        merged = [cmd for cmd in commands if cmd.get("command") not in ("start", "id")]
-        merged.append({"command": "start", "description": "查看使用引导"})
-        merged.append({"command": "id", "description": "查看当前聊天和用户ID"})
+        free_names = {cmd["command"] for cmd in BOT_FREE_COMMANDS}
+        merged = [cmd for cmd in commands if cmd.get("command") not in free_names]
+        merged.extend(BOT_FREE_COMMANDS)
 
         set_resp = requests.post(set_url, json={"commands": merged}, timeout=20)
         set_data = set_resp.json() if set_resp.headers.get("content-type", "").startswith("application/json") else {}
         if set_resp.status_code == 200 and set_data.get("ok"):
-            log_tree(1, "Bot 命令已设置: /start /id")
+            log_tree(1, "Bot 命令已设置: " + " ".join(f"/{cmd['command']}" for cmd in BOT_FREE_COMMANDS))
         else:
             log_tree(9, f"Bot 命令设置失败: HTTP {set_resp.status_code} {str(set_data)[:200]}")
     except Exception as e:
@@ -4410,8 +4417,11 @@ def format_start_command_reply(message):
         "常用操作：",
         "1. 发送 /id 可以再次查看自己的 ID。",
         "2. 在群里回复某个人的消息发送 /id，可以获取那个人的 ID。",
-        "3. 打开网页面板的「稍等预警名单」，勾选要预警的稍等关键词。",
-        "4. 把要接收预警的人的 ID 填到对应关键词的接收人 Chat ID，保存后生效。",
+        "3. /winrate 账号1 账号2：查胜率。",
+        "4. /sync_withdraw：同步大额提款状态到 Google 表格。",
+        "5. /withdraw_status：粘贴提款超时表格，补全订单完成时间和状态。",
+        "6. 打开网页面板的「稍等预警名单」，勾选要预警的稍等关键词。",
+        "7. 把要接收预警的人的 ID 填到对应关键词的接收人 Chat ID，保存后生效。",
         "",
         "注意：要私聊接收预警的人，必须先点过这个 Bot 的 Start。"
     ]
@@ -4421,6 +4431,12 @@ def format_start_command_reply(message):
         lines.append("网页面板入口未配置：需要设置 BOT_MENU_URL 为 Zeabur 的 https 域名。")
 
     return "\n".join(lines)
+
+def format_winrate_usage():
+    return "用法：\n/winrate 账号1 账号2 账号3\n\n也可以直接发送多行账号，最后一行写：查胜率"
+
+def format_withdraw_status_usage():
+    return "用法：\n/withdraw_status 后粘贴提款超时表格，或直接发送包含“提款超时”的表格内容。\n\n机器人会补全订单完成时间和订单状态，并返回网页复制链接。"
 
 def parse_order_table_block(raw_lines):
     if len(raw_lines) < 4:
@@ -4816,7 +4832,10 @@ async def handle_withdraw_timeout_status_bot_request(message):
 
 def is_withdraw_timeout_sheet_sync_command(text):
     compact = str(text or "").replace(" ", "").strip()
-    return bool(compact and "同步" in compact and ("大额提款" in compact or "提款超时" in compact) and ("状态" in compact or "完成时间" in compact))
+    return bool(
+        re.match(r"^/sync_withdraw(?:@[A-Za-z0-9_]+)?(?:\s|$)", str(text or "").strip(), flags=re.I)
+        or (compact and "同步" in compact and ("大额提款" in compact or "提款超时" in compact) and ("状态" in compact or "完成时间" in compact))
+    )
 
 def withdraw_timeout_sheet_request(action, method="GET", payload=None):
     if not WITHDRAW_TIMEOUT_SHEET_URL or not WITHDRAW_TIMEOUT_SHEET_TOKEN:
@@ -5214,9 +5233,11 @@ def parse_site_message_request(text):
 
 def parse_member_win_rate_request(text):
     raw = str(text or "").strip()
-    if "查胜率" not in raw:
+    is_slash = bool(re.match(r"^/winrate(?:@[A-Za-z0-9_]+)?(?:\s|$)", raw, flags=re.I))
+    if "查胜率" not in raw and not is_slash:
         return []
-    clean = re.sub(r"查胜率", " ", raw, flags=re.IGNORECASE)
+    clean = re.sub(r"^/winrate(?:@[A-Za-z0-9_]+)?", " ", raw, flags=re.I)
+    clean = re.sub(r"查胜率", " ", clean, flags=re.IGNORECASE)
     members = []
     seen = set()
     for item in re.findall(r"\b[A-Za-z][A-Za-z0-9._-]{2,31}\b", clean):
@@ -5644,6 +5665,8 @@ async def bot_command_polling_task():
                     reply_result = await handle_withdraw_timeout_sheet_sync_bot_request(message)
                     if not reply_result:
                         reply_result = await handle_withdraw_timeout_status_bot_request(message)
+                    if not reply_result and is_bot_command(text, "withdraw_status"):
+                        reply_result = format_withdraw_status_usage()
                     if not reply_result:
                         withdrawal_text = parse_withdrawal_table_text(text)
                         if withdrawal_text:
@@ -5659,6 +5682,8 @@ async def bot_command_polling_task():
                         reply_result = parse_large_timeout_text(text)
                     if not reply_result:
                         reply_result = await handle_member_win_rate_bot_request(message)
+                    if not reply_result and is_bot_command(text, "winrate"):
+                        reply_result = format_winrate_usage()
                     if not reply_result:
                         reply_result = await handle_site_message_bot_request(message)
                     if not reply_result:
