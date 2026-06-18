@@ -21,6 +21,14 @@ importScripts('service_worker.js');
     return /盘口错误|盤口錯誤|赔率错误|賠率錯誤|无效|無效|取消|失败|失敗|退回|本金|受影响注单|受影響注單|一律视为无效|一律視為無效|相关盘口赔率以|相關盤口賠率以|marketerror|market error|odds error|invalid/.test(text);
   }
 
+  function normalizeSettlementNoticeReply(text) {
+    const raw = String(text || '').trim();
+    if (/因赛果不明确，?赛果将进一步核实，?确认后再进行结算，?造成不便之处，?敬请见谅！?/.test(raw)) {
+      return '因赛果不明确，注单暂时无法结算，需待定24小时，如24小时无法确定，所有受影响的注单一律视为无效，连串注单该场赛事相关盘口赔率以（1）计算，谢谢！';
+    }
+    return raw;
+  }
+
   const originalScoreSettlementNotice = scoreSettlementNotice;
   scoreSettlementNotice = function patchedScoreSettlementNotice(item = {}, order = {}, detail = {}) {
     let score = originalScoreSettlementNotice(item, order, detail);
@@ -152,7 +160,7 @@ importScripts('service_worker.js');
         const selectedNotice = selected.item || {};
         const noticeText = await noticeReplyText(config, headers, selectedNotice);
         const marketLabel = detailMarketCategory(item)?.label || '';
-        const replyText = withSettlementRollbackPrefix(noticeText || '赛果核实中，请耐心等待。', order, item);
+        const replyText = withSettlementRollbackPrefix(normalizeSettlementNoticeReply(noticeText) || '赛果核实中，请耐心等待。', order, item);
         await replyOrigin(config, cmd, `赛事 ${matchId} 已有未结算公告${marketLabel ? `（${marketLabel}）` : ''}`, replyText, notice.text);
         return;
       }

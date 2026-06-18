@@ -3711,11 +3711,30 @@ function withdrawTimeoutOrders(cmd = {}, fallbackTarget = '') {
 
 function withdrawHistoryRange(cmd = {}) {
   const today = dateOnly(new Date());
-  const start = addDays(today, -30);
-  return {
-    startAt: `${String(cmd.confirmAtStart || cmd.confirm_at_start || formatDate(start))} 00:00:00`.replace(/\s+00:00:00\s+00:00:00$/, ' 00:00:00'),
-    endAt: `${String(cmd.confirmAtEnd || cmd.confirm_at_end || formatDate(today))} 23:59:59`.replace(/\s+23:59:59\s+23:59:59$/, ' 23:59:59')
+  const parseRangeDate = (value, fallback) => {
+    const match = String(value || '').trim().match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+    if (!match) return fallback;
+    const parsed = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+    return Number.isNaN(parsed.getTime()) ? fallback : dateOnly(parsed);
   };
+  let end = parseRangeDate(cmd.confirmAtEnd || cmd.confirm_at_end, today);
+  if (end > today) end = today;
+  const maxStart = addDays(end, -29);
+  let start = parseRangeDate(cmd.confirmAtStart || cmd.confirm_at_start, maxStart);
+  if (start < maxStart) start = maxStart;
+  if (start > end) start = maxStart;
+  return {
+    startAt: `${formatDate(start)} 00:00:00`,
+    endAt: `${formatDate(end)} 23:59:59`
+  };
+}
+
+function normalizeSettlementNoticeReply(text) {
+  const raw = String(text || '').trim();
+  if (/因赛果不明确，?赛果将进一步核实，?确认后再进行结算，?造成不便之处，?敬请见谅！?/.test(raw)) {
+    return '因赛果不明确，注单暂时无法结算，需待定24小时，如24小时无法确定，所有受影响的注单一律视为无效，连串注单该场赛事相关盘口赔率以（1）计算，谢谢！';
+  }
+  return raw;
 }
 
 function withdrawStatusLabel(item = {}) {
@@ -4286,7 +4305,7 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
       const selectedNotice = selected.item || {};
       const noticeText = await noticeReplyText(config, headers, selectedNotice);
       const marketLabel = detailMarketCategory(item)?.label || '';
-      const replyText = withSettlementRollbackPrefix(noticeText || '赛果核实中，请耐心等待。', order, item);
+      const replyText = withSettlementRollbackPrefix(normalizeSettlementNoticeReply(noticeText) || '赛果核实中，请耐心等待。', order, item);
       await replyOrigin(config, cmd, `赛事 ${matchId} 已有公告${marketLabel ? `（${marketLabel}）` : ''}`, replyText, notice.text);
       return;
     }

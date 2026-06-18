@@ -6933,7 +6933,7 @@ async def handler(event):
 
 if __name__ == '__main__':
     try:
-        delay = int(os.environ.get("STARTUP_DELAY", 120)) if MAIN_SESSION_READY else 0
+        delay = int(os.environ.get("STARTUP_DELAY", 60)) if MAIN_SESSION_READY else 0
         if delay > 0:
             logger.info(f"⏳ 启动延迟: 等待 {delay} 秒以确保旧连接断开...")
             time.sleep(delay)
