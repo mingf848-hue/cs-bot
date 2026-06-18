@@ -71,6 +71,8 @@ telegram_shutdown_started = False
 BOT_COMMAND_POLLING_ENABLED = os.environ.get("BOT_COMMAND_POLLING_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
 BOT_COMMAND_POLL_CONFLICT_LOG_INTERVAL_SECONDS = 300
 bot_command_poll_conflict_last_log_at = 0.0
+WITHDRAW_TIMEOUT_SHEET_URL = os.environ.get("WITHDRAW_TIMEOUT_SHEET_URL", "").strip()
+WITHDRAW_TIMEOUT_SHEET_TOKEN = os.environ.get("WITHDRAW_TIMEOUT_SHEET_TOKEN", "").strip()
 
 class BeijingFormatter(logging.Formatter):
     def converter(self, timestamp):
@@ -4685,6 +4687,232 @@ def parse_large_timeout_text(text):
         ],
     }
 
+WITHDRAW_TIMEOUT_ORDER_RE = re.compile(r"\b(?:HWD|MW)\w{10,}\b", re.I)
+
+def parse_withdraw_timeout_status_line(line, index=0):
+    raw = str(line or "").strip()
+    if "提款超时" not in raw:
+        return None
+    tokens = re.split(r"\s+", raw)
+    order_idx = next((i for i, token in enumerate(tokens) if WITHDRAW_TIMEOUT_ORDER_RE.fullmatch(token)), -1)
+    if order_idx < 8 or len(tokens) < order_idx + 6:
+        return None
+    rest = tokens[order_idx + 6:]
+    completion_at = ""
+    status = ""
+    for i in range(0, max(0, len(rest) - 1)):
+        candidate = f"{rest[i]} {rest[i + 1]}"
+        if parse_large_timeout_datetime(candidate):
+            completion_at = format_large_timeout_time(candidate)
+            status = rest[i + 2] if i + 2 < len(rest) else ""
+            break
+    return {
+        "index": index,
+        "raw": raw,
+        "tokens": tokens,
+        "order_no": tokens[order_idx],
+        "completion_at": completion_at,
+        "status": status,
+        "has_completion": bool(completion_at and status),
+    }
+
+def parse_withdraw_timeout_status_request(text):
+    rows = []
+    for idx, line in enumerate(str(text or "").splitlines()):
+        parsed = parse_withdraw_timeout_status_line(line, idx)
+        if parsed:
+            rows.append(parsed)
+    return rows
+
+def format_withdraw_timeout_status_row(row, lookup):
+    tokens = list(row.get("tokens") or [])
+    order_no = row.get("order_no") or ""
+    completion_at = row.get("completion_at") or ""
+    status = row.get("status") or ""
+    if not row.get("has_completion"):
+        result = lookup.get(order_no) or {}
+        completion_at = result.get("completion_at") or completion_at
+        status = result.get("status") or status
+    base_len = 14
+    columns = tokens[:base_len] if len(tokens) >= base_len else tokens
+    if completion_at and status:
+        columns.extend([completion_at, status])
+    elif len(tokens) > base_len:
+        columns.extend(tokens[base_len:])
+    return "\t".join(columns)
+
+def build_withdraw_timeout_status_text(rows, lookup):
+    return "\n".join(format_withdraw_timeout_status_row(row, lookup) for row in rows)
+
+async def handle_withdraw_timeout_status_bot_request(message):
+    if not queue_backend_command or not wait_backend_command_result:
+        return "提款超时状态补全模块未加载，无法执行。"
+    text = str(message.get("text") or "")
+    rows = parse_withdraw_timeout_status_request(text)
+    if not rows:
+        return None
+
+    known = {}
+    for row in rows:
+        if row.get("has_completion"):
+            known[row["order_no"]] = {
+                "completion_at": row.get("completion_at") or "",
+                "status": row.get("status") or "",
+            }
+
+    query_orders = []
+    seen = set()
+    for row in rows:
+        order_no = row["order_no"]
+        if order_no in seen or order_no in known:
+            continue
+        seen.add(order_no)
+        query_orders.append(order_no)
+
+    lookup = dict(known)
+    if query_orders:
+        cmd_id = queue_backend_command(
+            "withdraw_timeout_status",
+            target_value=query_orders[0],
+            source="telegram_bot_withdraw_timeout_status",
+            member_name=",".join(query_orders[:5]) + ("..." if len(query_orders) > 5 else ""),
+            orders=query_orders,
+            source_text=text,
+            chat_id=((message.get("chat") or {}).get("id")),
+            message_id=message.get("message_id"),
+        )
+        result, _progress_message_id = await wait_backend_result_with_simple_progress(
+            cmd_id,
+            (message.get("chat") or {}).get("id"),
+            "提款超时状态补全中",
+            len(query_orders),
+            timeout=300.0
+        )
+        reply_text = str((result or {}).get("reply_text") or "").strip()
+        if reply_text:
+            try:
+                payload = json.loads(reply_text)
+                if isinstance(payload, dict):
+                    for order_no, item in payload.items():
+                        if isinstance(item, dict):
+                            lookup[str(order_no)] = {
+                                "completion_at": str(item.get("completion_at") or ""),
+                                "status": str(item.get("status") or ""),
+                            }
+            except Exception:
+                return reply_text
+        elif str((result or {}).get("status") or "") not in {"success", "reply_origin"}:
+            return f"提款超时状态补全失败：{str((result or {}).get('detail') or '无回执')}"
+
+    output = build_withdraw_timeout_status_text(rows, lookup)
+    copy_page_url = store_copy_page("提款超时状态补全结果", [
+        {"title": "补全结果（制表符）", "text": output}
+    ])
+    return {
+        "text": output,
+        "reply_markup": build_conversion_reply_markup(output, "网页复制", copy_page_url),
+        "copy_page_token": get_copy_page_token_from_url(copy_page_url),
+    }
+
+def is_withdraw_timeout_sheet_sync_command(text):
+    compact = str(text or "").replace(" ", "").strip()
+    return bool(compact and "同步" in compact and ("大额提款" in compact or "提款超时" in compact) and ("状态" in compact or "完成时间" in compact))
+
+def withdraw_timeout_sheet_request(action, method="GET", payload=None):
+    if not WITHDRAW_TIMEOUT_SHEET_URL or not WITHDRAW_TIMEOUT_SHEET_TOKEN:
+        raise RuntimeError("未配置 WITHDRAW_TIMEOUT_SHEET_URL / WITHDRAW_TIMEOUT_SHEET_TOKEN")
+    params = {"action": action, "token": WITHDRAW_TIMEOUT_SHEET_TOKEN}
+    if method == "POST":
+        resp = requests.post(WITHDRAW_TIMEOUT_SHEET_URL, params=params, json=payload or {}, timeout=60)
+    else:
+        resp = requests.get(WITHDRAW_TIMEOUT_SHEET_URL, params=params, timeout=60)
+    data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+    if resp.status_code != 200 or not data.get("ok"):
+        raise RuntimeError(str(data.get("error") or data.get("msg") or f"HTTP {resp.status_code}"))
+    return data
+
+async def withdraw_timeout_sheet_request_async(action, method="GET", payload=None):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: withdraw_timeout_sheet_request(action, method, payload))
+
+async def handle_withdraw_timeout_sheet_sync_bot_request(message):
+    if not is_withdraw_timeout_sheet_sync_command(message.get("text")):
+        return None
+    if not queue_backend_command or not wait_backend_command_result:
+        return "提款超时状态同步模块未加载，无法执行。"
+
+    chat_id = (message.get("chat") or {}).get("id")
+    try:
+        pending_data = await withdraw_timeout_sheet_request_async("pending")
+    except Exception as err:
+        return f"读取表格失败：{err}"
+
+    rows = [row for row in (pending_data.get("rows") or []) if row.get("row") and row.get("orderNo")]
+    if not rows:
+        return "没有需要同步的提款订单。"
+
+    orders = [str(row.get("orderNo") or "").strip() for row in rows]
+    cmd_id = queue_backend_command(
+        "withdraw_timeout_status",
+        target_value=orders[0],
+        source="telegram_bot_withdraw_timeout_sheet_sync",
+        member_name=",".join(orders[:5]) + ("..." if len(orders) > 5 else ""),
+        orders=orders,
+        source_text=message.get("text") or "",
+        chat_id=chat_id,
+        message_id=message.get("message_id"),
+    )
+    result, _progress_message_id = await wait_backend_result_with_simple_progress(
+        cmd_id,
+        chat_id,
+        "同步大额提款状态中",
+        len(orders),
+        timeout=300.0
+    )
+    reply_text = str((result or {}).get("reply_text") or "").strip()
+    if not reply_text:
+        return f"同步大额提款状态失败：{str((result or {}).get('detail') or '无回执')}"
+
+    try:
+        lookup = json.loads(reply_text)
+    except Exception as err:
+        return f"同步大额提款状态失败：后台返回无法解析：{err}"
+
+    updates = []
+    missing = []
+    for row in rows:
+        order_no = str(row.get("orderNo") or "").strip().upper()
+        item = lookup.get(order_no) or lookup.get(str(row.get("orderNo") or "").strip()) or {}
+        completion_at = str(item.get("completion_at") or item.get("completionAt") or "").strip()
+        status = str(item.get("status") or "").strip()
+        if completion_at and status:
+            updates.append({
+                "row": row.get("row"),
+                "orderNo": row.get("orderNo"),
+                "completionAt": completion_at,
+                "status": status,
+            })
+        else:
+            missing.append(row.get("orderNo"))
+
+    if not updates:
+        return f"查询完成，但没有可回写结果。未查到：{len(missing)}"
+
+    try:
+        update_data = await withdraw_timeout_sheet_request_async("update", method="POST", payload={"results": updates})
+    except Exception as err:
+        return f"查询完成，但回写表格失败：{err}"
+
+    updated = update_data.get("updated") or []
+    lines = [
+        "同步大额提款状态完成",
+        f"读取：{len(rows)}",
+        f"回写：{len(updated)}",
+    ]
+    if missing:
+        lines.append(f"未查到：{len(missing)}")
+    return "\n".join(lines)
+
 def _bot_get_updates(offset=None, timeout=50):
     global bot_command_poll_conflict_last_log_at
     if not BOT_TOKEN:
@@ -5001,6 +5229,66 @@ def parse_member_win_rate_request(text):
         members.append(name)
     return members[:20]
 
+def format_backend_command_progress(title, total, progress=None, force_percent=None):
+    progress = progress or {}
+    total = int(progress.get("total") or total or 0)
+    step = int(progress.get("step") or 0)
+    success = int(progress.get("success") or 0)
+    percent = force_percent if force_percent is not None else progress.get("percent", 0)
+    try:
+        percent = int(percent or 0)
+    except Exception:
+        percent = 0
+    percent = max(0, min(100, percent))
+    message = str(progress.get("message") or "等待扩展接收任务")
+    lines = [
+        title,
+        f"进度：{progress_bar(percent)} {percent}%",
+        f"步骤：{step}/{total}",
+        f"成功：{success}",
+        f"状态：{message}",
+    ]
+    return "\n".join(lines)
+
+async def wait_backend_result_with_simple_progress(cmd_id, chat_id, title, total, timeout=300.0):
+    loop = asyncio.get_event_loop()
+    progress_message_id = await loop.run_in_executor(
+        None,
+        lambda: _bot_send_reply(chat_id, format_backend_command_progress(title, total, {"percent": 0, "total": total}))
+    )
+    wait_task = asyncio.create_task(wait_backend_command_result(cmd_id, timeout=timeout))
+    last_text = ""
+    last_edit = 0.0
+    while not wait_task.done():
+        progress = get_backend_command_progress(cmd_id) if get_backend_command_progress else {}
+        text = format_backend_command_progress(title, total, progress)
+        now_ts = time.time()
+        if progress_message_id and text != last_text and now_ts - last_edit >= 0.8:
+            await loop.run_in_executor(
+                None,
+                lambda cid=chat_id, mid=progress_message_id, txt=text: _bot_edit_message_text(cid, mid, txt)
+            )
+            last_text = text
+            last_edit = now_ts
+        await asyncio.sleep(0.7)
+
+    result = await wait_task
+    final_progress = get_backend_command_progress(cmd_id) if get_backend_command_progress else {}
+    final_status = str((result or {}).get("status") or "")
+    final_message = "完成" if final_status in {"success", "reply_origin"} else ((result or {}).get("detail") or "失败")
+    final_text = format_backend_command_progress(
+        title,
+        total,
+        {**final_progress, "message": final_message, "step": total, "total": total},
+        force_percent=100 if final_status in {"success", "reply_origin"} else final_progress.get("percent", 0)
+    )
+    if progress_message_id:
+        await loop.run_in_executor(
+            None,
+            lambda cid=chat_id, mid=progress_message_id, txt=final_text: _bot_edit_message_text(cid, mid, txt)
+        )
+    return result, progress_message_id
+
 async def handle_member_win_rate_bot_request(message):
     if not queue_backend_command or not wait_backend_command_result:
         return "查胜率模块未加载，无法执行。"
@@ -5018,7 +5306,13 @@ async def handle_member_win_rate_bot_request(message):
         chat_id=((message.get("chat") or {}).get("id")),
         message_id=message.get("message_id"),
     )
-    result = await wait_backend_command_result(cmd_id, timeout=300.0)
+    result, _progress_message_id = await wait_backend_result_with_simple_progress(
+        cmd_id,
+        (message.get("chat") or {}).get("id"),
+        "查胜率查询中",
+        len(members),
+        timeout=300.0
+    )
     status = str((result or {}).get("status") or "timeout")
     reply_text = str((result or {}).get("reply_text") or "").strip()
     detail = str((result or {}).get("detail") or "无回执").strip()
@@ -5347,22 +5641,26 @@ async def bot_command_polling_task():
                     chat = message.get("chat", {})
                     if chat.get("type") != "private":
                         continue
-                    withdrawal_text = parse_withdrawal_table_text(text)
-                    if withdrawal_text:
-                        copy_page_url = store_copy_page("存款/提款表格转换结果", [
-                            {"title": "表格分列结果", "text": withdrawal_text}
-                        ])
-                        reply_result = {
-                            "text": withdrawal_text,
-                            "reply_markup": build_conversion_reply_markup(withdrawal_text, "复制整理结果", copy_page_url),
-                            "copy_page_token": get_copy_page_token_from_url(copy_page_url),
-                        }
-                    else:
+                    reply_result = await handle_withdraw_timeout_sheet_sync_bot_request(message)
+                    if not reply_result:
+                        reply_result = await handle_withdraw_timeout_status_bot_request(message)
+                    if not reply_result:
+                        withdrawal_text = parse_withdrawal_table_text(text)
+                        if withdrawal_text:
+                            copy_page_url = store_copy_page("存款/提款表格转换结果", [
+                                {"title": "表格分列结果", "text": withdrawal_text}
+                            ])
+                            reply_result = {
+                                "text": withdrawal_text,
+                                "reply_markup": build_conversion_reply_markup(withdrawal_text, "复制整理结果", copy_page_url),
+                                "copy_page_token": get_copy_page_token_from_url(copy_page_url),
+                            }
+                    if not reply_result:
                         reply_result = parse_large_timeout_text(text)
-                        if not reply_result:
-                            reply_result = await handle_member_win_rate_bot_request(message)
-                        if not reply_result:
-                            reply_result = await handle_site_message_bot_request(message)
+                    if not reply_result:
+                        reply_result = await handle_member_win_rate_bot_request(message)
+                    if not reply_result:
+                        reply_result = await handle_site_message_bot_request(message)
                     if not reply_result:
                         continue
                     if isinstance(reply_result, dict):

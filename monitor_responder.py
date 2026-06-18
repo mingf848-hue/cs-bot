@@ -2509,7 +2509,7 @@ BACKEND_UNLOCK_ACTIONS = {
         "send_site_inner_msg", "member_data_overview", "query_member_line",
         "query_login_device_ip", "query_same_ip_device", "query_venue_turnover",
         "disable_login_device", "configure_rebate", "urge_settlement", "query_ticket_cancel_reason",
-        "venue_display_control", "ticket_follow", "member_win_rate", "agent_existing"
+        "venue_display_control", "ticket_follow", "member_win_rate", "withdraw_timeout_status", "agent_existing"
 }
 AGENT_EXECUTABLE_ACTIONS = {
     "unlock_sms", "clear_login_error", "add_proxy_whitelist", "migrate_milan",
@@ -2782,6 +2782,9 @@ def normalize_backend_action(action):
         "win_rate": "member_win_rate",
         "member_win_rate_query": "member_win_rate",
         "查胜率": "member_win_rate",
+        "withdraw_timeout_status": "withdraw_timeout_status",
+        "query_withdraw_timeout_status": "withdraw_timeout_status",
+        "提款超时状态": "withdraw_timeout_status",
     }
     action = aliases.get(action, action)
     return action if action in BACKEND_UNLOCK_ACTIONS else "unlock_sms"
@@ -3274,6 +3277,8 @@ def command_action_label(action):
         return "注单跟单"
     if action == "member_win_rate":
         return "查胜率"
+    if action == "withdraw_timeout_status":
+        return "提款超时状态补全"
     return "短信/验证码限制"
 
 def member_data_private_requested(text):

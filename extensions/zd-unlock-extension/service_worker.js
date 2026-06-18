@@ -29,6 +29,7 @@ const SITE_BACKEND_PATHS = {
   memberGameTotalInfoUrl: '/central/admin/site/admin/v1/user/game/totalInfo2',
   memberFinanceTotalAmountUrl: '/central/admin/site/admin/v1/user/finance/totalAmount2',
   gameRecordListUrl: '/central/admin/site/admin/v1/user/game/gameRecordList',
+  fastDrawWithdrawHistoryUrl: '/central/admin/fd/admin/v1/fastDraw/v1/queryWithdrawHistory',
   loginLogUrl: '/central/admin/fd/admin/v1/risk/loginLog',
   bulletFrameLogUrl: '/central/admin/fd/admin/v1/risk/bulletFrameLog',
   gameWalletListUrl: '/central/admin/game/admin/v1/user/game/list',
@@ -894,6 +895,7 @@ function commandLabel(action) {
   if (action === 'query_venue_turnover') return '查场馆流水锁定';
   if (action === 'configure_rebate') return '配置返水';
   if (action === 'member_win_rate') return '查胜率';
+  if (action === 'withdraw_timeout_status') return '提款超时状态补全';
   if (action === 'merchant_order_statistics') return '场馆注单查询';
   if (action === 'urge_settlement') return '催结算';
   if (action === 'query_ticket_cancel_reason') return '注单取消/失败原因';
@@ -989,6 +991,8 @@ function normalizeCommandAction(action, cmd = {}) {
     follow_bet: 'ticket_follow',
     win_rate: 'member_win_rate',
     member_win_rate_query: 'member_win_rate',
+    withdraw_timeout_status: 'withdraw_timeout_status',
+    query_withdraw_timeout_status: 'withdraw_timeout_status',
     data_overview: 'member_data_overview',
     query_member_data: 'member_data_overview',
     member_data_query: 'member_data_overview',
@@ -1029,11 +1033,12 @@ function normalizeCommandAction(action, cmd = {}) {
     '投注失败': 'query_ticket_cancel_reason',
     '注单跟单': 'ticket_follow',
     '跟单': 'ticket_follow',
-    '查胜率': 'member_win_rate'
+    '查胜率': 'member_win_rate',
+    '提款超时状态': 'withdraw_timeout_status'
   };
   const normalized = aliases[raw] || raw;
   if (hasMerchantCommandHint(cmd) && (raw === '' || raw === 'unlock_sms')) return 'merchant_order_statistics';
-  return ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg', 'member_data_overview', 'query_member_line', 'query_login_device_ip', 'query_same_ip_device', 'disable_login_device', 'query_venue_turnover', 'configure_rebate', 'member_win_rate', 'merchant_order_statistics', 'urge_settlement', 'query_ticket_cancel_reason', 'venue_display_control', 'ticket_follow'].includes(normalized)
+  return ['unlock_sms', 'clear_login_error', 'add_proxy_whitelist', 'migrate_milan', 'send_site_inner_msg', 'member_data_overview', 'query_member_line', 'query_login_device_ip', 'query_same_ip_device', 'disable_login_device', 'query_venue_turnover', 'configure_rebate', 'member_win_rate', 'withdraw_timeout_status', 'merchant_order_statistics', 'urge_settlement', 'query_ticket_cancel_reason', 'venue_display_control', 'ticket_follow'].includes(normalized)
     ? normalized
     : 'unlock_sms';
 }
@@ -1113,6 +1118,8 @@ function isSupportedCommandAction(action, cmd = {}) {
     'win_rate',
     'member_win_rate',
     'member_win_rate_query',
+    'withdraw_timeout_status',
+    'query_withdraw_timeout_status',
     '催结算',
     '注单取消原因',
     '取消原因',
@@ -1121,7 +1128,8 @@ function isSupportedCommandAction(action, cmd = {}) {
     '投注失败',
     '注单跟单',
     '跟单',
-    '查胜率'
+    '查胜率',
+    '提款超时状态'
   ].includes(raw);
 }
 
@@ -3679,6 +3687,120 @@ async function runMemberWinRateCommand(config, cmd, targetValue) {
   await ack(config, cmd, 'reply_origin', msg, { reply_text: replyText, stop_actions: true });
 }
 
+function withdrawTimeoutOrders(cmd = {}, fallbackTarget = '') {
+  const out = [];
+  const seen = new Set();
+  const add = (value) => {
+    const orderNo = String(value || '').trim().toUpperCase();
+    if (!/^(HWD|MW)\w{10,}$/i.test(orderNo) || seen.has(orderNo)) return;
+    seen.add(orderNo);
+    out.push(orderNo);
+  };
+  [
+    ...(Array.isArray(cmd.orders) ? cmd.orders : []),
+    ...(Array.isArray(cmd.order_nos) ? cmd.order_nos : []),
+    fallbackTarget,
+    cmd.target_value,
+    cmd.member_name
+  ].forEach(add);
+  for (const match of commandSourceText(cmd).matchAll(/\b((?:HWD|MW)\w{10,})\b/ig)) {
+    add(match[1]);
+  }
+  return out.slice(0, 80);
+}
+
+function withdrawHistoryRange(cmd = {}) {
+  const today = dateOnly(new Date());
+  const start = addDays(today, -30);
+  return {
+    startAt: `${String(cmd.confirmAtStart || cmd.confirm_at_start || formatDate(start))} 00:00:00`.replace(/\s+00:00:00\s+00:00:00$/, ' 00:00:00'),
+    endAt: `${String(cmd.confirmAtEnd || cmd.confirm_at_end || formatDate(today))} 23:59:59`.replace(/\s+23:59:59\s+23:59:59$/, ' 23:59:59')
+  };
+}
+
+function withdrawStatusLabel(item = {}) {
+  const stateInfo = String(item.orderStateInfo || item.drawStatusInfo || item.statusInfo || '').trim();
+  const comment = String(item.drawComment || item.requestSourceInfo || '').trim();
+  const text = `${stateInfo} ${comment}`.replace(/\s+/g, '');
+  if (/出款失败|提款失败|打款失败|失败/.test(text)) return '失败';
+  if (/已取消|会员主动取消|會員主動取消|主动取消|取消/.test(text)) return '已取消';
+  if (/已完成|完成|成功/.test(text)) return '已完成';
+  return stateInfo || '未知';
+}
+
+async function queryWithdrawTimeoutStatus(config, cmd, orderNo) {
+  if (!config.fastDrawWithdrawHistoryUrl) throw new Error('提款记录接口未配置');
+  const range = withdrawHistoryRange(cmd);
+  await setStatus({ state: 'running', message: `查询提款订单 ${orderNo}` });
+  const result = await postJson(config.fastDrawWithdrawHistoryUrl, config.headers, {
+    billNo: orderNo,
+    isSplit: -1,
+    preWithdraw: 0,
+    withdrawType: 0,
+    marginStatus: '',
+    matchResult: '',
+    dataRoute: '',
+    queryState: '',
+    siteId: Number(cmd.siteId || cmd.site_id || 9001),
+    confirmAtStart: range.startAt,
+    confirmAtEnd: range.endAt,
+    pageNum: 1,
+    pageSize: 10
+  });
+  if (!apiOk(result.res, result.data)) {
+    throw new Error(`查询提款订单失败 HTTP ${result.res.status}: ${result.text.slice(0, 300)}`);
+  }
+  const list = ((((result.data || {}).data || {}).list) || []);
+  const item = list.find((row) => String(row.billNo || '').toUpperCase() === orderNo)
+    || list.find((row) => String(row.typayOrderId || '').toUpperCase() === orderNo)
+    || list[0];
+  if (!item) throw new Error(`未找到提款订单：${orderNo}`);
+  return {
+    completion_at: String(item.confirmAt || item.updatedAt || '').trim(),
+    status: withdrawStatusLabel(item)
+  };
+}
+
+async function runWithdrawTimeoutStatusCommand(config, cmd, targetValue) {
+  const orders = withdrawTimeoutOrders(cmd, targetValue);
+  if (!orders.length) throw new Error('未提取到提款订单号');
+  const output = {};
+  const failures = [];
+  for (let index = 0; index < orders.length; index += 1) {
+    const orderNo = orders[index];
+    await reportProgress(config, cmd, {
+      status: 'running',
+      message: `提款超时状态 ${orderNo}`,
+      step: index + 1,
+      total: orders.length,
+      success: Object.keys(output).length,
+      percent: Math.floor((index / orders.length) * 100)
+    });
+    try {
+      output[orderNo] = await queryWithdrawTimeoutStatus(config, cmd, orderNo);
+    } catch (err) {
+      failures.push(`${orderNo}: ${friendlyErrorReason(err, 'withdraw_timeout_status', '提款超时状态补全')}`);
+    }
+  }
+  if (!Object.keys(output).length && failures.length) {
+    throw new Error(failures.join('；'));
+  }
+  const replyText = JSON.stringify(output);
+  const msg = failures.length
+    ? `提款超时状态补全完成：${Object.keys(output).length}/${orders.length}，失败${failures.length}`
+    : `提款超时状态补全完成：${orders.length}/${orders.length}`;
+  await reportProgress(config, cmd, {
+    status: 'success',
+    message: msg,
+    step: orders.length,
+    total: orders.length,
+    success: Object.keys(output).length,
+    percent: 100
+  });
+  await setStatus({ state: 'success', message: msg, detail: failures.join('\n') });
+  await ack(config, cmd, 'reply_origin', msg, { reply_text: replyText, stop_actions: true });
+}
+
 function requireSixSiteAuth(config) {
   const site = String((config.headers && config.headers['x-api-site']) || '');
   const href = String((config.pageAuth && config.pageAuth.href) || '');
@@ -4330,8 +4452,11 @@ async function runBackendCommand(config, cmd) {
     ? (cmd.orderNo || cmd.order_no || cmd.target_value || cmd.member_name || '')
     : (cmd.target_value || cmd.member_name || '');
   const label = commandLabel(action);
-  if (!String(rawValue || '').trim() && ['member_data_overview', 'query_member_line', 'query_login_device_ip', 'query_same_ip_device', 'disable_login_device', 'query_venue_turnover', 'member_win_rate'].includes(action)) {
+  if (!String(rawValue || '').trim() && ['member_data_overview', 'query_member_line', 'query_login_device_ip', 'query_same_ip_device', 'disable_login_device', 'query_venue_turnover', 'member_win_rate', 'withdraw_timeout_status'].includes(action)) {
     rawValue = commandMembers(cmd, '')[0] || '';
+  }
+  if (!String(rawValue || '').trim() && action === 'withdraw_timeout_status') {
+    rawValue = withdrawTimeoutOrders(cmd, '')[0] || '';
   }
   if (!String(rawValue || '').trim() && action === 'ticket_follow') {
     rawValue = ticketFollowMemberIds(cmd, '')[0] || '';
@@ -4380,6 +4505,10 @@ async function runBackendCommand(config, cmd) {
     }
     if (action === 'member_win_rate') {
       await runMemberWinRateCommand(config, cmd, targetValue);
+      return;
+    }
+    if (action === 'withdraw_timeout_status') {
+      await runWithdrawTimeoutStatusCommand(config, cmd, targetValue);
       return;
     }
     if (action === 'query_member_line') {
