@@ -4996,7 +4996,7 @@ def withdraw_timeout_sheet_request(action, method="GET", payload=None):
         raise RuntimeError("未配置 WITHDRAW_TIMEOUT_SHEET_URL / WITHDRAW_TIMEOUT_SHEET_TOKEN")
     params = {"action": action, "token": WITHDRAW_TIMEOUT_SHEET_TOKEN}
     if method == "POST":
-        resp = requests.post(WITHDRAW_TIMEOUT_SHEET_URL, params=params, json=payload or {}, timeout=60)
+        resp = requests.post(WITHDRAW_TIMEOUT_SHEET_URL, params=params, json=payload or {}, timeout=180)
     else:
         resp = requests.get(WITHDRAW_TIMEOUT_SHEET_URL, params=params, timeout=60)
     data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
@@ -5057,7 +5057,7 @@ async def handle_withdraw_timeout_sheet_sync_bot_request(message):
             chat_id=chat_id,
             message_id=message.get("message_id"),
         )
-        result, _progress_message_id = await wait_backend_result_with_simple_progress(
+        result, progress_message_id = await wait_backend_result_with_simple_progress(
             cmd_id,
             chat_id,
             "同步大额提款状态中",
@@ -5093,12 +5093,74 @@ async def handle_withdraw_timeout_sheet_sync_bot_request(message):
     if not updates:
         return f"查询完成，但没有可回写结果。未查到：{len(missing)}"
 
+    if chat_id and 'progress_message_id' in locals() and progress_message_id:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: _bot_edit_message_text(
+                chat_id,
+                progress_message_id,
+                format_backend_command_progress(
+                    "同步大额提款状态中",
+                    max(1, len(query_orders)),
+                    {
+                        "percent": 95,
+                        "step": len(query_orders),
+                        "total": len(query_orders),
+                        "success": len(query_orders),
+                        "message": f"正在回写 Google 表格 {len(updates)} 行"
+                    }
+                )
+            )
+        )
+
     try:
         update_data = await withdraw_timeout_sheet_request_async("update", method="POST", payload={"results": updates})
     except Exception as err:
+        if chat_id and 'progress_message_id' in locals() and progress_message_id:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: _bot_edit_message_text(
+                    chat_id,
+                    progress_message_id,
+                    format_backend_command_progress(
+                        "同步大额提款状态中",
+                        max(1, len(query_orders)),
+                        {
+                            "percent": 95,
+                            "step": len(query_orders),
+                            "total": len(query_orders),
+                            "success": len(query_orders),
+                            "message": f"回写 Google 表格失败：{err}"
+                        }
+                    )
+                )
+            )
         return f"查询完成，但回写表格失败：{err}"
 
     updated = update_data.get("updated") or []
+    if chat_id and 'progress_message_id' in locals() and progress_message_id:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: _bot_edit_message_text(
+                chat_id,
+                progress_message_id,
+                format_backend_command_progress(
+                    "同步大额提款状态中",
+                    max(1, len(query_orders)),
+                    {
+                        "percent": 100,
+                        "step": len(query_orders),
+                        "total": len(query_orders),
+                        "success": len(query_orders),
+                        "message": f"回写完成 {len(updated)}/{len(updates)} 行"
+                    },
+                    force_percent=100
+                )
+            )
+        )
     lines = [
         "同步大额提款状态完成",
         f"读取：{len(rows)}",

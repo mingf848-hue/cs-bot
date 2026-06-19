@@ -3755,12 +3755,53 @@ function withdrawApiErrorDetail(result = {}) {
   return [statusCode, message, text].filter(Boolean).join('：') || `HTTP ${result.res && result.res.status}`;
 }
 
-async function queryWithdrawTimeoutStatus(config, cmd, orderNo) {
-  if (!config.fastDrawWithdrawHistoryUrl) throw new Error('提款记录接口未配置');
+function withdrawParentOrderCandidates(orderNo) {
+  const raw = String(orderNo || '').trim().toUpperCase();
+  const out = [];
+  const add = (value) => {
+    const candidate = String(value || '').trim().toUpperCase();
+    if (!candidate || candidate === raw || out.includes(candidate)) return;
+    out.push(candidate);
+  };
+  if (/^MW\d{18,}$/.test(raw)) {
+    add(raw.slice(0, -3));
+  }
+  return out;
+}
+
+function withdrawCompletionAt(item = {}) {
+  return String(item.confirmAt || item.updatedAt || item.finishAt || item.completedAt || item.completeAt || '').trim();
+}
+
+function withdrawTimeMs(value) {
+  const text = String(value || '').trim();
+  if (!text) return 0;
+  const ms = Date.parse(text.replace(/-/g, '/'));
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function latestWithdrawItem(list = []) {
+  let selected = null;
+  let selectedMs = -1;
+  for (const item of list) {
+    const ms = withdrawTimeMs(withdrawCompletionAt(item));
+    if (!selected || ms >= selectedMs) {
+      selected = item;
+      selectedMs = ms;
+    }
+  }
+  return selected;
+}
+
+async function queryWithdrawHistoryList(config, cmd, query = {}) {
   const range = withdrawHistoryRange(cmd);
-  await setStatus({ state: 'running', message: `查询提款订单 ${orderNo}` });
+  const billNo = String(query.billNo || '').trim().toUpperCase();
+  const parentBillNo = String(query.parentBillNo || '').trim().toUpperCase();
+  const queryLabel = parentBillNo ? `父订单 ${parentBillNo}` : billNo;
+  await setStatus({ state: 'running', message: `查询提款订单 ${queryLabel}` });
   const result = await postJson(config.fastDrawWithdrawHistoryUrl, config.headers, {
-    billNo: orderNo,
+    billNo,
+    parentBillNo,
     isSplit: -1,
     preWithdraw: 0,
     withdrawType: 0,
@@ -3777,14 +3818,32 @@ async function queryWithdrawTimeoutStatus(config, cmd, orderNo) {
   if (!apiOk(result.res, result.data)) {
     throw new Error(`查询提款订单失败 HTTP ${result.res.status}: ${withdrawApiErrorDetail(result)}`);
   }
-  const list = ((((result.data || {}).data || {}).list) || []);
-  const item = list.find((row) => String(row.billNo || '').toUpperCase() === orderNo)
-    || list.find((row) => String(row.typayOrderId || '').toUpperCase() === orderNo)
-    || list[0];
-  if (!item) throw new Error(`未找到提款订单：${orderNo}`);
+  return ((((result.data || {}).data || {}).list) || []);
+}
+
+async function queryWithdrawTimeoutStatus(config, cmd, orderNo) {
+  if (!config.fastDrawWithdrawHistoryUrl) throw new Error('提款记录接口未配置');
+  const normalizedOrderNo = String(orderNo || '').trim().toUpperCase();
+  let list = await queryWithdrawHistoryList(config, cmd, { billNo: normalizedOrderNo });
+  let item = latestWithdrawItem(list.filter((row) => String(row.billNo || '').toUpperCase() === normalizedOrderNo))
+    || latestWithdrawItem(list.filter((row) => String(row.typayOrderId || '').toUpperCase() === normalizedOrderNo))
+    || latestWithdrawItem(list);
+  let parentOrderNo = '';
+  if (!item) {
+    for (const candidate of [normalizedOrderNo, ...withdrawParentOrderCandidates(normalizedOrderNo)]) {
+      list = await queryWithdrawHistoryList(config, cmd, { parentBillNo: candidate });
+      item = latestWithdrawItem(list);
+      if (item) {
+        parentOrderNo = candidate;
+        break;
+      }
+    }
+  }
+  if (!item) throw new Error(`未找到提款订单：${normalizedOrderNo}`);
   return {
-    completion_at: String(item.confirmAt || item.updatedAt || '').trim(),
-    status: withdrawStatusLabel(item)
+    completion_at: withdrawCompletionAt(item),
+    status: withdrawStatusLabel(item),
+    parent_order_no: parentOrderNo
   };
 }
 

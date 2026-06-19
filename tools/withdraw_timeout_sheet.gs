@@ -187,32 +187,64 @@ function updateRows(results) {
   const { sheet, col } = getSheetAndColumns();
   const updated = [];
   const skipped = [];
+  const lastRow = sheet.getLastRow();
+  const validItems = (results || [])
+    .map((item) => Object.assign({}, item, { row: Number(item.row || 0) }))
+    .filter((item) => item.row > CONFIG.headerRow && item.row <= lastRow);
+  if (!validItems.length) {
+    return { ok: true, updated, skipped: results || [] };
+  }
 
-  results.forEach((item) => {
+  const startRow = Math.min.apply(null, validItems.map((item) => item.row));
+  const endRow = Math.max.apply(null, validItems.map((item) => item.row));
+  const rowCount = endRow - startRow + 1;
+  const completionRange = sheet.getRange(startRow, col.completionAt, rowCount, 1);
+  const statusRange = sheet.getRange(startRow, col.status, rowCount, 1);
+  const completionValues = completionRange.getValues();
+  const statusValues = statusRange.getValues();
+  let completionChanged = false;
+  let statusChanged = false;
+  const validByRow = {};
+  validItems.forEach((item) => {
+    validByRow[item.row] = item;
+  });
+  (results || []).forEach((item) => {
     const row = Number(item.row || 0);
+    if (!validByRow[row]) {
+      skipped.push(item);
+    }
+  });
+
+  validItems.forEach((item) => {
+    const row = item.row;
     const completionAt = String(item.completionAt || '').trim();
     const status = String(item.status || '').trim();
 
-    if (!row || row <= CONFIG.headerRow) {
-      skipped.push(item);
-      return;
-    }
-
-    const currentCompletionAtValue = sheet.getRange(row, col.completionAt).getValue();
+    const index = row - startRow;
+    const currentCompletionAtValue = completionValues[index][0];
     if (isCompletionDateTime(currentCompletionAtValue)) {
       skipped.push(Object.assign({}, item, { reason: 'already_completed' }));
       return;
     }
 
     if (completionAt && isCompletionDateTime(completionAt)) {
-      sheet.getRange(row, col.completionAt).setValue(completionAt);
+      completionValues[index][0] = completionAt;
+      completionChanged = true;
     }
     if (status) {
-      sheet.getRange(row, col.status).setValue(status);
+      statusValues[index][0] = status;
+      statusChanged = true;
     }
 
     updated.push({ row, completionAt, status });
   });
+
+  if (completionChanged) {
+    completionRange.setValues(completionValues);
+  }
+  if (statusChanged) {
+    statusRange.setValues(statusValues);
+  }
 
   return { ok: true, updated, skipped };
 }
