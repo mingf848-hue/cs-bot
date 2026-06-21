@@ -2906,7 +2906,7 @@ function scoreInvalidNotice(item = {}, order = {}, detail = {}) {
   const play = normalizeText(detail.playName || detail.originalPlay || '');
   const option = normalizeText(detail.playOptionName || detail.marketValue || '');
   const reasonTerms = ticketReasonTerms(order, detail);
-  const marketScore = scoreNoticeMarketTerms(item, detail);
+  const marketScore = scoreNoticeMarketTerms(item, detail, order);
   let score = 0;
   let reasonMatched = false;
   for (const term of reasonTerms) {
@@ -3008,20 +3008,180 @@ function detailMarketTerms(detail = {}) {
   return [...terms];
 }
 
+function marketStageNumber(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const normalizedDigits = raw.replace(/[０-９]/g, (char) => String(char.charCodeAt(0) - 0xff10));
+  if (/^\d+$/.test(normalizedDigits)) {
+    const num = Number(normalizedDigits);
+    return Number.isFinite(num) && num > 0 ? num : null;
+  }
+  const lower = raw.toLowerCase();
+  const english = {
+    first: 1,
+    second: 2,
+    third: 3,
+    fourth: 4,
+    fifth: 5,
+    sixth: 6,
+    seventh: 7,
+    eighth: 8,
+    ninth: 9,
+    tenth: 10
+  };
+  if (english[lower]) return english[lower];
+  const digits = {
+    零: 0,
+    〇: 0,
+    一: 1,
+    壹: 1,
+    二: 2,
+    贰: 2,
+    貳: 2,
+    两: 2,
+    兩: 2,
+    三: 3,
+    叁: 3,
+    參: 3,
+    四: 4,
+    肆: 4,
+    五: 5,
+    伍: 5,
+    六: 6,
+    陆: 6,
+    陸: 6,
+    七: 7,
+    柒: 7,
+    八: 8,
+    捌: 8,
+    九: 9,
+    玖: 9
+  };
+  const text = raw.replace(/\s+/g, '');
+  if (text.length === 1 && Object.prototype.hasOwnProperty.call(digits, text)) return digits[text];
+  if (/^[一二两兩三四五六七八九壹贰貳叁參肆伍陆陸柒捌玖]?十[一二两兩三四五六七八九壹贰貳叁參肆伍陆陸柒捌玖]?$/.test(text)) {
+    const [left, right] = text.split('十');
+    return (left ? digits[left] : 1) * 10 + (right ? digits[right] : 0);
+  }
+  return null;
+}
+
+function marketStageUnitKey(unit) {
+  const compact = normalizeText(unit);
+  if (!compact) return '';
+  if (/^(节|節|小节|小節|quarter|period|q)$/.test(compact)) return 'quarter';
+  if (/^(局|game)$/.test(compact)) return 'game';
+  if (/^(盘|盤|set)$/.test(compact)) return 'set';
+  return compact;
+}
+
+function addMarketStageKey(keys, unit, value) {
+  const unitKey = marketStageUnitKey(unit);
+  const num = marketStageNumber(value);
+  if (!unitKey || !num || num > 50) return;
+  keys.add(`${unitKey}:${num}`);
+}
+
+function marketStageKeysFromText(value) {
+  const raw = htmlText(value);
+  const keys = new Set();
+  if (!raw) return keys;
+
+  const cnNum = '[0-9０-９零〇一二两兩三四五六七八九十壹贰貳叁參肆伍陆陸柒捌玖]+';
+  const chinesePattern = new RegExp(`第\\s*(${cnNum})\\s*(小?节|小?節|局|盘|盤)`, 'g');
+  for (const match of raw.matchAll(chinesePattern)) {
+    addMarketStageKey(keys, match[2], match[1]);
+  }
+
+  const lower = raw.toLowerCase();
+  const enNum = '[0-9０-９]+|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth';
+  const unit = 'quarter|period|set|game';
+  const unitBeforePattern = new RegExp(`\\b(${unit})\\s*(${enNum})\\b`, 'g');
+  for (const match of lower.matchAll(unitBeforePattern)) {
+    addMarketStageKey(keys, match[1], match[2]);
+  }
+  const numBeforePattern = new RegExp(`\\b(${enNum})(?:st|nd|rd|th)?\\s*(${unit})\\b`, 'g');
+  for (const match of lower.matchAll(numBeforePattern)) {
+    addMarketStageKey(keys, match[2], match[1]);
+  }
+  const qPattern = /\b(?:q\s*([0-9０-９]+)|([0-9０-９]+)\s*q)\b/g;
+  for (const match of lower.matchAll(qPattern)) {
+    addMarketStageKey(keys, 'q', match[1] || match[2]);
+  }
+
+  return keys;
+}
+
+function detailBasketballQuarterKey(order = {}, detail = {}) {
+  const sportId = Number(detail.sportId || order.sportId || detail.sport_id || order.sport_id || 0);
+  const sportText = normalizeText([
+    detail.sportName,
+    detail.sportCnName,
+    detail.sportEnName,
+    order.sportName,
+    order.sportCnName,
+    order.sportEnName
+  ].filter(Boolean).join(' '));
+  const isBasketball = sportId === 2 || /篮球|籃球|basketball/.test(sportText);
+  if (!isBasketball) return '';
+  const playId = Number(detail.playId || detail.hmPlayId || detail.gamePlayId || detail.orderPlayId || 0);
+  if (!Number.isFinite(playId) || playId < 44 || playId > 67) return '';
+  return `quarter:${Math.floor((playId - 44) / 6) + 1}`;
+}
+
+function detailMarketStageKeys(detail = {}, order = {}) {
+  const keys = new Set();
+  [
+    detail.playName,
+    detail.originalPlay,
+    detail.marketName,
+    detail.playTypeName,
+    detail.betItemName,
+    detail.playOptionName,
+    detail.playOptions,
+    detail.marketValue,
+    detail.optionValue
+  ].forEach((item) => {
+    for (const key of marketStageKeysFromText(item)) keys.add(key);
+  });
+  const playIdKey = detailBasketballQuarterKey(order, detail);
+  if (playIdKey) keys.add(playIdKey);
+  return keys;
+}
+
+function noticeMarketStageKeys(item = {}) {
+  return marketStageKeysFromText(noticeText(item));
+}
+
+function noticeMarketStageMatch(item = {}, detail = {}, order = {}) {
+  const detailKeys = detailMarketStageKeys(detail, order);
+  if (!detailKeys.size) return { score: 0, matched: false, mismatched: false };
+  const noticeKeys = noticeMarketStageKeys(item);
+  if (!noticeKeys.size) return { score: 0, matched: false, mismatched: false };
+  for (const key of detailKeys) {
+    if (noticeKeys.has(key)) return { score: 220, matched: true, mismatched: false };
+  }
+  return { score: -360, matched: false, mismatched: true };
+}
+
+function noticeMarketStageMismatch(item = {}, detail = {}, order = {}) {
+  return noticeMarketStageMatch(item, detail, order).mismatched;
+}
+
 function noticeMarketSegmentText(item = {}) {
   const raw = htmlText(noticeText(item));
   const segments = [...raw.matchAll(/[【\[]([^】\]]+)[】\]]/g)].map((match) => match[1]).filter(Boolean);
   return segments.join(' ');
 }
 
-function scoreNoticeMarketTerms(item = {}, detail = {}) {
+function scoreNoticeMarketTerms(item = {}, detail = {}, order = {}) {
   const terms = detailMarketTerms(detail);
-  if (!terms.length) return 0;
+  let score = noticeMarketStageMatch(item, detail, order).score;
+  if (!terms.length) return score;
   const fullText = normalizeText(noticeText(item));
   const segment = normalizeText(noticeMarketSegmentText(item));
   const segmentTerms = new Set();
   if (segment) addMarketTerm(segmentTerms, segment);
-  let score = 0;
   let matched = false;
   for (const term of terms) {
     if (term.length < 2) continue;
@@ -3058,7 +3218,7 @@ function scoreSettlementNotice(item = {}, order = {}, detail = {}) {
   if (matchName && text.includes(matchName)) score += 12;
   if (begin && text.includes(begin)) score += 12;
   if (/赛果不明确|不能按时结算|delaysettlement|delay settlement|noclearresult|no clear result/.test(text)) score += 10;
-  score += scoreNoticeMarketTerms(item, detail);
+  score += scoreNoticeMarketTerms(item, detail, order);
   if (category) {
     if (category.include.some((token) => text.includes(normalizeText(token)))) score += 100;
     if (category.exclude.some((token) => text.includes(normalizeText(token)))) score -= 120;
@@ -4358,6 +4518,7 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
     }
     const notices = merchantList(notice.data)
       .map((noticeItem) => ({ item: noticeItem, score: scoreSettlementNotice(noticeItem, order, item) }))
+      .filter((entry) => !noticeMarketStageMismatch(entry.item, item, order))
       .sort((a, b) => b.score - a.score);
     if (notices.length) {
       const selected = notices[0] || {};
