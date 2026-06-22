@@ -1583,6 +1583,10 @@ WAIT_CHECK_NOISE_TEXT_RE = re.compile(r"^[a-zA-Z0-9+._·。…!！?？,，、\\-
 WAIT_CHECK_ML_MENTION_ALLOWLIST = {
     "@ML_YYZB1", "@ML_YYZB2", "@ML_YYZB3", "@ML_YYZB4", "@ML_YYZB5", "@ML_YYZB6", "@ML_YYZB7"
 }
+WAIT_CHECK_WHITELIST_DONE_HINTS = [
+    "已处理", "已经处理", "处理好了", "已完成", "已经完成",
+    "已加白", "加白完成", "已添加", "添加完成", "添加好了"
+]
 
 def is_all_wait_check_keyword(keyword):
     return keyword in ["全体", "全体检测"] or keyword in WAIT_CHECK_SHIFT_WINDOWS
@@ -1591,6 +1595,31 @@ def is_wait_check_approval_message(message):
     if not message or not get_direct_reply_target_id(message):
         return False
     return (message.text or "").strip() == "同意"
+
+def compact_wait_check_text(text):
+    return re.sub(r"[\s:：,，。.!！?？、]+", "", str(text or ""))
+
+def is_wait_check_whitelist_request(text):
+    compact_text = compact_wait_check_text(text).lower()
+    if not compact_text:
+        return False
+    return "加白" in compact_text or "白名单" in compact_text or "白名單" in compact_text
+
+def is_wait_check_approval_deferred_message(text):
+    compact_text = compact_wait_check_text(text)
+    if not compact_text:
+        return False
+    if "不同意后处理" in compact_text:
+        return False
+    if compact_text in {"同意后处理", "领导同意后处理", "艾特领导同意后处理", "@领导同意后处理"}:
+        return True
+    return bool(re.fullmatch(r"(?:@[A-Za-z0-9_\u4e00-\u9fff]+)+(?:领导|艾特领导)?同意后处理", compact_text))
+
+def is_wait_check_whitelist_terminal_reply(text):
+    if is_wait_check_approval_deferred_message(text):
+        return True
+    compact_text = compact_wait_check_text(text)
+    return any(hint in compact_text for hint in WAIT_CHECK_WHITELIST_DONE_HINTS)
 
 def get_wait_check_shift_window(keyword):
     if keyword not in WAIT_CHECK_SHIFT_WINDOWS:
@@ -1676,12 +1705,57 @@ def get_obvious_noise_reason(text):
 
 def get_mention_exempt_reason(text):
     clean_text = text or ""
+    if is_wait_check_whitelist_request(clean_text):
+        return None
     mentions = set(re.findall(r"@[A-Za-z0-9_]+", clean_text))
     if not mentions:
         return None
     if mentions & WAIT_CHECK_ML_MENTION_ALLOWLIST:
         return None
     return "消息仅在催促或通知非指定 ML 值班账号，按班次遗漏规则忽略"
+
+def get_wait_check_related_message_ids(history, message):
+    related_ids = {message.id}
+    if getattr(message, "grouped_id", None):
+        related_ids.update({
+            grouped_msg.id for grouped_msg in history
+            if getattr(grouped_msg, "grouped_id", None) == message.grouped_id
+        })
+    return related_ids
+
+def get_wait_check_cs_replies_for_targets(cs_replies_by_target_id, target_ids):
+    replies = []
+    seen_ids = set()
+    for target_id in target_ids:
+        for reply_msg in cs_replies_by_target_id.get(target_id, []):
+            if reply_msg.id in seen_ids:
+                continue
+            seen_ids.add(reply_msg.id)
+            replies.append(reply_msg)
+    return replies
+
+def has_wait_check_deferred_response_after(history, target_index, target_ids):
+    blocked_by_newer_request = False
+    for follow_msg in reversed(history[:target_index]):
+        if getattr(follow_msg, "action", None):
+            continue
+
+        reply_ids = set(get_ordered_reply_target_ids(follow_msg))
+        if is_wait_check_cs_message(follow_msg):
+            if not is_wait_check_approval_deferred_message(follow_msg.text or ""):
+                continue
+            if reply_ids:
+                if target_ids.intersection(reply_ids):
+                    return True
+                continue
+            if not blocked_by_newer_request:
+                return True
+            continue
+
+        if is_wait_check_whitelist_request(follow_msg.text or ""):
+            blocked_by_newer_request = True
+
+    return False
 
 def format_wait_seconds(seconds):
     seconds = max(0, int(seconds))
@@ -3984,16 +4058,43 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         if m.grouped_id: msg_grouped_map[m.id] = m.grouped_id
                         if m.sender_id: user_msg_map[m.sender_id].append(m)
 
+                    message_by_id = {m.id: m for m in history}
+                    all_direct_replied_to_ids = set()
+                    for m in history:
+                        direct_reply_id = get_direct_reply_target_id(m)
+                        if direct_reply_id:
+                            all_direct_replied_to_ids.add(direct_reply_id)
+
                     replied_to_ids = set()
+                    cs_replies_by_target_id = defaultdict(list)
                     for m in history:
                         # 只把客服明确引用目标当成硬闭环；未引用的人工回复交给后续上下文 AI 判断。
                         if is_wait_check_cs_message(m):
-                            replied_to_ids.update(get_ordered_reply_target_ids(m))
+                            for target_id in get_ordered_reply_target_ids(m):
+                                replied_to_ids.add(target_id)
+                                cs_replies_by_target_id[target_id].append(m)
                     
                     replied_grouped_ids = set()
                     for mid in replied_to_ids:
                         if mid in msg_grouped_map:
                             replied_grouped_ids.add(msg_grouped_map[mid])
+
+                    approval_by_target_id = defaultdict(list)
+                    approval_missed_tasks = []
+                    for approval_msg in history:
+                        if not is_wait_check_approval_message(approval_msg):
+                            continue
+                        if is_wait_check_cs_message(approval_msg):
+                            continue
+                        approval_target_id = get_direct_reply_target_id(approval_msg)
+                        approval_target_msg = message_by_id.get(approval_target_id)
+                        if not approval_target_msg or not is_wait_check_whitelist_request(approval_target_msg.text or ""):
+                            continue
+                        approval_by_target_id[approval_target_id].append(approval_msg)
+                        if approval_msg.id not in all_direct_replied_to_ids:
+                            approval_missed_tasks.append((approval_msg, approval_target_msg))
+
+                    approval_target_ids = set(approval_by_target_id.keys())
 
                     orphan_tasks = []
                     reply_continuation_ai_cache = {}
@@ -4047,15 +4148,47 @@ async def check_wait_keyword_logic(keyword, result_queue):
                                     continue
 
                         is_orphan = True
-                        if m.id in replied_to_ids: is_orphan = False
-                        elif m.grouped_id and m.grouped_id in replied_grouped_ids: is_orphan = False
+                        if is_wait_check_whitelist_request(m.text or ""):
+                            target_related_ids = get_wait_check_related_message_ids(history, m)
+                            direct_cs_replies = get_wait_check_cs_replies_for_targets(cs_replies_by_target_id, target_related_ids)
+                            has_terminal_reply = any(is_wait_check_whitelist_terminal_reply(reply_msg.text or "") for reply_msg in direct_cs_replies)
+                            has_leader_approval = bool(target_related_ids.intersection(approval_target_ids))
+                            if has_terminal_reply or has_leader_approval:
+                                is_orphan = False
+                        else:
+                            if m.id in replied_to_ids: is_orphan = False
+                            elif m.grouped_id and m.grouped_id in replied_grouped_ids: is_orphan = False
                             
                         if is_orphan:
                             orphan_tasks.append((i, m, code_exempt_reason))
                     
                     # 核心修复 3: 如果发现孤立消息，提前发出一个进度提示，避免 AI 耗时导致界面长时间假死
-                    if orphan_tasks:
-                        result_queue.put(json.dumps({"type": "progress", "percent": percent, "msg": f"群组 {chat_id} 发现 {len(orphan_tasks)} 条潜在漏回消息，正在进行规则豁免和 AI 研判..."}))
+                    potential_count = len(orphan_tasks) + len(approval_missed_tasks)
+                    if potential_count:
+                        result_queue.put(json.dumps({"type": "progress", "percent": percent, "msg": f"群组 {chat_id} 发现 {potential_count} 条潜在漏回消息，正在进行规则豁免和 AI 研判..."}))
+
+                    for approval_msg, approval_target_msg in approval_missed_tasks:
+                        found_count += 1
+
+                        group_name = str(chat_id)
+                        try: g = await client.get_entity(chat_id); group_name = g.title
+                        except: pass
+
+                        target_text = (approval_target_msg.text or "[媒体/空]")[:60].replace('\n', ' ')
+                        beijing_time = approval_msg.date.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
+                        real_chat_id = str(chat_id).replace('-100', '')
+                        link = f"https://t.me/c/{real_chat_id}/{approval_msg.id}"
+
+                        result_queue.put(json.dumps({
+                            "type": "result",
+                            "is_closed": False,
+                            "reason": "领导已引用加白申请回复同意，但后续无人引用该同意消息回复处理。",
+                            "time": beijing_time,
+                            "group_name": group_name,
+                            "found_text": f"领导同意：{target_text}",
+                            "latest_text": "无人引用同意消息处理",
+                            "link": link
+                        }))
 
                     for orphan_idx, (i, m, preclosed_reason) in enumerate(orphan_tasks):
                         # 核心修复 4: 每完成 5 条 AI 判定推送一次进度
@@ -4109,7 +4242,19 @@ async def check_wait_keyword_logic(keyword, result_queue):
                         
                         found_count += 1
 
-                        if preclosed_reason:
+                        if is_wait_check_whitelist_request(m.text or ""):
+                            if target_related_ids.intersection(approval_target_ids):
+                                is_result_closed = True
+                                closed_count += 1
+                                display_reason = "代码判定(豁免): 已有领导引用回复同意，后续是否处理由同意消息单独检查。"
+                            elif has_wait_check_deferred_response_after(history, i, target_related_ids):
+                                is_result_closed = True
+                                closed_count += 1
+                                display_reason = "代码判定(暂不遗漏): 已回复同意后处理，等待领导同意。"
+                            else:
+                                is_result_closed = False
+                                display_reason = "代码判定(漏回): 加白申请需要回复“同意后处理”“@领导同意后处理”“领导同意后处理”或“艾特领导同意后处理”。"
+                        elif preclosed_reason:
                             is_result_closed = True
                             closed_count += 1
                             display_reason = f"代码判定(豁免): {preclosed_reason}，无需客服回复。"
