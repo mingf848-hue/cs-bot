@@ -609,9 +609,11 @@ function renderEditAudit(e){
 }
 function renderDeleteAudit(e){
   const sendTs=e.original_ts||null;
+  const deletedBy=e.deleted_by_name||'未记录';
   return `<div class="delete-audit-card">
     <div class="delete-audit-text">🗑️ ${escH(e.tx||'未知内容')}</div>
     <div class="delete-time-grid">
+      <div class="delete-time-item"><span class="delete-time-label">删除人：</span><span class="delete-time-value">${escH(deletedBy)}</span></div>
       <div class="delete-time-item"><span class="delete-time-label">消息发送时间：</span><span class="delete-time-value">${escH(fmtDateTime(sendTs))}</span></div>
       <div class="delete-time-item"><span class="delete-time-label">删除时间：</span><span class="delete-time-value">${escH(fmtDateTime(e.ts))}</span></div>
     </div>
@@ -619,7 +621,7 @@ function renderDeleteAudit(e){
 }
 function rowDetail(p){
   if(p.event_type==='edit')return `${p.sn||p.sender_name||'Unknown'}\n编辑前: ${p.old_text||'[空]'}\n编辑后: ${p.text||'[空]'}`;
-  if(p.event_type==='delete')return `${p.sn||p.sender_name||'Unknown'} 删除: ${p.text||p.old_text||'未知内容'}`;
+  if(p.event_type==='delete')return `删除人: ${p.deleted_by_name||'未记录'}\n原发送者: ${p.sn||p.sender_name||'Unknown'}\n内容: ${p.text||p.old_text||'未知内容'}`;
   return p.tx||stripDate(p.raw);
 }
 function findMessage(chatId,msgId){
