@@ -1645,6 +1645,15 @@ def get_wait_check_shift_window(keyword):
     scan_end_time = min(now, end_time)
     return start_time, scan_end_time, start_text, end_text
 
+def get_wait_check_date_window(date_text):
+    date_text = (date_text or "").strip()
+    if not date_text:
+        return None
+    day = datetime.strptime(date_text, "%Y-%m-%d")
+    start_time = day.replace(tzinfo=BEIJING_TZ)
+    end_time = start_time + timedelta(days=1)
+    return start_time, end_time, date_text
+
 def is_obvious_reply_continuation(text):
     clean_text = (text or "").strip()
     if not clean_text:
@@ -2477,8 +2486,8 @@ WAIT_CHECK_HTML = """
         h1 { margin-top: 0; color: #0f172a; font-size: 1.4rem; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #e2e8f0; padding-bottom: 16px; margin-bottom: 20px; }
         .form-group { margin-bottom: 16px; }
         label { display: block; margin-bottom: 6px; font-weight: 600; font-size: 0.9rem; color: #475569; }
-        input[type="text"] { width: 100%; padding: 12px 16px; border: 1px solid #cbd5e1; border-radius: 6px; box-sizing: border-box; font-size: 15px; outline: none; transition: border-color 0.2s; }
-        input[type="text"]:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1); }
+        input[type="text"], input[type="date"] { width: 100%; padding: 12px 16px; border: 1px solid #cbd5e1; border-radius: 6px; box-sizing: border-box; font-size: 15px; outline: none; transition: border-color 0.2s; }
+        input[type="text"]:focus, input[type="date"]:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1); }
         button { background: #0f172a; color: white; border: none; padding: 12px 20px; border-radius: 6px; cursor: pointer; font-size: 15px; width: 100%; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 8px; transition: background 0.2s; }
         button:hover { background: #1e293b; } button:disabled { background: #94a3b8; cursor: not-allowed; }
         
@@ -2550,6 +2559,10 @@ WAIT_CHECK_HTML = """
                     <label>扫描配置 (班次按固定时段，关键词及同意遗漏回看12小时)</label>
                     <input type="text" id="keyword" placeholder="点击左侧快捷键或输入关键词..." value="早班全体">
                 </div>
+                <div class="form-group">
+                    <label>指定日期 (北京时间，可选；选择后扫描当天 00:00-24:00)</label>
+                    <input type="date" id="checkDate">
+                </div>
                 <button onclick="startCheck()" id="btn-search">
                     <svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 开始排查
                 </button>
@@ -2579,6 +2592,7 @@ WAIT_CHECK_HTML = """
 
         async function startCheck() {
             const keyword = document.getElementById('keyword').value.trim();
+            const checkDate = document.getElementById('checkDate').value.trim();
             if (!keyword) return alert("配置内容不能为空");
             
             const btn = document.getElementById('btn-search');
@@ -2600,7 +2614,9 @@ WAIT_CHECK_HTML = """
             allResults = [];
 
             try {
-                const response = await fetch(`/api/wait_check_stream?keyword=${encodeURIComponent(keyword)}`);
+                const params = new URLSearchParams({keyword});
+                if (checkDate) params.set('date', checkDate);
+                const response = await fetch(`/api/wait_check_stream?${params.toString()}`);
                 if (!response.ok) {
                     const errorText = await response.text();
                     let message = errorText || `请求失败 (${response.status})`;
@@ -2638,6 +2654,8 @@ WAIT_CHECK_HTML = """
                                 allResults.sort((a, b) => new Date(b.time) - new Date(a.time));
                                 renderResults(allResults); 
                                 renderSummary(data.total, data.closed, data.open);
+                            } else if (data.type === 'error') {
+                                throw new Error(data.msg || '检测失败');
                             }
                         } catch (e) {
                             console.error("Parse error", e, "Line content:", line);
@@ -3868,12 +3886,13 @@ def api_wait_alerts():
 @app.route('/api/wait_check_stream')
 def wait_check_stream():
     keyword = request.args.get('keyword', '').strip()
+    date_text = request.args.get('date', '').strip()
     if not keyword: return "Keyword required", 400
     if not bot_loop:
         return jsonify({"ok": False, "error": "Bot loop not ready"}), 503
     def generate():
         result_queue = queue.Queue()
-        asyncio.run_coroutine_threadsafe(check_wait_keyword_logic(keyword, result_queue), bot_loop)
+        asyncio.run_coroutine_threadsafe(check_wait_keyword_logic(keyword, result_queue, date_text=date_text), bot_loop)
         
         yield (" " * 4096) + "\n"
         
@@ -4038,11 +4057,19 @@ async def _check_is_closed_logic(latest_msg):
         else: is_closed = True
     return is_closed, reason
 
-async def check_wait_keyword_logic(keyword, result_queue):
+async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
     try:
         cutoff_hours = WAIT_CHECK_LOOKBACK_HOURS
         limit_count = 6000
-        shift_window = get_wait_check_shift_window(keyword)
+        date_window = None
+        if date_text:
+            try:
+                date_window = get_wait_check_date_window(date_text)
+            except ValueError:
+                result_queue.put(json.dumps({"type": "error", "msg": "日期格式错误，请使用 YYYY-MM-DD"}))
+                result_queue.put(None)
+                return
+        shift_window = None if date_window else get_wait_check_shift_window(keyword)
         if is_all_wait_check_keyword(keyword):
             cutoff_hours = 20
             limit_count = 6000 
@@ -4050,7 +4077,16 @@ async def check_wait_keyword_logic(keyword, result_queue):
         cutoff_time = datetime.now(timezone.utc) - timedelta(hours=cutoff_hours)
         scan_start_time = cutoff_time
         scan_end_time = datetime.now(timezone.utc)
-        if shift_window:
+        if date_window:
+            day_start, day_end, day_text = date_window
+            scan_start_time = day_start.astimezone(timezone.utc)
+            scan_end_time = day_end.astimezone(timezone.utc)
+            result_queue.put(json.dumps({
+                "type": "progress",
+                "percent": 1,
+                "msg": f"{keyword} 指定日期扫描窗口: 北京时间 {day_text} 00:00 - 次日 00:00 (24小时)"
+            }))
+        elif shift_window:
             shift_start, shift_end, shift_start_text, shift_end_text = shift_window
             scan_start_time = shift_start.astimezone(timezone.utc)
             scan_end_time = shift_end.astimezone(timezone.utc)
