@@ -188,14 +188,6 @@ def _init_db():
             conn.execute("ALTER TABLE chat_events ADD COLUMN original_ts REAL")
         except sqlite3.OperationalError:
             pass
-        try:
-            conn.execute("ALTER TABLE chat_events ADD COLUMN deleted_by_id INTEGER")
-        except sqlite3.OperationalError:
-            pass
-        try:
-            conn.execute("ALTER TABLE chat_events ADD COLUMN deleted_by_name TEXT")
-        except sqlite3.OperationalError:
-            pass
         conn.execute("""CREATE TABLE IF NOT EXISTS chat_message_snapshots (
             chat_id INTEGER NOT NULL,
             message_id INTEGER NOT NULL,
@@ -280,7 +272,7 @@ def _broadcast_chat_event(row):
 def record_chat_event(event_type, chat_id, message_id, sender_id=None, sender_name=None,
                       text="", old_text="", msg_type="文本", ts=None, raw=None,
                       reply_to_msg_id=None, grouped_id=None, sender_role="user", original_ts=None,
-                      deleted_by_id=None, deleted_by_name=None, broadcast=True):
+                      broadcast=True):
     if not chat_id or not message_id:
         return None
     ts = float(ts or time.time())
@@ -309,8 +301,6 @@ def record_chat_event(event_type, chat_id, message_id, sender_id=None, sender_na
         "raw": raw,
         "reply_to_msg_id": reply_to_msg_id,
         "grouped_id": grouped_id,
-        "deleted_by_id": deleted_by_id,
-        "deleted_by_name": deleted_by_name or "",
     }
     try:
         with _db_lock:
@@ -318,14 +308,12 @@ def record_chat_event(event_type, chat_id, message_id, sender_id=None, sender_na
                 cur = conn.execute(
                     """INSERT OR IGNORE INTO chat_events(
                         event_uid, ts, chat_id, message_id, event_type, sender_id, sender_name,
-                        text, old_text, original_ts, sender_role, msg_type, raw, reply_to_msg_id, grouped_id,
-                        deleted_by_id, deleted_by_name
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        text, old_text, original_ts, sender_role, msg_type, raw, reply_to_msg_id, grouped_id
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         _event_uid(event_type, chat_id, message_id, ts), ts, chat_id, message_id,
                         event_type, sender_id, row["sender_name"], safe_text, safe_old_text,
-                        original_ts, row["sender_role"], row["msg_type"], raw, reply_to_msg_id, grouped_id,
-                        deleted_by_id, row["deleted_by_name"]
+                        original_ts, row["sender_role"], row["msg_type"], raw, reply_to_msg_id, grouped_id
                     )
                 )
                 conn.commit()
@@ -482,8 +470,7 @@ def _audit_rows(chat_id=None, limit=600, event_type=None, before_ts=None):
         rows = conn.execute(
             f"""SELECT e.id, e.ts, e.chat_id, e.message_id, e.event_type, e.sender_id, e.sender_name,
                       e.text, e.old_text, COALESCE(e.original_ts, s.first_ts) AS original_ts,
-                      e.sender_role, e.msg_type, e.raw, e.reply_to_msg_id, e.grouped_id,
-                      e.deleted_by_id, e.deleted_by_name
+                      e.sender_role, e.msg_type, e.raw, e.reply_to_msg_id, e.grouped_id
                FROM chat_events e
                LEFT JOIN chat_message_snapshots s ON s.chat_id=e.chat_id AND s.message_id=e.message_id
                WHERE {where_sql} ORDER BY e.ts DESC, e.id DESC LIMIT ?""",
@@ -581,7 +568,7 @@ def _search_log_rows(query, chat_id=None, limit=200, mode="all"):
 
         if mode in ("all", "audit", "edit", "delete"):
             where = [
-                "(COALESCE(e.text,'') LIKE ? OR COALESCE(e.old_text,'') LIKE ? OR COALESCE(e.sender_name,'') LIKE ? OR COALESCE(e.deleted_by_name,'') LIKE ?)",
+                "(COALESCE(e.text,'') LIKE ? OR COALESCE(e.old_text,'') LIKE ? OR COALESCE(e.sender_name,'') LIKE ?)",
                 "e.event_type IN ('edit', 'delete')",
                 """(
                     e.event_type!='edit'
@@ -592,7 +579,7 @@ def _search_log_rows(query, chat_id=None, limit=200, mode="all"):
                     )
                 )"""
             ]
-            params = [like, like, like, like]
+            params = [like, like, like]
             if chat_id:
                 where.append("e.chat_id=?")
                 params.append(chat_id)
@@ -603,8 +590,7 @@ def _search_log_rows(query, chat_id=None, limit=200, mode="all"):
             audits = conn.execute(
                 f"""SELECT e.id, e.ts, e.chat_id, e.message_id, e.event_type, e.sender_id, e.sender_name,
                           e.text, e.old_text, COALESCE(e.original_ts, s.first_ts) AS original_ts,
-                          e.sender_role, e.msg_type, e.raw, e.reply_to_msg_id, e.grouped_id,
-                      e.deleted_by_id, e.deleted_by_name
+                          e.sender_role, e.msg_type, e.raw, e.reply_to_msg_id, e.grouped_id
                    FROM chat_events e
                    LEFT JOIN chat_message_snapshots s ON s.chat_id=e.chat_id AND s.message_id=e.message_id
                    WHERE {" AND ".join(where)}
@@ -688,8 +674,7 @@ def _rows_from_ts(start_ts, chat_id=None, limit=1000, mode="all"):
             audits = conn.execute(
                 f"""SELECT e.id, e.ts, e.chat_id, e.message_id, e.event_type, e.sender_id, e.sender_name,
                           e.text, e.old_text, COALESCE(e.original_ts, s.first_ts) AS original_ts,
-                          e.sender_role, e.msg_type, e.raw, e.reply_to_msg_id, e.grouped_id,
-                      e.deleted_by_id, e.deleted_by_name
+                          e.sender_role, e.msg_type, e.raw, e.reply_to_msg_id, e.grouped_id
                    FROM chat_events e
                    LEFT JOIN chat_message_snapshots s ON s.chat_id=e.chat_id AND s.message_id=e.message_id
                    WHERE {" AND ".join(where)}
@@ -786,8 +771,7 @@ def _flow_rows(chat_id, message_id, window_seconds=0, limit=300):
         audits = conn.execute(
             f"""SELECT e.id, e.ts, e.chat_id, e.message_id, e.event_type, e.sender_id, e.sender_name,
                       e.text, e.old_text, COALESCE(e.original_ts, s.first_ts) AS original_ts,
-                      e.sender_role, e.msg_type, e.raw, e.reply_to_msg_id, e.grouped_id,
-                      e.deleted_by_id, e.deleted_by_name
+                      e.sender_role, e.msg_type, e.raw, e.reply_to_msg_id, e.grouped_id
                FROM chat_events e
                LEFT JOIN chat_message_snapshots s ON s.chat_id=e.chat_id AND s.message_id=e.message_id
                WHERE e.chat_id=? AND e.event_type IN ('edit', 'delete')
@@ -6885,46 +6869,6 @@ async def command_handler(event):
     elif cmd == '状态':
         await send_alert(f"🟢 **当前状态**: {'工作中' if IS_WORKING else '已下班'}\n⏳ 稍等: {len(wait_tasks)}\n🕵️ 跟进: {len(followup_tasks)}\n🔔 漏回: {len(reply_tasks)}\n🔄 自回: {len(self_reply_tasks)}", "")
 
-def format_telegram_actor_name(user):
-    if not user:
-        return ""
-    title = getattr(user, "title", "") or ""
-    if title:
-        return title
-    first = getattr(user, "first_name", "") or ""
-    last = getattr(user, "last_name", "") or ""
-    fullname = f"{first} {last}".strip()
-    username = getattr(user, "username", "") or ""
-    if username:
-        return f"{fullname} (@{username})".strip()
-    return fullname or str(getattr(user, "id", "") or "")
-
-async def find_message_delete_actor(client, chat_id, message_id, max_age_seconds=180):
-    try:
-        async for item in client.iter_admin_log(chat_id, delete=True, limit=25):
-            action = getattr(item, "action", None)
-            deleted_message = getattr(item, "deleted_message", None) or getattr(action, "message", None)
-            if getattr(deleted_message, "id", None) != message_id:
-                continue
-            item_date = getattr(item, "date", None)
-            if item_date:
-                try:
-                    if abs(time.time() - item_date.timestamp()) > max_age_seconds:
-                        continue
-                except Exception:
-                    pass
-            user = getattr(item, "user", None)
-            user_id = getattr(item, "user_id", None) or getattr(user, "id", None)
-            if user is None and user_id:
-                try:
-                    user = await client.get_entity(user_id)
-                except Exception:
-                    user = None
-            return {"id": user_id, "name": format_telegram_actor_name(user) if user else (str(user_id) if user_id else "")}
-    except Exception as e:
-        logger.debug(f"删除操作者查询失败 Chat={chat_id} Msg={message_id}: {e}")
-    return {}
-
 @client.on(events.MessageDeleted)
 async def handler_deleted(event):
     if not event.chat_id or not is_configured_cs_group(event.chat_id):
@@ -6941,8 +6885,6 @@ async def handler_deleted(event):
                 deleted_info['text'] = stored_text
 
         mark_message_snapshot_deleted(event.chat_id, msg_id)
-        delete_actor = await find_message_delete_actor(client, event.chat_id, msg_id)
-        deleted_by_name = delete_actor.get("name") or ""
         record_chat_event(
             "delete",
             event.chat_id,
@@ -6952,12 +6894,7 @@ async def handler_deleted(event):
             old_text=deleted_info['text'],
             msg_type="删除",
             original_ts=snapshot_info.get("first_ts"),
-            deleted_by_id=delete_actor.get("id"),
-            deleted_by_name=deleted_by_name,
-            raw=(
-                f"[DELETED] Msg={msg_id} | [{event.chat_id}] {deleted_info['name']}: {deleted_info['text']}"
-                + (f" | 删除人: {deleted_by_name}" if deleted_by_name else "")
-            )
+            raw=f"[DELETED] Msg={msg_id} | [{event.chat_id}] {deleted_info['name']}: {deleted_info['text']}"
         )
 
         if not IS_WORKING:

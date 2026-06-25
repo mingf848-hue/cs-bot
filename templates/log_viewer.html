@@ -609,11 +609,9 @@ function renderEditAudit(e){
 }
 function renderDeleteAudit(e){
   const sendTs=e.original_ts||null;
-  const deletedBy=e.deleted_by_name||'未记录';
   return `<div class="delete-audit-card">
     <div class="delete-audit-text">🗑️ ${escH(e.tx||'未知内容')}</div>
     <div class="delete-time-grid">
-      <div class="delete-time-item"><span class="delete-time-label">删除人：</span><span class="delete-time-value">${escH(deletedBy)}</span></div>
       <div class="delete-time-item"><span class="delete-time-label">消息发送时间：</span><span class="delete-time-value">${escH(fmtDateTime(sendTs))}</span></div>
       <div class="delete-time-item"><span class="delete-time-label">删除时间：</span><span class="delete-time-value">${escH(fmtDateTime(e.ts))}</span></div>
     </div>
@@ -621,7 +619,7 @@ function renderDeleteAudit(e){
 }
 function rowDetail(p){
   if(p.event_type==='edit')return `${p.sn||p.sender_name||'Unknown'}\n编辑前: ${p.old_text||'[空]'}\n编辑后: ${p.text||'[空]'}`;
-  if(p.event_type==='delete')return `删除人: ${p.deleted_by_name||'未记录'}\n原发送者: ${p.sn||p.sender_name||'Unknown'}\n内容: ${p.text||p.old_text||'未知内容'}`;
+  if(p.event_type==='delete')return `${p.sn||p.sender_name||'Unknown'} 删除: ${p.text||p.old_text||'未知内容'}`;
   return p.tx||stripDate(p.raw);
 }
 function findMessage(chatId,msgId){
@@ -666,6 +664,57 @@ function jumpToMessage(chatId,msgId){
   if(idx<0){return;}
   const row=document.getElementById('msg-'+idx);
   if(row){row.scrollIntoView({behavior:'smooth',block:'center'});row.classList.add('is-selected');setTimeout(()=>row.classList.remove('is-selected'),1200);}
+}
+function rowMatchesTarget(row,target){
+  if(!row||!target)return false;
+  if(String(row.id||'')&&String(row.id||'')===String(target.id||''))return true;
+  const sameMessage=String(row.chat_id||'')===String(target.chat_id||'')&&String(row.message_id||'')===String(target.message_id||'');
+  const sameType=String(row.event_type||row.msg_type||'')===String(target.event_type||target.msg_type||'');
+  const sameTs=Math.abs(Number(row.ts||0)-Number(target.ts||0))<0.001;
+  return sameMessage&&sameType&&sameTs;
+}
+function findTargetIndex(target){
+  return allLogs.findIndex(row=>rowMatchesTarget(row,target));
+}
+async function loadUntilTargetVisible(target){
+  let idx=findTargetIndex(target);
+  let guard=0;
+  while(idx<0&&hasMoreLogs&&Number(target.ts||0)<oldestLoadedTs()&&guard<50){
+    guard++;
+    const before=oldestLoadedTs();
+    const params=new URLSearchParams({limit:String(PAGE_SIZE),mode:activeMode});
+    if(activeChatId)params.set('chat_id',activeChatId);
+    if(Number.isFinite(before))params.set('before_ts',String(before));
+    const rows=await fetch('/log_db?'+params.toString()).then(r=>r.json());
+    if(!rows.length){hasMoreLogs=false;break;}
+    mergeOlderRows(filterRowsForMode(rows));
+    hasMoreLogs=rows.length>=PAGE_SIZE;
+    idx=findTargetIndex(target);
+  }
+  return idx;
+}
+async function ensureSearchBaseLoaded(){
+  if(!dateJumpActive&&allLogs.length)return;
+  if(logStream){logStream.close();logStream=null;}
+  const params=new URLSearchParams({limit:String(PAGE_SIZE),mode:activeMode});
+  if(activeChatId)params.set('chat_id',activeChatId);
+  const rows=await fetch('/log_db?'+params.toString()).then(r=>r.json());
+  allLogs=filterRowsForMode(rows);
+  hasMoreLogs=rows.length>=PAGE_SIZE;
+  visibleCount=INITIAL_VISIBLE;
+  render();
+  startStream();
+}
+function scrollToLogIndex(idx){
+  if(idx<0)return false;
+  visibleCount=Math.max(visibleCount,parsedLogs.length-idx);
+  render();
+  const row=document.getElementById('msg-'+idx);
+  if(!row)return false;
+  row.scrollIntoView({behavior:'smooth',block:'center'});
+  row.classList.add('is-selected');
+  setTimeout(()=>row.classList.remove('is-selected'),1600);
+  return true;
 }
 function openFlowForIndex(i){ctxTarget={i,e:parseLog(allLogs[i])};openDiscussion();}
 function showCtx(ev,i){
@@ -738,18 +787,24 @@ async function reportBug(type){
 async function searchLogs(){
   const input=document.getElementById('messageSearch');const q=(input&&input.value||'').trim();
   if(!q){clearLogSearch();return;}
-  const seq=++loadSeq;searchActive=true;searchQuery=q;dateJumpActive=false;dateJumpValue='';loadingOlder=false;hasMoreLogs=false;closeDiscussion(false);closeFlow();
+  const seq=++loadSeq;searchActive=false;searchQuery=q;loadingOlder=false;closeDiscussion(false);closeFlow();
   const dateInput=document.getElementById('dateJump');if(dateInput)dateInput.value='';
-  if(logStream){logStream.close();logStream=null;}
-  const el=document.getElementById('messages');el.innerHTML='<div class="empty-placeholder">搜索中…</div>';
   const params=new URLSearchParams({q,mode:activeMode,limit:String(SEARCH_LIMIT)});
   if(activeChatId)params.set('chat_id',activeChatId);
   try{
     const rows=await fetch('/log_search?'+params.toString()).then(r=>r.json());
     if(seq!==loadSeq)return;
-    allLogs=filterRowsForMode(rows);visibleCount=Math.max(INITIAL_VISIBLE,allLogs.length);updateSub(`搜索: ${q}`);render();scrollBottom();
+    const target=(rows||[])[rows.length-1];
+    if(!target){updateSub(`未找到: ${q}`,true);return;}
+    await ensureSearchBaseLoaded();
+    dateJumpActive=false;dateJumpValue='';
+    updateSub(`定位: ${q}`);
+    const idx=await loadUntilTargetVisible(target);
+    if(seq!==loadSeq)return;
+    prepareLogState();
+    if(!scrollToLogIndex(idx))updateSub(`未加载到: ${q}`,true);
   }catch(e){
-    if(seq===loadSeq)el.innerHTML='<div class="empty-placeholder">搜索失败</div>';
+    if(seq===loadSeq)updateSub('搜索失败',true);
   }
 }
 async function jumpToDate(){
