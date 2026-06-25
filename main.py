@@ -936,6 +936,15 @@ def extract_id_list(env_str):
             except: pass
     return result
 
+def extract_all_id_set(env_str):
+    ids = set()
+    for raw_id in re.findall(r"-?\d+", str(env_str or "")):
+        try:
+            ids.add(int(raw_id))
+        except Exception:
+            pass
+    return ids
+
 def build_group_id_lookup(group_ids):
     lookup = set()
     for raw_id in group_ids or []:
@@ -1448,6 +1457,8 @@ try:
     ALERT_GROUP_IDS = extract_id_list(alert_env)
     other_cs_env = os.environ.get("OTHER_CS_IDS", "")
     OTHER_CS_IDS = extract_id_list(other_cs_env)
+    bot_allowed_user_ids_env = os.environ.get("BOT_ALLOWED_USER_IDS", os.environ.get("BOT_WHITELIST_USER_IDS", ""))
+    BOT_ALLOWED_USER_IDS = extract_all_id_set(bot_allowed_user_ids_env)
     
     wait_keywords_env = os.environ["WAIT_KEYWORDS"]
     WAIT_SIGNATURES = extract_signature_set(wait_keywords_env)
@@ -1488,7 +1499,8 @@ except Exception as e:
     sys.exit(1)
 
 extra_session_name_text = "、".join(EXTRA_SESSION_NAMES) if EXTRA_SESSION_NAMES else "无"
-log_tree(0, f"系统启动 | 主Session来源: {SESSION_STRING_SOURCE} | 副账号Session来源: {EXTRA_SESSION_SOURCE}({len(EXTRA_SESSION_NAMES)}个: {extra_session_name_text}) | 稍等词: {len(WAIT_SIGNATURES)} | 稍等预警词: {len(WAIT_ALERT_SIGNATURES)} | 跟进词: {len(KEEP_SIGNATURES)} | 忽略词: {len(IGNORE_SIGNATURES)}")
+bot_allowed_user_text = f"{len(BOT_ALLOWED_USER_IDS)}个" if BOT_ALLOWED_USER_IDS else "未配置"
+log_tree(0, f"系统启动 | 主Session来源: {SESSION_STRING_SOURCE} | 副账号Session来源: {EXTRA_SESSION_SOURCE}({len(EXTRA_SESSION_NAMES)}个: {extra_session_name_text}) | Bot白名单: {bot_allowed_user_text} | 稍等词: {len(WAIT_SIGNATURES)} | 稍等预警词: {len(WAIT_ALERT_SIGNATURES)} | 跟进词: {len(KEEP_SIGNATURES)} | 忽略词: {len(IGNORE_SIGNATURES)}")
 
 # ==========================================
 # 模块 3: 全局状态
@@ -5647,6 +5659,21 @@ def bot_interaction_key(message):
     thread_id = message.get("message_thread_id") or ""
     return f"{chat_id}:{sender_id}:{thread_id}"
 
+def is_bot_sender_allowed(sender):
+    if not BOT_ALLOWED_USER_IDS:
+        return True
+    try:
+        sender_id = int((sender or {}).get("id"))
+    except Exception:
+        return False
+    return sender_id in BOT_ALLOWED_USER_IDS
+
+def is_bot_message_allowed(message):
+    return is_bot_sender_allowed((message or {}).get("from") or {})
+
+def is_bot_callback_allowed(callback):
+    return is_bot_sender_allowed((callback or {}).get("from") or {})
+
 def clear_bot_interaction(message):
     return bot_interaction_states.pop(bot_interaction_key(message), None)
 
@@ -6263,10 +6290,15 @@ async def bot_command_polling_task():
 
                 callback = update.get("callback_query")
                 if callback:
+                    if not is_bot_callback_allowed(callback):
+                        continue
                     await loop.run_in_executor(None, lambda cb=callback: _handle_bot_callback_query(cb))
                     continue
 
                 message = update.get("message") or {}
+                if not is_bot_message_allowed(message):
+                    clear_bot_interaction(message)
+                    continue
                 text = message.get("text")
                 delete_source = False
                 reply_to_source = True
