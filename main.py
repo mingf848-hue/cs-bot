@@ -1581,6 +1581,12 @@ WAIT_CHECK_NEW_QUESTION_HINTS = [
     "支付", "付款", "收款", "提款", "存款", "为什么", "怎么", "怎么办", "处理", "查询"
 ]
 WAIT_CHECK_NOISE_TEXT_RE = re.compile(r"^[a-zA-Z0-9+._·。…!！?？,，、\\-\\s]{1,16}$")
+WAIT_CHECK_PROCESSING_ACK_TEXTS = {"=", "＝"}
+WAIT_CHECK_PROCESSING_ACK_PHRASES = [
+    "稍等", "请稍等", "等下", "等等", "核实", "核查", "查下", "查一下",
+    "处理中", "处理下", "稍后", "稍后回复", "有结果回复"
+]
+WAIT_CHECK_CASE_RESOLUTION_SECONDS = 15 * 60
 WAIT_CHECK_ML_MENTION_ALLOWLIST = {
     "@ML_YYZB1", "@ML_YYZB2", "@ML_YYZB3", "@ML_YYZB4", "@ML_YYZB5", "@ML_YYZB6", "@ML_YYZB7"
 }
@@ -1694,19 +1700,136 @@ def get_mention_exempt_reason(text):
         return "仅单独@账号，无其他业务内容"
     return None
 
+def is_wait_check_processing_ack_text(text):
+    clean_text = re.sub(r"\s+", "", str(text or ""))
+    if not clean_text:
+        return False
+    if clean_text in WAIT_CHECK_PROCESSING_ACK_TEXTS:
+        return True
+    return any(phrase in clean_text for phrase in WAIT_CHECK_PROCESSING_ACK_PHRASES)
+
+def is_wait_check_substantive_cs_text(text):
+    clean_text = str(text or "").strip()
+    if not clean_text:
+        return False
+    if is_wait_check_processing_ack_text(clean_text):
+        return False
+    if get_obvious_noise_reason(clean_text):
+        return False
+    return True
+
+def wait_check_parent_id(message_by_id, msg_id):
+    msg = message_by_id.get(msg_id)
+    return get_direct_reply_target_id(msg) if msg else None
+
+def wait_check_case_thread_ids(message_by_id, *seed_ids):
+    related = set()
+    stack = []
+    for seed_id in seed_ids:
+        try:
+            seed_id = int(seed_id)
+        except Exception:
+            continue
+        if seed_id:
+            stack.append(seed_id)
+
+    while stack:
+        msg_id = stack.pop()
+        if not msg_id or msg_id in related:
+            continue
+        related.add(msg_id)
+        parent_id = wait_check_parent_id(message_by_id, msg_id)
+        if parent_id and parent_id not in related:
+            stack.append(parent_id)
+
+    changed = True
+    while changed:
+        changed = False
+        for msg in message_by_id.values():
+            msg_id = getattr(msg, "id", None)
+            parent_id = get_direct_reply_target_id(msg)
+            if parent_id in related and msg_id and msg_id not in related:
+                related.add(msg_id)
+                changed = True
+    return related
+
 def has_wait_check_approval_followup(history, approval_msg, approval_target_id):
+    message_by_id = {m.id: m for m in history if getattr(m, "id", None)}
+    # 同意消息常回复在“@领导”上，客服后续处理可能回复原申请或补充单号。
+    # 这里先还原同一申请线程，再判断是否已有客服实质处理。
+    related_ids = wait_check_case_thread_ids(message_by_id, approval_msg.id, approval_target_id)
     for follow_msg in history:
         if follow_msg.id == approval_msg.id:
             continue
         if approval_msg.date and follow_msg.date and follow_msg.date <= approval_msg.date:
             continue
         direct_reply_id = get_direct_reply_target_id(follow_msg)
-        if direct_reply_id not in {approval_msg.id, approval_target_id}:
+        if direct_reply_id not in related_ids:
+            continue
+        if not is_wait_check_cs_message(follow_msg):
             continue
         if is_wait_check_approval_message(follow_msg):
             continue
+        if not is_wait_check_substantive_cs_text(follow_msg.text or ""):
+            continue
         return True
     return False
+
+def get_wait_check_case_resolution_reason(history, target_index, target_msg, message_by_id):
+    target_ids = wait_check_case_thread_ids(message_by_id, target_msg.id, get_direct_reply_target_id(target_msg))
+    if not get_direct_reply_target_id(target_msg):
+        # 未引用的短句追问通常承接上一条同用户引用消息，应归并到同一业务 case。
+        for idx in range(target_index + 1, min(len(history), target_index + 8)):
+            previous_msg = history[idx]
+            if not previous_msg.date or not target_msg.date:
+                continue
+            elapsed = (target_msg.date - previous_msg.date).total_seconds()
+            if elapsed < 0:
+                continue
+            if elapsed > WAIT_CHECK_REPLY_CONTINUATION_SECONDS:
+                break
+            if is_wait_check_cs_message(previous_msg):
+                break
+            if previous_msg.sender_id != target_msg.sender_id:
+                continue
+            previous_reply_id = get_direct_reply_target_id(previous_msg)
+            if previous_reply_id:
+                target_ids.update(wait_check_case_thread_ids(message_by_id, previous_msg.id, previous_reply_id))
+                break
+
+    pending_ack = None
+    later_result = None
+
+    for idx in range(target_index - 1, -1, -1):
+        follow_msg = history[idx]
+        if not follow_msg.date or not target_msg.date:
+            continue
+        elapsed = (follow_msg.date - target_msg.date).total_seconds()
+        if elapsed < 0:
+            continue
+        if elapsed > WAIT_CHECK_CASE_RESOLUTION_SECONDS:
+            break
+        if not is_wait_check_cs_message(follow_msg):
+            continue
+
+        reply_ids = set(get_ordered_reply_target_ids(follow_msg))
+        same_thread = bool(reply_ids & target_ids)
+        if not same_thread and not pending_ack:
+            same_thread = elapsed <= 90 and is_wait_check_processing_ack_text(follow_msg.text or "")
+        if not same_thread:
+            continue
+
+        text = follow_msg.text or ""
+        if is_wait_check_processing_ack_text(text):
+            pending_ack = follow_msg
+        elif is_wait_check_substantive_cs_text(text):
+            later_result = follow_msg
+            if pending_ack:
+                return "客服已先用处理中信号承接，并在后续同一事件中给出处理结果。"
+
+    if later_result:
+        return "客服后续已在同一事件中给出处理进展或结果。"
+    return None
 
 def format_wait_seconds(seconds):
     seconds = max(0, int(seconds))
@@ -3802,7 +3925,7 @@ def _gemini_generate_json(prompt, timeout=60):
     return json.loads(raw_content)
 
 def _ai_check_reply_needed(text):
-    # 彻底移除本地暴力兜底，完全依靠 AI 研判
+    # 交由 AI 判断是否需要回复，避免本地关键词规则过度干预。
     prompt = f"判断客户消息是否需要回复。消息: '{text}'\n如果是礼貌结束语(如：好、好的、谢谢、收到、ok等)或无意义，返回false。如果是问题或业务请求，返回true。\nJSON: {{'reason': '...', 'need_reply': true/false}}"
     try:
         decision = _gemini_generate_json(prompt, timeout=60)
@@ -3839,7 +3962,7 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
     【分析逻辑】:
     请像人类一样综合思考。仔细观察上下文的时间流和对话流。
     - 豁免无需回复 (is_exempt=true): 如果这条消息看起来是用户连续发言中的一句（分段发送）、对上一句的补充、无意义的语气词（如：好、好的、收到、谢谢等），或者客服在上下文中已经明显针对该【同一事件/话题】接待了该用户，请认为无需单独回复。
-    【特别注意】：聊天记录中如果带有”[使用了引用回复]”标签，代表客服精确绑定回复了某个客户。没有引用也不代表一定漏回：如果客服在目标消息之后紧跟着回复，且中间没有其他客户插入新问题，或客服回复内容明确提到同一账号、注单、订单、金额、赛事等同一事件，也应判定为已处理并豁免。注意：如果客服只回复了”稍等”、”核实中”、”处理中”等安抚话语，【不等于】问题已解决，请判定为漏回 (is_exempt=false)！只有客服给出了明确处理结果、处理进展或有效答复，才能判定为已处理，予以豁免 (is_exempt=true)。
+    【特别注意】：聊天记录中如果带有”[使用了引用回复]”标签，代表客服精确绑定回复了某个客户。没有引用也不代表一定漏回：如果客服在目标消息之后紧跟着回复，且中间没有其他客户插入新问题，或客服回复内容明确提到同一账号、注单、订单、金额、赛事等同一事件，也应判定为已处理并豁免。客服回复“=”、“稍等”、“核实中”、“处理中”等代表已接单正在核查；如果后续同一事件已有处理结果、处理进展或有效答复，应判定为已处理并豁免 (is_exempt=true)。只有在仅有接单/等待话术、后续没有结果时，才判定仍需跟进 (is_exempt=false)。
     - 属于漏回需回复 (is_exempt=false): 只有当这是一条被完全忽视的、独立的业务请求时，才标记为漏回。特别注意：如果客户在短时间内连续发送了两个完全不同的问题（例如一个问充值，一个问其它业务），而客服只回答了其中一个，那么未被回答的那个独立问题应判定为漏回 (is_exempt=false)！
 
     请输出 JSON 格式: {{“reason”: “用中文简短说明原因...”, “is_exempt”: true/false}}
@@ -4161,7 +4284,7 @@ async def check_wait_keyword_logic(keyword, result_queue):
                                 c_txt = "[GIF动图]"
                             else:
                                 c_txt = (cm.text or "[媒体/图片]").replace('\n', ' ')
-                                
+
                             marker = " <<< TARGET" if cm.id == m.id else ""
                             
                             reply_tag = ""
@@ -4171,7 +4294,7 @@ async def check_wait_keyword_logic(keyword, result_queue):
                                     reply_tag = " [使用了引用回复:引用目标消息]"
                                 else:
                                     reply_tag = f" [使用了引用回复:引用Msg={reply_ids[0]}]"
-                                
+
                             beijing_time_str = cm.date.astimezone(timezone(timedelta(hours=8))).strftime('%H:%M:%S')
                             context_txts.append(f"[{beijing_time_str}] {c_label}{reply_tag}: {c_txt}{marker}")
                         
@@ -4182,19 +4305,25 @@ async def check_wait_keyword_logic(keyword, result_queue):
                             closed_count += 1
                             display_reason = f"代码判定(豁免): {preclosed_reason}，无需客服回复。"
                         else:
-                            # 返回的变成了 is_exempt(是否豁免), 不再是倒错逻辑的 is_slip_up
-                            is_exempt, ai_reason = await asyncio.get_event_loop().run_in_executor(
-                                None, lambda: _ai_check_orphan_context(m.text or "[Media]", context_txts, target_label)
-                            )
-                            
-                            # 核心修复：强制透传展示 AI 判定结果，不论真假
-                            if is_exempt:
+                            case_resolution_reason = get_wait_check_case_resolution_reason(history, i, m, message_by_id)
+                            if case_resolution_reason:
                                 is_result_closed = True
                                 closed_count += 1
-                                display_reason = f"AI判定(豁免): {ai_reason}"
+                                display_reason = f"代码判定(豁免): {case_resolution_reason}"
                             else:
-                                is_result_closed = False
-                                display_reason = f"AI判定(漏回): {ai_reason}"
+                                # 返回的变成了 is_exempt(是否豁免), 不再是倒错逻辑的 is_slip_up
+                                is_exempt, ai_reason = await asyncio.get_event_loop().run_in_executor(
+                                    None, lambda: _ai_check_orphan_context(m.text or "[Media]", context_txts, target_label)
+                                )
+
+                                # 保留 AI 判定原因，方便人工复核误判来源。
+                                if is_exempt:
+                                    is_result_closed = True
+                                    closed_count += 1
+                                    display_reason = f"AI判定(豁免): {ai_reason}"
+                                else:
+                                    is_result_closed = False
+                                    display_reason = f"AI判定(漏回): {ai_reason}"
                         
                         group_name = str(chat_id)
                         try: g = await client.get_entity(chat_id); group_name = g.title
