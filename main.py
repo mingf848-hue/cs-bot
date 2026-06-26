@@ -1779,94 +1779,9 @@ def wait_check_case_thread_ids(message_by_id, *seed_ids):
                 changed = True
     return related
 
-def get_wait_check_case_root_message(message_by_id, message):
-    current = message
-    seen = set()
-    while current and getattr(current, "id", None) not in seen:
-        seen.add(current.id)
-        parent_id = get_direct_reply_target_id(current)
-        parent = message_by_id.get(parent_id) if parent_id else None
-        if not parent:
-            break
-        current = parent
-    return current or message
-
-def wait_check_message_display_text(message):
-    if not message:
-        return "[未知消息]"
-    if getattr(message, "sticker", None):
-        return "[贴纸/表情包]"
-    if getattr(message, "gif", None):
-        return "[GIF动图]"
-    return (message.text or "[媒体/图片]").replace("\n", " ")
-
-def build_wait_check_case_context(history, approval_msg, approval_target_msg, message_by_id, before_seconds=600, after_seconds=1800):
-    original_request_msg = get_wait_check_case_root_message(message_by_id, approval_target_msg)
-    related_ids = wait_check_case_thread_ids(
-        message_by_id,
-        getattr(approval_msg, "id", None),
-        getattr(approval_target_msg, "id", None),
-        getattr(original_request_msg, "id", None),
-        get_direct_reply_target_id(approval_target_msg),
-    )
-    related_user_ids = {
-        getattr(msg, "sender_id", None)
-        for msg_id, msg in message_by_id.items()
-        if msg_id in related_ids and not is_wait_check_cs_message(msg)
-    }
-    approval_ts = approval_msg.date.timestamp() if approval_msg and approval_msg.date else None
-    rows = []
-    for msg in history:
-        msg_id = getattr(msg, "id", None)
-        if msg_id in related_ids:
-            rows.append(msg)
-            continue
-        if not approval_ts or not msg.date:
-            continue
-        offset = msg.date.timestamp() - approval_ts
-        if offset < -before_seconds or offset > after_seconds:
-            continue
-        reply_ids = set(get_ordered_reply_target_ids(msg))
-        if reply_ids & related_ids:
-            rows.append(msg)
-            continue
-        if msg.sender_id in related_user_ids:
-            rows.append(msg)
-            continue
-        if is_wait_check_cs_message(msg) and reply_ids:
-            replied_msg = message_by_id.get(next(iter(reply_ids)))
-            if replied_msg and getattr(replied_msg, "sender_id", None) in related_user_ids:
-                rows.append(msg)
-
-    dedup = {}
-    for msg in rows:
-        dedup[getattr(msg, "id", id(msg))] = msg
-    rows = list(dedup.values())
-    rows.sort(key=lambda m: m.date or datetime.min.replace(tzinfo=timezone.utc))
-
-    context = []
-    for msg in rows:
-        label = "CS" if is_wait_check_cs_message(msg) else f"User({str(msg.sender_id)[-4:]})"
-        reply_ids = get_ordered_reply_target_ids(msg)
-        reply_tag = f" [reply_to={reply_ids[0]}]" if reply_ids else ""
-        marker = ""
-        if msg.id == getattr(original_request_msg, "id", None):
-            marker = " <<< ORIGINAL_REQUEST"
-        elif msg.id == getattr(approval_target_msg, "id", None):
-            marker = " <<< APPROVAL_REQUEST"
-        if msg.id == getattr(approval_msg, "id", None):
-            marker = " <<< LEADER_APPROVAL"
-        time_text = msg.date.astimezone(BEIJING_TZ).strftime("%H:%M:%S") if msg.date else "--:--:--"
-        context.append(f"[{time_text}] Msg={msg.id} {label}{reply_tag}: {wait_check_message_display_text(msg)}{marker}")
-    return context
-
-def get_wait_check_approval_last_cs_reply(history, approval_msg, approval_target_msg, message_by_id):
-    related_ids = wait_check_case_thread_ids(
-        message_by_id,
-        getattr(approval_msg, "id", None),
-        getattr(approval_target_msg, "id", None),
-        get_direct_reply_target_id(approval_target_msg),
-    )
+def get_wait_check_approval_followup_reason(history, approval_msg, approval_target_id, message_by_id=None):
+    message_by_id = message_by_id or {m.id: m for m in history if getattr(m, "id", None)}
+    related_ids = wait_check_case_thread_ids(message_by_id, approval_msg.id, approval_target_id)
     candidates = []
     for follow_msg in history:
         if follow_msg.id == approval_msg.id:
@@ -1881,28 +1796,22 @@ def get_wait_check_approval_last_cs_reply(history, approval_msg, approval_target
         if not (reply_ids & related_ids):
             continue
         candidates.append(follow_msg)
-    if not candidates:
-        return None
-    candidates.sort(key=lambda m: m.date or datetime.min.replace(tzinfo=timezone.utc))
-    return candidates[-1]
 
-async def ai_check_wait_check_approval_followup(history, approval_msg, approval_target_msg, message_by_id):
-    last_cs_msg = get_wait_check_approval_last_cs_reply(history, approval_msg, approval_target_msg, message_by_id)
-    if not last_cs_msg:
-        return False, "领导同意后没有找到同一申请相关客服回复。"
-    context_lines = build_wait_check_case_context(history, approval_msg, approval_target_msg, message_by_id)
-    original_request_msg = get_wait_check_case_root_message(message_by_id, approval_target_msg)
-    original_text = wait_check_message_display_text(original_request_msg)
-    approval_text = wait_check_message_display_text(approval_msg)
-    last_cs_text = wait_check_message_display_text(last_cs_msg)
-    try:
-        return await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: _ai_check_approval_followup_result(original_text, approval_text, last_cs_text, context_lines)
-        )
-    except Exception as e:
-        log_tree(9, f"审批同意闭环 AI 判定失败 Msg={approval_msg.id}: {e}")
-        return False, "AI判定失败，请人工核查。"
+    candidates.sort(key=lambda m: m.date or datetime.min.replace(tzinfo=timezone.utc))
+    pending_ack = None
+    for follow_msg in candidates:
+        text = follow_msg.text or ""
+        if is_wait_check_processing_ack_text(text):
+            pending_ack = follow_msg
+            continue
+        if is_wait_check_substantive_cs_text(text):
+            if pending_ack:
+                return "客服已先用等待/处理中信号承接，后续同一申请已有非等待处理进展。"
+            return "领导同意后，客服已在同一申请中给出非等待处理进展。"
+    return None
+
+def has_wait_check_approval_followup(history, approval_msg, approval_target_id, message_by_id=None):
+    return bool(get_wait_check_approval_followup_reason(history, approval_msg, approval_target_id, message_by_id))
 
 def get_wait_check_case_resolution_reason(history, target_index, target_msg, message_by_id):
     target_ids = wait_check_case_thread_ids(message_by_id, target_msg.id, get_direct_reply_target_id(target_msg))
@@ -4145,34 +4054,6 @@ def _ai_check_reply_continuation(anchor_text, followup_texts):
         log_tree(9, f"❌ AI补充判定失败: {e}，按新问题处理")
     return False, "AI补充判定失败，按新问题处理"
 
-def _ai_check_approval_followup_result(original_text, approval_text, last_cs_text, context_text_list):
-    context_str = "\n".join(context_text_list)
-    prompt = f"""
-    你是一名客服闭环质检员。
-    下面是一条需要领导同意后处理的业务申请。你的任务只判断【最后一条相关客服回复】是否已经构成处理结果或明确处理进展。
-
-    原申请:
-    {original_text}
-
-    领导同意:
-    {approval_text}
-
-    最后一条相关客服回复:
-    {last_cs_text}
-
-    同一申请上下文:
-    {context_str}
-
-    判断标准:
-    - 如果最后一条客服回复只是纯等待/接单/占位，例如“稍等”“请稍等”“=”“核实中”“处理中”，返回 is_resolved=false。
-    - 如果最后一条客服回复已经给出处理结果、处理进展、处理要求、拒绝原因、下一步指引，或表达已经处理/已反馈/稍后查看等可执行结论，返回 is_resolved=true。
-    - 只判断这个领导同意对应的原申请，不要被上下文里其他客户的新问题干扰。
-
-    请输出 JSON: {{"reason": "中文简短说明", "is_resolved": true/false}}
-    """
-    decision = _gemini_generate_json(prompt, timeout=45)
-    return bool(decision.get("is_resolved", False)), decision.get("reason", "AI Decision")
-
 async def _check_is_closed_logic(latest_msg):
     is_closed = False
     reason = ""
@@ -4276,9 +4157,10 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
                         if not approval_target_msg or is_wait_check_cs_message(approval_target_msg):
                             continue
                         found_count += 1
-                        is_closed, ai_reason = await ai_check_wait_check_approval_followup(
-                            history, approval_msg, approval_target_msg, message_by_id
+                        followup_reason = get_wait_check_approval_followup_reason(
+                            history, approval_msg, approval_target_id, message_by_id
                         )
+                        is_closed = bool(followup_reason)
                         if is_closed:
                             closed_count += 1
 
@@ -4302,11 +4184,11 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
                         result_queue.put(json.dumps({
                             "type": "result",
                             "is_closed": is_closed,
-                            "reason": f"AI判定({'已闭环' if is_closed else '未闭环'}): {ai_reason}",
+                            "reason": f"代码判定(已闭环): {followup_reason}" if is_closed else "领导已回复同意，但后续同一申请未找到非等待处理进展。",
                             "time": beijing_time,
                             "group_name": group_name,
                             "found_text": f"{sender_name}：同意",
-                            "latest_text": "AI复核领导同意后处理",
+                            "latest_text": "同一申请已有处理进展" if is_closed else "同一申请未见处理进展",
                             "link": link
                         }))
                     continue
@@ -4330,7 +4212,7 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
                         if mid in msg_grouped_map:
                             replied_grouped_ids.add(msg_grouped_map[mid])
 
-                    approval_review_tasks = []
+                    approval_missed_tasks = []
                     for approval_msg in history:
                         if not is_wait_check_approval_message(approval_msg):
                             continue
@@ -4345,7 +4227,8 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
                             or get_obvious_noise_reason(approval_target_msg.text or "")
                         ):
                             continue
-                        approval_review_tasks.append((approval_msg, approval_target_msg))
+                        if not has_wait_check_approval_followup(history, approval_msg, approval_target_id, message_by_id):
+                            approval_missed_tasks.append((approval_msg, approval_target_msg))
 
                     orphan_tasks = []
                     reply_continuation_ai_cache = {}
@@ -4406,17 +4289,12 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
                             orphan_tasks.append((i, m, code_exempt_reason))
                     
                     # 核心修复 3: 如果发现孤立消息，提前发出一个进度提示，避免 AI 耗时导致界面长时间假死
-                    potential_count = len(orphan_tasks) + len(approval_review_tasks)
+                    potential_count = len(orphan_tasks) + len(approval_missed_tasks)
                     if potential_count:
                         result_queue.put(json.dumps({"type": "progress", "percent": percent, "msg": f"群组 {chat_id} 发现 {potential_count} 条潜在漏回消息，正在进行规则豁免和 AI 研判..."}))
 
-                    for approval_msg, approval_target_msg in approval_review_tasks:
+                    for approval_msg, approval_target_msg in approval_missed_tasks:
                         found_count += 1
-                        is_closed, ai_reason = await ai_check_wait_check_approval_followup(
-                            history, approval_msg, approval_target_msg, message_by_id
-                        )
-                        if is_closed:
-                            closed_count += 1
 
                         group_name = str(chat_id)
                         try: g = await client.get_entity(chat_id); group_name = g.title
@@ -4429,12 +4307,12 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
 
                         result_queue.put(json.dumps({
                             "type": "result",
-                            "is_closed": is_closed,
-                            "reason": f"AI判定({'已闭环' if is_closed else '未闭环'}): {ai_reason}",
+                            "is_closed": False,
+                            "reason": "领导已回复同意，但后续同一申请未找到非等待处理进展。",
                             "time": beijing_time,
                             "group_name": group_name,
                             "found_text": f"领导同意：{target_text}",
-                            "latest_text": "AI复核领导同意后处理",
+                            "latest_text": "同一申请未见处理进展",
                             "link": link
                         }))
 
