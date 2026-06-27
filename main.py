@@ -1768,6 +1768,15 @@ def is_wait_check_non_business_text(text):
         return True
     return normalize(clean_text) in IGNORE_SIGNATURES
 
+def is_wait_check_case_anchor_message(message):
+    if not message or is_wait_check_cs_message(message):
+        return False
+    if getattr(message, "sticker", None) or getattr(message, "gif", None):
+        return False
+    if not (message.text or "").strip():
+        return True
+    return not is_wait_check_non_business_text(message.text or "")
+
 def wait_check_parent_id(message_by_id, msg_id):
     msg = message_by_id.get(msg_id)
     return get_direct_reply_target_id(msg) if msg else None
@@ -1850,14 +1859,14 @@ def get_wait_check_related_ids_for_target(history, target_index, target_msg, mes
                 continue
             if elapsed > WAIT_CHECK_REPLY_CONTINUATION_SECONDS:
                 break
-            if is_wait_check_cs_message(previous_msg):
-                break
             if previous_msg.sender_id != target_msg.sender_id:
                 continue
             previous_reply_id = get_direct_reply_target_id(previous_msg)
-            if is_wait_check_non_business_text(previous_msg.text or ""):
+            if not is_wait_check_case_anchor_message(previous_msg):
                 continue
             target_ids.update(wait_check_case_thread_ids(message_by_id, previous_msg.id, previous_reply_id))
+            if not (previous_msg.text or "").strip():
+                continue
             break
     return target_ids
 
@@ -4433,12 +4442,14 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
                             is_result_closed = True
                             closed_count += 1
                             display_reason = f"代码判定(豁免): {preclosed_reason}，无需客服回复。"
+                            latest_label = "无人引用回复"
                         else:
                             case_resolution_reason = get_wait_check_case_resolution_reason(history, i, m, message_by_id)
                             if case_resolution_reason:
                                 is_result_closed = True
                                 closed_count += 1
                                 display_reason = f"代码判定(豁免): {case_resolution_reason}"
+                                latest_label = "相邻消息被回复"
                             else:
                                 # 返回的变成了 is_exempt(是否豁免), 不再是倒错逻辑的 is_slip_up
                                 is_exempt, ai_reason = await asyncio.get_event_loop().run_in_executor(
@@ -4453,6 +4464,7 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
                                 else:
                                     is_result_closed = False
                                     display_reason = f"AI判定(漏回): {ai_reason}"
+                                latest_label = "无人引用回复"
                         
                         group_name = str(chat_id)
                         try: g = await client.get_entity(chat_id); group_name = g.title
@@ -4470,7 +4482,7 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
                             "time": beijing_time,
                             "group_name": group_name,
                             "found_text": safe_text,
-                            "latest_text": "无人引用回复",
+                            "latest_text": latest_label,
                             "link": link
                         }))
                             
