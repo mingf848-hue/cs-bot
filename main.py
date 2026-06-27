@@ -1599,6 +1599,7 @@ WAIT_CHECK_PROCESSING_ACK_PHRASES = [
     "处理中", "处理下", "稍后", "稍后回复", "有结果回复"
 ]
 WAIT_CHECK_CASE_RESOLUTION_SECONDS = 15 * 60
+WAIT_CHECK_FOLLOWUP_LOOKAHEAD_SECONDS = 15 * 60
 WAIT_CHECK_ML_MENTION_ALLOWLIST = {
     "@ML_YYZB1", "@ML_YYZB2", "@ML_YYZB3", "@ML_YYZB4", "@ML_YYZB5", "@ML_YYZB6", "@ML_YYZB7"
 }
@@ -1665,6 +1666,10 @@ def get_wait_check_date_window(date_text):
     start_time = day.replace(tzinfo=BEIJING_TZ)
     end_time = start_time + timedelta(days=1)
     return start_time, end_time, date_text
+
+def is_wait_check_message_in_window(message, start_time, end_time):
+    msg_time = getattr(message, "date", None)
+    return bool(msg_time and start_time <= msg_time <= end_time)
 
 def is_obvious_reply_continuation(text):
     clean_text = (text or "").strip()
@@ -1744,6 +1749,25 @@ def is_wait_check_substantive_cs_text(text):
         return False
     return True
 
+def is_wait_check_case_result_text(text):
+    clean_text = str(text or "").strip()
+    if not clean_text:
+        return False
+    if is_wait_check_processing_ack_text(clean_text):
+        return False
+    noise_reason = get_obvious_noise_reason(clean_text)
+    if not noise_reason:
+        return True
+    return bool(re.search(r"\d{4,}", clean_text))
+
+def is_wait_check_non_business_text(text):
+    clean_text = str(text or "").strip()
+    if not clean_text:
+        return True
+    if get_obvious_noise_reason(clean_text):
+        return True
+    return normalize(clean_text) in IGNORE_SIGNATURES
+
 def wait_check_parent_id(message_by_id, msg_id):
     msg = message_by_id.get(msg_id)
     return get_direct_reply_target_id(msg) if msg else None
@@ -1804,7 +1828,7 @@ def get_wait_check_approval_followup_reason(history, approval_msg, approval_targ
         if is_wait_check_processing_ack_text(text):
             pending_ack = follow_msg
             continue
-        if is_wait_check_substantive_cs_text(text):
+        if is_wait_check_case_result_text(text):
             if pending_ack:
                 return "客服已先用等待/处理中信号承接，后续同一申请已有非等待处理进展。"
             return "领导同意后，客服已在同一申请中给出非等待处理进展。"
@@ -1813,7 +1837,7 @@ def get_wait_check_approval_followup_reason(history, approval_msg, approval_targ
 def has_wait_check_approval_followup(history, approval_msg, approval_target_id, message_by_id=None):
     return bool(get_wait_check_approval_followup_reason(history, approval_msg, approval_target_id, message_by_id))
 
-def get_wait_check_case_resolution_reason(history, target_index, target_msg, message_by_id):
+def get_wait_check_related_ids_for_target(history, target_index, target_msg, message_by_id):
     target_ids = wait_check_case_thread_ids(message_by_id, target_msg.id, get_direct_reply_target_id(target_msg))
     if not get_direct_reply_target_id(target_msg):
         # 未引用的短句追问通常承接上一条同用户引用消息，应归并到同一业务 case。
@@ -1831,9 +1855,14 @@ def get_wait_check_case_resolution_reason(history, target_index, target_msg, mes
             if previous_msg.sender_id != target_msg.sender_id:
                 continue
             previous_reply_id = get_direct_reply_target_id(previous_msg)
-            if previous_reply_id:
-                target_ids.update(wait_check_case_thread_ids(message_by_id, previous_msg.id, previous_reply_id))
-                break
+            if is_wait_check_non_business_text(previous_msg.text or ""):
+                continue
+            target_ids.update(wait_check_case_thread_ids(message_by_id, previous_msg.id, previous_reply_id))
+            break
+    return target_ids
+
+def get_wait_check_case_resolution_reason(history, target_index, target_msg, message_by_id):
+    target_ids = get_wait_check_related_ids_for_target(history, target_index, target_msg, message_by_id)
 
     pending_ack = None
     later_result = None
@@ -1860,7 +1889,7 @@ def get_wait_check_case_resolution_reason(history, target_index, target_msg, mes
         text = follow_msg.text or ""
         if is_wait_check_processing_ack_text(text):
             pending_ack = follow_msg
-        elif is_wait_check_substantive_cs_text(text):
+        elif is_wait_check_case_result_text(text):
             later_result = follow_msg
             if pending_ack:
                 return "客服已先用处理中信号承接，并在后续同一事件中给出处理结果。"
@@ -4103,9 +4132,10 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
             cutoff_hours = 20
             limit_count = 6000 
             
-        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=cutoff_hours)
+        now_utc = datetime.now(timezone.utc)
+        cutoff_time = now_utc - timedelta(hours=cutoff_hours)
         scan_start_time = cutoff_time
-        scan_end_time = datetime.now(timezone.utc)
+        scan_end_time = now_utc
         if date_window:
             day_start, day_end, day_text = date_window
             scan_start_time = day_start.astimezone(timezone.utc)
@@ -4125,6 +4155,19 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
                 "msg": f"{keyword} 扫描窗口: 北京时间 {shift_start.strftime('%Y-%m-%d %H:%M')} - {shift_end.strftime('%Y-%m-%d %H:%M')} ({shift_start_text}-{shift_end_text})"
             }))
 
+        analysis_end_time = scan_end_time
+        if is_all_wait_check_keyword(keyword) or keyword == WAIT_CHECK_APPROVAL_MISSED_KEYWORD:
+            analysis_end_time = min(
+                datetime.now(timezone.utc),
+                scan_end_time + timedelta(seconds=WAIT_CHECK_FOLLOWUP_LOOKAHEAD_SECONDS)
+            )
+            if analysis_end_time > scan_end_time:
+                result_queue.put(json.dumps({
+                    "type": "progress",
+                    "percent": 2,
+                    "msg": f"闭环判定额外查看至北京时间 {analysis_end_time.astimezone(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')}，用于识别窗口后引用回复。"
+                }))
+
         total_groups = len(CS_GROUP_IDS)
         EXCLUDED_GROUPS = [-1002807120955, -1002169616907]
         
@@ -4140,7 +4183,7 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
             try:
                 history = []
                 async for m in client.iter_messages(chat_id, limit=limit_count):
-                    if m.date and m.date > scan_end_time:
+                    if m.date and m.date > analysis_end_time:
                         continue
                     if m.date and m.date < scan_start_time: break
                     if getattr(m, 'action', None): continue # 过滤拉人、置顶等系统服务消息
@@ -4150,6 +4193,8 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
                     message_by_id = {m.id: m for m in history if getattr(m, "id", None)}
 
                     for approval_msg in history:
+                        if not is_wait_check_message_in_window(approval_msg, scan_start_time, scan_end_time):
+                            continue
                         if not is_wait_check_approval_message(approval_msg):
                             continue
                         approval_target_id = get_direct_reply_target_id(approval_msg)
@@ -4214,6 +4259,8 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
 
                     approval_missed_tasks = []
                     for approval_msg in history:
+                        if not is_wait_check_message_in_window(approval_msg, scan_start_time, scan_end_time):
+                            continue
                         if not is_wait_check_approval_message(approval_msg):
                             continue
                         if is_wait_check_cs_message(approval_msg):
@@ -4233,6 +4280,8 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
                     orphan_tasks = []
                     reply_continuation_ai_cache = {}
                     for i, m in enumerate(history):
+                        if not is_wait_check_message_in_window(m, scan_start_time, scan_end_time):
+                            continue
                         if is_wait_check_cs_message(m): continue
 
                         if m.sticker or m.gif:
@@ -4329,7 +4378,7 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
                         target_uid = m.sender_id
                         target_label = f"User({str(target_uid)[-4:]})" 
 
-                        target_related_ids = {m.id}
+                        target_related_ids = get_wait_check_related_ids_for_target(history, i, m, message_by_id)
                         if m.grouped_id:
                             target_related_ids.update({
                                 grouped_msg.id for grouped_msg in history
@@ -4339,6 +4388,18 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
                         context_txts = []
                         for cm in context_slice:
                             if getattr(cm, 'action', None): continue 
+                            cm_id = getattr(cm, "id", None)
+                            cm_reply_ids_ordered = get_ordered_reply_target_ids(cm)
+                            cm_reply_ids = set(cm_reply_ids_ordered)
+                            same_target_user = (
+                                getattr(cm, "sender_id", None) == target_uid
+                                and cm.date
+                                and m.date
+                                and abs((cm.date - m.date).total_seconds()) <= WAIT_CHECK_CASE_RESOLUTION_SECONDS
+                            )
+                            related_cs_reply = is_wait_check_cs_message(cm) and bool(cm_reply_ids & target_related_ids)
+                            if cm_id != m.id and cm_id not in target_related_ids and not same_target_user and not related_cs_reply:
+                                continue
                             
                             if is_wait_check_cs_message(cm):
                                 c_label = "CS"
@@ -4356,7 +4417,7 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
                             marker = " <<< TARGET" if cm.id == m.id else ""
                             
                             reply_tag = ""
-                            reply_ids = get_ordered_reply_target_ids(cm)
+                            reply_ids = cm_reply_ids_ordered
                             if reply_ids:
                                 if target_related_ids.intersection(reply_ids):
                                     reply_tag = " [使用了引用回复:引用目标消息]"
