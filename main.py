@@ -1849,6 +1849,23 @@ def has_wait_check_approval_followup(history, approval_msg, approval_target_id, 
 def get_wait_check_related_ids_for_target(history, target_index, target_msg, message_by_id):
     target_ids = wait_check_case_thread_ids(message_by_id, target_msg.id, get_direct_reply_target_id(target_msg))
     if not get_direct_reply_target_id(target_msg):
+        # 目标消息之后，客户可能马上补充文字/截图；客服经常引用补充图回复。
+        for idx in range(target_index - 1, -1, -1):
+            next_msg = history[idx]
+            if not next_msg.date or not target_msg.date:
+                continue
+            elapsed = (next_msg.date - target_msg.date).total_seconds()
+            if elapsed < 0:
+                continue
+            if elapsed > WAIT_CHECK_REPLY_CONTINUATION_SECONDS:
+                break
+            if next_msg.sender_id != target_msg.sender_id:
+                break
+            if not is_wait_check_case_anchor_message(next_msg):
+                continue
+            target_ids.update(wait_check_case_thread_ids(message_by_id, next_msg.id, get_direct_reply_target_id(next_msg)))
+
+    if not get_direct_reply_target_id(target_msg):
         # 未引用的短句追问通常承接上一条同用户引用消息，应归并到同一业务 case。
         for idx in range(target_index + 1, min(len(history), target_index + 8)):
             previous_msg = history[idx]
