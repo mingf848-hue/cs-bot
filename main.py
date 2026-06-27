@@ -1587,6 +1587,18 @@ WAIT_CHECK_CONTINUATION_PHRASES = [
     "不是这个", "就是这个", "这个不对", "不对", "错了", "有问题", "p图", "P图", "图片",
     "截图", "看这个", "这个图", "这个图片", "补充", "补充一下", "对", "嗯", "是的"
 ]
+WAIT_CHECK_FOLLOWUP_PING_PHRASES = [
+    "有人吗", "有人在吗", "人在吗", "在吗", "在不在", "还在吗",
+    "还没好吗", "还没好么", "好了没", "好了吗",
+    "还没处理吗", "还没处理么", "处理了吗", "处理了没", "处理好了没", "处理好了吗",
+    "有结果了吗", "出结果了吗", "还没结果吗",
+    "催一下", "催下", "跟进下", "麻烦跟进", "麻烦看下", "帮忙看下", "帮看下", "再看下"
+]
+WAIT_CHECK_FOLLOWUP_PING_BUSINESS_HINTS = [
+    "订单", "注单", "会员", "账号", "账户", "代理", "额度", "金额", "充值", "提现",
+    "提款", "存款", "钱包", "地址", "哈希", "hash", "卡号", "转账", "支付", "付款",
+    "收款", "赛事", "红包", "反水", "vpn", "h5", "为什么", "怎么办"
+]
 WAIT_CHECK_NEW_QUESTION_HINTS = [
     "另外", "还有", "再问", "顺便", "第二个", "另一个", "新问题", "订单", "充值", "提现",
     "钱包", "冻结", "未到账", "不到账", "金额", "地址", "哈希", "hash", "卡号", "转账",
@@ -1683,6 +1695,16 @@ def is_obvious_reply_continuation(text):
     if clean_text in ["?", "？", "??", "？？", "。。。", "..."]:
         return True
     return False
+
+def is_wait_check_followup_ping_text(text):
+    clean_text = compact_wait_check_text(text).lower()
+    if not clean_text or len(clean_text) > 18:
+        return False
+    if re.search(r"https?://|www\.|[a-z0-9]{4,}", clean_text):
+        return False
+    if any(hint.lower() in clean_text for hint in WAIT_CHECK_FOLLOWUP_PING_BUSINESS_HINTS):
+        return False
+    return any(phrase.lower() in clean_text for phrase in WAIT_CHECK_FOLLOWUP_PING_PHRASES)
 
 def is_obvious_new_question(text):
     clean_text = (text or "").strip()
@@ -1867,14 +1889,20 @@ def get_wait_check_related_ids_for_target(history, target_index, target_msg, mes
 
     if not get_direct_reply_target_id(target_msg):
         # 未引用的短句追问通常承接上一条同用户引用消息，应归并到同一业务 case。
-        for idx in range(target_index + 1, min(len(history), target_index + 8)):
+        is_followup_ping = is_wait_check_followup_ping_text(target_msg.text or "")
+        backward_link_seconds = (
+            WAIT_CHECK_CASE_RESOLUTION_SECONDS
+            if is_followup_ping else WAIT_CHECK_REPLY_CONTINUATION_SECONDS
+        )
+        backward_scan_end = len(history) if is_followup_ping else min(len(history), target_index + 8)
+        for idx in range(target_index + 1, backward_scan_end):
             previous_msg = history[idx]
             if not previous_msg.date or not target_msg.date:
                 continue
             elapsed = (target_msg.date - previous_msg.date).total_seconds()
             if elapsed < 0:
                 continue
-            if elapsed > WAIT_CHECK_REPLY_CONTINUATION_SECONDS:
+            if elapsed > backward_link_seconds:
                 break
             if previous_msg.sender_id != target_msg.sender_id:
                 continue
