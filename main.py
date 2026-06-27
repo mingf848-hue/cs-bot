@@ -1748,6 +1748,31 @@ def get_mention_exempt_reason(text):
         return "仅单独@账号，无其他业务内容"
     return None
 
+def is_wait_check_media_or_unknown_content_message(message):
+    if not message:
+        return False
+    if getattr(message, "action", None):
+        return False
+    if (getattr(message, "text", None) or "").strip():
+        return False
+    if getattr(message, "sticker", None) or getattr(message, "gif", None):
+        return False
+    media_attrs = ("media", "photo", "video", "document", "file")
+    if any(getattr(message, attr, None) for attr in media_attrs):
+        return True
+    # Telethon 媒体消息在不同类型下字段不完全一致；进入闭环检测的空文本非动作消息，不应直接当噪声闭环。
+    return True
+
+def get_wait_check_preclosed_reason(message):
+    text = getattr(message, "text", None) or ""
+    mention_reason = get_mention_exempt_reason(text)
+    if mention_reason:
+        return mention_reason
+    noise_reason = get_obvious_noise_reason(text)
+    if noise_reason == "空消息或无文本内容" and is_wait_check_media_or_unknown_content_message(message):
+        return None
+    return noise_reason
+
 def is_wait_check_processing_ack_text(text):
     clean_text = re.sub(r"\s+", "", str(text or ""))
     if not clean_text:
@@ -4343,7 +4368,7 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
 
                         if m.reply_to and m.reply_to.reply_to_msg_id: continue
 
-                        code_exempt_reason = get_mention_exempt_reason(m.text or "") or get_obvious_noise_reason(m.text or "")
+                        code_exempt_reason = get_wait_check_preclosed_reason(m)
 
                         previous_customer_reply = None
                         followup_texts = []
@@ -4483,33 +4508,32 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
                         
                         found_count += 1
 
-                        if preclosed_reason:
+                        case_resolution_reason = get_wait_check_case_resolution_reason(history, i, m, message_by_id)
+                        if case_resolution_reason:
+                            is_result_closed = True
+                            closed_count += 1
+                            display_reason = f"代码判定(豁免): {case_resolution_reason}"
+                            latest_label = "相邻消息被回复"
+                        elif preclosed_reason:
                             is_result_closed = True
                             closed_count += 1
                             display_reason = f"代码判定(豁免): {preclosed_reason}，无需客服回复。"
                             latest_label = "无人引用回复"
                         else:
-                            case_resolution_reason = get_wait_check_case_resolution_reason(history, i, m, message_by_id)
-                            if case_resolution_reason:
+                            # 返回的变成了 is_exempt(是否豁免), 不再是倒错逻辑的 is_slip_up
+                            is_exempt, ai_reason = await asyncio.get_event_loop().run_in_executor(
+                                None, lambda: _ai_check_orphan_context(m.text or "[Media]", context_txts, target_label)
+                            )
+
+                            # 保留 AI 判定原因，方便人工复核误判来源。
+                            if is_exempt:
                                 is_result_closed = True
                                 closed_count += 1
-                                display_reason = f"代码判定(豁免): {case_resolution_reason}"
-                                latest_label = "相邻消息被回复"
+                                display_reason = f"AI判定(豁免): {ai_reason}"
                             else:
-                                # 返回的变成了 is_exempt(是否豁免), 不再是倒错逻辑的 is_slip_up
-                                is_exempt, ai_reason = await asyncio.get_event_loop().run_in_executor(
-                                    None, lambda: _ai_check_orphan_context(m.text or "[Media]", context_txts, target_label)
-                                )
-
-                                # 保留 AI 判定原因，方便人工复核误判来源。
-                                if is_exempt:
-                                    is_result_closed = True
-                                    closed_count += 1
-                                    display_reason = f"AI判定(豁免): {ai_reason}"
-                                else:
-                                    is_result_closed = False
-                                    display_reason = f"AI判定(漏回): {ai_reason}"
-                                latest_label = "无人引用回复"
+                                is_result_closed = False
+                                display_reason = f"AI判定(漏回): {ai_reason}"
+                            latest_label = "无人引用回复"
                         
                         group_name = str(chat_id)
                         try: g = await client.get_entity(chat_id); group_name = g.title
