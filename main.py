@@ -4134,6 +4134,42 @@ def _ai_check_orphan_context(target_text, context_text_list, target_label="User"
         log_tree(9, log_prefix + f"❌ AI Check Failed: {e}，标记人工核查")
         return (False, f"⚠️ AI出错，请人工核查")
 
+def _ai_check_wait_check_context_resolution(target_text, context_text_list, target_label="User"):
+    """
+    连续发言/相邻上下文覆盖不能只靠代码闭环；由 AI 判断是否同一事件且已处理。
+    """
+    context_str = "\n".join(context_text_list)
+    log_prefix = f"🤖 [AI-ContextResolution] Text='{str(target_text or '')[:15]}...' | "
+    prompt = f"""
+    你是一名客服闭环质检员。
+    系统发现【目标消息】没有被客服直接引用回复，但它可能属于客户连续发言中的一部分，
+    后续客服可能引用了同一组连续消息里的其他消息并给出处理。请你判断是否可以视为已闭环。
+
+    目标发送者: “{target_label}”
+    目标消息: “{target_text or '[媒体/图片]'}”
+
+    候选上下文（按时间顺序，包含目标消息、同一客户连续发言、以及可能相关的客服回复）:
+    {context_str}
+
+    判断标准：
+    - 只有当【目标消息】与相邻连续消息属于同一个业务问题/同一个客户诉求，并且目标消息之后客服已经对这个同一事件给出接单后处理结果、处理进展或有效答复，才返回 is_exempt=true。
+    - 如果客服只是“稍等/处理中/核实中”，后续没有结果或进展，返回 is_exempt=false。
+    - 如果相邻连续消息其实是不同问题，或客服回复的是另一条独立问题，不能因为时间相近或引用了相邻消息就豁免，返回 is_exempt=false。
+    - 如果目标消息本身是客户连续表达中的片段、补充说明、视频/图片示例，且客服后续已处理同一事件，可以返回 is_exempt=true。
+
+    请输出 JSON 格式: {{"reason": "用中文简短说明原因...", "is_exempt": true/false}}
+    """
+
+    try:
+        decision = _gemini_generate_json(prompt, timeout=60)
+        is_exempt = decision.get("is_exempt", False)
+        reason = decision.get("reason", "AI Decision")
+        log_tree(2, log_prefix + f"✅ AI判定连续上下文闭环: 豁免={is_exempt} | {reason}")
+        return (is_exempt, reason)
+    except Exception as e:
+        log_tree(9, log_prefix + f"❌ AI连续上下文判定失败: {e}，标记人工核查")
+        return (False, f"⚠️ AI出错，请人工核查")
+
 def _ai_check_reply_continuation(anchor_text, followup_texts):
     if not followup_texts:
         return True, "无补充消息"
@@ -4498,8 +4534,11 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
                             reply_tag = ""
                             reply_ids = cm_reply_ids_ordered
                             if reply_ids:
-                                if target_related_ids.intersection(reply_ids):
-                                    reply_tag = " [使用了引用回复:引用目标消息]"
+                                if m.id in reply_ids:
+                                    reply_tag = " [使用了引用回复:直接引用目标消息]"
+                                elif target_related_ids.intersection(reply_ids):
+                                    related_reply_id = next((rid for rid in reply_ids if rid in target_related_ids), reply_ids[0])
+                                    reply_tag = f" [使用了引用回复:引用候选同组Msg={related_reply_id}]"
                                 else:
                                     reply_tag = f" [使用了引用回复:引用Msg={reply_ids[0]}]"
 
@@ -4510,10 +4549,20 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
 
                         case_resolution_reason = get_wait_check_case_resolution_reason(history, i, m, message_by_id)
                         if case_resolution_reason:
-                            is_result_closed = True
-                            closed_count += 1
-                            display_reason = f"代码判定(豁免): {case_resolution_reason}"
-                            latest_label = "相邻消息被回复"
+                            is_exempt, ai_reason = await asyncio.get_event_loop().run_in_executor(
+                                None,
+                                lambda: _ai_check_wait_check_context_resolution(
+                                    m.text or "[媒体/图片]", context_txts, target_label
+                                )
+                            )
+                            if is_exempt:
+                                is_result_closed = True
+                                closed_count += 1
+                                display_reason = f"AI判定(豁免): {ai_reason}"
+                            else:
+                                is_result_closed = False
+                                display_reason = f"AI判定(漏回): {ai_reason}"
+                            latest_label = "无人引用回复"
                         elif preclosed_reason:
                             is_result_closed = True
                             closed_count += 1
