@@ -3218,6 +3218,7 @@ function scoreSettlementNotice(item = {}, order = {}, detail = {}) {
   if (matchName && text.includes(matchName)) score += 12;
   if (begin && text.includes(begin)) score += 12;
   if (/赛果不明确|不能按时结算|delaysettlement|delay settlement|noclearresult|no clear result/.test(text)) score += 10;
+  if (/比赛中断|比賽中斷|赛事中断|賽事中斷|match interruption|match interrupted|interrupted/.test(text)) score += 35;
   score += scoreNoticeMarketTerms(item, detail, order);
   if (category) {
     if (category.include.some((token) => text.includes(normalizeText(token)))) score += 100;
@@ -3891,10 +3892,13 @@ function withdrawHistoryRange(cmd = {}) {
 
 function normalizeSettlementNoticeReply(text) {
   const raw = String(text || '').trim();
-  if (/赛事状态不明确|賽事狀態不明確|比赛中断|比賽中斷|赛事中断|賽事中斷/.test(raw)) return raw;
+  if (/赛事状态不明确|賽事狀態不明確/.test(raw)) return raw;
   const oldText = '因赛果不明确，赛果将进一步核实，确认后再进行结算，造成不便之处，敬请见谅！';
   const replacement = '因赛果不明确，注单暂时无法结算，需待定24小时，如24小时无法确定，所有受影响的注单一律视为无效，连串注单该场赛事相关盘口赔率以（1）计算，谢谢！';
-  return raw.split(oldText).join(replacement);
+  const interruptedReplacement = '因赛事中断，注单暂时无法结算，赛果将进一步核实，需待定36小时，如36小时仍未恢复比赛或未指定新的开赛时间，除了已有明确赛果的注单以外，其余受影响的注单一律视为无效，串关中该赛事赔率以（1）计算，谢谢！';
+  return raw
+    .replace(/因(?:比赛|比賽|赛事|賽事)中[断斷]，?赛果将进一步核实，?确认后再进行结算，?造成不便之处，?敬请见谅[！!]?/g, interruptedReplacement)
+    .split(oldText).join(replacement);
 }
 
 function withdrawStatusLabel(item = {}) {
