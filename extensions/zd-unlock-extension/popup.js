@@ -201,8 +201,13 @@ recClear.addEventListener('click', async () => {
 
 recExport.addEventListener('click', async () => {
   const data = await chrome.storage.local.get(['recorderState', 'recorderRecords', 'pageAuth', 'pageAuthByHost']);
+  const manifest = chrome.runtime.getManifest();
   const payload = {
     exported_at: new Date().toISOString(),
+    extension: {
+      name: manifest.name,
+      version: manifest.version
+    },
     recorder_state: data.recorderState || {},
     page_auth: data.pageAuth ? { href: data.pageAuth.href, capturedAt: data.pageAuth.capturedAt } : null,
     page_auth_hosts: Object.fromEntries(Object.entries(data.pageAuthByHost || {}).map(([host, auth]) => [host, { href: auth.href, capturedAt: auth.capturedAt }])),

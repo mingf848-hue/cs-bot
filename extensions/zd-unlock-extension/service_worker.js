@@ -89,7 +89,7 @@ let polling = false;
 let activeBackendCommands = 0;
 const RECORDER_LIMIT = 400;
 const RECORDER_BODY_LIMIT = 8000;
-const RECORDER_RESPONSE_LIMIT = 20000;
+const RECORDER_RESPONSE_LIMIT = 2 * 1024 * 1024;
 const AUTH_SYNC_WAIT_MS = 12000;
 const MERCHANT_RELOGIN_WAIT_MS = 90000;
 const FETCH_RETRY_DELAYS_MS = [800, 1800, 3200];
@@ -492,8 +492,15 @@ async function setStatus(status) {
 
 function truncateText(value, limit) {
   const text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
-  if (text.length <= limit) return text;
-  return `${text.slice(0, limit)}\n...[truncated ${text.length - limit} chars]`;
+  const originalLength = text.length;
+  if (originalLength <= limit) {
+    return { text, originalLength, truncated: false };
+  }
+  return {
+    text: `${text.slice(0, limit)}\n...[truncated ${originalLength - limit} chars]`,
+    originalLength,
+    truncated: true
+  };
 }
 
 function sanitizeHeaders(headers = {}) {
@@ -511,6 +518,8 @@ function sanitizeHeaders(headers = {}) {
 }
 
 function normalizeRecord(record = {}) {
+  const requestBody = truncateText(record.request_body || '', RECORDER_BODY_LIMIT);
+  const responseBody = truncateText(record.response_body || '', RECORDER_RESPONSE_LIMIT);
   return {
     id: `rec_${Date.now()}_${Math.floor(Math.random() * 100000)}`,
     captured_at: new Date().toISOString(),
@@ -519,12 +528,16 @@ function normalizeRecord(record = {}) {
     method: String(record.method || 'GET').toUpperCase(),
     url: String(record.url || ''),
     request_headers: sanitizeHeaders(record.request_headers || {}),
-    request_body: truncateText(record.request_body || '', RECORDER_BODY_LIMIT),
+    request_body: requestBody.text,
+    request_body_original_length: requestBody.originalLength,
+    request_body_truncated: requestBody.truncated,
     status: record.status ?? null,
     ok: record.ok ?? null,
     duration_ms: Math.max(0, Number(record.duration_ms || 0)),
     response_url: String(record.response_url || ''),
-    response_body: truncateText(record.response_body || '', RECORDER_RESPONSE_LIMIT),
+    response_body: responseBody.text,
+    response_body_original_length: responseBody.originalLength,
+    response_body_truncated: responseBody.truncated,
     error: String(record.error || '')
   };
 }
