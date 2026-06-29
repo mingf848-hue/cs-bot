@@ -13,7 +13,8 @@ const defaultConfig = () => ({
   rules: [],
   ticket_follow_tasks: [],
   scheduled_backend_actions: [],
-  scheduled_messages: []
+  scheduled_messages: [],
+  available_accounts: []
 })
 
 const defaultRuntime = () => ({
@@ -54,6 +55,7 @@ const normalizeConfig = (data: any) => {
     ? next.scheduled_backend_actions
     : []
   next.scheduled_messages = Array.isArray(next.scheduled_messages) ? next.scheduled_messages : []
+  next.available_accounts = Array.isArray(next.available_accounts) ? next.available_accounts : []
   next.ai_private_reply = next.ai_private_reply || { accounts: {} }
   next.ai_private_reply.accounts = next.ai_private_reply.accounts || {}
   return next
