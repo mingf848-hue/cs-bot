@@ -1565,7 +1565,15 @@ async def edit_domain_pin_target(client, target, text, dry_run=False):
         raise RuntimeError("目标群没有置顶消息")
     if dry_run:
         return {"chat_id": target, "pinned_message_id": pinned_id, "status": "preview"}
-    await client.edit_message(telegram_peer_value(target), int(pinned_id), text, link_preview=False)
+    try:
+        await client.edit_message(telegram_peer_value(target), int(pinned_id), text, link_preview=False)
+    except Exception as e:
+        error_text = str(e)
+        if "Content of the message was not modified" in error_text:
+            return {"chat_id": target, "pinned_message_id": pinned_id, "status": "unchanged"}
+        if "Message author required" in error_text:
+            raise RuntimeError("当前置顶消息不是该账号发送，Telegram 不允许编辑")
+        raise
     return {"chat_id": target, "pinned_message_id": pinned_id, "status": "success"}
 
 async def run_domain_pin_update_command(payload=None):
@@ -1602,7 +1610,8 @@ async def run_domain_pin_update_command(payload=None):
                 results.append(await edit_domain_pin_target(target_client, target, text, dry_run=dry_run))
             except Exception as e:
                 results.append({"chat_id": target, "status": "failed", "error": str(e)})
-    success_count = sum(1 for item in results if item.get("status") in ("success", "preview"))
+    ok_statuses = {"success", "preview", "unchanged"}
+    success_count = sum(1 for item in results if item.get("status") in ok_statuses)
     return {
         "success": success_count > 0 and not any(item.get("status") == "failed" for item in results),
         "source_account": source_account,

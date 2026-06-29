@@ -3522,7 +3522,7 @@ createApp({
                 });
                 const json = await res.json();
                 const resultLines = (json.results || []).map(item => {
-                    const label = item.status === "failed" ? "失败" : (item.status === "preview" ? "预览" : "成功");
+                    const label = item.status === "failed" ? "失败" : (item.status === "preview" ? "预览" : (item.status === "unchanged" ? "无变化" : "成功"));
                     return `${item.chat_id} ${label}${item.error ? `：${item.error}` : ""}`;
                 });
                 domainPin.preview = json.texts?.combined_with_footer || json.texts?.combined || "";
