@@ -778,7 +778,7 @@
         .page-card { min-width: 0; }
         .page-body { padding: 16px; display: grid; gap: 16px; }
         .dashboard-grid, .resource-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(320px, .75fr); gap: 16px; align-items: start; }
-        .resource-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .resource-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .span-2 { grid-row: span 2; }
         .metrics-grid.wide { grid-template-columns: repeat(4, minmax(0, 1fr)); }
         .hour-bars { height: 178px; display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 5px; align-items: end; padding: 12px 4px 0; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
@@ -804,9 +804,18 @@
         .table-head { color: var(--muted); background: #f8fafc; font-size: 12px; font-weight: 790; }
         .table-row { min-height: 52px; border-top: 1px solid var(--line); color: #536078; font-size: 13px; }
         .table-row span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-        .settings-grid .section { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: #fff; }
-        .settings-grid .section.full { grid-column: 1 / -1; }
+        .settings-layout { grid-template-columns: minmax(320px, .82fr) minmax(0, 1.18fr); align-items: start; }
+        .settings-stack { display: grid; gap: 14px; min-width: 0; }
+        .settings-panel { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: #fff; display: grid; gap: 14px; min-width: 0; }
+        .settings-panel.compact { gap: 10px; }
+        .settings-panel .section { gap: 10px; }
+        .settings-panel .section + .section { padding-top: 12px; border-top: 1px solid var(--line); }
+        .settings-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+        .settings-title-row .section-title { display: flex; align-items: center; gap: 8px; }
+        .settings-toggle-list { display: grid; gap: 4px; }
+        .settings-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .development-state { min-height: 320px; display: grid; place-items: center; text-align: center; color: var(--muted); }
+        .development-state strong { display: block; color: var(--text); font-size: 22px; margin-bottom: 8px; }
         .account-ai-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
         .account-ai-card { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fbfcff; display: grid; gap: 10px; }
         .account-ai-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -946,7 +955,7 @@
             .rule-id { max-width: 100%; }
             .rule-list { max-height: none; }
             .ops-popover { right: 14px; top: 128px; }
-            .dashboard-grid, .resource-grid, .settings-grid, .account-list.cards, .metrics-grid.wide, .records-toolbar, .account-ai-grid { grid-template-columns: 1fr; }
+            .dashboard-grid, .resource-grid, .settings-layout, .account-list.cards, .metrics-grid.wide, .records-toolbar, .account-ai-grid { grid-template-columns: 1fr; }
             .resource-row, .resource-row.prefix { grid-template-columns: 1fr auto; }
             .resource-row .input:first-child { grid-column: 1 / -1; }
             .hour-bars { gap: 3px; }
@@ -1912,37 +1921,17 @@
                             <div v-if="config.resources.sender_prefixes.length === 0" class="empty-state">暂无名单资源</div>
                         </div>
                     </article>
-                    <article class="panel page-card" v-for="item in resourceCards" :key="item.key">
-                        <div class="panel-head"><div class="panel-title"><i :data-lucide="item.icon"></i>{{ item.label }}</div><strong>{{ item.count }}</strong></div>
-                        <div class="page-body tag-row">
-                            <span v-for="value in item.items" :key="value" class="tag">{{ value }}</span>
-                            <div v-if="item.items.length === 0" class="empty-state">暂无数据</div>
-                        </div>
-                    </article>
                 </section>
 
                 <section class="panel page-wide page-panel" v-if="ui.page === 'members'">
                     <div class="panel-head">
                         <div class="panel-title"><i data-lucide="users-round"></i>成员权限</div>
-                        <span class="hint">账号来自当前已注册 Telegram Client</span>
                     </div>
                     <div class="page-body">
-                        <div class="account-list cards">
-                            <div v-for="account in accountRows" :key="account.name" class="account-row">
-                                <div class="avatar small">{{ account.name.slice(0, 1) }}</div>
-                                <div><strong>{{ account.name }}</strong><span>{{ account.role }} · {{ account.user_id || '未读取 ID' }}</span></div>
-                                <em :class="{ok: account.connected}">{{ account.connected ? '在线' : '离线' }}</em>
-                            </div>
-                        </div>
-                        <div class="record-table">
-                            <div class="table-head"><span>规则</span><span>回复账号</span><span>过滤方式</span><span>用户/标签</span><span>状态</span><span>操作</span></div>
-                            <div v-for="rule in config.rules" :key="rule.id" class="table-row">
-                                <span>{{ rule.name }}</span>
-                                <span>{{ rule.reply_account || mainAccount }}</span>
-                                <span>{{ rule.sender_mode === 'include' ? '仅允许' : '排除前缀' }}</span>
-                                <span>{{ (rule.sender_prefixes || []).join(', ') || '-' }}</span>
-                                <span>{{ ruleStatus(rule).text }}</span>
-                                <button class="inline-link" @click="selectRule(rule); setPage('rules'); ui.activeTab = 'permissions'">编辑</button>
+                        <div class="development-state">
+                            <div>
+                                <strong>开发中</strong>
+                                <span>成员权限功能暂未开放</span>
                             </div>
                         </div>
                     </div>
@@ -2123,101 +2112,107 @@
                         <div class="panel-title"><i data-lucide="settings"></i>系统设置</div>
                         <button class="primary-btn" @click="saveConfig" :disabled="ui.saving"><i data-lucide="check"></i>{{ ui.saving ? '保存中' : '保存设置' }}</button>
                     </div>
-                    <div class="page-body settings-grid">
-                        <section class="section">
-                            <div class="section-title">监听开关</div>
-                            <label class="inline-check"><input class="checkbox" type="checkbox" v-model="config.enabled">全局监听总开关</label>
-                            <label class="inline-check" v-for="account in accountFilterOptions" :key="`monitor-${account}`">
-                                <input class="checkbox" type="checkbox" v-model="config.account_monitor_enabled[account]">
-                                {{ account }} 监听启用
-                            </label>
-                        </section>
-                        <section class="section">
-                            <div class="section-title">自动排班</div>
-                            <label class="inline-check"><input class="checkbox" type="checkbox" v-model="config.schedule.active">启用排班</label>
-                            <div class="form-grid">
-                                <input class="input" type="time" v-model="config.schedule.start">
-                                <input class="input" type="time" v-model="config.schedule.end">
-                            </div>
-                        </section>
-                        <section class="section">
-                            <div class="section-title">审批触发词</div>
-                            <input class="input" :value="(config.approval_keywords || []).join(', ')" @input="config.approval_keywords = splitInline($event.target.value)" placeholder="同意, 批准, ok">
-                        </section>
-                        <section class="section full">
-                            <div class="section-head">
-                                <div>
-                                    <div class="section-title">AI 私聊回复</div>
-                                    <div class="hint">只回复对应账号收到的私聊，不处理群聊。</div>
+                    <div class="page-body settings-layout">
+                        <div class="settings-stack">
+                            <section class="settings-panel compact">
+                                <div class="settings-title-row">
+                                    <div class="section-title"><i data-lucide="power"></i>监听开关</div>
                                 </div>
-                                <button class="primary-btn" @click="saveConfig" :disabled="ui.saving"><i data-lucide="check"></i>{{ ui.saving ? '保存中' : '保存AI设置' }}</button>
-                            </div>
-                            <div class="account-ai-grid">
-                                <article class="account-ai-card" v-for="account in accountFilterOptions" :key="`ai-${account}`">
-                                    <div class="account-ai-head">
-                                        <div class="account-ai-title">{{ account }}</div>
-                                        <button type="button" class="switch" :class="{on: aiPrivateAccountConfig(account).enabled}" :aria-pressed="aiPrivateAccountConfig(account).enabled ? 'true' : 'false'" @click="toggleAiPrivateAccount(account)"></button>
+                                <div class="settings-toggle-list">
+                                    <label class="inline-check"><input class="checkbox" type="checkbox" v-model="config.enabled">全局监听总开关</label>
+                                    <label class="inline-check" v-for="account in accountFilterOptions" :key="`monitor-${account}`">
+                                        <input class="checkbox" type="checkbox" v-model="config.account_monitor_enabled[account]">
+                                        {{ account }} 监听启用
+                                    </label>
+                                </div>
+                            </section>
+                            <section class="settings-panel">
+                                <div class="section">
+                                    <div class="section-title">自动排班</div>
+                                    <label class="inline-check"><input class="checkbox" type="checkbox" v-model="config.schedule.active">启用排班</label>
+                                    <div class="form-grid">
+                                        <input class="input" type="time" v-model="config.schedule.start">
+                                        <input class="input" type="time" v-model="config.schedule.end">
                                     </div>
-                                    <textarea class="textarea" v-model="aiPrivateAccountConfig(account).prompt" placeholder="这个账号私聊时的说话风格，比如：语气自然一点，简短，像平时聊天。"></textarea>
-                                </article>
-                            </div>
-                        </section>
-                        <section class="section full">
-                            <div class="section-head">
-                                <div>
-                                    <div class="section-title">域名更新置顶</div>
-                                    <div class="hint">从 ara 源群读取米兰/江南域名，转换格式后用组长值班账号编辑目标群置顶。</div>
                                 </div>
-                                <button class="primary-btn" @click="runDomainPinUpdate(false)" :disabled="domainPin.running"><i :data-lucide="domainPin.running ? 'loader-2' : 'pin'"></i>{{ domainPin.running ? '执行中' : '更新置顶' }}</button>
-                            </div>
-                            <div class="form-grid">
-                                <div class="field">
-                                    <label>读取账号</label>
-                                    <select class="input select" v-model="domainPin.source_account">
-                                        <option value="">自动匹配 ara</option>
-                                        <option v-for="account in accountFilterOptions" :key="`domain-source-${account}`" :value="account">{{ account }}</option>
-                                    </select>
+                                <div class="section">
+                                    <div class="section-title">审批触发词</div>
+                                    <input class="input" :value="(config.approval_keywords || []).join(', ')" @input="config.approval_keywords = splitInline($event.target.value)" placeholder="同意, 批准, ok">
                                 </div>
-                                <div class="field">
-                                    <label>编辑账号</label>
-                                    <select class="input select" v-model="domainPin.target_account">
-                                        <option value="">自动匹配组长值班</option>
-                                        <option v-for="account in accountFilterOptions" :key="`domain-target-${account}`" :value="account">{{ account }}</option>
-                                    </select>
+                            </section>
+                            <section class="settings-panel">
+                                <div class="settings-title-row">
+                                    <div class="section-title"><i data-lucide="send"></i>突发事件批量回复</div>
+                                    <button class="primary-btn" :disabled="!recovery.search || !recovery.reply" @click="runRecovery"><i data-lucide="send"></i>执行回复</button>
                                 </div>
-                                <div class="field">
-                                    <label>读取条数</label>
-                                    <input class="input" type="number" min="10" max="300" v-model.number="domainPin.history_limit">
+                                <div class="form-grid">
+                                    <input class="input" v-model="recovery.search" placeholder="查找我的反馈话术">
+                                    <input class="input" v-model="recovery.reply" placeholder="回复给原提问者">
+                                    <input class="input" type="datetime-local" v-model="recovery.start_time" title="从这个时间之后开始查找">
+                                    <div class="delay-grid"><input class="input" type="number" v-model.number="recovery.min"><span class="hint">-</span><input class="input" type="number" v-model.number="recovery.max"></div>
+                                    <div class="file-picker full">
+                                        <input id="recovery-file-settings" data-recovery-file class="sr-file" type="file" accept="image/*" @change="onRecoveryImage">
+                                        <label class="file-button" for="recovery-file-settings"><i data-lucide="image-plus"></i><span>{{ recovery.imageName || '选择图片' }}</span></label>
+                                        <button v-if="recovery.image" type="button" class="file-clear" @click="clearRecoveryImage" aria-label="清除图片"><i data-lucide="x"></i></button>
+                                    </div>
                                 </div>
-                                <div class="field">
-                                    <label>源群</label>
-                                    <input class="input" v-model="domainPin.source_chat_ids" placeholder="-1002819832851 -1002560892878">
+                            </section>
+                        </div>
+                        <div class="settings-stack">
+                            <section class="settings-panel">
+                                <div class="settings-title-row">
+                                    <div class="section-title"><i data-lucide="pin"></i>域名更新置顶</div>
+                                    <div class="settings-actions">
+                                        <button class="tiny-btn" @click="runDomainPinUpdate(true)" :disabled="domainPin.running"><i data-lucide="eye"></i>只预览</button>
+                                        <button class="primary-btn" @click="runDomainPinUpdate(false)" :disabled="domainPin.running"><i :data-lucide="domainPin.running ? 'loader-2' : 'pin'"></i>{{ domainPin.running ? '执行中' : '更新置顶' }}</button>
+                                    </div>
                                 </div>
-                                <div class="field full">
-                                    <label>最近结果</label>
-                                    <textarea class="textarea" rows="8" readonly :value="domainPin.preview || '尚未执行'"></textarea>
+                                <div class="form-grid">
+                                    <div class="field">
+                                        <label>读取账号</label>
+                                        <select class="input select" v-model="domainPin.source_account">
+                                            <option value="">自动匹配 ara</option>
+                                            <option v-for="account in accountFilterOptions" :key="`domain-source-${account}`" :value="account">{{ account }}</option>
+                                        </select>
+                                    </div>
+                                    <div class="field">
+                                        <label>编辑账号</label>
+                                        <select class="input select" v-model="domainPin.target_account">
+                                            <option value="">自动匹配组长值班</option>
+                                            <option v-for="account in accountFilterOptions" :key="`domain-target-${account}`" :value="account">{{ account }}</option>
+                                        </select>
+                                    </div>
+                                    <div class="field">
+                                        <label>读取条数</label>
+                                        <input class="input" type="number" min="10" max="300" v-model.number="domainPin.history_limit">
+                                    </div>
+                                    <div class="field">
+                                        <label>源群</label>
+                                        <input class="input" v-model="domainPin.source_chat_ids" placeholder="-1002819832851 -1002560892878">
+                                    </div>
+                                    <div class="field full">
+                                        <label>最近结果</label>
+                                        <textarea class="textarea" rows="8" readonly :value="domainPin.preview || '尚未执行'"></textarea>
+                                    </div>
                                 </div>
-                            </div>
-                            <div class="toolbar">
-                                <button class="tiny-btn" @click="runDomainPinUpdate(true)" :disabled="domainPin.running"><i data-lucide="eye"></i>只预览</button>
                                 <span class="hint">{{ domainPin.status }}</span>
-                            </div>
-                        </section>
-                        <section class="section">
-                            <div class="section-title">突发事件批量回复</div>
-                            <div class="form-grid">
-                                <input class="input" v-model="recovery.search" placeholder="查找我的反馈话术">
-                                <input class="input" v-model="recovery.reply" placeholder="回复给原提问者">
-                                <input class="input" type="datetime-local" v-model="recovery.start_time" title="从这个时间之后开始查找">
-                                <div class="delay-grid"><input class="input" type="number" v-model.number="recovery.min"><span class="hint">-</span><input class="input" type="number" v-model.number="recovery.max"></div>
-                                <div class="file-picker full">
-                                    <input id="recovery-file-settings" data-recovery-file class="sr-file" type="file" accept="image/*" @change="onRecoveryImage">
-                                    <label class="file-button" for="recovery-file-settings"><i data-lucide="image-plus"></i><span>{{ recovery.imageName || '选择图片' }}</span></label>
-                                    <button v-if="recovery.image" type="button" class="file-clear" @click="clearRecoveryImage" aria-label="清除图片"><i data-lucide="x"></i></button>
+                            </section>
+                            <section class="settings-panel">
+                                <div class="settings-title-row">
+                                    <div class="section-title"><i data-lucide="bot"></i>AI 私聊回复</div>
+                                    <button class="primary-btn" @click="saveConfig" :disabled="ui.saving"><i data-lucide="check"></i>{{ ui.saving ? '保存中' : '保存AI设置' }}</button>
                                 </div>
-                            </div>
-                            <button class="primary-btn" style="width:max-content;" :disabled="!recovery.search || !recovery.reply" @click="runRecovery"><i data-lucide="send"></i>执行回复</button>
-                        </section>
+                                <div class="account-ai-grid">
+                                    <article class="account-ai-card" v-for="account in accountFilterOptions" :key="`ai-${account}`">
+                                        <div class="account-ai-head">
+                                            <div class="account-ai-title">{{ account }}</div>
+                                            <button type="button" class="switch" :class="{on: aiPrivateAccountConfig(account).enabled}" :aria-pressed="aiPrivateAccountConfig(account).enabled ? 'true' : 'false'" @click="toggleAiPrivateAccount(account)"></button>
+                                        </div>
+                                        <textarea class="textarea" v-model="aiPrivateAccountConfig(account).prompt" placeholder="这个账号私聊时的说话风格，比如：语气自然一点，简短，像平时聊天。"></textarea>
+                                    </article>
+                                </div>
+                            </section>
+                        </div>
                     </div>
                 </section>
             </section>
@@ -3308,40 +3303,6 @@ createApp({
 
         const accountRows = computed(() => runtime.accounts.length ? runtime.accounts : []);
 
-        const unique = (items) => Array.from(new Set(items.map(item => String(item || "").trim()).filter(Boolean)));
-        const actionLabels = {
-            text: "发送文本",
-            edit_prev: "编辑上一条",
-            forward: "直接转发",
-            copy_file: "转发+新文案",
-            amount_logic: "金额分流",
-            preempt_check: "抢答检测",
-            scan_nearby_missed: "扫描遗漏",
-            notify_user: "Bot通知",
-            backend_unlock: "后台动作",
-            agent_orchestrator: "Agent编排"
-        };
-        const resourceCards = computed(() => {
-            const groups = unique(config.rules.flatMap(rule => (rule.groups || []).map(groupLabel)));
-            const keywords = unique(config.rules.flatMap(rule => rule.keywords || []));
-            const fileTypes = unique(config.rules.flatMap(rule => rule.file_extensions || []));
-            const approvalRules = unique(config.rules.filter(rule => rule.enable_approval).map(rule => rule.name || rule.id));
-            const actionCounts = {};
-            config.rules.forEach(rule => (rule.replies || []).forEach(step => {
-                const label = actionLabels[step.type] || step.type || "发送文本";
-                actionCounts[label] = (actionCounts[label] || 0) + 1;
-            }));
-            const actions = Object.entries(actionCounts).map(([name, count]) => `${name} x${count}`);
-            return [
-                { key: "groups", label: "监听群", icon: "messages-square", count: groups.length, items: groups },
-                { key: "keywords", label: "文本关键词", icon: "search", count: keywords.length, items: keywords },
-                { key: "files", label: "文件类型", icon: "files", count: fileTypes.length, items: fileTypes.map(item => `.${item}`) },
-                { key: "actions", label: "动作类型", icon: "workflow", count: actions.length, items: actions },
-                { key: "approval", label: "审批规则", icon: "stamp", count: approvalRules.length, items: approvalRules },
-                { key: "accounts", label: "回复账号", icon: "users-round", count: accountRows.value.length, items: accountRows.value.map(item => `${item.name} · ${item.connected ? "在线" : "离线"}`) }
-            ];
-        });
-
         const saveConfig = async (options = {}) => {
             const silent = !!options.silent;
             const successMessage = options.successMessage || "配置已保存";
@@ -3602,7 +3563,7 @@ createApp({
             mainAccount, accountFilterOptions, avatarText, lastRefreshText, selectedRuleStats, currentRuleRecords,
             aiPrivateAccountConfig, isCurrentAiPrivateEnabled, toggleCurrentAiPrivateReply, toggleAiPrivateAccount,
             isCurrentAccountMonitorEnabled, isCurrentAccountMonitorActive, monitorButtonText, monitorButtonTitle, ensureAccountMonitorEnabled,
-            filteredRecords, hourlyBars, compactHourlyBars, topRules, accountRows, resourceCards,
+            filteredRecords, hourlyBars, compactHourlyBars, topRules, accountRows,
             resourceGroupOptions, senderPrefixOptions, selectedGroupNames, selectedPrefixNames,
             loadConfig, loadRuntimeStats, loadAll, saveConfig, exportConfig, triggerImportConfig, importConfigFile, toggleRuleEnabled, toggleMonitorEnabled, selectRule, selectRuleFromCard, setPage, addRule, duplicateRule, removeRule, ruleStatus,
             onRuleAccountChange, showFailedRecords, showRuleHelp,
