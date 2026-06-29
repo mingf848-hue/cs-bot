@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
+import { ElButton, ElCard, ElCol, ElInput, ElRow, ElTable, ElTableColumn } from 'element-plus'
 import { useZd } from './useZd'
 
 const { state, ensureLoaded, save } = useZd()
@@ -31,17 +32,22 @@ const addPrefix = () => state.config.resources.sender_prefixes.push({ value: '',
           </template>
           <ElTable :data="state.config.resources.groups" height="620" size="small">
             <ElTableColumn label="群名" min-width="180">
-              <template #default="{ row }"><ElInput v-model="row.name" /></template>
+              <template #default="scope"
+                ><ElInput v-if="scope?.row" v-model="scope.row.name"
+              /></template>
             </ElTableColumn>
             <ElTableColumn label="群 ID" min-width="220">
-              <template #default="{ row }"><ElInput v-model="row.id" /></template>
+              <template #default="scope"
+                ><ElInput v-if="scope?.row" v-model="scope.row.id"
+              /></template>
             </ElTableColumn>
             <ElTableColumn width="80" align="center">
-              <template #default="{ $index }">
+              <template #default="scope">
                 <ElButton
+                  v-if="scope?.$index !== undefined"
                   link
                   type="danger"
-                  @click="state.config.resources.groups.splice($index, 1)"
+                  @click="state.config.resources.groups.splice(scope.$index, 1)"
                 >
                   删除
                 </ElButton>
@@ -60,17 +66,22 @@ const addPrefix = () => state.config.resources.sender_prefixes.push({ value: '',
           </template>
           <ElTable :data="state.config.resources.sender_prefixes" height="620" size="small">
             <ElTableColumn label="名称" min-width="180">
-              <template #default="{ row }"><ElInput v-model="row.label" /></template>
+              <template #default="scope"
+                ><ElInput v-if="scope?.row" v-model="scope.row.label"
+              /></template>
             </ElTableColumn>
             <ElTableColumn label="匹配值" min-width="220">
-              <template #default="{ row }"><ElInput v-model="row.value" /></template>
+              <template #default="scope"
+                ><ElInput v-if="scope?.row" v-model="scope.row.value"
+              /></template>
             </ElTableColumn>
             <ElTableColumn width="80" align="center">
-              <template #default="{ $index }">
+              <template #default="scope">
                 <ElButton
+                  v-if="scope?.$index !== undefined"
                   link
                   type="danger"
-                  @click="state.config.resources.sender_prefixes.splice($index, 1)"
+                  @click="state.config.resources.sender_prefixes.splice(scope.$index, 1)"
                 >
                   删除
                 </ElButton>

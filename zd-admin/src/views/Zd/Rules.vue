@@ -1,5 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import {
+  ElButton,
+  ElCard,
+  ElEmpty,
+  ElForm,
+  ElFormItem,
+  ElInput,
+  ElInputNumber,
+  ElSwitch,
+  ElTable,
+  ElTableColumn,
+  ElTag
+} from 'element-plus'
 import { useZd } from './useZd'
 
 const { state, ruleStats, ensureLoaded, save } = useZd()
@@ -79,15 +92,21 @@ const setTextList = (row: any, key: string, value: string) => {
       >
         <ElTableColumn prop="name" label="规则" min-width="180" show-overflow-tooltip />
         <ElTableColumn label="状态" width="80">
-          <template #default="{ row }">
-            <ElTag size="small" :type="row.enabled === false ? 'info' : 'success'">
-              {{ row.enabled === false ? '停用' : '运行' }}
+          <template #default="scope">
+            <ElTag
+              v-if="scope?.row"
+              size="small"
+              :type="scope.row.enabled === false ? 'info' : 'success'"
+            >
+              {{ scope.row.enabled === false ? '停用' : '运行' }}
             </ElTag>
           </template>
         </ElTableColumn>
         <ElTableColumn width="70" align="center">
-          <template #default="{ row }">
-            <ElButton link type="danger" @click.stop="removeRule(row)">删除</ElButton>
+          <template #default="scope">
+            <ElButton v-if="scope?.row" link type="danger" @click.stop="removeRule(scope.row)"
+              >删除</ElButton
+            >
           </template>
         </ElTableColumn>
       </ElTable>

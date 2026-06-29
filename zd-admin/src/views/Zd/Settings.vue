@@ -1,6 +1,18 @@
 <script setup lang="ts">
 import { onMounted, reactive } from 'vue'
-import { ElMessage } from 'element-plus'
+import {
+  ElButton,
+  ElCard,
+  ElCol,
+  ElForm,
+  ElFormItem,
+  ElInput,
+  ElInputNumber,
+  ElMessage,
+  ElRow,
+  ElSwitch,
+  ElTimePicker
+} from 'element-plus'
 import { runDomainPinUpdate } from '@/api/zd'
 import { useZd } from './useZd'
 

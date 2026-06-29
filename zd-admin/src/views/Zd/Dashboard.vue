@@ -1,6 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import {
+  ElButton,
+  ElCard,
+  ElCol,
+  ElMessage,
+  ElRow,
+  ElStatistic,
+  ElTable,
+  ElTableColumn,
+  ElTag
+} from 'element-plus'
 import { toggleMonitor } from '@/api/zd'
 import { useZd } from './useZd'
 
@@ -76,9 +86,13 @@ const toggleGlobalMonitor = async () => {
             <ElTableColumn prop="time" label="时间" width="160" />
             <ElTableColumn prop="rule_name" label="规则" min-width="160" show-overflow-tooltip />
             <ElTableColumn prop="status" label="状态" width="90">
-              <template #default="{ row }">
-                <ElTag size="small" :type="row.status === 'success' ? 'success' : 'danger'">
-                  {{ row.status || '-' }}
+              <template #default="scope">
+                <ElTag
+                  v-if="scope?.row"
+                  size="small"
+                  :type="scope.row.status === 'success' ? 'success' : 'danger'"
+                >
+                  {{ scope.row.status || '-' }}
                 </ElTag>
               </template>
             </ElTableColumn>
@@ -92,9 +106,13 @@ const toggleGlobalMonitor = async () => {
           <ElTable :data="state.runtime.accounts || []" height="430" size="small">
             <ElTableColumn prop="name" label="账号" min-width="120" />
             <ElTableColumn prop="status" label="状态" width="90">
-              <template #default="{ row }">
-                <ElTag size="small" :type="row.connected === false ? 'danger' : 'success'">
-                  {{ row.connected === false ? '离线' : '在线' }}
+              <template #default="scope">
+                <ElTag
+                  v-if="scope?.row"
+                  size="small"
+                  :type="scope.row.connected === false ? 'danger' : 'success'"
+                >
+                  {{ scope.row.connected === false ? '离线' : '在线' }}
                 </ElTag>
               </template>
             </ElTableColumn>

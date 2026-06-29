@@ -1,5 +1,18 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
+import {
+  ElButton,
+  ElInput,
+  ElInputNumber,
+  ElOption,
+  ElSelect,
+  ElSwitch,
+  ElTabPane,
+  ElTable,
+  ElTableColumn,
+  ElTabs,
+  ElTimePicker
+} from 'element-plus'
 import { useZd } from './useZd'
 
 const { state, ensureLoaded, save } = useZd()
@@ -49,32 +62,43 @@ const addBackend = () => {
         >
         <ElTable :data="state.config.scheduled_messages" height="560" size="small">
           <ElTableColumn label="启用" width="80"
-            ><template #default="{ row }"><ElSwitch v-model="row.enabled" /></template
+            ><template #default="scope"
+              ><ElSwitch v-if="scope?.row" v-model="scope.row.enabled" /></template
           ></ElTableColumn>
           <ElTableColumn label="名称" min-width="180"
-            ><template #default="{ row }"><ElInput v-model="row.name" /></template
+            ><template #default="scope"
+              ><ElInput v-if="scope?.row" v-model="scope.row.name" /></template
           ></ElTableColumn>
           <ElTableColumn label="时间" width="130"
-            ><template #default="{ row }"
-              ><ElTimePicker v-model="row.time" format="HH:mm" value-format="HH:mm" /></template
+            ><template #default="scope"
+              ><ElTimePicker
+                v-if="scope?.row"
+                v-model="scope.row.time"
+                format="HH:mm"
+                value-format="HH:mm" /></template
           ></ElTableColumn>
           <ElTableColumn label="频率" width="130"
-            ><template #default="{ row }"
-              ><ElSelect v-model="row.frequency"
+            ><template #default="scope"
+              ><ElSelect v-if="scope?.row" v-model="scope.row.frequency"
                 ><ElOption label="每天" value="daily" /><ElOption
                   label="一次"
                   value="once" /></ElSelect></template
           ></ElTableColumn>
           <ElTableColumn label="内容" min-width="260"
-            ><template #default="{ row }"
-              ><ElInput v-model="row.text" type="textarea" :rows="2" /></template
+            ><template #default="scope"
+              ><ElInput
+                v-if="scope?.row"
+                v-model="scope.row.text"
+                type="textarea"
+                :rows="2" /></template
           ></ElTableColumn>
           <ElTableColumn width="80"
-            ><template #default="{ $index }"
+            ><template #default="scope"
               ><ElButton
+                v-if="scope?.$index !== undefined"
                 link
                 type="danger"
-                @click="state.config.scheduled_messages.splice($index, 1)"
+                @click="state.config.scheduled_messages.splice(scope.$index, 1)"
                 >删除</ElButton
               ></template
             ></ElTableColumn
@@ -87,27 +111,36 @@ const addBackend = () => {
         >
         <ElTable :data="state.config.scheduled_backend_actions" height="560" size="small">
           <ElTableColumn label="启用" width="80"
-            ><template #default="{ row }"><ElSwitch v-model="row.enabled" /></template
+            ><template #default="scope"
+              ><ElSwitch v-if="scope?.row" v-model="scope.row.enabled" /></template
           ></ElTableColumn>
           <ElTableColumn label="名称" min-width="180"
-            ><template #default="{ row }"><ElInput v-model="row.name" /></template
+            ><template #default="scope"
+              ><ElInput v-if="scope?.row" v-model="scope.row.name" /></template
           ></ElTableColumn>
           <ElTableColumn label="时间" width="130"
-            ><template #default="{ row }"
-              ><ElTimePicker v-model="row.time" format="HH:mm" value-format="HH:mm" /></template
+            ><template #default="scope"
+              ><ElTimePicker
+                v-if="scope?.row"
+                v-model="scope.row.time"
+                format="HH:mm"
+                value-format="HH:mm" /></template
           ></ElTableColumn>
           <ElTableColumn label="动作" min-width="180"
-            ><template #default="{ row }"><ElInput v-model="row.action" /></template
+            ><template #default="scope"
+              ><ElInput v-if="scope?.row" v-model="scope.row.action" /></template
           ></ElTableColumn>
           <ElTableColumn label="目标" min-width="180"
-            ><template #default="{ row }"><ElInput v-model="row.target" /></template
+            ><template #default="scope"
+              ><ElInput v-if="scope?.row" v-model="scope.row.target" /></template
           ></ElTableColumn>
           <ElTableColumn width="80"
-            ><template #default="{ $index }"
+            ><template #default="scope"
               ><ElButton
+                v-if="scope?.$index !== undefined"
                 link
                 type="danger"
-                @click="state.config.scheduled_backend_actions.splice($index, 1)"
+                @click="state.config.scheduled_backend_actions.splice(scope.$index, 1)"
                 >删除</ElButton
               ></template
             ></ElTableColumn
@@ -117,17 +150,23 @@ const addBackend = () => {
       <ElTabPane label="跟单查询">
         <ElTable :data="state.config.ticket_follow_tasks" height="590" size="small">
           <ElTableColumn label="启用" width="80"
-            ><template #default="{ row }"><ElSwitch v-model="row.enabled" /></template
+            ><template #default="scope"
+              ><ElSwitch v-if="scope?.row" v-model="scope.row.enabled" /></template
           ></ElTableColumn>
           <ElTableColumn label="名称" min-width="180"
-            ><template #default="{ row }"><ElInput v-model="row.name" /></template
+            ><template #default="scope"
+              ><ElInput v-if="scope?.row" v-model="scope.row.name" /></template
           ></ElTableColumn>
           <ElTableColumn label="间隔分钟" width="140"
-            ><template #default="{ row }"
-              ><ElInputNumber v-model="row.interval_minutes" :min="1" /></template
+            ><template #default="scope"
+              ><ElInputNumber
+                v-if="scope?.row"
+                v-model="scope.row.interval_minutes"
+                :min="1" /></template
           ></ElTableColumn>
           <ElTableColumn label="推送目标" min-width="180"
-            ><template #default="{ row }"><ElInput v-model="row.telegram_target" /></template
+            ><template #default="scope"
+              ><ElInput v-if="scope?.row" v-model="scope.row.telegram_target" /></template
           ></ElTableColumn>
         </ElTable>
       </ElTabPane>
