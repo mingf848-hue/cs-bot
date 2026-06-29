@@ -15,7 +15,7 @@ import zipfile
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from flask import request, jsonify, Response, render_template_string
-from telethon import events, TelegramClient, functions
+from telethon import events, TelegramClient, functions, types
 from telethon.sessions import StringSession
 from telethon.errors import AuthKeyDuplicatedError
 from telegram_proxy import telegram_proxy_client_kwargs
@@ -1559,22 +1559,46 @@ async def get_pinned_message_id(client, target):
     except Exception:
         return None
 
+async def get_pinned_message_ids(client, target, limit=10):
+    peer = telegram_peer_value(target)
+    pinned_ids = []
+    try:
+        messages = await client.get_messages(peer, limit=max(1, int(limit or 10)), filter=types.InputMessagesFilterPinned)
+        for message in messages or []:
+            message_id = getattr(message, "id", None)
+            if message_id and message_id not in pinned_ids:
+                pinned_ids.append(message_id)
+    except Exception as e:
+        logger.info(f"📌 [DomainPin] 读取多置顶列表失败，回退当前置顶: target={target} err={e}")
+    current_pinned_id = await get_pinned_message_id(client, target)
+    if current_pinned_id and current_pinned_id not in pinned_ids:
+        pinned_ids.insert(0, current_pinned_id)
+    return pinned_ids
+
 async def edit_domain_pin_target(client, target, text, dry_run=False):
-    pinned_id = await get_pinned_message_id(client, target)
-    if not pinned_id:
+    pinned_ids = await get_pinned_message_ids(client, target)
+    if not pinned_ids:
         raise RuntimeError("目标群没有置顶消息")
     if dry_run:
-        return {"chat_id": target, "pinned_message_id": pinned_id, "status": "preview"}
-    try:
-        await client.edit_message(telegram_peer_value(target), int(pinned_id), text, link_preview=False)
-    except Exception as e:
-        error_text = str(e)
-        if "Content of the message was not modified" in error_text:
-            return {"chat_id": target, "pinned_message_id": pinned_id, "status": "unchanged"}
-        if "Message author required" in error_text:
-            raise RuntimeError("当前置顶消息不是该账号发送，Telegram 不允许编辑")
-        raise
-    return {"chat_id": target, "pinned_message_id": pinned_id, "status": "success"}
+        return {"chat_id": target, "pinned_message_id": pinned_ids[0], "pinned_message_ids": pinned_ids, "status": "preview"}
+    author_required_count = 0
+    last_author_error = ""
+    for pinned_id in pinned_ids:
+        try:
+            await client.edit_message(telegram_peer_value(target), int(pinned_id), text, link_preview=False)
+            return {"chat_id": target, "pinned_message_id": pinned_id, "pinned_message_ids": pinned_ids, "status": "success"}
+        except Exception as e:
+            error_text = str(e)
+            if "Content of the message was not modified" in error_text:
+                return {"chat_id": target, "pinned_message_id": pinned_id, "pinned_message_ids": pinned_ids, "status": "unchanged"}
+            if "Message author required" in error_text:
+                author_required_count += 1
+                last_author_error = error_text
+                continue
+            raise
+    if author_required_count:
+        raise RuntimeError(f"已尝试 {author_required_count} 条置顶消息，均不是该账号发送，Telegram 不允许编辑")
+    raise RuntimeError(last_author_error or "未找到可编辑的置顶消息")
 
 async def run_domain_pin_update_command(payload=None):
     payload = payload or {}
