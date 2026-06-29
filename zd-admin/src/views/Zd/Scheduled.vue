@@ -1,0 +1,163 @@
+<script setup lang="ts">
+import { onMounted } from 'vue'
+import { useZd } from './useZd'
+
+const { state, ensureLoaded, save } = useZd()
+
+onMounted(ensureLoaded)
+
+const addMessage = () => {
+  state.config.scheduled_messages.push({
+    id: `schedule_${Date.now()}`,
+    name: `定时发送 #${state.config.scheduled_messages.length + 1}`,
+    enabled: true,
+    time: '09:00',
+    frequency: 'daily',
+    account: '',
+    groups: [],
+    text: ''
+  })
+}
+
+const addBackend = () => {
+  state.config.scheduled_backend_actions.push({
+    id: `backend_${Date.now()}`,
+    name: `后台操作 #${state.config.scheduled_backend_actions.length + 1}`,
+    enabled: true,
+    time: '06:00',
+    frequency: 'daily',
+    action: 'venue_display_control',
+    target: ''
+  })
+}
+</script>
+
+<template>
+  <div v-loading="state.loading" class="zd-page">
+    <div class="zd-toolbar">
+      <div>
+        <div class="zd-title">定时任务</div>
+        <div class="zd-subtitle">定时发送、后台操作、跟单查询</div>
+      </div>
+      <ElButton type="primary" :loading="state.saving" @click="save">保存配置</ElButton>
+    </div>
+
+    <ElTabs type="border-card">
+      <ElTabPane label="定时发送">
+        <div class="tab-head"
+          ><ElButton size="small" type="primary" @click="addMessage">添加任务</ElButton></div
+        >
+        <ElTable :data="state.config.scheduled_messages" height="560" size="small">
+          <ElTableColumn label="启用" width="80"
+            ><template #default="{ row }"><ElSwitch v-model="row.enabled" /></template
+          ></ElTableColumn>
+          <ElTableColumn label="名称" min-width="180"
+            ><template #default="{ row }"><ElInput v-model="row.name" /></template
+          ></ElTableColumn>
+          <ElTableColumn label="时间" width="130"
+            ><template #default="{ row }"
+              ><ElTimePicker v-model="row.time" format="HH:mm" value-format="HH:mm" /></template
+          ></ElTableColumn>
+          <ElTableColumn label="频率" width="130"
+            ><template #default="{ row }"
+              ><ElSelect v-model="row.frequency"
+                ><ElOption label="每天" value="daily" /><ElOption
+                  label="一次"
+                  value="once" /></ElSelect></template
+          ></ElTableColumn>
+          <ElTableColumn label="内容" min-width="260"
+            ><template #default="{ row }"
+              ><ElInput v-model="row.text" type="textarea" :rows="2" /></template
+          ></ElTableColumn>
+          <ElTableColumn width="80"
+            ><template #default="{ $index }"
+              ><ElButton
+                link
+                type="danger"
+                @click="state.config.scheduled_messages.splice($index, 1)"
+                >删除</ElButton
+              ></template
+            ></ElTableColumn
+          >
+        </ElTable>
+      </ElTabPane>
+      <ElTabPane label="后台操作">
+        <div class="tab-head"
+          ><ElButton size="small" type="primary" @click="addBackend">添加操作</ElButton></div
+        >
+        <ElTable :data="state.config.scheduled_backend_actions" height="560" size="small">
+          <ElTableColumn label="启用" width="80"
+            ><template #default="{ row }"><ElSwitch v-model="row.enabled" /></template
+          ></ElTableColumn>
+          <ElTableColumn label="名称" min-width="180"
+            ><template #default="{ row }"><ElInput v-model="row.name" /></template
+          ></ElTableColumn>
+          <ElTableColumn label="时间" width="130"
+            ><template #default="{ row }"
+              ><ElTimePicker v-model="row.time" format="HH:mm" value-format="HH:mm" /></template
+          ></ElTableColumn>
+          <ElTableColumn label="动作" min-width="180"
+            ><template #default="{ row }"><ElInput v-model="row.action" /></template
+          ></ElTableColumn>
+          <ElTableColumn label="目标" min-width="180"
+            ><template #default="{ row }"><ElInput v-model="row.target" /></template
+          ></ElTableColumn>
+          <ElTableColumn width="80"
+            ><template #default="{ $index }"
+              ><ElButton
+                link
+                type="danger"
+                @click="state.config.scheduled_backend_actions.splice($index, 1)"
+                >删除</ElButton
+              ></template
+            ></ElTableColumn
+          >
+        </ElTable>
+      </ElTabPane>
+      <ElTabPane label="跟单查询">
+        <ElTable :data="state.config.ticket_follow_tasks" height="590" size="small">
+          <ElTableColumn label="启用" width="80"
+            ><template #default="{ row }"><ElSwitch v-model="row.enabled" /></template
+          ></ElTableColumn>
+          <ElTableColumn label="名称" min-width="180"
+            ><template #default="{ row }"><ElInput v-model="row.name" /></template
+          ></ElTableColumn>
+          <ElTableColumn label="间隔分钟" width="140"
+            ><template #default="{ row }"
+              ><ElInputNumber v-model="row.interval_minutes" :min="1" /></template
+          ></ElTableColumn>
+          <ElTableColumn label="推送目标" min-width="180"
+            ><template #default="{ row }"><ElInput v-model="row.telegram_target" /></template
+          ></ElTableColumn>
+        </ElTable>
+      </ElTabPane>
+    </ElTabs>
+  </div>
+</template>
+
+<style scoped>
+.zd-page {
+  display: grid;
+  gap: 12px;
+}
+.zd-toolbar,
+.tab-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.zd-title {
+  font-size: 20px;
+  font-weight: 700;
+}
+.zd-subtitle {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.tab-head {
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+</style>

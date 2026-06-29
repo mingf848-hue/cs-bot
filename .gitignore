@@ -7,3 +7,5 @@ monitor_runtime_stats.json
 telegram_session_string.txt
 telegram_extra_sessions.json
 extensions/zd-unlock-extension.pem
+zd-admin/node_modules/
+zd-admin/dist/

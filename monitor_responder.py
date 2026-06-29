@@ -15,7 +15,7 @@ import zipfile
 import hmac
 from collections import deque
 from datetime import datetime, timedelta, timezone
-from flask import request, jsonify, Response, render_template_string, session, redirect
+from flask import request, jsonify, Response, render_template_string, session, redirect, send_from_directory
 from telethon import events, TelegramClient, functions, types
 from telethon.sessions import StringSession
 from telethon.errors import AuthKeyDuplicatedError
@@ -5798,6 +5798,12 @@ poll();setInterval(poll,2000);
 """
 
 def get_monitor_settings_html():
+    dist_index = os.path.join(os.path.dirname(__file__), "zd-admin", "dist", "index.html")
+    try:
+        with open(dist_index, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        pass
     template_path = os.path.join(os.path.dirname(__file__), "templates", "monitor_settings.html")
     try:
         with open(template_path, "r", encoding="utf-8") as f:
@@ -6319,10 +6325,59 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         session.pop("zd_username", None)
         return redirect("/zd/login")
 
-    @app.route('/zd')
-    def monitor_settings_page():
+    @app.route('/api/zd_auth/login', methods=['POST'])
+    def zd_auth_login_api():
+        cfg = zd_auth_config()
+        data = request.get_json(silent=True) or {}
+        username = str(data.get("username") or "")
+        password = str(data.get("password") or "")
+        if hmac.compare_digest(username, cfg["username"]) and hmac.compare_digest(password, cfg["password"]):
+            session["zd_authenticated"] = True
+            session["zd_username"] = username
+            return jsonify({
+                "code": 0,
+                "data": {
+                    "username": username,
+                    "realName": username,
+                    "role": "admin",
+                    "roleId": "admin",
+                    "permissions": ["*"],
+                },
+                "message": "登录成功",
+            })
+        return jsonify({"code": 401, "message": "用户名或密码错误"}), 401
+
+    @app.route('/api/zd_auth/logout', methods=['POST', 'GET'])
+    def zd_auth_logout_api():
+        session.pop("zd_authenticated", None)
+        session.pop("zd_username", None)
+        return jsonify({"code": 0, "data": None, "message": "已退出"})
+
+    @app.route('/api/zd_auth/me')
+    def zd_auth_me_api():
         if not zd_is_logged_in():
-            return redirect(zd_login_url())
+            return jsonify({"code": 401, "message": "请先登录"}), 401
+        username = session.get("zd_username") or zd_auth_config()["username"]
+        return jsonify({
+            "code": 0,
+            "data": {
+                "username": username,
+                "realName": username,
+                "role": "admin",
+                "roleId": "admin",
+                "permissions": ["*"],
+            },
+            "message": "ok",
+        })
+
+    @app.route('/zd/assets/<path:filename>')
+    def zd_admin_assets(filename):
+        dist_assets = os.path.join(os.path.dirname(__file__), "zd-admin", "dist", "assets")
+        return send_from_directory(dist_assets, filename)
+
+    @app.route('/zd')
+    @app.route('/zd/')
+    def monitor_settings_page():
         return Response(get_monitor_settings_html(), mimetype='text/html; charset=utf-8')
         
     @app.route('/otp')
