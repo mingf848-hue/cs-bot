@@ -184,8 +184,8 @@
             z-index: 20;
         }
 
-        .env-pill, .search-box, .icon-btn, .more-btn, .primary-btn, .ghost-btn, .tiny-btn {
-            min-height: 44px;
+        .env-pill, .search-box, .icon-btn, .more-btn, .primary-btn, .ghost-btn {
+            min-height: 40px;
             border-radius: 8px;
             border: 1px solid var(--line);
             background: #fff;
@@ -212,7 +212,7 @@
         .more-btn:hover, .ghost-btn:hover, .tiny-btn:hover, .icon-btn:hover, .env-pill:hover { background: var(--surface-tint); border-color: var(--line-strong); }
         .ghost-btn { padding: 0 14px; color: #536078; font-weight: 700; }
         .account-select { min-width: 132px; appearance: none; outline: 0; cursor: pointer; }
-        .tiny-btn { min-height: 34px; padding: 0 10px; font-size: 13px; font-weight: 700; color: #536078; }
+        .tiny-btn { min-height: 34px; border-radius: 8px; border: 1px solid var(--line); background: #fff; padding: 0 10px; font-size: 13px; font-weight: 700; color: #536078; display: inline-flex; align-items: center; gap: 8px; }
 
         .avatar {
             width: 28px;
@@ -246,19 +246,31 @@
         .stats-row {
             grid-column: 1 / -1;
             display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(0, 1.45fr);
+            grid-template-columns: repeat(4, minmax(160px, 1fr)) minmax(360px, .95fr);
             gap: 14px;
-            align-items: center;
+            align-items: stretch;
         }
 
         .stat-actions {
-            align-self: start;
-            justify-self: end;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding-top: 8px;
+            min-height: 98px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: #fff;
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+            align-items: stretch;
+            padding: 10px;
         }
+        .stat-actions .more-btn,
+        .stat-actions .primary-btn {
+            width: 100%;
+            min-height: 36px;
+            justify-content: center;
+            padding: 0 10px;
+            white-space: nowrap;
+        }
+        .stat-actions .primary-btn { grid-column: 1 / -1; }
 
         .stat-card {
             min-height: 98px;
@@ -306,6 +318,7 @@
             padding: 0 16px;
             border-bottom: 1px solid var(--line);
             background: linear-gradient(180deg, #fff, #fbfdff);
+            flex-wrap: wrap;
         }
 
         .panel-title { display: flex; align-items: center; gap: 9px; font-weight: 820; font-size: 16px; min-width: 0; }
@@ -798,9 +811,10 @@
         .page-panel { min-height: calc(100vh - 188px); }
         .page-card { min-width: 0; }
         .page-body { padding: 16px; display: grid; gap: 16px; }
-        .dashboard-grid, .resource-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(320px, .75fr); gap: 16px; align-items: start; }
+        .dashboard-grid, .resource-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(340px, .75fr); gap: 16px; align-items: start; }
         .resource-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-        .span-2 { grid-row: span 2; }
+        .dashboard-main { grid-row: span 3; }
+        .dashboard-side { min-height: 0; }
         .metrics-grid.wide { grid-template-columns: repeat(4, minmax(0, 1fr)); }
         .hour-bars { height: 178px; display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 5px; align-items: end; padding: 12px 4px 0; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
         .hour-bars.tall { height: 230px; }
@@ -820,7 +834,7 @@
         .account-row em { font-style: normal; color: var(--red); font-weight: 780; }
         .account-row em.ok { color: var(--green); }
         .records-toolbar { display: grid; grid-template-columns: minmax(260px, 420px) minmax(0, 1fr); gap: 12px; align-items: center; }
-        .record-table { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #fff; }
+        .record-table { border: 1px solid var(--line); border-radius: 8px; overflow: auto; background: #fff; }
         .table-head, .table-row { display: grid; grid-template-columns: 130px 100px minmax(160px, 1fr) 130px 90px minmax(180px, 1.2fr); gap: 12px; align-items: center; padding: 12px 14px; }
         .table-head { color: #64748b; background: #f8fafc; font-size: 12px; font-weight: 790; }
         .table-row { min-height: 52px; border-top: 1px solid var(--line); color: #475569; font-size: 13px; }
@@ -855,8 +869,8 @@
         .account-ai-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
         .account-ai-title { min-width: 0; font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .account-ai-card .textarea { min-height: 118px; }
-        .schedule-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 620px)); gap: 14px; align-items: start; }
-        .schedule-card { border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 12px; display: grid; gap: 12px; max-width: 620px; }
+        .schedule-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 14px; align-items: start; }
+        .schedule-card { border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 12px; display: grid; gap: 12px; min-width: 0; }
         .schedule-card.off { opacity: .62; }
         .schedule-head { display: grid; grid-template-columns: minmax(180px, 1fr) auto auto; gap: 10px; align-items: center; }
         .schedule-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
@@ -965,7 +979,10 @@
             .stats-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             .stat-actions { grid-column: 1 / -1; }
             .dashboard-grid, .resource-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-            .span-2 { grid-row: auto; grid-column: 1 / -1; }
+            .dashboard-main { grid-row: auto; grid-column: 1 / -1; }
+            .topbar { height: auto; min-height: 68px; padding-top: 10px; padding-bottom: 10px; flex-wrap: wrap; }
+            .top-actions { flex-wrap: wrap; justify-content: flex-end; }
+            .search-box { width: 180px; }
             .table-head, .table-row { grid-template-columns: 120px 88px minmax(130px, 1fr) 110px 78px minmax(160px, 1fr); }
         }
 
@@ -981,6 +998,9 @@
             .content.rules-page .rule-list { grid-template-columns: 1fr; }
             .mobile-nav { display: flex; }
             .stats-row { grid-template-columns: 1fr; }
+            .stat-actions { grid-template-columns: 1fr; }
+            .stat-actions .primary-btn { grid-column: auto; }
+            .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             .form-grid, .form-grid.three, .flow-top, .backend-grid { grid-template-columns: 1fr; }
             .list-topline { grid-template-columns: 1fr; }
             .editor-head { grid-template-columns: 1fr; align-items: start; padding-top: 10px; padding-bottom: 10px; }
@@ -996,6 +1016,22 @@
             .hour-cell small { display: none; }
             .record-table { overflow-x: auto; }
             .table-head, .table-row { min-width: 760px; }
+        }
+
+        @media (max-width: 560px) {
+            .metrics-grid,
+            .metrics-grid.wide {
+                grid-template-columns: 1fr;
+            }
+            .panel-head {
+                padding-top: 10px;
+                padding-bottom: 10px;
+            }
+            .top-actions .script-btn,
+            .top-actions .account-select {
+                width: 100%;
+                justify-content: center;
+            }
         }
     </style>
 </head>
@@ -1792,7 +1828,7 @@
                 </section>
 
                 <section class="page-wide dashboard-grid" v-if="ui.page === 'dashboard'">
-                    <article class="panel page-card span-2">
+                    <article class="panel page-card dashboard-main">
                         <div class="panel-head">
                             <div class="panel-title"><i data-lucide="activity"></i>今日监控台</div>
                             <span class="hint">数据刷新：{{ lastRefreshText }}</span>
@@ -1819,7 +1855,22 @@
                         </div>
                     </article>
 
-                    <article class="panel page-card">
+                    <article class="panel page-card dashboard-side">
+                        <div class="panel-head">
+                            <div class="panel-title"><i data-lucide="users-round"></i>账号状态</div>
+                            <button class="tiny-btn" @click="setPage('members')">成员</button>
+                        </div>
+                        <div class="page-body account-list">
+                            <div v-for="account in accountRows" :key="account.name" class="account-row">
+                                <div class="avatar small">{{ account.name.slice(0, 1) }}</div>
+                                <div><strong>{{ account.name }}</strong><span>{{ account.role }} · {{ account.user_id || '未读取 ID' }}</span></div>
+                                <em :class="{ok: account.connected}">{{ account.connected ? '在线' : '离线' }}</em>
+                            </div>
+                            <div v-if="accountRows.length === 0" class="empty-state">暂无已注册账号</div>
+                        </div>
+                    </article>
+
+                    <article class="panel page-card dashboard-side">
                         <div class="panel-head">
                             <div class="panel-title"><i data-lucide="clipboard-list"></i>最近执行</div>
                             <button class="tiny-btn" @click="setPage('records')">全部</button>
@@ -1834,7 +1885,7 @@
                         </div>
                     </article>
 
-                    <article class="panel page-card">
+                    <article class="panel page-card dashboard-side">
                         <div class="panel-head">
                             <div class="panel-title"><i data-lucide="list-ordered"></i>规则热度</div>
                             <button class="tiny-btn" @click="setPage('analytics')">分析</button>
@@ -1846,21 +1897,6 @@
                                 <strong>{{ rule.total }}</strong>
                             </div>
                             <div v-if="topRules.length === 0" class="empty-state">今天还没有规则触发</div>
-                        </div>
-                    </article>
-
-                    <article class="panel page-card">
-                        <div class="panel-head">
-                            <div class="panel-title"><i data-lucide="users-round"></i>账号状态</div>
-                            <button class="tiny-btn" @click="setPage('members')">成员</button>
-                        </div>
-                        <div class="page-body account-list">
-                            <div v-for="account in accountRows" :key="account.name" class="account-row">
-                                <div class="avatar small">{{ account.name.slice(0, 1) }}</div>
-                                <div><strong>{{ account.name }}</strong><span>{{ account.role }} · {{ account.user_id || '未读取 ID' }}</span></div>
-                                <em :class="{ok: account.connected}">{{ account.connected ? '在线' : '离线' }}</em>
-                            </div>
-                            <div v-if="accountRows.length === 0" class="empty-state">暂无已注册账号</div>
                         </div>
                     </article>
                 </section>
