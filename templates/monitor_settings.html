@@ -819,7 +819,7 @@
         .inline-link { color: var(--primary); font-weight: 760; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
 
         .page-wide { grid-column: 1 / -1; min-width: 0; }
-        .page-panel { min-height: calc(100vh - 188px); }
+        .page-panel { min-height: 0; }
         .page-card { min-width: 0; }
         .page-body { padding: 16px; display: grid; gap: 16px; }
         .dashboard-grid, .resource-grid { display: grid; gap: 16px; align-items: start; }
@@ -855,15 +855,44 @@
         .table-row { min-height: 52px; border-top: 1px solid var(--line); color: #475569; font-size: 13px; }
         .table-row:hover { background: #fbfdff; }
         .table-row span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .settings-layout { grid-template-columns: minmax(320px, .82fr) minmax(0, 1.18fr); align-items: start; }
-        .settings-stack { display: grid; gap: 16px; min-width: 0; }
-        .settings-panel { border: 1px solid var(--line); border-radius: 8px; padding: 16px; background: #fff; display: grid; gap: 14px; min-width: 0; box-shadow: 0 1px 2px rgba(15,23,42,.03); }
-        .settings-panel.compact { gap: 10px; }
+        .settings-page .page-body,
+        .scheduled-page .page-body { padding: 12px; gap: 12px; }
+        .settings-page .panel-head,
+        .scheduled-page .panel-head { min-height: 50px; }
+        .settings-page .input,
+        .settings-page .select,
+        .scheduled-page .input,
+        .scheduled-page .select { min-height: 34px; padding: 0 10px; font-size: 13px; }
+        .settings-page .textarea,
+        .scheduled-page .textarea { padding: 8px 10px; font-size: 13px; line-height: 1.45; }
+        .settings-page .field,
+        .scheduled-page .field { gap: 4px; }
+        .settings-page label,
+        .settings-page .field-label,
+        .scheduled-page label,
+        .scheduled-page .field-label { font-size: 12px; }
+        .settings-page .primary-btn,
+        .settings-page .more-btn,
+        .settings-page .ghost-btn,
+        .settings-page .tiny-btn,
+        .scheduled-page .primary-btn,
+        .scheduled-page .more-btn,
+        .scheduled-page .ghost-btn,
+        .scheduled-page .tiny-btn { min-height: 34px; }
+        .settings-layout { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 12px; align-items: start; }
+        .settings-stack { display: contents; min-width: 0; }
+        .settings-panel { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fff; display: grid; gap: 10px; min-width: 0; box-shadow: none; }
+        .settings-panel.compact { gap: 8px; }
+        .settings-panel.monitor-panel,
+        .settings-panel.schedule-panel,
+        .settings-panel.recovery-panel { grid-column: span 4; }
+        .settings-panel.domain-panel { grid-column: span 8; }
+        .settings-panel.ai-panel { grid-column: span 4; }
         .settings-panel .section { gap: 10px; }
         .settings-panel .section + .section { padding-top: 12px; border-top: 1px solid var(--line); }
         .settings-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
         .settings-title-row .section-title { display: flex; align-items: center; gap: 8px; }
-        .settings-toggle-list { display: grid; gap: 4px; }
+        .settings-toggle-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 4px 12px; }
         .settings-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
         .domain-status {
             display: block;
@@ -879,22 +908,29 @@
         }
         .development-state { min-height: 320px; display: grid; place-items: center; text-align: center; color: var(--muted); border: 1px dashed var(--line-strong); border-radius: 8px; background: #fbfdff; }
         .development-state strong { display: block; color: var(--text); font-size: 22px; margin-bottom: 8px; }
-        .account-ai-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-        .account-ai-card { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fbfcff; display: grid; gap: 10px; }
+        .account-ai-grid { display: grid; gap: 8px; }
+        .account-ai-card { border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: #fbfcff; display: grid; gap: 8px; }
         .account-ai-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
         .account-ai-title { min-width: 0; font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .account-ai-card .textarea { min-height: 118px; }
-        .schedule-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 14px; align-items: start; }
-        .schedule-card { border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 12px; display: grid; gap: 12px; min-width: 0; }
+        .account-ai-card .textarea { min-height: 72px; }
+        .schedule-board { grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; }
+        .task-section { min-width: 0; display: grid; gap: 8px; }
+        .schedule-list { display: grid; gap: 0; border: 1px solid var(--line); border-radius: 8px; background: #fff; overflow: hidden; }
+        .scheduled-page .schedule-list + .subhead { margin-top: 4px; }
+        .schedule-card { border: 0; border-top: 1px solid var(--line); border-radius: 0; background: #fff; padding: 10px 12px; display: grid; grid-template-columns: minmax(220px, 280px) minmax(0, 1fr) minmax(220px, .42fr); gap: 12px; min-width: 0; align-items: start; }
+        .schedule-board .schedule-card { grid-template-columns: 1fr; gap: 10px; }
+        .schedule-card:first-child { border-top: 0; }
         .schedule-card.off { opacity: .62; }
-        .schedule-head { display: grid; grid-template-columns: minmax(180px, 1fr) auto auto; gap: 10px; align-items: center; }
-        .schedule-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-        .schedule-fields { display: grid; gap: 12px; }
-        .schedule-fields .textarea { min-height: 92px; }
-        .schedule-fields .message-box { min-height: 136px; }
+        .schedule-head { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; align-items: center; }
+        .schedule-head .icon-btn { width: 34px; min-height: 34px; }
+        .schedule-options { display: grid; grid-template-columns: repeat(4, minmax(110px, 1fr)); gap: 8px; }
+        .schedule-board .schedule-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .schedule-fields { display: grid; gap: 8px; }
+        .schedule-fields .textarea { min-height: 58px; }
+        .schedule-fields .message-box { min-height: 72px; }
         .schedule-meta { display: flex; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
-        .subhead { margin: 4px 0 10px; color: var(--muted); font-size: 12px; font-weight: 800; }
-        .check-row, .time-row { display: flex; align-items: center; gap: 10px; min-height: 44px; }
+        .subhead { min-height: 32px; margin: 0; padding: 0 2px; color: #334155; font-size: 13px; font-weight: 820; display: flex; align-items: center; }
+        .check-row, .time-row { display: flex; align-items: center; gap: 8px; min-height: 36px; }
         .time-row .input { min-width: 0; }
         .input.full { grid-column: 1 / -1; }
         .file-picker { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -968,7 +1004,7 @@
         .toast.show { opacity: 1; transform: translateY(0); }
         .toast.error { background: #821f35; }
 
-        .empty-state { border: 1px dashed var(--line-strong); border-radius: 8px; min-height: 140px; display: grid; place-items: center; text-align: center; color: var(--muted); padding: 18px; }
+        .empty-state { border: 1px dashed var(--line-strong); border-radius: 8px; min-height: 72px; display: grid; place-items: center; text-align: center; color: var(--muted); padding: 12px; }
         .mobile-bar { display: none; }
         .mobile-nav { display: none; grid-column: 1 / -1; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
         .mobile-nav .chip { flex: 0 0 auto; }
@@ -2070,7 +2106,7 @@
                     </div>
                 </section>
 
-                <section class="panel page-wide page-panel" v-if="ui.page === 'scheduled'">
+                <section class="panel page-wide page-panel scheduled-page" v-if="ui.page === 'scheduled'">
                     <div class="panel-head">
                         <div class="panel-title"><i data-lucide="send"></i>定时任务</div>
                         <div class="toolbar">
@@ -2080,7 +2116,8 @@
                             <button class="primary-btn" @click="saveConfig" :disabled="ui.saving"><i data-lucide="check"></i>{{ ui.saving ? '保存中' : '保存定时任务' }}</button>
                         </div>
                     </div>
-                    <div class="page-body">
+                    <div class="page-body schedule-board">
+                        <section class="task-section">
                         <div class="subhead">注单跟单</div>
                         <div class="schedule-list">
                             <article class="schedule-card" v-for="(item, index) in config.ticket_follow_tasks" :key="item.id" :class="{off: !item.enabled}">
@@ -2129,6 +2166,8 @@
                             </article>
                             <div v-if="!config.ticket_follow_tasks.length" class="empty-state">暂无注单跟单任务</div>
                         </div>
+                        </section>
+                        <section class="task-section">
                         <div class="subhead">定时后台操作</div>
                         <div class="schedule-list">
                             <article class="schedule-card" v-for="(item, index) in config.scheduled_backend_actions" :key="item.id" :class="{off: !item.enabled}">
@@ -2187,6 +2226,8 @@
                             </article>
                             <div v-if="!config.scheduled_backend_actions.length" class="empty-state">暂无定时后台操作</div>
                         </div>
+                        </section>
+                        <section class="task-section">
                         <div class="subhead">定时发送</div>
                         <div class="schedule-list">
                             <article class="schedule-card" v-for="(item, index) in config.scheduled_messages" :key="item.id" :class="{off: !item.enabled}">
@@ -2237,17 +2278,18 @@
                             </article>
                             <div v-if="!config.scheduled_messages.length" class="empty-state">暂无定时发送任务</div>
                         </div>
+                        </section>
                     </div>
                 </section>
 
-                <section class="panel page-wide page-panel" v-if="ui.page === 'settings'">
+                <section class="panel page-wide page-panel settings-page" v-if="ui.page === 'settings'">
                     <div class="panel-head">
                         <div class="panel-title"><i data-lucide="settings"></i>系统设置</div>
                         <button class="primary-btn" @click="saveConfig" :disabled="ui.saving"><i data-lucide="check"></i>{{ ui.saving ? '保存中' : '保存设置' }}</button>
                     </div>
                     <div class="page-body settings-layout">
                         <div class="settings-stack">
-                            <section class="settings-panel compact">
+                            <section class="settings-panel compact monitor-panel">
                                 <div class="settings-title-row">
                                     <div class="section-title"><i data-lucide="power"></i>监听开关</div>
                                 </div>
@@ -2259,7 +2301,7 @@
                                     </label>
                                 </div>
                             </section>
-                            <section class="settings-panel">
+                            <section class="settings-panel schedule-panel">
                                 <div class="section">
                                     <div class="section-title">自动排班</div>
                                     <label class="inline-check"><input class="checkbox" type="checkbox" v-model="config.schedule.active">启用排班</label>
@@ -2273,7 +2315,7 @@
                                     <input class="input" :value="(config.approval_keywords || []).join(', ')" @input="config.approval_keywords = splitInline($event.target.value)" placeholder="同意, 批准, ok">
                                 </div>
                             </section>
-                            <section class="settings-panel">
+                            <section class="settings-panel recovery-panel">
                                 <div class="settings-title-row">
                                     <div class="section-title"><i data-lucide="send"></i>突发事件批量回复</div>
                                     <button class="primary-btn" :disabled="!recovery.search || !recovery.reply" @click="runRecovery"><i data-lucide="send"></i>执行回复</button>
@@ -2292,7 +2334,7 @@
                             </section>
                         </div>
                         <div class="settings-stack">
-                            <section class="settings-panel">
+                            <section class="settings-panel domain-panel">
                                 <div class="settings-title-row">
                                     <div class="section-title"><i data-lucide="pin"></i>域名更新置顶</div>
                                     <div class="settings-actions">
@@ -2330,7 +2372,7 @@
                                 </div>
                                 <span class="domain-status" v-if="domainPin.status">{{ domainPin.status }}</span>
                             </section>
-                            <section class="settings-panel">
+                            <section class="settings-panel ai-panel">
                                 <div class="settings-title-row">
                                     <div class="section-title"><i data-lucide="bot"></i>AI 私聊回复</div>
                                     <button class="primary-btn" @click="saveConfig" :disabled="ui.saving"><i data-lucide="check"></i>{{ ui.saving ? '保存中' : '保存AI设置' }}</button>
