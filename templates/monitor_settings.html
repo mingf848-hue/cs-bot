@@ -5,6 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Monitor Pro v78</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@latest/dist/css/tabler.min.css">
     <script src="https://unpkg.com/vue@3.3.4/dist/vue.global.prod.js"></script>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
     <style>
@@ -1182,10 +1183,188 @@
                 min-width: 0;
             }
         }
+
+        .tabler-admin {
+            --bg: var(--tblr-bg-surface-secondary, #f6f8fb);
+            --surface: var(--tblr-bg-surface, #fff);
+            --line: var(--tblr-border-color, #dce1e7);
+            --line-strong: var(--tblr-border-color, #dce1e7);
+            --text: var(--tblr-body-color, #1f2937);
+            --muted: var(--tblr-muted, #667085);
+            --primary: var(--tblr-primary, #206bc4);
+            --primary-strong: #1a569d;
+            --primary-soft: rgba(32, 107, 196, .08);
+            background: var(--tblr-bg-surface-secondary, #f6f8fb);
+            color: var(--tblr-body-color, #1f2937);
+            font-family: var(--tblr-font-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif);
+        }
+
+        .tabler-admin .app-shell {
+            grid-template-columns: 15rem minmax(0, 1fr);
+            background: var(--tblr-bg-surface-secondary, #f6f8fb);
+        }
+
+        .tabler-admin .sidebar {
+            padding: 0;
+            gap: 0;
+            background: var(--tblr-bg-surface, #fff);
+            border-right: 1px solid var(--tblr-border-color);
+            box-shadow: none;
+        }
+
+        .tabler-admin .brand {
+            min-height: 3.5rem;
+            padding: 0 1rem;
+            border-bottom: 1px solid var(--tblr-border-color);
+        }
+
+        .tabler-admin .brand-mark {
+            width: 2rem;
+            height: 2rem;
+            border-radius: var(--tblr-border-radius, 4px);
+            background: var(--tblr-primary);
+            box-shadow: none;
+        }
+
+        .tabler-admin .brand-title { font-size: 1rem; font-weight: 700; }
+        .tabler-admin .brand-version { font-size: .75rem; border-left: 0; padding-left: 0; }
+        .tabler-admin .nav-list { padding: .75rem; gap: .125rem; }
+        .tabler-admin .nav-item {
+            height: 2.25rem;
+            border-radius: var(--tblr-border-radius, 4px);
+            padding: 0 .75rem;
+            color: var(--tblr-muted);
+            font-size: .875rem;
+            font-weight: 500;
+            border: 0;
+        }
+        .tabler-admin .nav-item.active {
+            background: rgba(32, 107, 196, .08);
+            color: var(--tblr-primary);
+            box-shadow: inset 2px 0 0 var(--tblr-primary);
+        }
+
+        .tabler-admin .plan-card {
+            margin: auto .75rem .75rem;
+            padding: .75rem;
+            border-radius: var(--tblr-border-radius, 4px);
+            border-color: var(--tblr-border-color);
+            box-shadow: none;
+        }
+
+        .tabler-admin .collapse-link { display: none; }
+
+        .tabler-admin .topbar {
+            min-height: 3.5rem;
+            height: 3.5rem;
+            padding: 0 1rem;
+            background: var(--tblr-bg-surface, #fff);
+            border-bottom: 1px solid var(--tblr-border-color);
+            position: sticky;
+            top: 0;
+        }
+
+        .tabler-admin .content {
+            width: 100%;
+            max-width: none;
+            padding: 1rem;
+            gap: 1rem;
+        }
+
+        .tabler-admin .panel,
+        .tabler-admin .stat-card,
+        .tabler-admin .preview-card {
+            border: 1px solid var(--tblr-border-color);
+            border-radius: var(--tblr-border-radius, 4px);
+            background: var(--tblr-bg-surface, #fff);
+            box-shadow: var(--tblr-box-shadow-card, 0 1px 2px rgba(0,0,0,.04));
+        }
+
+        .tabler-admin .panel-head {
+            min-height: 3rem;
+            padding: 0 .875rem;
+            background: var(--tblr-bg-surface, #fff);
+            border-bottom: 1px solid var(--tblr-border-color);
+        }
+
+        .tabler-admin .panel-title,
+        .tabler-admin .section-title,
+        .tabler-admin .subhead {
+            font-size: .875rem;
+            font-weight: 600;
+            color: var(--tblr-body-color);
+        }
+
+        .tabler-admin .page-body,
+        .tabler-admin .editor-body,
+        .tabler-admin .preview-body {
+            padding: .875rem;
+            gap: .875rem;
+        }
+
+        .tabler-admin .input,
+        .tabler-admin .textarea,
+        .tabler-admin .select,
+        .tabler-admin .rule-search,
+        .tabler-admin .search-box {
+            min-height: 2.25rem;
+            border-radius: var(--tblr-border-radius, 4px);
+            border: 1px solid var(--tblr-border-color);
+            box-shadow: none;
+        }
+
+        .tabler-admin .env-pill,
+        .tabler-admin .more-btn,
+        .tabler-admin .ghost-btn,
+        .tabler-admin .primary-btn,
+        .tabler-admin .tiny-btn,
+        .tabler-admin .icon-btn,
+        .tabler-admin .script-btn,
+        .tabler-admin .file-button {
+            min-height: 2.25rem;
+            border-radius: var(--tblr-border-radius, 4px);
+            box-shadow: none;
+            font-size: .875rem;
+        }
+
+        .tabler-admin .primary-btn {
+            background: var(--tblr-primary);
+            border-color: var(--tblr-primary);
+        }
+
+        .tabler-admin .stat-card {
+            min-height: 5rem;
+            padding: .875rem;
+            grid-template-columns: 2.5rem minmax(0, 1fr);
+        }
+        .tabler-admin .stat-icon { width: 2.5rem; height: 2.5rem; border-radius: var(--tblr-border-radius); }
+        .tabler-admin .stat-value { font-size: 1.5rem; font-weight: 700; }
+        .tabler-admin .stat-label,
+        .tabler-admin label,
+        .tabler-admin .field-label { font-size: .75rem; font-weight: 500; color: var(--tblr-muted); }
+
+        .tabler-admin .table-head,
+        .tabler-admin .table-row,
+        .tabler-admin .rule-card,
+        .tabler-admin .account-row,
+        .tabler-admin .record.rich {
+            border-color: var(--tblr-border-color);
+            border-radius: 0;
+            box-shadow: none;
+        }
+
+        .tabler-admin .settings-page .page-body,
+        .tabler-admin .scheduled-page .page-body {
+            background: var(--tblr-bg-surface, #fff);
+            border: 1px solid var(--tblr-border-color);
+            border-top: 0;
+            border-radius: 0 0 var(--tblr-border-radius) var(--tblr-border-radius);
+        }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tabler/core@latest/dist/js/tabler.min.js"></script>
 </head>
-<body>
-<div id="app" v-cloak>
+<body class="tabler-admin">
+<div id="app" v-cloak class="page">
     <div class="mobile-bar">
         <div class="brand">
             <div class="brand-mark"><i data-lucide="zap"></i></div>
@@ -1195,8 +1374,8 @@
         <button class="icon-btn" @click="ui.showOps = !ui.showOps" aria-label="更多操作"><i data-lucide="sliders-horizontal"></i></button>
     </div>
 
-    <div class="app-shell">
-        <aside class="sidebar">
+    <div class="app-shell tabler-shell">
+        <aside class="sidebar tabler-sidebar">
             <div class="brand">
                 <div class="brand-mark"><i data-lucide="zap"></i></div>
                 <div class="brand-title">Monitor</div>
@@ -1216,8 +1395,8 @@
             <button class="collapse-link"><i data-lucide="chevron-left"></i><span>收起菜单</span></button>
         </aside>
 
-        <main class="main">
-            <header class="topbar">
+        <main class="main tabler-main">
+            <header class="topbar tabler-topbar">
                 <button class="env-pill" @click="toggleMonitorEnabled" :disabled="ui.togglingMonitor" :aria-busy="ui.togglingMonitor ? 'true' : 'false'" :aria-pressed="isCurrentAccountMonitorActive ? 'true' : 'false'" :title="monitorButtonTitle">
                     <span class="status-dot" :style="{background: isCurrentAccountMonitorActive ? 'var(--green)' : 'var(--red)'}"></span>
                     <span>{{ monitorButtonText }}</span>
@@ -1241,10 +1420,11 @@
                     <select class="ghost-btn account-select" v-model="ui.ruleAccount" @change="onRuleAccountChange">
                         <option v-for="account in accountFilterOptions" :key="account" :value="account">{{ account }}</option>
                     </select>
+                    <a class="icon-btn" href="/zd/logout" aria-label="退出登录" title="退出登录"><i data-lucide="log-out"></i></a>
                 </div>
             </header>
 
-            <section class="content" :class="{'rules-page': ui.page === 'rules'}">
+            <section class="content tabler-content" :class="{'rules-page': ui.page === 'rules'}">
                 <div class="mobile-nav">
                     <button v-for="item in navItems" :key="item.key" class="chip" :class="{active: ui.page === item.key}" @click="setPage(item.key)">
                         <i :data-lucide="item.icon"></i>{{ item.label }}

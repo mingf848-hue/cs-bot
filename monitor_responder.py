@@ -12,9 +12,10 @@ import urllib.parse
 import threading
 import io
 import zipfile
+import hmac
 from collections import deque
 from datetime import datetime, timedelta, timezone
-from flask import request, jsonify, Response, render_template_string
+from flask import request, jsonify, Response, render_template_string, session, redirect
 from telethon import events, TelegramClient, functions, types
 from telethon.sessions import StringSession
 from telethon.errors import AuthKeyDuplicatedError
@@ -6206,6 +6207,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
     global system_cs_prefixes
     global_main_handler = main_handler
     system_cs_prefixes = list(main_cs_prefixes or [])
+    if not getattr(app, "secret_key", None):
+        app.secret_key = os.environ.get("ZD_SESSION_SECRET") or os.environ.get("SECRET_KEY") or "cs-bot-zd-session-secret"
     init_redis_connection() # [v78] 确保调用全局函数
     load_config(main_cs_prefixes)
     load_runtime_stats()
@@ -6221,8 +6224,105 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         bot_loop.create_task(run_scheduled_backend_actions_job())
         bot_loop.create_task(run_ticket_follow_tasks_job())
 
+    def zd_auth_config():
+        return {
+            "username": os.environ.get("ZD_ADMIN_USERNAME", "changshan"),
+            "password": os.environ.get("ZD_ADMIN_PASSWORD", "Mmf198964."),
+        }
+
+    def zd_is_logged_in():
+        return bool(session.get("zd_authenticated"))
+
+    def zd_login_url():
+        next_url = request.path
+        if request.query_string:
+            try:
+                next_url = f"{next_url}?{request.query_string.decode('utf-8', 'ignore')}"
+            except Exception:
+                pass
+        return "/zd/login?next=" + urllib.parse.quote(next_url, safe="")
+
+    def require_zd_login_json():
+        if zd_is_logged_in():
+            return None
+        return jsonify({"success": False, "msg": "请先登录", "login_required": True}), 401
+
+    ZD_LOGIN_HTML = """
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ZD 登录</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@latest/dist/css/tabler.min.css">
+</head>
+<body class="d-flex flex-column bg-light">
+  <div class="page page-center">
+    <div class="container container-tight py-4">
+      <div class="text-center mb-4">
+        <div class="navbar-brand navbar-brand-autodark justify-content-center">
+          <span class="avatar avatar-rounded bg-primary text-white me-2">ZD</span>
+          <span class="fw-bold">Monitor Pro</span>
+        </div>
+      </div>
+      <form class="card card-md" method="post" autocomplete="off">
+        <input type="hidden" name="next" value="{{ next_url }}">
+        <div class="card-body">
+          <h2 class="h2 text-center mb-4">登录 ZD 控制台</h2>
+          {% if error %}
+          <div class="alert alert-danger" role="alert">{{ error }}</div>
+          {% endif %}
+          <div class="mb-3">
+            <label class="form-label">用户名</label>
+            <input class="form-control" name="username" value="{{ username }}" placeholder="输入用户名" autofocus>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">密码</label>
+            <input class="form-control" type="password" name="password" placeholder="输入密码">
+          </div>
+          <div class="form-footer">
+            <button class="btn btn-primary w-100" type="submit">登录</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+</body>
+</html>
+"""
+
+    @app.route('/zd/login', methods=['GET', 'POST'])
+    def zd_login_page():
+        cfg = zd_auth_config()
+        next_url = request.values.get("next") or "/zd"
+        if not str(next_url).startswith("/"):
+            next_url = "/zd"
+        error = ""
+        if request.method == "POST":
+            username = str(request.form.get("username") or "")
+            password = str(request.form.get("password") or "")
+            if hmac.compare_digest(username, cfg["username"]) and hmac.compare_digest(password, cfg["password"]):
+                session["zd_authenticated"] = True
+                session["zd_username"] = username
+                return redirect(next_url)
+            error = "用户名或密码错误"
+        return render_template_string(
+            ZD_LOGIN_HTML,
+            error=error,
+            username=cfg["username"] if request.method == "GET" else str(request.form.get("username") or ""),
+            next_url=next_url,
+        )
+
+    @app.route('/zd/logout')
+    def zd_logout_page():
+        session.pop("zd_authenticated", None)
+        session.pop("zd_username", None)
+        return redirect("/zd/login")
+
     @app.route('/zd')
-    def monitor_settings_page(): 
+    def monitor_settings_page():
+        if not zd_is_logged_in():
+            return redirect(zd_login_url())
         return Response(get_monitor_settings_html(), mimetype='text/html; charset=utf-8')
         
     @app.route('/otp')
@@ -6252,6 +6352,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @app.route('/tool/monitor_settings_json')
     def monitor_settings_json():
+        denied = require_zd_login_json()
+        if denied:
+            return denied
         with current_config_lock:
             data = clone_config_data(current_config)
         data["available_accounts"] = [k for k in global_clients.keys() if k != MAIN_NAME]
@@ -6261,6 +6364,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @app.route('/api/monitor_runtime_stats')
     def monitor_runtime_stats_api():
+        denied = require_zd_login_json()
+        if denied:
+            return denied
         try:
             limit = max(1, min(500, int(request.args.get("limit", 160))))
         except Exception:
@@ -6269,11 +6375,17 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @app.route('/api/monitor_status')
     def monitor_status_api():
+        denied = require_zd_login_json()
+        if denied:
+            return denied
         account = str(request.args.get("account") or "").strip()
         return jsonify(build_monitor_status_payload(account or MAIN_NAME))
 
     @app.route('/api/monitor_settings', methods=['POST'])
     def update_monitor_settings():
+        denied = require_zd_login_json()
+        if denied:
+            return denied
         success, msg = save_config(request.get_json(silent=True) or {})
         return_config = str(request.args.get("return_config", "1")).strip().lower() not in ("0", "false", "no", "off")
         data = {}
@@ -6287,6 +6399,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @app.route('/api/monitor_settings/export')
     def export_monitor_settings():
+        denied = require_zd_login_json()
+        if denied:
+            return denied
         exported_at = datetime.now(BJ_TZ)
         export_config, export_account = build_account_export_config(request.args.get("account", ""))
         payload = {
@@ -6306,6 +6421,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @app.route('/api/monitor_settings/import', methods=['POST'])
     def import_monitor_settings():
+        denied = require_zd_login_json()
+        if denied:
+            return denied
         raw = request.get_json(silent=True) or {}
         candidate = raw.get("config") if isinstance(raw.get("config"), dict) else raw
         if not isinstance(candidate, dict) or "rules" not in candidate:
@@ -6330,6 +6448,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @app.route('/api/monitor_toggle', methods=['POST'])
     def update_monitor_toggle():
+        denied = require_zd_login_json()
+        if denied:
+            return denied
         global current_config
         data = request.get_json(silent=True) or {}
         account = str(data.get("account") or "").strip()
@@ -6365,6 +6486,9 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @app.route('/api/domain_pin_update', methods=['POST'])
     def domain_pin_update_api():
+        denied = require_zd_login_json()
+        if denied:
+            return denied
         data = request.get_json(silent=True) or {}
         if not bot_loop:
             return jsonify({"success": False, "msg": "Telegram 事件循环未启动"}), 500
@@ -6497,6 +6621,8 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @app.route('/tool/zd_unlock_extension.zip')
     def zd_unlock_extension_zip():
+        if not zd_is_logged_in():
+            return redirect(zd_login_url())
         extension_dir = os.path.join(os.path.dirname(__file__), "extensions", "zd-unlock-extension")
         bot_base = resolve_extension_bot_base()
         buf = io.BytesIO()
@@ -6535,12 +6661,17 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
 
     @app.route('/tool/9site_storage_scan.js')
     def nine_site_storage_scan_script():
+        if not zd_is_logged_in():
+            return redirect(zd_login_url())
         script_path = os.path.join(os.path.dirname(__file__), "tools", "9site_storage_scan.js")
         with open(script_path, "r", encoding="utf-8") as f:
             return Response(f.read(), mimetype="application/javascript; charset=utf-8")
 
     @app.route('/api/batch_recovery', methods=['POST'])
     def trigger_batch_recovery():
+        denied = require_zd_login_json()
+        if denied:
+            return denied
         data = request.get_json(silent=True) or {}
         search = str(data.get('search') or '').strip()
         reply = str(data.get('reply') or '').strip()
