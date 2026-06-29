@@ -109,6 +109,43 @@ settlement_tg_forwarded_keys = set()
 ai_private_reply_latest = {}
 ai_private_reply_locks = {}
 
+DOMAIN_PIN_SOURCE_CHAT_IDS = [-1002819832851, -1002560892878]
+DOMAIN_PIN_TARGET_COMBINED_WITH_FOOTER = [
+    -1001800838000, -1001978088089, -1001931146238, -1001911814916,
+    -1001885279888, -1001703213989, -1001571955528, -1002807120955,
+    -1002957057436, -1001871198775, -1001931567173, -1001959120958,
+    -1002024356399,
+]
+DOMAIN_PIN_TARGET_JIANGNAN_WITH_FOOTER = [-1001840201909]
+DOMAIN_PIN_TARGET_COMBINED_NO_FOOTER = [-1004283436982]
+DOMAIN_PIN_DEFAULT_SOURCE_HINTS = ("ara",)
+DOMAIN_PIN_DEFAULT_TARGET_HINTS = ("组长", "值班")
+DOMAIN_PIN_FOOTER = """各端 i_code 拼接示例：
+WEB：域名 + /register/?i_code=xxxxxxx
+H5：域名 + /entry/register/?i_code=xxxxxxx
+全站APP：域名 + /?i_code=xxxxxxx
+体育APP：域名 + /?i_code=xxxxxxx
+
+
+提醒您：
+如个别用户反馈线上推广链接无法访问时，可使用以上域名，直接拼接代理 i_code 提供用户使用。
+i_code 即代理编号。
+用户使用正确的 i_code 推广链接注册，方可注册到对应代理线下。
+
+APP最新版本：
+安卓：6.3.9
+iOS：6.3.9
+
+IP查询：
+https://ip138.com/
+
+EBpay官网域名【下载APP】
+www.ebpayijt6el.com
+www-eb.sdzlrz.com
+
+H5链接：网页版
+https://h5-pay-v2.ebpay15.net/#/main"""
+
 def client_is_connected(cli):
     if not cli:
         return False
@@ -1293,6 +1330,291 @@ def telegram_peer_value(value):
         except Exception:
             return text
     return text
+
+def parse_domain_pin_id_list(raw, defaults):
+    if isinstance(raw, (list, tuple, set)):
+        items = raw
+    else:
+        items = re.split(r"[\s,，;；]+", str(raw or ""))
+    result = []
+    seen = set()
+    for item in items:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        try:
+            value = int(text)
+        except Exception:
+            continue
+        if value not in seen:
+            result.append(value)
+            seen.add(value)
+    return result or list(defaults)
+
+def parse_domain_pin_hints(raw, defaults):
+    parts = [p.strip().lower() for p in re.split(r"[\s,，;；|]+", str(raw or "")) if p.strip()]
+    return tuple(parts or defaults)
+
+def resolve_domain_pin_client(account_name="", hints=(), fallback_main=False):
+    wanted = str(account_name or "").strip()
+    if wanted:
+        for name, cli in global_clients.items():
+            if name == wanted and client_is_connected(cli):
+                return name, cli
+        wanted_lower = wanted.lower()
+        for name, cli in global_clients.items():
+            if str(name).lower() == wanted_lower and client_is_connected(cli):
+                return name, cli
+        lowered_hints = (wanted_lower,)
+    else:
+        lowered_hints = tuple(str(h or "").lower() for h in hints if str(h or "").strip())
+    for hint in lowered_hints:
+        for name, cli in global_clients.items():
+            if hint and hint in str(name).lower() and client_is_connected(cli):
+                return name, cli
+    if fallback_main:
+        cli = global_clients.get(MAIN_NAME)
+        if client_is_connected(cli):
+            return MAIN_NAME, cli
+    return "", None
+
+def clean_domain_pin_text(text):
+    return unicodedata.normalize("NFKC", str(text or "")).replace("\u00a0", " ").replace("\u3000", " ")
+
+def domain_pin_site_from_text(text):
+    clean = clean_domain_pin_text(text)
+    milan_pos = clean.find("米兰")
+    jiangnan_pos = clean.find("江南")
+    if milan_pos < 0 and jiangnan_pos < 0:
+        return ""
+    if milan_pos >= 0 and (jiangnan_pos < 0 or milan_pos <= jiangnan_pos):
+        return "米兰"
+    return "江南"
+
+def domain_pin_category_from_line(line):
+    compact = re.sub(r"\s+", "", clean_domain_pin_text(line))
+    if "SEO" in compact.upper() and "敏感区域名" in compact:
+        return "seo_sensitive"
+    if "SEO专用域名" in compact.upper():
+        return "seo"
+    if "主推" in compact and "运营" in compact:
+        return "main"
+    if "敏感区域名" in compact:
+        return "sensitive"
+    return ""
+
+def normalize_domain_pin_label(raw_label):
+    compact = re.sub(r"[\s:：]+", "", clean_domain_pin_text(raw_label)).lower()
+    if not compact:
+        return ""
+    if "代理" in compact and "web" in compact:
+        return "代理WEB"
+    if "代理" in compact and "h5" in compact:
+        return "代理H5"
+    if "精简版" in compact and "h5" in compact:
+        return "精简版H5"
+    if "体育" in compact and "h5" in compact:
+        return "体育H5"
+    if "真人" in compact and "h5" in compact:
+        return "真人H5"
+    if compact == "web":
+        return "WEB"
+    if compact == "h5":
+        return "H5"
+    if compact.startswith("全站"):
+        return "全站"
+    if compact.startswith("体育"):
+        return "体育"
+    if compact.startswith("真人"):
+        return "真人"
+    return ""
+
+def extract_domain_pin_entry(line):
+    clean = clean_domain_pin_text(line).strip()
+    url_match = re.search(r"https?://[^\s【】]+", clean)
+    if not url_match:
+        return None
+    label = normalize_domain_pin_label(clean[:url_match.start()])
+    if not label:
+        return None
+    url = url_match.group(0).rstrip(".,，。；;")
+    suffix = " 【新】" if "【新】" in clean else ""
+    return label, f"{url}{suffix}"
+
+def collect_domain_pin_sections_from_message(text):
+    site = domain_pin_site_from_text(text)
+    if not site:
+        return []
+    sections = []
+    current = ""
+    entries = {}
+    for raw_line in clean_domain_pin_text(text).splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        category = domain_pin_category_from_line(line)
+        if category:
+            if current and entries:
+                sections.append((site, current, dict(entries)))
+            current = category
+            entries = {}
+            continue
+        if not current:
+            continue
+        entry = extract_domain_pin_entry(line)
+        if entry:
+            label, value = entry
+            entries[label] = value
+    if current and entries:
+        sections.append((site, current, dict(entries)))
+    return sections
+
+def format_domain_pin_line(label, value):
+    spacing = {
+        "WEB": "  ",
+        "H5": "   ",
+        "全站": "  ",
+        "体育": "  ",
+        "真人": "  ",
+        "代理WEB": "  ",
+        "代理H5": "   ",
+        "精简版H5": "  ",
+        "体育H5": "   ",
+        "真人H5": "   ",
+    }.get(label, "  ")
+    return f"{label}{spacing}{value}"
+
+def build_domain_pin_site_text(site, sections):
+    lines = [site]
+    main = sections.get("main", {})
+    if main:
+        lines.extend([
+            "主推-运营【线上主推域名】",
+            *[format_domain_pin_line(label, main[label]) for label in ("WEB", "H5", "全站", "体育", "真人") if label in main],
+        ])
+        proxy_lines = [format_domain_pin_line(label, main[label]) for label in ("代理WEB", "代理H5") if label in main]
+        if proxy_lines:
+            lines.extend(["", *proxy_lines])
+        simple_lines = [format_domain_pin_line(label, main[label]) for label in ("精简版H5", "体育H5", "真人H5") if label in main]
+        if simple_lines:
+            lines.extend(["", "精简版APP主域名", *simple_lines])
+    sensitive = sections.get("sensitive", {})
+    if sensitive:
+        lines.extend(["", "敏感区域名"])
+        lines.extend(format_domain_pin_line(label, sensitive[label]) for label in ("WEB", "H5") if label in sensitive)
+    seo = sections.get("seo", {})
+    if seo:
+        lines.extend(["", "SEO专用域名"])
+        lines.extend(format_domain_pin_line(label, seo[label]) for label in ("WEB", "H5", "全站", "体育") if label in seo)
+    seo_sensitive = sections.get("seo_sensitive", {})
+    if seo_sensitive:
+        lines.extend(["", "SEO敏感区域名"])
+        lines.extend(format_domain_pin_line(label, seo_sensitive[label]) for label in ("WEB", "H5") if label in seo_sensitive)
+    return "\n".join(lines).strip()
+
+async def get_domain_pin_source_sections(client, source_chat_ids, history_limit=80):
+    latest = {}
+    for chat_id in source_chat_ids:
+        messages = await client.get_messages(telegram_peer_value(chat_id), limit=history_limit)
+        for message in messages or []:
+            text = getattr(message, "raw_text", None) or getattr(message, "text", "") or ""
+            if not text:
+                continue
+            msg_ts = getattr(getattr(message, "date", None), "timestamp", lambda: 0)()
+            for site, category, entries in collect_domain_pin_sections_from_message(text):
+                key = (site, category)
+                if entries and (key not in latest or msg_ts >= latest[key]["ts"]):
+                    latest[key] = {"ts": msg_ts, "entries": entries, "chat_id": chat_id, "message_id": getattr(message, "id", None)}
+    sections = {"米兰": {}, "江南": {}}
+    sources = []
+    for (site, category), item in latest.items():
+        sections.setdefault(site, {})[category] = item["entries"]
+        sources.append({"site": site, "category": category, "chat_id": item["chat_id"], "message_id": item["message_id"]})
+    return sections, sources
+
+def append_domain_pin_footer(text):
+    return f"{str(text or '').strip()}\n\n{DOMAIN_PIN_FOOTER}".strip()
+
+def build_domain_pin_payloads(sections):
+    milan_text = build_domain_pin_site_text("米兰", sections.get("米兰", {}))
+    jiangnan_text = build_domain_pin_site_text("江南", sections.get("江南", {}))
+    combined = "\n======================================\n".join([part for part in (milan_text, jiangnan_text) if part]).strip()
+    return {
+        "combined": combined,
+        "combined_with_footer": append_domain_pin_footer(combined) if combined else "",
+        "jiangnan_with_footer": append_domain_pin_footer(jiangnan_text) if jiangnan_text else "",
+    }
+
+async def get_pinned_message_id(client, target):
+    entity = await client.get_entity(telegram_peer_value(target))
+    try:
+        full = await client(functions.channels.GetFullChannelRequest(entity))
+        return getattr(getattr(full, "full_chat", None), "pinned_msg_id", None)
+    except Exception:
+        pass
+    try:
+        chat_id = getattr(entity, "id", None) or abs(int(str(target).replace("-100", "", 1)))
+        full = await client(functions.messages.GetFullChatRequest(chat_id))
+        return getattr(getattr(full, "full_chat", None), "pinned_msg_id", None)
+    except Exception:
+        return None
+
+async def edit_domain_pin_target(client, target, text, dry_run=False):
+    pinned_id = await get_pinned_message_id(client, target)
+    if not pinned_id:
+        raise RuntimeError("目标群没有置顶消息")
+    if dry_run:
+        return {"chat_id": target, "pinned_message_id": pinned_id, "status": "preview"}
+    await client.edit_message(telegram_peer_value(target), int(pinned_id), text, link_preview=False)
+    return {"chat_id": target, "pinned_message_id": pinned_id, "status": "success"}
+
+async def run_domain_pin_update_command(payload=None):
+    payload = payload or {}
+    source_hints = parse_domain_pin_hints(os.environ.get("DOMAIN_PIN_SOURCE_ACCOUNT_HINTS", ""), DOMAIN_PIN_DEFAULT_SOURCE_HINTS)
+    target_hints = parse_domain_pin_hints(os.environ.get("DOMAIN_PIN_TARGET_ACCOUNT_HINTS", ""), DOMAIN_PIN_DEFAULT_TARGET_HINTS)
+    source_account, source_client = resolve_domain_pin_client(payload.get("source_account", ""), source_hints, fallback_main=False)
+    target_account, target_client = resolve_domain_pin_client(payload.get("target_account", ""), target_hints, fallback_main=False)
+    if not source_client:
+        raise RuntimeError("未找到可用 ara 账号，请在页面选择源账号")
+    if not target_client:
+        raise RuntimeError("未找到可用组长值班账号，请在页面选择编辑账号")
+
+    source_chat_ids = parse_domain_pin_id_list(payload.get("source_chat_ids"), DOMAIN_PIN_SOURCE_CHAT_IDS)
+    history_limit = max(10, min(300, int(payload.get("history_limit") or 80)))
+    dry_run = bool(payload.get("dry_run"))
+    sections, sources = await get_domain_pin_source_sections(source_client, source_chat_ids, history_limit=history_limit)
+    texts = build_domain_pin_payloads(sections)
+    if not texts["combined"]:
+        raise RuntimeError("源群最近消息中没有解析到米兰/江南域名")
+
+    target_batches = [
+        ("combined_with_footer", parse_domain_pin_id_list(payload.get("combined_with_footer_targets"), DOMAIN_PIN_TARGET_COMBINED_WITH_FOOTER)),
+        ("jiangnan_with_footer", parse_domain_pin_id_list(payload.get("jiangnan_with_footer_targets"), DOMAIN_PIN_TARGET_JIANGNAN_WITH_FOOTER)),
+        ("combined", parse_domain_pin_id_list(payload.get("combined_no_footer_targets"), DOMAIN_PIN_TARGET_COMBINED_NO_FOOTER)),
+    ]
+    results = []
+    for text_key, targets in target_batches:
+        text = texts.get(text_key) or ""
+        if not text:
+            continue
+        for target in targets:
+            try:
+                results.append(await edit_domain_pin_target(target_client, target, text, dry_run=dry_run))
+            except Exception as e:
+                results.append({"chat_id": target, "status": "failed", "error": str(e)})
+    success_count = sum(1 for item in results if item.get("status") in ("success", "preview"))
+    return {
+        "success": success_count > 0 and not any(item.get("status") == "failed" for item in results),
+        "source_account": source_account,
+        "target_account": target_account,
+        "source_chat_ids": source_chat_ids,
+        "sources": sources,
+        "dry_run": dry_run,
+        "texts": texts,
+        "results": results,
+        "success_count": success_count,
+        "failed_count": sum(1 for item in results if item.get("status") == "failed"),
+    }
 
 def get_leased_command_snapshot(cmd_id):
     if not cmd_id:
@@ -5970,6 +6292,24 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             "msg": msg if not success else ""
         })
         return jsonify(payload)
+
+    @app.route('/api/domain_pin_update', methods=['POST'])
+    def domain_pin_update_api():
+        data = request.get_json(silent=True) or {}
+        if not bot_loop:
+            return jsonify({"success": False, "msg": "Telegram 事件循环未启动"}), 500
+        future = asyncio.run_coroutine_threadsafe(run_domain_pin_update_command(data), bot_loop)
+        try:
+            result = future.result(timeout=180)
+            result["msg"] = (
+                f"域名更新置顶完成：成功 {result.get('success_count', 0)}，失败 {result.get('failed_count', 0)}"
+                if not result.get("dry_run")
+                else f"域名更新置顶预览完成：目标 {result.get('success_count', 0)} 个"
+            )
+            return jsonify(result)
+        except Exception as e:
+            logger.error(f"❌ [DomainPin] 域名更新置顶失败: {e}")
+            return jsonify({"success": False, "msg": str(e)}), 500
 
     @app.route('/api/cmd/poll')
     def cmd_poll():

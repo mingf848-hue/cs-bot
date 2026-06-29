@@ -2162,6 +2162,47 @@
                                 </article>
                             </div>
                         </section>
+                        <section class="section full">
+                            <div class="section-head">
+                                <div>
+                                    <div class="section-title">域名更新置顶</div>
+                                    <div class="hint">从 ara 源群读取米兰/江南域名，转换格式后用组长值班账号编辑目标群置顶。</div>
+                                </div>
+                                <button class="primary-btn" @click="runDomainPinUpdate(false)" :disabled="domainPin.running"><i :data-lucide="domainPin.running ? 'loader-2' : 'pin'"></i>{{ domainPin.running ? '执行中' : '更新置顶' }}</button>
+                            </div>
+                            <div class="form-grid">
+                                <div class="field">
+                                    <label>读取账号</label>
+                                    <select class="input select" v-model="domainPin.source_account">
+                                        <option value="">自动匹配 ara</option>
+                                        <option v-for="account in accountFilterOptions" :key="`domain-source-${account}`" :value="account">{{ account }}</option>
+                                    </select>
+                                </div>
+                                <div class="field">
+                                    <label>编辑账号</label>
+                                    <select class="input select" v-model="domainPin.target_account">
+                                        <option value="">自动匹配组长值班</option>
+                                        <option v-for="account in accountFilterOptions" :key="`domain-target-${account}`" :value="account">{{ account }}</option>
+                                    </select>
+                                </div>
+                                <div class="field">
+                                    <label>读取条数</label>
+                                    <input class="input" type="number" min="10" max="300" v-model.number="domainPin.history_limit">
+                                </div>
+                                <div class="field">
+                                    <label>源群</label>
+                                    <input class="input" v-model="domainPin.source_chat_ids" placeholder="-1002819832851 -1002560892878">
+                                </div>
+                                <div class="field full">
+                                    <label>最近结果</label>
+                                    <textarea class="textarea" rows="8" readonly :value="domainPin.preview || '尚未执行'"></textarea>
+                                </div>
+                            </div>
+                            <div class="toolbar">
+                                <button class="tiny-btn" @click="runDomainPinUpdate(true)" :disabled="domainPin.running"><i data-lucide="eye"></i>只预览</button>
+                                <span class="hint">{{ domainPin.status }}</span>
+                            </div>
+                        </section>
                         <section class="section">
                             <div class="section-title">突发事件批量回复</div>
                             <div class="form-grid">
@@ -2292,6 +2333,15 @@ createApp({
             return formatDateTimeLocal(date);
         };
         const recovery = reactive({ search: "", reply: "", start_time: defaultRecoveryStartTime(), hours: 5, min: 2, max: 5, image: "", imageName: "" });
+        const domainPin = reactive({
+            source_account: "",
+            target_account: "",
+            source_chat_ids: "-1002819832851 -1002560892878",
+            history_limit: 80,
+            running: false,
+            status: "",
+            preview: ""
+        });
         const tabs = [
             { key: "basic", label: "基础配置" },
             { key: "advanced", label: "高级设置" },
@@ -3493,6 +3543,39 @@ createApp({
             }
         };
 
+        const runDomainPinUpdate = async (dryRun = false) => {
+            if (!dryRun && !confirm("确定执行域名更新置顶吗？")) return;
+            domainPin.running = true;
+            domainPin.status = dryRun ? "正在预览" : "正在更新置顶";
+            try {
+                const res = await fetch("/api/domain_pin_update", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        source_account: domainPin.source_account,
+                        target_account: domainPin.target_account,
+                        source_chat_ids: domainPin.source_chat_ids,
+                        history_limit: domainPin.history_limit,
+                        dry_run: dryRun
+                    })
+                });
+                const json = await res.json();
+                const resultLines = (json.results || []).map(item => {
+                    const label = item.status === "failed" ? "失败" : (item.status === "preview" ? "预览" : "成功");
+                    return `${item.chat_id} ${label}${item.error ? `：${item.error}` : ""}`;
+                });
+                domainPin.preview = json.texts?.combined_with_footer || json.texts?.combined || "";
+                domainPin.status = [json.msg || (json.success ? "完成" : "失败"), ...resultLines].filter(Boolean).join("\n");
+                showToast(json.success ? (dryRun ? "预览完成" : "置顶更新完成") : (json.msg || "置顶更新失败"), json.success ? "success" : "error");
+            } catch (e) {
+                domainPin.status = "网络请求错误";
+                showToast("网络请求错误", "error");
+            } finally {
+                domainPin.running = false;
+                refreshIcons();
+            }
+        };
+
         const closeSelectMenus = (event) => {
             document.querySelectorAll("details[data-select-menu][open]").forEach((menu) => {
                 if (!menu.contains(event.target)) menu.removeAttribute("open");
@@ -3513,7 +3596,7 @@ createApp({
         });
 
         return {
-            config, runtime, available_accounts, ui, toast, recovery, tabs, navItems, recordFilters, defaultFailureNotifyText,
+            config, runtime, available_accounts, ui, toast, recovery, domainPin, tabs, navItems, recordFilters, defaultFailureNotifyText,
             importFileInput,
             currentRule, filteredRules, stats, previewSteps, estimatedTotal,
             mainAccount, accountFilterOptions, avatarText, lastRefreshText, selectedRuleStats, currentRuleRecords,
@@ -3530,7 +3613,7 @@ createApp({
             addStep, duplicateStep, removeStep, normalizeStep, displayDelay, setDefaultFailureNotify,
             startStepDrag, overStepDrag, dropStepDrag, endStepDrag, isStepDragScope, isStepDragging, isStepDropTarget,
             amountPart, setAmountPart, amountLowLines, setAmountLowLines,
-            ensureApprovalAction, onRecoveryImage, clearRecoveryImage, runRecovery,
+            ensureApprovalAction, onRecoveryImage, clearRecoveryImage, runRecovery, runDomainPinUpdate,
             deltaText, statusLabel, recordClass, recordIcon, formatRecordTime, recordFilterCount
         };
     }
