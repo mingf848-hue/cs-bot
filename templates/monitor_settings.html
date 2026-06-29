@@ -228,7 +228,7 @@
         .content {
             padding: 20px 26px 28px 20px;
             display: grid;
-            grid-template-columns: minmax(320px, 395px) minmax(520px, 1fr) minmax(330px, 455px);
+            grid-template-columns: minmax(0, 1fr);
             gap: 16px;
             align-items: start;
         }
@@ -246,31 +246,42 @@
         .stats-row {
             grid-column: 1 / -1;
             display: grid;
-            grid-template-columns: repeat(4, minmax(160px, 1fr)) minmax(360px, .95fr);
+            grid-template-columns: repeat(4, minmax(160px, 1fr));
             gap: 14px;
             align-items: stretch;
         }
 
-        .stat-actions {
-            min-height: 98px;
-            border: 1px solid var(--line);
-            border-radius: 8px;
-            background: #fff;
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
+        .page-header {
+            grid-column: 1 / -1;
+            min-height: 56px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+        }
+
+        .page-heading { min-width: 0; }
+        .page-heading h1 {
+            margin: 0;
+            font-size: 22px;
+            line-height: 1.15;
+            font-weight: 820;
+            color: var(--text);
+        }
+        .page-heading span {
+            display: block;
+            margin-top: 6px;
+            color: var(--muted);
+            font-size: 13px;
+            font-weight: 680;
+        }
+        .page-actions {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
             gap: 8px;
-            align-items: stretch;
-            padding: 10px;
+            flex-wrap: wrap;
         }
-        .stat-actions .more-btn,
-        .stat-actions .primary-btn {
-            width: 100%;
-            min-height: 36px;
-            justify-content: center;
-            padding: 0 10px;
-            white-space: nowrap;
-        }
-        .stat-actions .primary-btn { grid-column: 1 / -1; }
 
         .stat-card {
             min-height: 98px;
@@ -811,9 +822,13 @@
         .page-panel { min-height: calc(100vh - 188px); }
         .page-card { min-width: 0; }
         .page-body { padding: 16px; display: grid; gap: 16px; }
-        .dashboard-grid, .resource-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(340px, .75fr); gap: 16px; align-items: start; }
-        .resource-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-        .dashboard-main { grid-row: span 3; }
+        .dashboard-grid, .resource-grid { display: grid; gap: 16px; align-items: start; }
+        .dashboard-grid { grid-template-columns: repeat(12, minmax(0, 1fr)); }
+        .resource-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); }
+        .dashboard-main { grid-column: span 8; }
+        .dashboard-account { grid-column: span 4; }
+        .dashboard-recent,
+        .dashboard-rank { grid-column: span 6; }
         .dashboard-side { min-height: 0; }
         .metrics-grid.wide { grid-template-columns: repeat(4, minmax(0, 1fr)); }
         .hour-bars { height: 178px; display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 5px; align-items: end; padding: 12px 4px 0; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
@@ -957,6 +972,11 @@
         .mobile-bar { display: none; }
         .mobile-nav { display: none; grid-column: 1 / -1; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
         .mobile-nav .chip { flex: 0 0 auto; }
+        .mobile-nav {
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+        }
+        .mobile-nav::-webkit-scrollbar { display: none; }
 
         @media (prefers-reduced-motion: reduce) {
             *, *::before, *::after { transition: none !important; animation: none !important; }
@@ -974,12 +994,15 @@
         }
 
         @media (max-width: 1280px) {
-            .content { grid-template-columns: minmax(300px, 360px) minmax(0, 1fr); }
+            .content.rules-page { grid-template-columns: minmax(360px, 460px) minmax(0, 1fr); }
             .preview-panel { grid-column: 1 / -1; }
             .stats-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-            .stat-actions { grid-column: 1 / -1; }
-            .dashboard-grid, .resource-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-            .dashboard-main { grid-row: auto; grid-column: 1 / -1; }
+            .page-header { align-items: flex-start; }
+            .dashboard-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .dashboard-main { grid-column: 1 / -1; }
+            .dashboard-account,
+            .dashboard-recent,
+            .dashboard-rank { grid-column: auto; }
             .topbar { height: auto; min-height: 68px; padding-top: 10px; padding-bottom: 10px; flex-wrap: wrap; }
             .top-actions { flex-wrap: wrap; justify-content: flex-end; }
             .search-box { width: 180px; }
@@ -998,8 +1021,6 @@
             .content.rules-page .rule-list { grid-template-columns: 1fr; }
             .mobile-nav { display: flex; }
             .stats-row { grid-template-columns: 1fr; }
-            .stat-actions { grid-template-columns: 1fr; }
-            .stat-actions .primary-btn { grid-column: auto; }
             .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             .form-grid, .form-grid.three, .flow-top, .backend-grid { grid-template-columns: 1fr; }
             .list-topline { grid-template-columns: 1fr; }
@@ -1019,6 +1040,29 @@
         }
 
         @media (max-width: 560px) {
+            .stats-row {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 10px;
+            }
+            .stat-card {
+                min-height: 92px;
+                grid-template-columns: 38px minmax(0, 1fr);
+                gap: 10px;
+                padding: 12px;
+            }
+            .stat-icon {
+                width: 38px;
+                height: 38px;
+            }
+            .stat-value {
+                font-size: 22px;
+            }
+            .stat-sub {
+                font-size: 12px;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
             .metrics-grid,
             .metrics-grid.wide {
                 grid-template-columns: 1fr;
@@ -1031,6 +1075,29 @@
             .top-actions .account-select {
                 width: 100%;
                 justify-content: center;
+            }
+            .top-actions {
+                display: grid;
+                grid-template-columns: 1fr 1fr 40px 40px 40px;
+                gap: 10px;
+            }
+            .top-actions .env-pill,
+            .top-actions .script-btn,
+            .top-actions .account-select,
+            .top-actions .search-box {
+                width: 100%;
+            }
+            .top-actions .search-box,
+            .top-actions .script-btn,
+            .top-actions .account-select {
+                grid-column: 1 / -1;
+            }
+            .top-actions .icon-btn {
+                width: 40px;
+                min-height: 40px;
+            }
+            .top-actions .account-select {
+                min-width: 0;
             }
         }
     </style>
@@ -1101,7 +1168,22 @@
                         <i :data-lucide="item.icon"></i>{{ item.label }}
                     </button>
                 </div>
-                <div class="stats-row">
+                <div class="page-header" v-if="ui.page === 'dashboard'">
+                    <div class="page-heading">
+                        <h1>监控台</h1>
+                        <span>数据刷新：{{ lastRefreshText }}</span>
+                    </div>
+                    <div class="page-actions">
+                        <input ref="importFileInput" class="sr-file" type="file" accept="application/json,.json" @change="importConfigFile">
+                        <button class="more-btn" @click="exportConfig"><i data-lucide="download"></i>导出配置</button>
+                        <button class="more-btn" @click="triggerImportConfig"><i data-lucide="upload"></i>导入配置</button>
+                        <button class="more-btn" @click="ui.showOps = !ui.showOps"><i data-lucide="more-vertical"></i>更多操作</button>
+                        <button class="primary-btn" @click="saveConfig" :disabled="ui.saving">
+                            <i data-lucide="check"></i>{{ ui.saving ? '保存中' : '保存配置' }}
+                        </button>
+                    </div>
+                </div>
+                <div class="stats-row" v-if="ui.page === 'dashboard'">
                     <article class="stat-card">
                         <div class="stat-icon"><i data-lucide="chart-no-axes-column"></i></div>
                         <div>
@@ -1134,15 +1216,6 @@
                             <div class="stat-sub">成功 {{ stats.success }} / 失败 {{ stats.failed }}</div>
                         </div>
                     </article>
-                    <div class="stat-actions">
-                        <input ref="importFileInput" class="sr-file" type="file" accept="application/json,.json" @change="importConfigFile">
-                        <button class="more-btn" @click="exportConfig"><i data-lucide="download"></i>导出配置</button>
-                        <button class="more-btn" @click="triggerImportConfig"><i data-lucide="upload"></i>导入配置</button>
-                        <button class="more-btn" @click="ui.showOps = !ui.showOps"><i data-lucide="more-vertical"></i>更多操作</button>
-                        <button class="primary-btn" @click="saveConfig" :disabled="ui.saving">
-                            <i data-lucide="check"></i>{{ ui.saving ? '保存中' : '保存规则' }}
-                        </button>
-                    </div>
                 </div>
 
                 <section class="panel rule-list-panel" v-if="ui.page === 'rules'">
@@ -1830,21 +1903,11 @@
                 <section class="page-wide dashboard-grid" v-if="ui.page === 'dashboard'">
                     <article class="panel page-card dashboard-main">
                         <div class="panel-head">
-                            <div class="panel-title"><i data-lucide="activity"></i>今日监控台</div>
-                            <span class="hint">数据刷新：{{ lastRefreshText }}</span>
+                            <div class="panel-title"><i data-lucide="activity"></i>24 小时触发分布</div>
+                            <span class="hint">{{ runtime.today.total ? '按北京时间统计' : '今天暂无触发' }}</span>
                         </div>
                         <div class="page-body">
-                            <div class="metrics-grid wide">
-                                <div class="metric-tile"><div class="metric-label">今日触发</div><div class="metric-value" style="color:var(--blue);">{{ runtime.today.total }}</div></div>
-                                <div class="metric-tile"><div class="metric-label">执行动作</div><div class="metric-value" style="color:var(--primary);">{{ runtime.today.action_count }}</div></div>
-                                <div class="metric-tile"><div class="metric-label">成功</div><div class="metric-value" style="color:var(--green);">{{ runtime.today.success }}</div></div>
-                                <div class="metric-tile"><div class="metric-label">失败</div><div class="metric-value" style="color:var(--red);">{{ runtime.today.failed }}</div></div>
-                            </div>
                             <div class="section">
-                                <div class="section-head">
-                                    <div class="section-title">24 小时触发分布</div>
-                                    <span class="hint">{{ runtime.today.total ? '按北京时间统计' : '今天暂无触发' }}</span>
-                                </div>
                                 <div class="hour-bars">
                                     <div v-for="bucket in hourlyBars" :key="bucket.hour" class="hour-cell" :title="bucket.hour + ':00 · ' + bucket.total + ' 次'">
                                         <span class="hour-bar" :style="{height: bucket.height + '%'}"></span>
@@ -1855,7 +1918,7 @@
                         </div>
                     </article>
 
-                    <article class="panel page-card dashboard-side">
+                    <article class="panel page-card dashboard-side dashboard-account">
                         <div class="panel-head">
                             <div class="panel-title"><i data-lucide="users-round"></i>账号状态</div>
                             <button class="tiny-btn" @click="setPage('members')">成员</button>
@@ -1870,7 +1933,7 @@
                         </div>
                     </article>
 
-                    <article class="panel page-card dashboard-side">
+                    <article class="panel page-card dashboard-side dashboard-recent">
                         <div class="panel-head">
                             <div class="panel-title"><i data-lucide="clipboard-list"></i>最近执行</div>
                             <button class="tiny-btn" @click="setPage('records')">全部</button>
@@ -1885,7 +1948,7 @@
                         </div>
                     </article>
 
-                    <article class="panel page-card dashboard-side">
+                    <article class="panel page-card dashboard-side dashboard-rank">
                         <div class="panel-head">
                             <div class="panel-title"><i data-lucide="list-ordered"></i>规则热度</div>
                             <button class="tiny-btn" @click="setPage('analytics')">分析</button>
