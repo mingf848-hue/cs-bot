@@ -824,7 +824,19 @@
         .page-body { padding: 16px; display: grid; gap: 16px; }
         .dashboard-grid, .resource-grid { display: grid; gap: 16px; align-items: start; }
         .dashboard-grid { grid-template-columns: repeat(12, minmax(0, 1fr)); }
-        .resource-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); }
+        .resource-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; border: 1px solid var(--line); border-radius: 8px; background: #fff; overflow: hidden; }
+        .resource-grid .panel { border: 0; border-radius: 0; background: transparent; }
+        .resource-grid .panel + .panel { border-left: 1px solid var(--line); }
+        .resource-grid .panel-head { min-height: 46px; }
+        .resource-grid .page-body { padding: 0; }
+        .resource-grid .resource-list { gap: 0; }
+        .resource-grid .resource-row {
+            border: 0;
+            border-top: 1px solid var(--line);
+            border-radius: 0;
+            background: #fff;
+            padding: 8px 12px;
+        }
         .dashboard-main { grid-column: span 8; }
         .dashboard-account { grid-column: span 4; }
         .dashboard-recent,
@@ -879,18 +891,49 @@
         .scheduled-page .more-btn,
         .scheduled-page .ghost-btn,
         .scheduled-page .tiny-btn { min-height: 34px; }
-        .settings-layout { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 12px; align-items: start; }
+        .settings-layout { display: grid; gap: 0; align-items: start; }
         .settings-stack { display: contents; min-width: 0; }
-        .settings-panel { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fff; display: grid; gap: 10px; min-width: 0; box-shadow: none; }
+        .settings-panel {
+            border: 0;
+            border-top: 1px solid var(--line);
+            border-radius: 0;
+            padding: 14px 0;
+            background: transparent;
+            display: grid;
+            grid-template-columns: 170px minmax(0, 1fr);
+            gap: 10px 18px;
+            min-width: 0;
+            box-shadow: none;
+        }
+        .settings-panel:first-child { border-top: 0; padding-top: 2px; }
         .settings-panel.compact { gap: 8px; }
         .settings-panel.monitor-panel,
         .settings-panel.schedule-panel,
-        .settings-panel.recovery-panel { grid-column: span 4; }
-        .settings-panel.domain-panel { grid-column: span 8; }
-        .settings-panel.ai-panel { grid-column: span 4; }
+        .settings-panel.recovery-panel,
+        .settings-panel.domain-panel,
+        .settings-panel.ai-panel { grid-column: 1 / -1; }
+        .settings-panel.schedule-panel::before {
+            content: "排班与审批";
+            color: #172033;
+            font-size: 16px;
+            font-weight: 820;
+        }
+        .settings-panel > .settings-title-row {
+            grid-column: 1 / -1;
+            display: grid;
+            grid-template-columns: 170px minmax(0, 1fr);
+            gap: 18px;
+            align-items: start;
+        }
+        .settings-panel > .settings-title-row > .settings-actions,
+        .settings-panel > .settings-title-row > .primary-btn {
+            justify-self: end;
+        }
+        .settings-panel > :not(.settings-title-row) { grid-column: 2; }
+        .settings-panel.schedule-panel > .section { grid-column: 2; }
         .settings-panel .section { gap: 10px; }
-        .settings-panel .section + .section { padding-top: 12px; border-top: 1px solid var(--line); }
-        .settings-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+        .settings-panel .section + .section { padding-top: 10px; border-top: 1px solid var(--line); }
+        .settings-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
         .settings-title-row .section-title { display: flex; align-items: center; gap: 8px; }
         .settings-toggle-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 4px 12px; }
         .settings-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -908,14 +951,17 @@
         }
         .development-state { min-height: 320px; display: grid; place-items: center; text-align: center; color: var(--muted); border: 1px dashed var(--line-strong); border-radius: 8px; background: #fbfdff; }
         .development-state strong { display: block; color: var(--text); font-size: 22px; margin-bottom: 8px; }
-        .account-ai-grid { display: grid; gap: 8px; }
-        .account-ai-card { border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: #fbfcff; display: grid; gap: 8px; }
+        .account-ai-grid { display: grid; gap: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+        .account-ai-card { border: 0; border-top: 1px solid var(--line); border-radius: 0; padding: 8px 10px; background: #fff; display: grid; grid-template-columns: minmax(120px, 180px) minmax(0, 1fr); gap: 10px; align-items: start; }
+        .account-ai-card:first-child { border-top: 0; }
         .account-ai-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
         .account-ai-title { min-width: 0; font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .account-ai-card .textarea { min-height: 72px; }
         .schedule-board { grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; }
-        .task-section { min-width: 0; display: grid; gap: 8px; }
+        .task-section { min-width: 0; display: grid; gap: 0; align-content: start; border-left: 1px solid var(--line); }
+        .task-section:first-child { border-left: 0; }
         .schedule-list { display: grid; gap: 0; border: 1px solid var(--line); border-radius: 8px; background: #fff; overflow: hidden; }
+        .schedule-board .schedule-list { border: 0; border-top: 1px solid var(--line); border-radius: 0; }
         .scheduled-page .schedule-list + .subhead { margin-top: 4px; }
         .schedule-card { border: 0; border-top: 1px solid var(--line); border-radius: 0; background: #fff; padding: 10px 12px; display: grid; grid-template-columns: minmax(220px, 280px) minmax(0, 1fr) minmax(220px, .42fr); gap: 12px; min-width: 0; align-items: start; }
         .schedule-board .schedule-card { grid-template-columns: 1fr; gap: 10px; }
@@ -929,7 +975,7 @@
         .schedule-fields .textarea { min-height: 58px; }
         .schedule-fields .message-box { min-height: 72px; }
         .schedule-meta { display: flex; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
-        .subhead { min-height: 32px; margin: 0; padding: 0 2px; color: #334155; font-size: 13px; font-weight: 820; display: flex; align-items: center; }
+        .subhead { min-height: 38px; margin: 0; padding: 0 12px; color: #334155; font-size: 13px; font-weight: 820; display: flex; align-items: center; background: #f8fafc; }
         .check-row, .time-row { display: flex; align-items: center; gap: 8px; min-height: 36px; }
         .time-row .input { min-width: 0; }
         .input.full { grid-column: 1 / -1; }
@@ -1004,7 +1050,7 @@
         .toast.show { opacity: 1; transform: translateY(0); }
         .toast.error { background: #821f35; }
 
-        .empty-state { border: 1px dashed var(--line-strong); border-radius: 8px; min-height: 72px; display: grid; place-items: center; text-align: center; color: var(--muted); padding: 12px; }
+        .empty-state { border: 0; border-radius: 0; min-height: 52px; display: grid; place-items: center; text-align: center; color: var(--muted); padding: 10px 12px; background: #fff; }
         .mobile-bar { display: none; }
         .mobile-nav { display: none; grid-column: 1 / -1; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
         .mobile-nav .chip { flex: 0 0 auto; }
