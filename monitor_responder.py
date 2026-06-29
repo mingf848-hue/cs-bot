@@ -1600,6 +1600,41 @@ async def edit_domain_pin_target(client, target, text, dry_run=False):
         raise RuntimeError(f"已尝试 {author_required_count} 条置顶消息，均不是该账号发送，Telegram 不允许编辑")
     raise RuntimeError(last_author_error or "未找到可编辑的置顶消息")
 
+def build_domain_pin_group_name_lookup():
+    lookup = {}
+    try:
+        with current_config_lock:
+            resources = current_config.get("resources", {}) if isinstance(current_config, dict) else {}
+            groups = resources.get("groups", []) if isinstance(resources, dict) else []
+            for item in groups or []:
+                if not isinstance(item, dict):
+                    continue
+                ids = clean_group_ids([item.get("id", item.get("value", item.get("group_id", "")))])
+                if not ids:
+                    continue
+                name = str(item.get("name") or item.get("label") or item.get("title") or "").strip()
+                if name:
+                    lookup[ids[0]] = name
+    except Exception as e:
+        logger.info(f"📌 [DomainPin] 读取资源群名失败: {e}")
+    return lookup
+
+def domain_pin_group_name_for(target, name_lookup):
+    try:
+        ids = clean_group_ids([target])
+        if ids:
+            return name_lookup.get(ids[0], "")
+    except Exception:
+        pass
+    return ""
+
+def attach_domain_pin_group_name(result, target, name_lookup):
+    if isinstance(result, dict):
+        group_name = domain_pin_group_name_for(target, name_lookup)
+        if group_name:
+            result["chat_name"] = group_name
+    return result
+
 async def run_domain_pin_update_command(payload=None):
     payload = payload or {}
     source_hints = parse_domain_pin_hints(os.environ.get("DOMAIN_PIN_SOURCE_ACCOUNT_HINTS", ""), DOMAIN_PIN_DEFAULT_SOURCE_HINTS)
@@ -1624,6 +1659,7 @@ async def run_domain_pin_update_command(payload=None):
         ("jiangnan_with_footer", parse_domain_pin_id_list(payload.get("jiangnan_with_footer_targets"), DOMAIN_PIN_TARGET_JIANGNAN_WITH_FOOTER)),
         ("combined", parse_domain_pin_id_list(payload.get("combined_no_footer_targets"), DOMAIN_PIN_TARGET_COMBINED_NO_FOOTER)),
     ]
+    group_name_lookup = build_domain_pin_group_name_lookup()
     results = []
     for text_key, targets in target_batches:
         text = texts.get(text_key) or ""
@@ -1631,9 +1667,10 @@ async def run_domain_pin_update_command(payload=None):
             continue
         for target in targets:
             try:
-                results.append(await edit_domain_pin_target(target_client, target, text, dry_run=dry_run))
+                result = await edit_domain_pin_target(target_client, target, text, dry_run=dry_run)
+                results.append(attach_domain_pin_group_name(result, target, group_name_lookup))
             except Exception as e:
-                results.append({"chat_id": target, "status": "failed", "error": str(e)})
+                results.append(attach_domain_pin_group_name({"chat_id": target, "status": "failed", "error": str(e)}, target, group_name_lookup))
     ok_statuses = {"success", "preview", "unchanged"}
     success_count = sum(1 for item in results if item.get("status") in ok_statuses)
     return {
