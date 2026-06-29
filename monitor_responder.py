@@ -6375,6 +6375,14 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
         dist_assets = os.path.join(os.path.dirname(__file__), "zd-admin", "dist", "assets")
         return send_from_directory(dist_assets, filename)
 
+    @app.route('/zd/<path:filename>')
+    def zd_admin_static(filename):
+        dist_root = os.path.join(os.path.dirname(__file__), "zd-admin", "dist")
+        safe_root_files = {"favicon.ico", "logo.png"}
+        if filename in safe_root_files:
+            return send_from_directory(dist_root, filename)
+        return Response(get_monitor_settings_html(), mimetype='text/html; charset=utf-8')
+
     @app.route('/zd')
     @app.route('/zd/')
     def monitor_settings_page():

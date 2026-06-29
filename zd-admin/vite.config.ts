@@ -59,12 +59,14 @@ export default ({ command, mode }: ConfigEnv): UserConfig => {
             ]
           })
         : undefined,
-      EslintPlugin({
-        cache: false,
-        failOnWarning: false,
-        failOnError: false,
-        include: ['src/**/*.vue', 'src/**/*.ts', 'src/**/*.tsx'] // 检查的文件
-      }),
+      !isBuild
+        ? EslintPlugin({
+            cache: false,
+            failOnWarning: false,
+            failOnError: false,
+            include: ['src/**/*.vue', 'src/**/*.ts', 'src/**/*.tsx'] // 检查的文件
+          })
+        : undefined,
       VueI18nPlugin({
         runtimeOnly: true,
         compositionOnly: true,

@@ -3,7 +3,6 @@ __pycache__
 *.pyc
 .playwright-cli
 zd-admin/node_modules
-zd-admin/dist
 zd-admin/.git
 zd-admin/.cache
 zd-admin/.vite
