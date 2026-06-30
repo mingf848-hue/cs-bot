@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import {
   ElButton,
   ElCard,
@@ -24,6 +24,7 @@ import { useZd } from './useZd'
 const { state, ruleStats, ensureLoaded, save } = useZd()
 const query = ref('')
 const selected = ref<any>(null)
+const activeAccount = ref('')
 const activeRuleTab = ref('basic')
 const draggedStepIndex = ref<number | null>(null)
 
@@ -34,6 +35,20 @@ const accountOptions = computed(() => {
   ;(state.config.available_accounts || []).forEach((name: string) => name && names.add(name))
   return [main, ...Array.from(names).filter((name) => name !== main)]
 })
+
+const mainAccount = computed(() => accountOptions.value[0] || state.runtime.main_account || '主账号')
+const ruleAccountName = (rule: any) => String(rule?.reply_account || mainAccount.value).trim() || mainAccount.value
+
+const accountRuleStats = computed(() =>
+  accountOptions.value.map((account) => {
+    const rules = state.config.rules.filter((rule: any) => ruleAccountName(rule) === account)
+    return {
+      account,
+      total: rules.length,
+      running: rules.filter((rule: any) => rule.enabled !== false).length
+    }
+  })
+)
 
 const replyTypes = [
   { label: '文字回复', value: 'text' },
@@ -58,18 +73,25 @@ const backendActions = [
 onMounted(async () => {
   await ensureLoaded()
   hydrateAllRules()
-  selected.value = state.config.rules[0] || null
+  activeAccount.value = mainAccount.value
+  selected.value = filteredRules.value[0] || null
 })
 
 const filteredRules = computed(() => {
   const keyword = query.value.trim().toLowerCase()
-  if (!keyword) return state.config.rules
-  return state.config.rules.filter((rule: any) =>
-    [rule.name, rule.id, (rule.keywords || []).join(','), (rule.groups || []).join(',')]
+  const account = activeAccount.value || mainAccount.value
+  return state.config.rules.filter((rule: any) => {
+    if (ruleAccountName(rule) !== account) return false
+    if (!keyword) return true
+    return [rule.name, rule.id, ruleAccountName(rule), (rule.keywords || []).join(','), (rule.groups || []).join(',')]
       .join(' ')
       .toLowerCase()
       .includes(keyword)
-  )
+  })
+})
+
+watch(filteredRules, (rules) => {
+  if (!rules.includes(selected.value)) selected.value = rules[0] || null
 })
 
 const defaultApprovalAction = () => ({
@@ -145,6 +167,7 @@ const hydrateAllRules = () => {
 }
 
 const addRule = () => {
+  const account = activeAccount.value || mainAccount.value
   const rule = hydrateRule({
     id: `rule_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
     name: `新规则 #${state.config.rules.length + 1}`,
@@ -160,20 +183,43 @@ const addRule = () => {
     sender_prefixes: [],
     cooldown: 1,
     replies: [hydrateReply({ type: 'text', text: '', min: 1, max: 2 })],
-    reply_account: ''
+    reply_account: account === mainAccount.value ? '' : account
   })
   state.config.rules.unshift(rule)
   selected.value = rule
+  activeRuleTab.value = 'basic'
 }
 
 const removeRule = (row: any) => {
   const index = state.config.rules.indexOf(row)
   if (index >= 0) state.config.rules.splice(index, 1)
-  if (selected.value === row) selected.value = state.config.rules[0] || null
+  if (selected.value === row) selected.value = filteredRules.value[0] || null
 }
 
 const selectRule = (rule: any) => {
   selected.value = hydrateRule(rule)
+}
+
+const selectAccount = (account: string) => {
+  activeAccount.value = account
+  selected.value = state.config.rules.find((rule: any) => ruleAccountName(rule) === account) || null
+}
+
+const setSelectedAccount = (account: string) => {
+  if (!selected.value) return
+  selected.value.reply_account = account === mainAccount.value ? '' : account
+  activeAccount.value = account
+}
+
+const toggleRule = async (rule: any, enabled: boolean) => {
+  rule.enabled = enabled
+  try {
+    await save()
+    ElMessage.success(`${rule.name || '规则'} 已${enabled ? '启用' : '停用'}`)
+  } catch (error: any) {
+    rule.enabled = !enabled
+    ElMessage.error(error?.message || '保存失败')
+  }
 }
 
 const textList = (value: any) => (Array.isArray(value) ? value.join('\n') : '')
@@ -276,25 +322,43 @@ const handleSave = async () => {
         <ElTag type="info">停用 {{ ruleStats.disabled }}</ElTag>
         <ElTag type="warning">草稿 {{ ruleStats.draft }}</ElTag>
       </div>
+      <div class="account-tabs">
+        <button
+          v-for="item in accountRuleStats"
+          :key="item.account"
+          class="account-tab"
+          :class="{ active: activeAccount === item.account }"
+          @click="selectAccount(item.account)"
+        >
+          <span class="account-name">{{ item.account }}</span>
+          <span class="account-count">{{ item.running }}/{{ item.total }}</span>
+        </button>
+      </div>
       <ElInput v-model="query" clearable placeholder="搜索规则名、关键词、群 ID" class="mt-12px" />
       <ElTable
         :data="filteredRules"
-        height="calc(100vh - 270px)"
+        height="calc(100vh - 354px)"
         size="small"
         highlight-current-row
         class="mt-12px"
         @row-click="selectRule"
       >
         <ElTableColumn prop="name" label="规则" min-width="170" show-overflow-tooltip />
-        <ElTableColumn label="状态" width="74">
+        <ElTableColumn label="账号" width="92" show-overflow-tooltip>
+          <template #default="scope">{{ scope?.row ? ruleAccountName(scope.row) : '-' }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="状态" width="82">
           <template #default="scope">
-            <ElTag
+            <ElSwitch
               v-if="scope?.row"
               size="small"
-              :type="scope.row.enabled === false ? 'info' : 'success'"
-            >
-              {{ scope.row.enabled === false ? '停用' : '运行' }}
-            </ElTag>
+              :model-value="scope.row.enabled !== false"
+              inline-prompt
+              active-text="启用"
+              inactive-text="停用"
+              @click.stop
+              @change="toggleRule(scope.row, Boolean($event))"
+            />
           </template>
         </ElTableColumn>
         <ElTableColumn width="64" align="center">
@@ -310,7 +374,10 @@ const handleSave = async () => {
     <ElCard shadow="never" class="rule-editor">
       <template #header>
         <div class="card-header">
-          <span>{{ selected?.name || '选择规则' }}</span>
+          <div>
+            <span>{{ selected?.name || '选择规则' }}</span>
+            <ElTag v-if="selected" size="small" class="ml-8px">{{ ruleAccountName(selected) }}</ElTag>
+          </div>
           <ElButton type="primary" :loading="state.saving" @click="handleSave">保存配置</ElButton>
         </div>
       </template>
@@ -321,7 +388,14 @@ const handleSave = async () => {
             <ElForm label-position="top" class="editor-grid compact-grid">
               <ElFormItem label="规则名称"><ElInput v-model="selected.name" /></ElFormItem>
               <ElFormItem label="规则 ID"><ElInput v-model="selected.id" /></ElFormItem>
-              <ElFormItem label="启用状态"><ElSwitch v-model="selected.enabled" /></ElFormItem>
+              <ElFormItem label="所属账号">
+                <ElSelect :model-value="ruleAccountName(selected)" @update:model-value="setSelectedAccount">
+                  <ElOption v-for="account in accountOptions" :key="account" :label="account" :value="account" />
+                </ElSelect>
+              </ElFormItem>
+              <ElFormItem label="启用状态">
+                <ElSwitch v-model="selected.enabled" inline-prompt active-text="启用" inactive-text="停用" />
+              </ElFormItem>
               <ElFormItem label="冷却秒数">
                 <ElInputNumber v-model="selected.cooldown" :min="0" :controls="false" />
               </ElFormItem>
@@ -381,9 +455,8 @@ const handleSave = async () => {
               <ElButton type="primary" plain @click="addStep(selected)">添加步骤</ElButton>
             </div>
             <div class="account-row">
-              <span>规则回复账号</span>
-              <ElSelect v-model="selected.reply_account" placeholder="主账号（默认）" clearable>
-                <ElOption label="主账号（默认）" value="" />
+              <span>规则所属账号</span>
+              <ElSelect :model-value="ruleAccountName(selected)" @update:model-value="setSelectedAccount">
                 <ElOption v-for="account in accountOptions" :key="account" :label="account" :value="account" />
               </ElSelect>
             </div>
@@ -602,6 +675,52 @@ const handleSave = async () => {
 .rule-summary {
   justify-content: flex-start;
   flex-wrap: wrap;
+}
+.account-tabs {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 8px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  background: var(--el-fill-color-extra-light);
+}
+.account-tab {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--el-text-color-regular);
+  cursor: pointer;
+  text-align: left;
+}
+.account-tab:hover {
+  background: var(--el-fill-color-light);
+}
+.account-tab.active {
+  border-color: var(--el-color-primary-light-7);
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+}
+.account-name {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-count {
+  font-size: 11px;
+  font-family: var(--el-font-family);
+  color: var(--el-text-color-secondary);
+}
+.account-tab.active .account-count {
+  color: var(--el-color-primary);
 }
 .rules-list,
 .rule-editor {
