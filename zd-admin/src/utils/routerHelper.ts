@@ -8,10 +8,14 @@ import type {
 import { isUrl } from '@/utils/is'
 import { omit, cloneDeep } from 'lodash-es'
 
-const modules = import.meta.glob('../views/**/*.{vue,tsx}')
+const modules = {
+  ...import.meta.glob('../views/Zd/**/*.{vue,tsx}'),
+  ...import.meta.glob('../views/Login/Login.vue'),
+  ...import.meta.glob('../views/Error/**/*.{vue,tsx}')
+}
 
 /* Layout */
-export const Layout = () => import('@/layout/Layout.vue')
+export const Layout = () => import('@/layout/ZdLayout.vue')
 
 export const getParentLayout = () => {
   return () =>

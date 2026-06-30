@@ -140,7 +140,9 @@ ${selector}:after {
   transformers: [transformerVariantGroup()],
   content: {
     pipeline: {
-      include: [/\.(vue|svelte|[jt]sx|mdx?|astro|elm|php|phtml|html|ts)($|\?)/]
+      include: [
+        /src\/(App|main|permission|router|layout|plugins|store|styles|views\/(Zd|Login|Error)|components\/(Icon|Menu|TagsView|UserInfo|Breadcrumb|Collapse|Footer|Hamburger|LocaleDropdown|Screenfull|SizeDropdown|ThemeSwitch|Setting|Error)|hooks\/web\/(useDesign|useI18n|useTitle|useNProgress|usePageLoading|useIcon)).*\.(vue|[jt]sx?|html)($|\?)/
+      ]
     }
   }
 })
