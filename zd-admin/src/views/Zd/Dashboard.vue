@@ -21,18 +21,32 @@ onMounted(() => {
   window.setInterval(() => refreshRuntime().catch(() => {}), 15000)
 })
 
-const mainAccount = computed(() => state.runtime.main_account || state.accounts[0] || '主账号')
-
 const monitorText = computed(() => (state.config.enabled ? '监听运行中' : '监听已暂停'))
+const recentRecords = computed(() => state.runtime.records || state.runtime.recent || [])
 
 const toggleGlobalMonitor = async () => {
   const next = !state.config.enabled
   state.config.enabled = next
-  const res = await toggleMonitor({ account: mainAccount.value, effective_enabled: next })
+  const res = await toggleMonitor({ enabled: next })
   if (!res.success) throw new Error(res.msg || '切换失败')
   ElMessage.success(`监听已${next ? '开启' : '关闭'}`)
   await refresh()
 }
+
+const toggleAccountMonitor = async (row: any) => {
+  const next = !row.monitor_enabled
+  row.monitor_enabled = next
+  const res = await toggleMonitor({ account: row.name, effective_enabled: next })
+  if (!res.success) throw new Error(res.msg || '切换失败')
+  ElMessage.success(`${row.name} 已${next ? '开启' : '停止'}监听`)
+  await refresh()
+}
+
+const recordTime = (row: any) => row.time || row.created_at || row.ts || '-'
+const recordRule = (row: any) => row.rule_name || row.rule || row.rule_id || '-'
+const recordStatus = (row: any) => row.status || row.result || '-'
+const recordDetail = (row: any) =>
+  row.detail || row.message || row.reason || row.error || row.action || row.event || '-'
 </script>
 
 <template>
@@ -82,21 +96,27 @@ const toggleGlobalMonitor = async () => {
               <ElTag :type="state.config.enabled ? 'success' : 'info'">{{ monitorText }}</ElTag>
             </div>
           </template>
-          <ElTable :data="state.runtime.recent || []" height="430" size="small">
-            <ElTableColumn prop="time" label="时间" width="160" />
-            <ElTableColumn prop="rule_name" label="规则" min-width="160" show-overflow-tooltip />
+          <ElTable :data="recentRecords" height="430" size="small">
+            <ElTableColumn label="时间" width="170">
+              <template #default="scope">{{ scope?.row ? recordTime(scope.row) : '-' }}</template>
+            </ElTableColumn>
+            <ElTableColumn label="规则" min-width="160" show-overflow-tooltip>
+              <template #default="scope">{{ scope?.row ? recordRule(scope.row) : '-' }}</template>
+            </ElTableColumn>
             <ElTableColumn prop="status" label="状态" width="90">
               <template #default="scope">
                 <ElTag
                   v-if="scope?.row"
                   size="small"
-                  :type="scope.row.status === 'success' ? 'success' : 'danger'"
+                  :type="recordStatus(scope.row) === 'success' ? 'success' : 'danger'"
                 >
-                  {{ scope.row.status || '-' }}
+                  {{ recordStatus(scope.row) }}
                 </ElTag>
               </template>
             </ElTableColumn>
-            <ElTableColumn prop="detail" label="详情" min-width="260" show-overflow-tooltip />
+            <ElTableColumn label="详情" min-width="260" show-overflow-tooltip>
+              <template #default="scope">{{ scope?.row ? recordDetail(scope.row) : '-' }}</template>
+            </ElTableColumn>
           </ElTable>
         </ElCard>
       </ElCol>
@@ -114,6 +134,29 @@ const toggleGlobalMonitor = async () => {
                 >
                   {{ scope.row.connected === false ? '离线' : '在线' }}
                 </ElTag>
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="监听" width="90">
+              <template #default="scope">
+                <ElTag
+                  v-if="scope?.row"
+                  size="small"
+                  :type="scope.row.monitor_enabled === false ? 'info' : 'success'"
+                >
+                  {{ scope.row.monitor_enabled === false ? '已停止' : '已开启' }}
+                </ElTag>
+              </template>
+            </ElTableColumn>
+            <ElTableColumn width="92" align="center">
+              <template #default="scope">
+                <ElButton
+                  v-if="scope?.row"
+                  link
+                  :type="scope.row.monitor_enabled === false ? 'primary' : 'danger'"
+                  @click="toggleAccountMonitor(scope.row)"
+                >
+                  {{ scope.row.monitor_enabled === false ? '开启' : '停止' }}
+                </ElButton>
               </template>
             </ElTableColumn>
           </ElTable>

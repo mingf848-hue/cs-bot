@@ -13,8 +13,10 @@ import {
   ElOption,
   ElSelect,
   ElSwitch,
+  ElTabPane,
   ElTable,
   ElTableColumn,
+  ElTabs,
   ElTag
 } from 'element-plus'
 import { useZd } from './useZd'
@@ -22,6 +24,8 @@ import { useZd } from './useZd'
 const { state, ruleStats, ensureLoaded, save } = useZd()
 const query = ref('')
 const selected = ref<any>(null)
+const activeRuleTab = ref('basic')
+const draggedStepIndex = ref<number | null>(null)
 
 const accountOptions = computed(() => {
   const main = state.runtime.main_account || '主账号'
@@ -190,6 +194,26 @@ const removeStep = (rule: any, index: number) => {
   rule.replies.splice(index, 1)
 }
 
+const moveStep = (rule: any, from: number, to: number) => {
+  if (!rule?.replies || to < 0 || to >= rule.replies.length || from === to) return
+  const [item] = rule.replies.splice(from, 1)
+  rule.replies.splice(to, 0, item)
+}
+
+const onStepDragStart = (index: number) => {
+  draggedStepIndex.value = index
+}
+
+const onStepDrop = (rule: any, index: number) => {
+  if (draggedStepIndex.value === null) return
+  moveStep(rule, draggedStepIndex.value, index)
+  draggedStepIndex.value = null
+}
+
+const onStepDragEnd = () => {
+  draggedStepIndex.value = null
+}
+
 const normalizeStep = (reply: any) => {
   Object.assign(reply, hydrateReply(reply))
 }
@@ -292,105 +316,126 @@ const handleSave = async () => {
       </template>
       <ElEmpty v-if="!selected" description="请选择或新建规则" />
       <div v-else class="editor-body">
-        <section class="editor-section">
-          <div class="section-title">基础规则</div>
-          <ElForm label-position="top" class="editor-grid">
-            <ElFormItem label="规则名称"><ElInput v-model="selected.name" /></ElFormItem>
-            <ElFormItem label="规则 ID"><ElInput v-model="selected.id" /></ElFormItem>
-            <ElFormItem label="启用状态"><ElSwitch v-model="selected.enabled" /></ElFormItem>
-            <ElFormItem label="冷却秒数">
-              <ElInputNumber v-model="selected.cooldown" :min="0" :controls="false" />
-            </ElFormItem>
-            <ElFormItem label="监听群 ID（一行一个）">
-              <ElInput
-                type="textarea"
-                :rows="4"
-                :model-value="textList(selected.groups)"
-                @update:model-value="setTextList(selected, 'groups', $event)"
-              />
-            </ElFormItem>
-            <ElFormItem label="关键词（一行一个，支持 r: 正则）">
-              <ElInput
-                type="textarea"
-                :rows="4"
-                :model-value="textList(selected.keywords)"
-                @update:model-value="setTextList(selected, 'keywords', $event)"
-              />
-            </ElFormItem>
-            <ElFormItem label="文件模式"><ElSwitch v-model="selected.check_file" /></ElFormItem>
-            <ElFormItem label="发送者过滤">
-              <ElSelect v-model="selected.sender_mode">
-                <ElOption label="排除前缀" value="exclude" />
-                <ElOption label="仅允许前缀" value="include" />
-              </ElSelect>
-            </ElFormItem>
-            <ElFormItem label="文件后缀">
-              <ElInput
-                :model-value="textList(selected.file_extensions)"
-                placeholder="xlsx, png"
-                @update:model-value="setTextList(selected, 'file_extensions', $event)"
-              />
-            </ElFormItem>
-            <ElFormItem label="文件名关键词">
-              <ElInput
-                :model-value="textList(selected.filename_keywords)"
-                placeholder="一行或逗号分隔"
-                @update:model-value="setTextList(selected, 'filename_keywords', $event)"
-              />
-            </ElFormItem>
-            <ElFormItem label="发送者前缀" class="span-2">
-              <ElInput
-                :model-value="textList(selected.sender_prefixes)"
-                placeholder="YY, AA"
-                @update:model-value="setTextList(selected, 'sender_prefixes', $event)"
-              />
-            </ElFormItem>
-          </ElForm>
-        </section>
-
-        <section class="editor-section">
-          <div class="section-head">
-            <div>
-              <div class="section-title">执行动作流</div>
-              <div class="section-desc">按顺序执行，不再手写 JSON。</div>
-            </div>
-            <ElButton type="primary" plain @click="addStep(selected)">添加步骤</ElButton>
-          </div>
-          <div class="account-row">
-            <span>规则回复账号</span>
-            <ElSelect v-model="selected.reply_account" placeholder="主账号（默认）" clearable>
-              <ElOption label="主账号（默认）" value="" />
-              <ElOption v-for="account in accountOptions" :key="account" :label="account" :value="account" />
-            </ElSelect>
-          </div>
-
-          <ElEmpty v-if="!selected.replies?.length" description="暂无动作步骤" />
-          <div v-else class="steps">
-            <div v-for="(reply, index) in selected.replies" :key="index" class="step-panel">
-              <div class="step-head">
-                <div class="step-index">#{{ index + 1 }}</div>
-                <ElSelect v-model="reply.type" class="step-type" @change="normalizeStep(reply)">
-                  <ElOption
-                    v-for="item in replyTypes"
-                    :key="item.value"
-                    :label="item.label"
-                    :value="item.value"
-                  />
+        <ElTabs v-model="activeRuleTab" type="border-card" class="rule-tabs">
+          <ElTabPane label="基础规则" name="basic">
+            <ElForm label-position="top" class="editor-grid compact-grid">
+              <ElFormItem label="规则名称"><ElInput v-model="selected.name" /></ElFormItem>
+              <ElFormItem label="规则 ID"><ElInput v-model="selected.id" /></ElFormItem>
+              <ElFormItem label="启用状态"><ElSwitch v-model="selected.enabled" /></ElFormItem>
+              <ElFormItem label="冷却秒数">
+                <ElInputNumber v-model="selected.cooldown" :min="0" :controls="false" />
+              </ElFormItem>
+              <ElFormItem label="监听群 ID（一行一个）">
+                <ElInput
+                  type="textarea"
+                  :rows="4"
+                  :model-value="textList(selected.groups)"
+                  @update:model-value="setTextList(selected, 'groups', $event)"
+                />
+              </ElFormItem>
+              <ElFormItem label="关键词（一行一个，支持 r: 正则）">
+                <ElInput
+                  type="textarea"
+                  :rows="4"
+                  :model-value="textList(selected.keywords)"
+                  @update:model-value="setTextList(selected, 'keywords', $event)"
+                />
+              </ElFormItem>
+              <ElFormItem label="文件模式"><ElSwitch v-model="selected.check_file" /></ElFormItem>
+              <ElFormItem label="发送者过滤">
+                <ElSelect v-model="selected.sender_mode">
+                  <ElOption label="排除前缀" value="exclude" />
+                  <ElOption label="仅允许前缀" value="include" />
                 </ElSelect>
-                <div v-if="reply.type !== 'amount_logic'" class="delay-inputs">
-                  <ElInputNumber v-model="reply.min" :controls="false" :min="0" />
-                  <span>-</span>
-                  <ElInputNumber v-model="reply.max" :controls="false" :min="0" />
-                  <span>秒</span>
-                </div>
-                <ElButton link type="danger" @click="removeStep(selected, index)">删除</ElButton>
-              </div>
+              </ElFormItem>
+              <ElFormItem label="文件后缀">
+                <ElInput
+                  :model-value="textList(selected.file_extensions)"
+                  placeholder="xlsx, png"
+                  @update:model-value="setTextList(selected, 'file_extensions', $event)"
+                />
+              </ElFormItem>
+              <ElFormItem label="文件名关键词">
+                <ElInput
+                  :model-value="textList(selected.filename_keywords)"
+                  placeholder="一行或逗号分隔"
+                  @update:model-value="setTextList(selected, 'filename_keywords', $event)"
+                />
+              </ElFormItem>
+              <ElFormItem label="发送者前缀" class="span-2">
+                <ElInput
+                  :model-value="textList(selected.sender_prefixes)"
+                  placeholder="YY, AA"
+                  @update:model-value="setTextList(selected, 'sender_prefixes', $event)"
+                />
+              </ElFormItem>
+            </ElForm>
+          </ElTabPane>
 
-              <div v-if="reply.type === 'text' || reply.type === 'edit_prev'" class="step-grid">
-                <ElFormItem label="回复内容" class="span-2">
-                  <ElInput v-model="reply.text" type="textarea" :rows="3" />
-                </ElFormItem>
+          <ElTabPane label="执行动作流" name="steps">
+            <div class="section-head compact-head">
+              <div>
+                <div class="section-title">执行动作流</div>
+                <div class="section-desc">拖动步骤调整顺序，也可以用上下按钮微调。</div>
               </div>
+              <ElButton type="primary" plain @click="addStep(selected)">添加步骤</ElButton>
+            </div>
+            <div class="account-row">
+              <span>规则回复账号</span>
+              <ElSelect v-model="selected.reply_account" placeholder="主账号（默认）" clearable>
+                <ElOption label="主账号（默认）" value="" />
+                <ElOption v-for="account in accountOptions" :key="account" :label="account" :value="account" />
+              </ElSelect>
+            </div>
+
+            <ElEmpty v-if="!selected.replies?.length" description="暂无动作步骤" />
+            <div v-else class="steps">
+              <div
+                v-for="(reply, index) in selected.replies"
+                :key="index"
+                class="step-panel"
+                draggable="true"
+                @dragstart="onStepDragStart(index)"
+                @dragend="onStepDragEnd"
+                @dragover.prevent
+                @drop="onStepDrop(selected, index)"
+              >
+                <div class="step-head">
+                  <div class="step-index" title="拖动调整顺序">#{{ index + 1 }}</div>
+                  <ElSelect v-model="reply.type" class="step-type" @change="normalizeStep(reply)">
+                    <ElOption
+                      v-for="item in replyTypes"
+                      :key="item.value"
+                      :label="item.label"
+                      :value="item.value"
+                    />
+                  </ElSelect>
+                  <div v-if="reply.type !== 'amount_logic'" class="delay-inputs">
+                    <ElInputNumber v-model="reply.min" :controls="false" :min="0" />
+                    <span>-</span>
+                    <ElInputNumber v-model="reply.max" :controls="false" :min="0" />
+                    <span>秒</span>
+                  </div>
+                  <div class="step-order">
+                    <ElButton link :disabled="index === 0" @click="moveStep(selected, index, index - 1)">
+                      上移
+                    </ElButton>
+                    <ElButton
+                      link
+                      :disabled="index === selected.replies.length - 1"
+                      @click="moveStep(selected, index, index + 1)"
+                    >
+                      下移
+                    </ElButton>
+                  </div>
+                  <ElButton link type="danger" @click="removeStep(selected, index)">删除</ElButton>
+                </div>
+
+                <div v-if="reply.type === 'text' || reply.type === 'edit_prev'" class="step-grid">
+                  <ElFormItem label="回复内容" class="span-2">
+                    <ElInput v-model="reply.text" type="textarea" :rows="3" />
+                  </ElFormItem>
+                </div>
 
               <div v-else-if="reply.type === 'forward' || reply.type === 'copy_file'" class="step-grid">
                 <ElFormItem label="目标群/用户名">
@@ -485,52 +530,54 @@ const handleSave = async () => {
                 </ElFormItem>
               </div>
 
-              <div v-else class="step-grid">
-                <ElFormItem label="内容" class="span-2">
-                  <ElInput v-model="reply.text" type="textarea" :rows="3" />
-                </ElFormItem>
+                <div v-else class="step-grid">
+                  <ElFormItem label="内容" class="span-2">
+                    <ElInput v-model="reply.text" type="textarea" :rows="3" />
+                  </ElFormItem>
+                </div>
               </div>
             </div>
-          </div>
-        </section>
+          </ElTabPane>
 
-        <section class="editor-section">
-          <div class="section-head">
-            <div>
-              <div class="section-title">同意后流程</div>
-              <div class="section-desc">领导引用报备并发送同意词后执行。</div>
-            </div>
-            <ElSwitch v-model="selected.enable_approval" @change="ensureApprovalAction(selected)" />
-          </div>
-          <template v-if="selected.enable_approval">
-            <ElDivider />
-            <div class="approval-flow">
-              <ElFormItem label="同意后回复领导引用消息">
-                <ElInput v-model="selected.approval_action.reply_admin" type="textarea" :rows="2" />
-              </ElFormItem>
-              <ElFormItem label="同意后转发原始报备到群">
-                <ElInput v-model="selected.approval_action.forward_to" placeholder="-1001234567890" />
-              </ElFormItem>
-              <ElFormItem label="同意后回复原始报备">
-                <ElInput v-model="selected.approval_action.reply_origin" type="textarea" :rows="2" />
-              </ElFormItem>
-              <div class="approval-delays">
-                <label>先回领导延迟</label>
-                <ElInputNumber v-model="selected.approval_action.delay_1_min" :controls="false" :min="0" />
-                <span>-</span>
-                <ElInputNumber v-model="selected.approval_action.delay_1_max" :controls="false" :min="0" />
-                <label>转发延迟</label>
-                <ElInputNumber v-model="selected.approval_action.delay_2_min" :controls="false" :min="0" />
-                <span>-</span>
-                <ElInputNumber v-model="selected.approval_action.delay_2_max" :controls="false" :min="0" />
-                <label>回原始报备延迟</label>
-                <ElInputNumber v-model="selected.approval_action.delay_3_min" :controls="false" :min="0" />
-                <span>-</span>
-                <ElInputNumber v-model="selected.approval_action.delay_3_max" :controls="false" :min="0" />
+          <ElTabPane label="同意后流程" name="approval">
+            <div class="section-head compact-head">
+              <div>
+                <div class="section-title">同意后流程</div>
+                <div class="section-desc">领导引用报备并发送同意词后执行。</div>
               </div>
+              <ElSwitch v-model="selected.enable_approval" @change="ensureApprovalAction(selected)" />
             </div>
-          </template>
-        </section>
+            <template v-if="selected.enable_approval">
+              <ElDivider />
+              <div class="approval-flow">
+                <ElFormItem label="同意后回复领导引用消息">
+                  <ElInput v-model="selected.approval_action.reply_admin" type="textarea" :rows="2" />
+                </ElFormItem>
+                <ElFormItem label="同意后转发原始报备到群">
+                  <ElInput v-model="selected.approval_action.forward_to" placeholder="-1001234567890" />
+                </ElFormItem>
+                <ElFormItem label="同意后回复原始报备">
+                  <ElInput v-model="selected.approval_action.reply_origin" type="textarea" :rows="2" />
+                </ElFormItem>
+                <div class="approval-delays">
+                  <label>先回领导延迟</label>
+                  <ElInputNumber v-model="selected.approval_action.delay_1_min" :controls="false" :min="0" />
+                  <span>-</span>
+                  <ElInputNumber v-model="selected.approval_action.delay_1_max" :controls="false" :min="0" />
+                  <label>转发延迟</label>
+                  <ElInputNumber v-model="selected.approval_action.delay_2_min" :controls="false" :min="0" />
+                  <span>-</span>
+                  <ElInputNumber v-model="selected.approval_action.delay_2_max" :controls="false" :min="0" />
+                  <label>回原始报备延迟</label>
+                  <ElInputNumber v-model="selected.approval_action.delay_3_min" :controls="false" :min="0" />
+                  <span>-</span>
+                  <ElInputNumber v-model="selected.approval_action.delay_3_max" :controls="false" :min="0" />
+                </div>
+              </div>
+            </template>
+            <ElEmpty v-else description="同意后流程未开启" />
+          </ElTabPane>
+        </ElTabs>
       </div>
     </ElCard>
   </div>
@@ -563,6 +610,12 @@ const handleSave = async () => {
 .editor-body {
   display: grid;
   gap: 12px;
+}
+.rule-tabs {
+  min-height: calc(100vh - 196px);
+}
+:deep(.rule-tabs > .el-tabs__content) {
+  padding: 12px;
 }
 .editor-section {
   border: 1px solid var(--el-border-color-lighter);
@@ -614,6 +667,15 @@ const handleSave = async () => {
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 6px;
   background: var(--el-fill-color-extra-light);
+  cursor: grab;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.step-panel:hover {
+  border-color: var(--el-color-primary-light-5);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 5%);
+}
+.step-panel:active {
+  cursor: grabbing;
 }
 .step-head {
   margin-bottom: 10px;
@@ -622,6 +684,11 @@ const handleSave = async () => {
   width: 34px;
   font-weight: 700;
   color: var(--el-text-color-secondary);
+}
+.step-order {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 .step-type {
   width: 180px;
