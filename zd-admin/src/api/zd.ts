@@ -39,6 +39,9 @@ export const loadZdConfig = () => zdFetch<any>('/tool/monitor_settings_json')
 export const loadRuntimeStats = (limit = 240) =>
   zdFetch<any>(`/api/monitor_runtime_stats?limit=${encodeURIComponent(String(limit))}`)
 
+export const loadMonitorAccountGroups = (account: string) =>
+  zdFetch<ZdResponse>(`/api/monitor_account_groups?account=${encodeURIComponent(account || '')}`)
+
 export const saveZdConfig = async (payload: any) => {
   const data = await zdFetch<ZdResponse>('/api/monitor_settings?return_config=1', {
     method: 'POST',

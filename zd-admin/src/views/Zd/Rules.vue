@@ -19,6 +19,7 @@ import {
   ElTabs,
   ElTag
 } from 'element-plus'
+import { loadMonitorAccountGroups } from '@/api/zd'
 import { useZd } from './useZd'
 
 const { state, ruleStats, ensureLoaded, save } = useZd()
@@ -27,6 +28,8 @@ const selected = ref<any>(null)
 const activeAccount = ref('')
 const activeRuleTab = ref('basic')
 const draggedStepIndex = ref<number | null>(null)
+const groupOptionsByAccount = ref<Record<string, any[]>>({})
+const groupLoading = ref(false)
 
 const accountOptions = computed(() => {
   const main = state.runtime.main_account || '主账号'
@@ -49,6 +52,19 @@ const accountRuleStats = computed(() =>
     }
   })
 )
+
+const resourceGroupOptions = computed(() =>
+  (state.config.resources?.groups || []).map((item: any) => {
+    const id = item?.id ?? item?.value ?? item?.group_id ?? item
+    const name = item?.name || item?.label || item?.title || id
+    return { id, name: String(name || id) }
+  })
+)
+
+const currentGroupOptions = computed(() => {
+  const account = selected.value ? ruleAccountName(selected.value) : activeAccount.value || mainAccount.value
+  return groupOptionsByAccount.value[account] || resourceGroupOptions.value
+})
 
 const replyTypes = [
   { label: '文字回复', value: 'text' },
@@ -75,6 +91,7 @@ onMounted(async () => {
   hydrateAllRules()
   activeAccount.value = mainAccount.value
   selected.value = filteredRules.value[0] || null
+  await loadGroupsForAccount(activeAccount.value)
 })
 
 const filteredRules = computed(() => {
@@ -92,6 +109,10 @@ const filteredRules = computed(() => {
 
 watch(filteredRules, (rules) => {
   if (!rules.includes(selected.value)) selected.value = rules[0] || null
+})
+
+watch(selected, (rule) => {
+  if (rule) loadGroupsForAccount(ruleAccountName(rule))
 })
 
 const defaultApprovalAction = () => ({
@@ -147,7 +168,7 @@ const hydrateReply = (reply: any = {}) => ({
 
 const hydrateRule = (rule: any) => {
   rule.enabled = rule.enabled !== false
-  rule.groups = Array.isArray(rule.groups) ? rule.groups : []
+  rule.groups = Array.isArray(rule.groups) ? rule.groups.map(normalizeGroupId) : []
   rule.keywords = Array.isArray(rule.keywords) ? rule.keywords : []
   rule.file_extensions = Array.isArray(rule.file_extensions) ? rule.file_extensions : []
   rule.filename_keywords = Array.isArray(rule.filename_keywords) ? rule.filename_keywords : []
@@ -203,12 +224,14 @@ const selectRule = (rule: any) => {
 const selectAccount = (account: string) => {
   activeAccount.value = account
   selected.value = state.config.rules.find((rule: any) => ruleAccountName(rule) === account) || null
+  loadGroupsForAccount(account)
 }
 
 const setSelectedAccount = (account: string) => {
   if (!selected.value) return
   selected.value.reply_account = account === mainAccount.value ? '' : account
   activeAccount.value = account
+  loadGroupsForAccount(account)
 }
 
 const toggleRule = async (rule: any, enabled: boolean) => {
@@ -229,6 +252,31 @@ const setTextList = (row: any, key: string, value: string) => {
     .split(splitter)
     .map((item) => item.trim())
     .filter(Boolean)
+}
+
+const normalizeGroupId = (value: any) => {
+  const text = String(value ?? '').trim()
+  const num = Number(text)
+  return Number.isFinite(num) && text ? num : text
+}
+
+const loadGroupsForAccount = async (account: string) => {
+  const target = account || mainAccount.value
+  if (!target || groupOptionsByAccount.value[target]) return
+  groupLoading.value = true
+  try {
+    const data = await loadMonitorAccountGroups(target)
+    if (data.success && Array.isArray(data.groups)) {
+      groupOptionsByAccount.value[target] = data.groups.map((item: any) => ({
+        id: normalizeGroupId(item.id),
+        name: item.name || item.title || item.id
+      }))
+    }
+  } catch (error) {
+    groupOptionsByAccount.value[target] = resourceGroupOptions.value
+  } finally {
+    groupLoading.value = false
+  }
 }
 
 const addStep = (rule: any) => {
@@ -340,14 +388,11 @@ const handleSave = async () => {
         height="calc(100vh - 354px)"
         size="small"
         highlight-current-row
-        class="mt-12px"
+        class="rule-table mt-12px"
         @row-click="selectRule"
       >
-        <ElTableColumn prop="name" label="规则" min-width="170" show-overflow-tooltip />
-        <ElTableColumn label="账号" width="92" show-overflow-tooltip>
-          <template #default="scope">{{ scope?.row ? ruleAccountName(scope.row) : '-' }}</template>
-        </ElTableColumn>
-        <ElTableColumn label="状态" width="82">
+        <ElTableColumn prop="name" label="规则" min-width="120" show-overflow-tooltip />
+        <ElTableColumn label="状态" width="76">
           <template #default="scope">
             <ElSwitch
               v-if="scope?.row"
@@ -361,7 +406,7 @@ const handleSave = async () => {
             />
           </template>
         </ElTableColumn>
-        <ElTableColumn width="64" align="center">
+        <ElTableColumn width="52" align="center">
           <template #default="scope">
             <ElButton v-if="scope?.row" link type="danger" @click.stop="removeRule(scope.row)"
               >删除</ElButton
@@ -399,13 +444,24 @@ const handleSave = async () => {
               <ElFormItem label="冷却秒数">
                 <ElInputNumber v-model="selected.cooldown" :min="0" :controls="false" />
               </ElFormItem>
-              <ElFormItem label="监听群 ID（一行一个）">
-                <ElInput
-                  type="textarea"
-                  :rows="4"
-                  :model-value="textList(selected.groups)"
-                  @update:model-value="setTextList(selected, 'groups', $event)"
-                />
+              <ElFormItem label="监听群" class="span-2">
+                <ElSelect
+                  v-model="selected.groups"
+                  multiple
+                  filterable
+                  collapse-tags
+                  collapse-tags-tooltip
+                  :max-collapse-tags="4"
+                  :loading="groupLoading"
+                  placeholder="从当前账号群列表选择"
+                >
+                  <ElOption
+                    v-for="group in currentGroupOptions"
+                    :key="String(group.id)"
+                    :label="`${group.name} (${group.id})`"
+                    :value="group.id"
+                  />
+                </ElSelect>
               </ElFormItem>
               <ElFormItem label="关键词（一行一个，支持 r: 正则）">
                 <ElInput
@@ -721,6 +777,13 @@ const handleSave = async () => {
 }
 .account-tab.active .account-count {
   color: var(--el-color-primary);
+}
+:deep(.rule-table .el-scrollbar__bar.is-horizontal) {
+  display: none;
+}
+:deep(.rule-table .el-table__body),
+:deep(.rule-table .el-table__header) {
+  width: 100% !important;
 }
 .rules-list,
 .rule-editor {

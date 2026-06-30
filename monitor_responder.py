@@ -1936,6 +1936,35 @@ def get_account_summaries():
         })
     return accounts
 
+async def list_monitor_account_groups(account_name=""):
+    account = resolve_client_name(account_name) or MAIN_NAME
+    client = global_clients.get(account)
+    if client is None:
+        raise RuntimeError(f"账号未在线：{account}")
+    groups = []
+    async for dialog in client.iter_dialogs():
+        entity = getattr(dialog, "entity", None)
+        entity_id = getattr(entity, "id", None)
+        if entity_id is None:
+            continue
+        is_group = bool(getattr(dialog, "is_group", False) or getattr(dialog, "is_channel", False))
+        if not is_group:
+            continue
+        try:
+            raw_id = int(entity_id)
+            group_id = int(f"-100{raw_id}") if raw_id > 0 and getattr(dialog, "is_channel", False) else raw_id
+        except Exception:
+            continue
+        title = str(getattr(dialog, "title", "") or getattr(entity, "title", "") or group_id).strip()
+        groups.append({
+            "id": group_id,
+            "name": title,
+            "title": title,
+            "account": account,
+        })
+    groups.sort(key=lambda item: str(item.get("name") or item.get("id")))
+    return groups
+
 def build_monitor_status_payload(account_name=None):
     account = str(account_name or MAIN_NAME).strip() or MAIN_NAME
     with current_config_lock:
@@ -6443,6 +6472,26 @@ def init_monitor(client, app, other_cs_ids, main_cs_prefixes, main_handler=None)
             return denied
         account = str(request.args.get("account") or "").strip()
         return jsonify(build_monitor_status_payload(account or MAIN_NAME))
+
+    @app.route('/api/monitor_account_groups')
+    def monitor_account_groups_api():
+        denied = require_zd_login_json()
+        if denied:
+            return denied
+        account = str(request.args.get("account") or "").strip() or MAIN_NAME
+        resolved_account = resolve_client_name(account) or MAIN_NAME
+        try:
+            future = asyncio.run_coroutine_threadsafe(list_monitor_account_groups(resolved_account), bot_loop)
+            groups = future.result(timeout=20)
+            return jsonify({
+                "success": True,
+                "account": resolved_account,
+                "groups": groups,
+                "count": len(groups),
+            })
+        except Exception as e:
+            logger.error(f"❌ [Monitor] 读取账号群列表失败 account={resolved_account}: {e}")
+            return jsonify({"success": False, "msg": str(e), "account": resolved_account, "groups": []})
 
     @app.route('/api/monitor_settings', methods=['POST'])
     def update_monitor_settings():
