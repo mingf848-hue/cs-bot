@@ -114,6 +114,25 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
     ]
   },
   {
+    path: '/domain-pin',
+    component: Layout,
+    name: 'DomainPin',
+    meta: {
+      title: '域名置顶',
+      icon: 'vi-ant-design:pushpin-filled'
+    },
+    children: [
+      {
+        path: '',
+        component: () => import('@/views/Zd/DomainPin.vue'),
+        name: 'ZdDomainPin',
+        meta: {
+          title: '域名置顶'
+        }
+      }
+    ]
+  },
+  {
     path: '/settings',
     component: Layout,
     name: 'Settings',

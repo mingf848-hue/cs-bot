@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive } from 'vue'
+import { onMounted } from 'vue'
 import {
   ElButton,
   ElCard,
@@ -7,58 +7,19 @@ import {
   ElForm,
   ElFormItem,
   ElInput,
-  ElInputNumber,
-  ElMessage,
   ElRow,
   ElSwitch,
   ElTimePicker
 } from 'element-plus'
-import { runDomainPinUpdate } from '@/api/zd'
 import { useZd } from './useZd'
 
 const { state, ensureLoaded, save } = useZd()
 
-const domainPin = reactive({
-  source_account: 'ara账号',
-  target_account: '组长值班',
-  source_chat_ids: '-1002819832851\n-1002560892878',
-  history_limit: 80,
-  dry_run: true,
-  running: false,
-  result: ''
-})
-
 onMounted(ensureLoaded)
-
-const updateDomainPin = async (dryRun: boolean) => {
-  domainPin.running = true
-  domainPin.result = dryRun ? '正在预览...' : '正在更新...'
-  try {
-    const data = await runDomainPinUpdate({ ...domainPin, dry_run: dryRun })
-    domainPin.result = [
-      data.msg || (data.success ? '完成' : '失败'),
-      ...(data.results || []).map((item: any) => {
-        const label =
-          item.status === 'failed'
-            ? '失败'
-            : item.status === 'preview'
-              ? '预览'
-              : item.status === 'unchanged'
-                ? '无变化'
-                : '成功'
-        const chat = item.chat_name ? `${item.chat_name}（${item.chat_id}）` : item.chat_id
-        return `${chat} ${label}${item.error ? `：${item.error}` : ''}`
-      })
-    ].join('\n')
-    ElMessage[data.success ? 'success' : 'error'](data.msg || (dryRun ? '预览完成' : '更新完成'))
-  } finally {
-    domainPin.running = false
-  }
-}
 </script>
 
 <template>
-  <div v-loading="state.loading" class="settings-grid">
+  <div v-loading="state.loading" class="settings-page">
     <ElCard shadow="never">
       <template #header>
         <div class="card-header">
@@ -115,58 +76,20 @@ const updateDomainPin = async (dryRun: boolean) => {
         </ElRow>
       </ElForm>
     </ElCard>
-
-    <ElCard shadow="never">
-      <template #header>域名更新置顶</template>
-      <ElForm label-position="top">
-        <ElRow :gutter="12">
-          <ElCol :span="6"
-            ><ElFormItem label="读取账号"><ElInput v-model="domainPin.source_account" /></ElFormItem
-          ></ElCol>
-          <ElCol :span="6"
-            ><ElFormItem label="编辑账号"><ElInput v-model="domainPin.target_account" /></ElFormItem
-          ></ElCol>
-          <ElCol :span="6"
-            ><ElFormItem label="读取条数"
-              ><ElInputNumber v-model="domainPin.history_limit" :min="10" :max="300" /></ElFormItem
-          ></ElCol>
-          <ElCol :span="24">
-            <ElFormItem label="来源群 ID">
-              <ElInput v-model="domainPin.source_chat_ids" type="textarea" :rows="4" />
-            </ElFormItem>
-          </ElCol>
-          <ElCol :span="24">
-            <div class="domain-actions">
-              <ElButton :loading="domainPin.running" @click="updateDomainPin(true)">预览</ElButton>
-              <ElButton type="primary" :loading="domainPin.running" @click="updateDomainPin(false)"
-                >执行更新</ElButton
-              >
-            </div>
-          </ElCol>
-          <ElCol :span="24">
-            <ElInput v-model="domainPin.result" type="textarea" :rows="10" readonly />
-          </ElCol>
-        </ElRow>
-      </ElForm>
-    </ElCard>
   </div>
 </template>
 
 <style scoped>
-.settings-grid {
+.settings-page {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 12px;
+  max-width: 980px;
 }
-.card-header,
-.domain-actions {
+.card-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-}
-.domain-actions {
-  justify-content: flex-end;
-  margin-bottom: 12px;
 }
 </style>
