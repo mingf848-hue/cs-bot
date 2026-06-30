@@ -15,6 +15,8 @@ import { useZd } from './useZd'
 
 const { state, ensureLoaded, save } = useZd()
 
+defineOptions({ name: 'ZdSettings' })
+
 onMounted(ensureLoaded)
 </script>
 

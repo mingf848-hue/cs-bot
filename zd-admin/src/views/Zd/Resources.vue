@@ -5,6 +5,8 @@ import { useZd } from './useZd'
 
 const { state, ensureLoaded, save } = useZd()
 
+defineOptions({ name: 'ZdResources' })
+
 onMounted(ensureLoaded)
 
 const addGroup = () => state.config.resources.groups.push({ id: '', name: '新群组' })

@@ -23,6 +23,9 @@ import { loadMonitorAccountGroups } from '@/api/zd'
 import { useZd } from './useZd'
 
 const { state, ruleStats, ensureLoaded, save } = useZd()
+
+defineOptions({ name: 'ZdRules' })
+
 const query = ref('')
 const selected = ref<any>(null)
 const activeAccount = ref('')

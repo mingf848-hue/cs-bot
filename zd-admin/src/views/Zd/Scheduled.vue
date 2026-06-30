@@ -17,6 +17,8 @@ import { useZd } from './useZd'
 
 const { state, ensureLoaded, save } = useZd()
 
+defineOptions({ name: 'ZdScheduled' })
+
 onMounted(ensureLoaded)
 
 const addMessage = () => {

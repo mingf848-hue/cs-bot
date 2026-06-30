@@ -95,6 +95,44 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
     ]
   },
   {
+    path: '/accounts',
+    component: Layout,
+    name: 'Accounts',
+    meta: {
+      title: '账号管理',
+      icon: 'vi-ant-design:user-outlined'
+    },
+    children: [
+      {
+        path: '',
+        component: () => import('@/views/Zd/Accounts.vue'),
+        name: 'ZdAccounts',
+        meta: {
+          title: '账号管理'
+        }
+      }
+    ]
+  },
+  {
+    path: '/workload',
+    component: Layout,
+    name: 'Workload',
+    meta: {
+      title: '工作量统计',
+      icon: 'vi-ant-design:bar-chart-outlined'
+    },
+    children: [
+      {
+        path: '',
+        component: () => import('@/views/Zd/Workload.vue'),
+        name: 'ZdWorkload',
+        meta: {
+          title: '工作量统计'
+        }
+      }
+    ]
+  },
+  {
     path: '/scheduled',
     component: Layout,
     name: 'Scheduled',

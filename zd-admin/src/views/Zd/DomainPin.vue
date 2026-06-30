@@ -19,6 +19,8 @@ import { useZd } from './useZd'
 
 const { state, ensureLoaded } = useZd()
 
+defineOptions({ name: 'ZdDomainPin' })
+
 type GroupOption = {
   id: string
   name: string
