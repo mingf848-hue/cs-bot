@@ -5,8 +5,10 @@ importScripts('service_worker.js');
 
 (function patchUrgeSettlementNoticeSelection() {
   function isSettlementStillUnsettled(order = {}, detail = {}) {
+    const betStatus = numericValue(detail.betStatus);
+    const betResult = numericValue(detail.betResult);
     return Number(order.orderStatus) === 0
-      && detailIsUnsettled(detail, order)
+      && (detailIsUnsettled(detail, order) || betStatus === 0 || betStatus === 6 || (betResult === 0 && betStatus !== 1))
       && !detailIsCanceled(detail)
       && !detailIsBetFailed(detail);
   }

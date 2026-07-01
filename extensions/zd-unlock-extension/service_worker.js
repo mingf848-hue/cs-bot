@@ -2287,6 +2287,11 @@ function withSettlementRollbackPrefix(replyText, order = {}, detail = {}) {
 
 function detailIsSettled(detail = {}, order = {}) {
   if (isSettlementRollback(order, detail)) return false;
+  if (Number(order.orderStatus) === 0) {
+    const betStatus = numericValue(detail.betStatus);
+    const betResult = numericValue(detail.betResult);
+    if (betStatus === 0 || betStatus === 6 || (betResult === 0 && betStatus !== 1)) return false;
+  }
   const settleTimes = numericValue(detail.settleTimes);
   if (settleTimes !== null) return settleTimes > 0;
   const betStatus = numericValue(detail.betStatus);
@@ -2296,11 +2301,12 @@ function detailIsSettled(detail = {}, order = {}) {
 
 function detailIsUnsettled(detail = {}, order = {}) {
   if (isSettlementRollback(order, detail)) return true;
+  const betStatus = numericValue(detail.betStatus);
+  const betResult = numericValue(detail.betResult);
+  if (Number(order.orderStatus) === 0 && (betStatus === 0 || betStatus === 6 || (betResult === 0 && betStatus !== 1))) return true;
   const settleTimes = numericValue(detail.settleTimes);
   if (settleTimes !== null) return settleTimes <= 0;
-  const betStatus = numericValue(detail.betStatus);
   if (betStatus === 0 || betStatus === 6) return true;
-  const betResult = numericValue(detail.betResult);
   return betResult === 0 && betStatus !== 1;
 }
 
