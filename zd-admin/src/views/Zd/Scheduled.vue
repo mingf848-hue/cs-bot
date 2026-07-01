@@ -42,7 +42,11 @@ const addBackend = () => {
     time: '06:00',
     frequency: 'daily',
     action: 'venue_display_control',
-    target: ''
+    target: '双赢彩票',
+    mode: 'maintenance',
+    sites: ['9001', '6001'],
+    maintenance_start: '06:00',
+    maintenance_end: '07:05'
   })
 }
 </script>
@@ -128,14 +132,42 @@ const addBackend = () => {
                 format="HH:mm"
                 value-format="HH:mm" /></template
           ></ElTableColumn>
-          <ElTableColumn label="动作" min-width="180"
+          <ElTableColumn label="操作" width="120"
             ><template #default="scope"
-              ><ElInput v-if="scope?.row" v-model="scope.row.action" /></template
+              ><ElSelect v-if="scope?.row" v-model="scope.row.mode">
+                <ElOption label="维护" value="maintenance" />
+                <ElOption label="启用" value="enable" />
+              </ElSelect></template
           ></ElTableColumn>
-          <ElTableColumn label="目标" min-width="180"
+          <ElTableColumn label="场馆" min-width="160"
             ><template #default="scope"
-              ><ElInput v-if="scope?.row" v-model="scope.row.target" /></template
+              ><ElInput v-if="scope?.row" v-model="scope.row.target" placeholder="双赢彩票" /></template
           ></ElTableColumn>
+          <ElTableColumn label="站点" width="170"
+            ><template #default="scope"
+              ><ElSelect v-if="scope?.row" v-model="scope.row.sites" multiple collapse-tags>
+                <ElOption label="9001" value="9001" />
+                <ElOption label="6001" value="6001" />
+              </ElSelect></template
+          ></ElTableColumn>
+          <ElTableColumn label="维护开始" width="130">
+            <template #default="scope">
+              <ElTimePicker
+                v-if="scope?.row && scope.row.mode !== 'enable'"
+                v-model="scope.row.maintenance_start"
+                format="HH:mm"
+                value-format="HH:mm" />
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="维护结束" width="130">
+            <template #default="scope">
+              <ElTimePicker
+                v-if="scope?.row && scope.row.mode !== 'enable'"
+                v-model="scope.row.maintenance_end"
+                format="HH:mm"
+                value-format="HH:mm" />
+            </template>
+          </ElTableColumn>
           <ElTableColumn width="80"
             ><template #default="scope"
               ><ElButton
