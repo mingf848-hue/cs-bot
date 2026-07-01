@@ -115,8 +115,8 @@ DOMAIN_PIN_TARGET_COMBINED_WITH_FOOTER = [
     -1001800838000, -1001978088089, -1001931146238, -1001911814916,
     -1001885279888, -1001703213989, -1001571955528, -1002807120955,
     -1002957057436, -1001871198775, -1001931567173, -1001959120958,
-    -1002024356399,
 ]
+DOMAIN_PIN_TARGET_MILAN_WITH_FOOTER = [-1002024356399]
 DOMAIN_PIN_TARGET_JIANGNAN_WITH_FOOTER = [-1001840201909]
 DOMAIN_PIN_TARGET_COMBINED_NO_FOOTER = [-1002169616907]
 DOMAIN_PIN_DEFAULT_SOURCE_HINTS = ("ara",)
@@ -1543,6 +1543,7 @@ def build_domain_pin_payloads(sections):
     return {
         "combined": combined,
         "combined_with_footer": append_domain_pin_footer(combined) if combined else "",
+        "milan_with_footer": append_domain_pin_footer(milan_text) if milan_text else "",
         "jiangnan_with_footer": append_domain_pin_footer(jiangnan_text) if jiangnan_text else "",
     }
 
@@ -1657,6 +1658,7 @@ async def run_domain_pin_update_command(payload=None):
 
     target_batches = [
         ("combined_with_footer", parse_domain_pin_id_list(payload.get("combined_with_footer_targets"), DOMAIN_PIN_TARGET_COMBINED_WITH_FOOTER)),
+        ("milan_with_footer", parse_domain_pin_id_list(payload.get("milan_with_footer_targets"), DOMAIN_PIN_TARGET_MILAN_WITH_FOOTER)),
         ("jiangnan_with_footer", parse_domain_pin_id_list(payload.get("jiangnan_with_footer_targets"), DOMAIN_PIN_TARGET_JIANGNAN_WITH_FOOTER)),
         ("combined", parse_domain_pin_id_list(payload.get("combined_no_footer_targets"), DOMAIN_PIN_TARGET_COMBINED_NO_FOOTER)),
     ]
