@@ -87,6 +87,9 @@ const accountWorkload = computed(() => {
         <div class="zd-subtitle">最后刷新：{{ state.lastLoadedAt || '未同步' }}</div>
       </div>
       <div class="zd-actions">
+        <ElButton tag="a" href="/tool/zd_unlock_extension.zip" type="primary" plain>
+          Chrome扩展ZIP
+        </ElButton>
         <ElButton @click="refresh">刷新</ElButton>
         <ElButton :type="state.config.enabled ? 'danger' : 'primary'" @click="toggleGlobalMonitor">
           {{ state.config.enabled ? '暂停监听' : '开启监听' }}
