@@ -1,213 +1,267 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElButton, ElCard, ElDescriptions, ElDescriptionsItem, ElInput, ElMessage, ElTable, ElTableColumn, ElTag } from 'element-plus'
-import { loadManualWorkloadStatus, runManualWorkloadScan } from '@/api/zd'
-import { useZd } from './useZd'
-
-const { state, ensureLoaded, refreshRuntime } = useZd()
+import {
+  ElButton,
+  ElCard,
+  ElInput,
+  ElInputNumber,
+  ElMessage,
+  ElProgress,
+  ElTable,
+  ElTableColumn,
+  ElTag
+} from 'element-plus'
+import { zdFetch } from '@/api/zd'
 
 defineOptions({ name: 'ZdWorkload' })
 
-const query = ref('')
-const manual = reactive({
-  loading: false,
-  status: {} as any,
-  result: null as any
-})
-
-const loadManualStatus = async () => {
-  try {
-    manual.status = await loadManualWorkloadStatus()
-  } catch (error: any) {
-    ElMessage.error(error?.message || '读取手动工作量状态失败')
-  }
+type StatsRow = {
+  keyword: string
+  promo: number
+  assist: number
 }
 
-const refreshAll = async () => {
-  await Promise.all([refreshRuntime(), loadManualStatus()])
+type MatchLog = {
+  kw: string
+  text: string
+  link?: string
 }
 
-const runManual = async (sync: boolean) => {
-  manual.loading = true
-  try {
-    const data = await runManualWorkloadScan(sync)
-    manual.result = data
-    await loadManualStatus()
-    if (data.success) {
-      ElMessage.success(sync ? '手动执行成功，已同步表格' : '扫描完成')
-    } else {
-      ElMessage.error(data.msg || '手动执行失败')
-    }
-  } catch (error: any) {
-    manual.result = { success: false, msg: error?.message || '手动执行失败' }
-    ElMessage.error(error?.message || '手动执行失败')
-    await loadManualStatus()
-  } finally {
-    manual.loading = false
-  }
+const yesterdayDay = () => {
+  const date = new Date()
+  date.setDate(date.getDate() - 1)
+  return date.getDate()
 }
 
-onMounted(async () => {
-  await ensureLoaded()
-  await loadManualStatus()
+const day = ref(yesterdayDay())
+const keywords = ref('')
+const loadingKeywords = ref(false)
+const running = ref(false)
+const syncing = ref(false)
+const progress = reactive({
+  percent: 0,
+  text: '准备就绪'
 })
+const resultRows = ref<StatsRow[]>([])
+const matchLogs = ref<MatchLog[]>([])
+const currentStats = ref<Record<string, { promo: number; assist: number }> | null>(null)
+const syncStatus = ref('')
 
-const records = computed(() => state.runtime.records || state.runtime.recent || [])
-
-const statusText = (record: any) => String(record.status || record.result || '-')
-
-const workloadRows = computed(() => {
-  const keyword = query.value.trim().toLowerCase()
-  const map = new Map<string, any>()
-  records.value.forEach((record: any) => {
-    const account = String(record.target_account || record.sender_name || '未标记')
-    if (keyword && !account.toLowerCase().includes(keyword)) return
-    const item =
-      map.get(account) ||
-      ({
-        account,
-        total: 0,
-        success: 0,
-        failed: 0,
-        skipped: 0,
-        action_count: 0,
-        duration_ms: 0,
-        last_time: ''
-      } as any)
-    item.total += 1
-    item.action_count += Number(record.action_count || 0)
-    item.duration_ms += Number(record.duration_ms || 0)
-    const status = statusText(record)
-    if (status === 'success') item.success += 1
-    else if (status === 'failed') item.failed += 1
-    else if (status === 'skipped') item.skipped += 1
-    item.last_time = item.last_time || record.ts || record.time || ''
-    map.set(account, item)
-  })
-  return Array.from(map.values()).sort((a, b) => b.total - a.total)
-})
-
-const totalSummary = computed(() =>
-  workloadRows.value.reduce(
-    (sum, item) => ({
-      total: sum.total + item.total,
-      success: sum.success + item.success,
-      failed: sum.failed + item.failed,
-      action_count: sum.action_count + item.action_count
-    }),
-    { total: 0, success: 0, failed: 0, action_count: 0 }
-  )
+const totalCount = computed(() =>
+  resultRows.value.reduce((sum, row) => sum + Number(row.promo || 0) + Number(row.assist || 0), 0)
+)
+const promoTotal = computed(() => resultRows.value.reduce((sum, row) => sum + Number(row.promo || 0), 0))
+const assistTotal = computed(() =>
+  resultRows.value.reduce((sum, row) => sum + Number(row.assist || 0), 0)
 )
 
-const manualStatusType = computed(() => {
-  const text = String(manual.status.status || manual.result?.msg || '')
-  if (manual.result?.success || text.includes('成功')) return 'success'
-  if (text.includes('失败') || text.includes('错误')) return 'danger'
-  if (text.includes('执行中')) return 'warning'
-  return 'info'
-})
+const keywordLines = computed(() =>
+  keywords.value
+    .split('\n')
+    .map((item) => item.trim())
+    .filter(Boolean)
+)
 
-const latestEntry = computed(() => manual.result?.entry || null)
+const renderStatsRows = (stats: Record<string, { promo: number; assist: number }>) => {
+  resultRows.value = keywordLines.value.map((keyword) => ({
+    keyword,
+    promo: Number(stats?.[keyword]?.promo || 0),
+    assist: Number(stats?.[keyword]?.assist || 0)
+  }))
+}
+
+const loadDefaultKeywords = async () => {
+  loadingKeywords.value = true
+  try {
+    const res = await fetch('/tool/work_stats', { credentials: 'same-origin' })
+    const html = await res.text()
+    const doc = new DOMParser().parseFromString(html, 'text/html')
+    const textarea = doc.querySelector<HTMLTextAreaElement>('#keywordsInput')
+    keywords.value = textarea?.value?.trim() || ''
+    if (!keywords.value) ElMessage.warning('没有读取到默认关键词，可手动粘贴')
+  } catch (error: any) {
+    ElMessage.error(error?.message || '读取关键词失败')
+  } finally {
+    loadingKeywords.value = false
+  }
+}
+
+const startStats = async () => {
+  if (!day.value || !keywordLines.value.length) {
+    ElMessage.warning('请填写统计日期和关键词')
+    return
+  }
+  running.value = true
+  progress.percent = 2
+  progress.text = '连接服务器...'
+  resultRows.value = []
+  matchLogs.value = []
+  currentStats.value = null
+  syncStatus.value = ''
+  try {
+    const params = new URLSearchParams({
+      day: String(day.value),
+      keywords: keywords.value
+    })
+    const res = await fetch(`/api/work_stats_stream?${params}`, { credentials: 'same-origin' })
+    if (!res.ok || !res.body) throw new Error(res.statusText || '统计请求失败')
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+      for (const line of lines) {
+        const text = line.trim()
+        if (!text) continue
+        const data = JSON.parse(text)
+        if (data.type === 'progress') {
+          progress.percent = Number(data.percent || 0)
+          progress.text = data.msg || '统计中...'
+        } else if (data.type === 'match') {
+          matchLogs.value.push({
+            kw: data.kw || '',
+            text: data.text || '',
+            link: data.link || ''
+          })
+        } else if (data.type === 'done') {
+          currentStats.value = data.results || {}
+          renderStatsRows(currentStats.value || {})
+          progress.percent = 100
+          progress.text = '统计完成'
+        } else if (data.type === 'error') {
+          throw new Error(data.msg || '统计失败')
+        }
+      }
+    }
+    ElMessage.success('统计完成')
+  } catch (error: any) {
+    progress.text = error?.message || '统计失败'
+    ElMessage.error(progress.text)
+  } finally {
+    running.value = false
+  }
+}
+
+const syncToSheet = async () => {
+  if (!currentStats.value) {
+    ElMessage.warning('请先统计后再同步')
+    return
+  }
+  syncing.value = true
+  syncStatus.value = '同步中...'
+  try {
+    const data = await zdFetch<any>('/api/sync_to_sheet', {
+      method: 'POST',
+      body: JSON.stringify({
+        day: String(day.value),
+        stats: currentStats.value
+      })
+    })
+    if (data.success) {
+      syncStatus.value = data.msg || '已同步'
+      ElMessage.success(syncStatus.value)
+    } else {
+      syncStatus.value = data.msg || '同步失败'
+      ElMessage.error(syncStatus.value)
+    }
+  } catch (error: any) {
+    syncStatus.value = error?.message || '同步失败'
+    ElMessage.error(syncStatus.value)
+  } finally {
+    syncing.value = false
+  }
+}
+
+onMounted(loadDefaultKeywords)
 </script>
 
 <template>
-  <div v-loading="state.loading" class="workload-page">
-    <div class="zd-toolbar">
+  <div class="workload-page">
+    <div class="page-head">
       <div>
         <div class="zd-title">工作量统计</div>
-        <div class="zd-subtitle">按最近执行记录聚合账号处理量、成功失败和动作次数</div>
+        <div class="zd-subtitle">统计稍等关键词在推广群、协助群中的数量</div>
       </div>
-      <div class="actions">
-        <ElInput v-model="query" clearable placeholder="筛选账号" />
-        <ElButton @click="refreshAll">刷新</ElButton>
+      <div class="head-actions">
+        <ElButton :loading="loadingKeywords" @click="loadDefaultKeywords">重新读取关键词</ElButton>
+        <ElButton tag="a" href="/tool/work_stats" target="_blank">打开旧统计页</ElButton>
       </div>
     </div>
 
-    <ElCard shadow="never" class="manual-card">
-      <template #header>
-        <div class="card-header">
-          <span>手动工作量同步</span>
-          <ElTag :type="manualStatusType">{{ manual.status.status || '未读取' }}</ElTag>
+    <div class="stats-layout">
+      <ElCard shadow="never" class="config-card">
+        <template #header>统计条件</template>
+        <div class="form-stack">
+          <label>
+            <span>统计日期</span>
+            <ElInputNumber v-model="day" :min="1" :max="31" controls-position="right" />
+          </label>
+          <label>
+            <span>稍等关键词</span>
+            <ElInput
+              v-model="keywords"
+              type="textarea"
+              :rows="14"
+              placeholder="每行一个关键词"
+            />
+          </label>
+          <ElButton type="primary" :loading="running" @click="startStats">开始统计</ElButton>
+          <div class="progress-box">
+            <ElProgress :percentage="progress.percent" :stroke-width="8" />
+            <span>{{ progress.text }}</span>
+          </div>
         </div>
-      </template>
-      <div class="manual-layout">
-        <ElDescriptions :column="4" border size="small">
-          <ElDescriptionsItem label="来源群">
-            {{ manual.status.source_group || manual.status.last_chat_title || '-' }}
-          </ElDescriptionsItem>
-          <ElDescriptionsItem label="统计人员">
-            {{ manual.status.worker || '-' }}
-          </ElDescriptionsItem>
-          <ElDescriptionsItem label="自动时间">
-            {{ String(manual.status.auto_hour ?? '-').padStart(2, '0') }}:{{
-              String(manual.status.auto_minute ?? '-').padStart(2, '0')
-            }}
-          </ElDescriptionsItem>
-          <ElDescriptionsItem label="下次执行">
-            {{ manual.status.next_run || '-' }}
-          </ElDescriptionsItem>
-          <ElDescriptionsItem label="上次完成">
-            {{ manual.status.last_finished || '-' }}
-          </ElDescriptionsItem>
-          <ElDescriptionsItem label="目标日期">
-            {{ manual.status.last_target_day || latestEntry?.date || '-' }}
-          </ElDescriptionsItem>
-          <ElDescriptionsItem label="上次总量">
-            {{ manual.status.last_total ?? latestEntry?.total ?? '-' }}
-          </ElDescriptionsItem>
-          <ElDescriptionsItem label="同步结果">
-            {{ manual.status.last_sync_msg || manual.result?.msg || '-' }}
-          </ElDescriptionsItem>
-        </ElDescriptions>
-        <div class="manual-actions">
-          <ElButton :loading="manual.loading" @click="runManual(false)">只扫描</ElButton>
-          <ElButton type="primary" :loading="manual.loading" @click="runManual(true)">
-            手动执行并同步
-          </ElButton>
-          <ElButton tag="a" href="/tool/work_stats" target="_blank">打开旧统计页</ElButton>
-        </div>
-        <div v-if="manual.status.last_error || manual.result?.msg" class="manual-message">
-          <strong>{{ manual.result?.success === false ? '失败原因' : '执行说明' }}：</strong>
-          {{ manual.status.last_error || manual.result?.msg }}
-        </div>
-      </div>
-    </ElCard>
+      </ElCard>
 
-    <div class="metric-row">
-      <ElCard shadow="never"><strong>{{ totalSummary.total }}</strong><span>处理记录</span></ElCard>
-      <ElCard shadow="never"><strong>{{ totalSummary.action_count }}</strong><span>执行动作</span></ElCard>
-      <ElCard shadow="never"><strong>{{ totalSummary.success }}</strong><span>成功</span></ElCard>
-      <ElCard shadow="never"><strong>{{ totalSummary.failed }}</strong><span>失败</span></ElCard>
+      <ElCard shadow="never" class="result-card">
+        <template #header>
+          <div class="card-header">
+            <span>统计结果</span>
+            <div class="result-actions">
+              <ElTag type="info">合计 {{ totalCount }}</ElTag>
+              <ElTag>推广 {{ promoTotal }}</ElTag>
+              <ElTag type="warning">协助 {{ assistTotal }}</ElTag>
+              <ElButton
+                type="success"
+                size="small"
+                :disabled="!currentStats"
+                :loading="syncing"
+                @click="syncToSheet"
+              >
+                同步到表格
+              </ElButton>
+            </div>
+          </div>
+        </template>
+        <div v-if="syncStatus" class="sync-status">{{ syncStatus }}</div>
+        <ElTable :data="resultRows" height="520" size="small" empty-text="统计后显示结果">
+          <ElTableColumn prop="keyword" label="关键词" min-width="220" show-overflow-tooltip />
+          <ElTableColumn prop="promo" label="推广群" width="120" align="center" />
+          <ElTableColumn prop="assist" label="协助群" width="120" align="center" />
+          <ElTableColumn label="合计" width="120" align="center">
+            <template #default="scope">
+              {{ Number(scope.row.promo || 0) + Number(scope.row.assist || 0) }}
+            </template>
+          </ElTableColumn>
+        </ElTable>
+      </ElCard>
     </div>
 
-    <ElCard shadow="never">
-      <template #header>
-        <div class="card-header">
-          <span>监控执行聚合</span>
-          <span class="hint">来自最近执行记录，成功/失败已转成中文</span>
+    <ElCard shadow="never" class="logs-card">
+      <template #header>实时抓取记录</template>
+      <div v-if="!matchLogs.length" class="empty-log">开始统计后显示命中的原消息记录</div>
+      <div v-else class="log-list">
+        <div v-for="(log, index) in matchLogs" :key="`${log.kw}-${index}`" class="log-row">
+          <ElTag size="small">{{ log.kw }}</ElTag>
+          <a v-if="log.link" :href="log.link" target="_blank">原消息</a>
+          <span>{{ log.text }}</span>
         </div>
-      </template>
-      <ElTable :data="workloadRows" height="610" size="small">
-        <ElTableColumn prop="account" label="账号" min-width="180" show-overflow-tooltip />
-        <ElTableColumn prop="total" label="处理记录" width="110" />
-        <ElTableColumn prop="action_count" label="动作次数" width="110" />
-        <ElTableColumn prop="success" label="成功" width="90" />
-        <ElTableColumn prop="failed" label="失败" width="90" />
-        <ElTableColumn prop="skipped" label="跳过" width="90" />
-        <ElTableColumn label="成功率" width="110">
-          <template #default="scope">
-            <ElTag size="small" :type="scope.row.failed ? 'warning' : 'success'">
-              {{
-                scope.row.success + scope.row.failed
-                  ? Math.round((scope.row.success / (scope.row.success + scope.row.failed)) * 1000) /
-                    10
-                  : 0
-              }}%
-            </ElTag>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn prop="last_time" label="最近记录" min-width="180" show-overflow-tooltip />
-      </ElTable>
+      </div>
     </ElCard>
   </div>
 </template>
@@ -215,73 +269,18 @@ const latestEntry = computed(() => manual.result?.entry || null)
 <style scoped>
 .workload-page {
   display: grid;
-  gap: 12px;
+  gap: 14px;
   min-width: 0;
 }
 
-.zd-toolbar,
-.actions,
-.metric-row,
-.card-header {
+.page-head,
+.head-actions,
+.card-header,
+.result-actions {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-}
-
-.actions {
-  min-width: 360px;
-}
-
-.metric-row {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.manual-card :deep(.el-card__body) {
-  padding: 14px;
-}
-
-.manual-layout {
-  display: grid;
-  gap: 12px;
-}
-
-.manual-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-}
-
-.manual-message {
-  border-radius: 8px;
-  background: #f8fafc;
-  padding: 10px 12px;
-  color: #475569;
-  font-size: 13px;
-}
-
-.hint {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-  font-weight: 400;
-}
-
-.metric-row :deep(.el-card__body) {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.metric-row strong {
-  color: var(--el-text-color-primary);
-  font-size: 24px;
-}
-
-.metric-row span {
-  color: var(--el-text-color-secondary);
-  font-size: 13px;
 }
 
 .zd-title {
@@ -291,7 +290,89 @@ const latestEntry = computed(() => manual.result?.entry || null)
 
 .zd-subtitle {
   margin-top: 4px;
-  font-size: 12px;
   color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.stats-layout {
+  display: grid;
+  grid-template-columns: 380px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.form-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.form-stack label {
+  display: grid;
+  gap: 8px;
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.form-stack :deep(.el-input-number),
+.form-stack :deep(.el-textarea) {
+  width: 100%;
+}
+
+.progress-box {
+  display: grid;
+  gap: 6px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.result-card,
+.config-card,
+.logs-card {
+  min-width: 0;
+}
+
+.sync-status {
+  margin-bottom: 10px;
+  border-radius: 8px;
+  background: #f0fdf4;
+  padding: 8px 10px;
+  color: #15803d;
+  font-size: 13px;
+}
+
+.log-list {
+  display: grid;
+  max-height: 220px;
+  overflow: auto;
+  gap: 6px;
+}
+
+.log-row {
+  display: grid;
+  grid-template-columns: 120px 72px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px dashed #e5e7eb;
+  padding: 6px 0;
+  color: #475569;
+  font-size: 12px;
+}
+
+.log-row a {
+  color: #16a34a;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.log-row span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty-log {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
 }
 </style>
