@@ -79,7 +79,7 @@ const addBackend = () => {
       </div>
     </div>
 
-    <ElTabs type="border-card">
+    <ElTabs class="scheduled-tabs" type="border-card">
       <ElTabPane label="定时发送">
         <div class="tab-head">
           <div class="tab-actions">
@@ -89,7 +89,7 @@ const addBackend = () => {
             </ElButton>
           </div>
         </div>
-        <ElTable :data="state.config.scheduled_messages" height="560" size="small">
+        <ElTable class="scheduled-table" :data="state.config.scheduled_messages" height="560" size="small">
           <ElTableColumn label="启用" width="80"
             ><template #default="scope"
               ><ElSwitch v-if="scope?.row" v-model="scope.row.enabled" /></template
@@ -167,7 +167,12 @@ const addBackend = () => {
             </ElButton>
           </div>
         </div>
-        <ElTable :data="state.config.scheduled_backend_actions" height="560" size="small">
+        <ElTable
+          class="scheduled-table"
+          :data="state.config.scheduled_backend_actions"
+          height="560"
+          size="small"
+        >
           <ElTableColumn label="启用" width="80"
             ><template #default="scope"
               ><ElSwitch v-if="scope?.row" v-model="scope.row.enabled" /></template
@@ -297,7 +302,7 @@ const addBackend = () => {
             </ElButton>
           </div>
         </div>
-        <ElTable :data="state.config.ticket_follow_tasks" height="590" size="small">
+        <ElTable class="scheduled-table" :data="state.config.ticket_follow_tasks" height="590" size="small">
           <ElTableColumn label="启用" width="80"
             ><template #default="scope"
               ><ElSwitch v-if="scope?.row" v-model="scope.row.enabled" /></template
@@ -327,6 +332,7 @@ const addBackend = () => {
 .zd-page {
   display: grid;
   gap: 12px;
+  min-width: 0;
 }
 .zd-toolbar,
 .tab-head {
@@ -347,12 +353,28 @@ const addBackend = () => {
 .tab-head {
   justify-content: flex-end;
   margin-bottom: 12px;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 .tab-actions {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+  margin-left: auto;
+}
+.scheduled-tabs {
+  min-width: 0;
+  overflow: hidden;
+}
+.scheduled-table {
+  width: 100%;
+}
+:deep(.scheduled-tabs .el-tabs__content),
+:deep(.scheduled-tabs .el-tab-pane) {
+  min-width: 0;
+  overflow: hidden;
 }
 .native-time {
   width: 100%;
