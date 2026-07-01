@@ -1830,10 +1830,14 @@ def clean_settlement_group_reply(text):
     if not raw:
         return ""
     raw = re.sub(r"\r\n?", "\n", raw)
-    suffix = r"(?:[ \t]*[~～\-—–_#]*[ \t]*[A-Za-z][A-Za-z0-9_-]{0,15})[ \t]*[。.!！]*[ \t]*$"
+    suffix = r"(?:[ \t]*[。.!！]*[ \t]*[~～\-—–_#]*[ \t]*[A-Za-z][A-Za-z0-9_-]{0,15})[ \t]*[。.!！]*[ \t]*$"
+    trailing_staff_marker = re.compile(
+        r"[ \t]*[。.!！]*[ \t]*[~～\-—–_#]+[ \t]*[A-Za-z][A-Za-z0-9_-]{0,15}[ \t]*[。.!！]*[ \t]*$"
+    )
 
     def clean_line(line):
         line = re.sub(rf"((?:谢谢|感谢)[！!。.]?){suffix}", r"\1", line)
+        line = trailing_staff_marker.sub("", line)
         return line.rstrip()
 
     return "\n".join(clean_line(line) for line in raw.split("\n")).strip()
