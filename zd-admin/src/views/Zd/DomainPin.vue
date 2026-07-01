@@ -173,90 +173,92 @@ watch(
       </div>
     </div>
 
-    <ElCard shadow="never" class="tool-card">
-      <ElForm label-position="top">
-        <ElRow :gutter="16">
-          <ElCol :span="8">
-            <ElFormItem label="读取账号">
-              <ElSelect v-model="domainPin.source_account" filterable>
-                <ElOption
-                  v-for="account in accountOptions"
-                  :key="`source-${account}`"
-                  :label="account"
-                  :value="account"
-                />
-              </ElSelect>
-            </ElFormItem>
-          </ElCol>
-          <ElCol :span="8">
-            <ElFormItem label="编辑账号">
-              <ElSelect v-model="domainPin.target_account" filterable>
-                <ElOption
-                  v-for="account in accountOptions"
-                  :key="`target-${account}`"
-                  :label="account"
-                  :value="account"
-                />
-              </ElSelect>
-            </ElFormItem>
-          </ElCol>
-          <ElCol :span="8">
-            <ElFormItem label="读取条数">
-              <ElInputNumber v-model="domainPin.history_limit" :min="10" :max="300" />
-            </ElFormItem>
-          </ElCol>
-          <ElCol :span="24">
-            <ElFormItem label="来源群">
-              <ElSelect
-                v-model="domainPin.source_chat_ids"
-                multiple
-                filterable
-                collapse-tags
-                collapse-tags-tooltip
-                :max-collapse-tags="5"
-                :loading="domainPin.groupLoading"
-                placeholder="从读取账号已加入的群中选择"
-              >
-                <ElOption
-                  v-for="group in sourceGroupOptions"
-                  :key="group.id"
-                  :label="`${group.name}（${group.id}）`"
-                  :value="group.id"
-                />
-              </ElSelect>
-            </ElFormItem>
-          </ElCol>
-          <ElCol :span="24">
-            <div class="selected-groups">
-              <ElTag v-for="groupId in domainPin.source_chat_ids" :key="groupId" size="small">
-                {{ groupId }}
-              </ElTag>
-            </div>
-          </ElCol>
-        </ElRow>
-      </ElForm>
-    </ElCard>
+    <div class="domain-workspace">
+      <div class="left-stack">
+        <ElCard shadow="never" class="tool-card">
+          <ElForm label-position="top">
+            <ElRow :gutter="16">
+              <ElCol :span="8">
+                <ElFormItem label="读取账号">
+                  <ElSelect v-model="domainPin.source_account" filterable>
+                    <ElOption
+                      v-for="account in accountOptions"
+                      :key="`source-${account}`"
+                      :label="account"
+                      :value="account"
+                    />
+                  </ElSelect>
+                </ElFormItem>
+              </ElCol>
+              <ElCol :span="8">
+                <ElFormItem label="编辑账号">
+                  <ElSelect v-model="domainPin.target_account" filterable>
+                    <ElOption
+                      v-for="account in accountOptions"
+                      :key="`target-${account}`"
+                      :label="account"
+                      :value="account"
+                    />
+                  </ElSelect>
+                </ElFormItem>
+              </ElCol>
+              <ElCol :span="8">
+                <ElFormItem label="读取条数">
+                  <ElInputNumber v-model="domainPin.history_limit" :min="10" :max="300" />
+                </ElFormItem>
+              </ElCol>
+              <ElCol :span="24">
+                <ElFormItem label="来源群">
+                  <ElSelect
+                    v-model="domainPin.source_chat_ids"
+                    multiple
+                    filterable
+                    collapse-tags
+                    collapse-tags-tooltip
+                    :max-collapse-tags="5"
+                    :loading="domainPin.groupLoading"
+                    placeholder="从读取账号已加入的群中选择"
+                  >
+                    <ElOption
+                      v-for="group in sourceGroupOptions"
+                      :key="group.id"
+                      :label="`${group.name}（${group.id}）`"
+                      :value="group.id"
+                    />
+                  </ElSelect>
+                </ElFormItem>
+              </ElCol>
+              <ElCol :span="24">
+                <div class="selected-groups">
+                  <ElTag v-for="groupId in domainPin.source_chat_ids" :key="groupId" size="small">
+                    {{ groupId }}
+                  </ElTag>
+                </div>
+              </ElCol>
+            </ElRow>
+          </ElForm>
+        </ElCard>
 
-    <div class="preview-grid">
-      <ElCard shadow="never" class="result-card">
+        <ElCard shadow="never" class="result-card">
+          <template #header>目标群结果</template>
+          <ElInput
+            v-model="domainPin.result"
+            type="textarea"
+            :rows="14"
+            readonly
+            placeholder="预览或执行后显示每个目标群结果"
+          />
+        </ElCard>
+      </div>
+
+      <ElCard shadow="never" class="result-card preview-card">
         <template #header>处理后消息</template>
         <ElInput
           v-model="domainPin.preview"
           type="textarea"
-          :rows="18"
+          :rows="25"
           readonly
           placeholder="点击预览后，这里显示将写入置顶的完整消息"
-        />
-      </ElCard>
-
-      <ElCard shadow="never" class="result-card">
-        <template #header>目标群结果</template>
-        <ElInput
-          v-model="domainPin.result"
-          type="textarea"
-          :rows="18"
-          readonly
-          placeholder="预览或执行后显示每个目标群结果"
         />
       </ElCard>
     </div>
@@ -268,6 +270,7 @@ watch(
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 14px;
+  min-width: 0;
 }
 
 .page-head {
@@ -309,10 +312,18 @@ watch(
   min-height: 24px;
 }
 
-.preview-grid {
+.domain-workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(360px, 0.75fr);
+  grid-template-columns: minmax(650px, 0.92fr) minmax(420px, 1.08fr);
   gap: 14px;
+  align-items: start;
+  min-width: 0;
+}
+
+.left-stack {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
 }
 
 .result-card :deep(textarea) {
@@ -320,5 +331,10 @@ watch(
     ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
     monospace;
   line-height: 1.55;
+}
+
+.preview-card {
+  position: sticky;
+  top: 0;
 }
 </style>
