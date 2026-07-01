@@ -227,8 +227,8 @@ const addBackend = () => {
           <ElTableColumn label="站点" width="170"
             ><template #default="scope"
               ><ElSelect v-if="scope?.row" v-model="scope.row.sites" multiple collapse-tags>
-                <ElOption label="9001" value="9001" />
-                <ElOption label="6001" value="6001" />
+                <ElOption label="米兰" value="9001" />
+                <ElOption label="江南" value="6001" />
               </ElSelect></template
           ></ElTableColumn>
           <ElTableColumn label="维护开始" width="120">
