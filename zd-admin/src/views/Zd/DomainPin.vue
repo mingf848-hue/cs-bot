@@ -314,7 +314,7 @@ watch(
 
 .domain-workspace {
   display: grid;
-  grid-template-columns: minmax(650px, 0.92fr) minmax(420px, 1.08fr);
+  grid-template-columns: 760px minmax(420px, 1fr);
   gap: 14px;
   align-items: start;
   min-width: 0;
