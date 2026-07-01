@@ -10,16 +10,32 @@ import {
   ElTabPane,
   ElTable,
   ElTableColumn,
-  ElTabs,
-  ElTimePicker
+  ElTabs
 } from 'element-plus'
 import { useZd } from './useZd'
+import { milanVenueOptions, venueOptions } from './venueOptions'
 
 const { state, ensureLoaded, save } = useZd()
 
 defineOptions({ name: 'ZdScheduled' })
 
 onMounted(ensureLoaded)
+
+const weekdayOptions = [
+  { label: '周一', value: 1 },
+  { label: '周二', value: 2 },
+  { label: '周三', value: 3 },
+  { label: '周四', value: 4 },
+  { label: '周五', value: 5 },
+  { label: '周六', value: 6 },
+  { label: '周日', value: 7 }
+]
+
+const ensureWeekdays = (row: any) => {
+  if (row?.frequency === 'weekly' && (!Array.isArray(row.weekdays) || !row.weekdays.length)) {
+    row.weekdays = weekdayOptions.map((item) => item.value)
+  }
+}
 
 const addMessage = () => {
   state.config.scheduled_messages.push({
@@ -28,6 +44,7 @@ const addMessage = () => {
     enabled: true,
     time: '09:00',
     frequency: 'daily',
+    weekdays: [1, 2, 3, 4, 5, 6, 7],
     account: '',
     groups: [],
     text: ''
@@ -41,12 +58,14 @@ const addBackend = () => {
     enabled: true,
     time: '06:00',
     frequency: 'daily',
+    weekdays: [1, 2, 3, 4, 5, 6, 7],
     action: 'venue_display_control',
     target: '双赢彩票',
     mode: 'maintenance',
     sites: ['9001', '6001'],
     maintenance_start: '06:00',
-    maintenance_end: '07:05'
+    maintenance_end: '07:05',
+    jump_venue_id: 14
   })
 }
 </script>
@@ -77,19 +96,43 @@ const addBackend = () => {
           ></ElTableColumn>
           <ElTableColumn label="时间" width="130"
             ><template #default="scope"
-              ><ElTimePicker
+              ><input
                 v-if="scope?.row"
+                class="native-time"
+                type="time"
                 v-model="scope.row.time"
-                format="HH:mm"
-                value-format="HH:mm" /></template
+            /></template
           ></ElTableColumn>
           <ElTableColumn label="频率" width="130"
             ><template #default="scope"
-              ><ElSelect v-if="scope?.row" v-model="scope.row.frequency"
+              ><ElSelect
+                v-if="scope?.row"
+                v-model="scope.row.frequency"
+                @change="ensureWeekdays(scope.row)"
                 ><ElOption label="每天" value="daily" /><ElOption
+                  label="每周"
+                  value="weekly" /><ElOption
                   label="一次"
                   value="once" /></ElSelect></template
           ></ElTableColumn>
+          <ElTableColumn label="周几" width="190">
+            <template #default="scope">
+              <ElSelect
+                v-if="scope?.row && scope.row.frequency === 'weekly'"
+                v-model="scope.row.weekdays"
+                multiple
+                collapse-tags
+                collapse-tags-tooltip
+              >
+                <ElOption
+                  v-for="day in weekdayOptions"
+                  :key="`msg-day-${day.value}`"
+                  :label="day.label"
+                  :value="day.value"
+                />
+              </ElSelect>
+            </template>
+          </ElTableColumn>
           <ElTableColumn label="内容" min-width="260"
             ><template #default="scope"
               ><ElInput
@@ -126,12 +169,43 @@ const addBackend = () => {
           ></ElTableColumn>
           <ElTableColumn label="时间" width="130"
             ><template #default="scope"
-              ><ElTimePicker
+              ><input
                 v-if="scope?.row"
+                class="native-time"
+                type="time"
                 v-model="scope.row.time"
-                format="HH:mm"
-                value-format="HH:mm" /></template
+            /></template
           ></ElTableColumn>
+          <ElTableColumn label="频率" width="130"
+            ><template #default="scope"
+              ><ElSelect
+                v-if="scope?.row"
+                v-model="scope.row.frequency"
+                @change="ensureWeekdays(scope.row)"
+              >
+                <ElOption label="每天" value="daily" />
+                <ElOption label="每周" value="weekly" />
+                <ElOption label="单次" value="once" />
+              </ElSelect></template
+          ></ElTableColumn>
+          <ElTableColumn label="周几" width="190">
+            <template #default="scope">
+              <ElSelect
+                v-if="scope?.row && scope.row.frequency === 'weekly'"
+                v-model="scope.row.weekdays"
+                multiple
+                collapse-tags
+                collapse-tags-tooltip
+              >
+                <ElOption
+                  v-for="day in weekdayOptions"
+                  :key="`backend-day-${day.value}`"
+                  :label="day.label"
+                  :value="day.value"
+                />
+              </ElSelect>
+            </template>
+          </ElTableColumn>
           <ElTableColumn label="操作" width="120"
             ><template #default="scope"
               ><ElSelect v-if="scope?.row" v-model="scope.row.mode">
@@ -139,9 +213,16 @@ const addBackend = () => {
                 <ElOption label="启用" value="enable" />
               </ElSelect></template
           ></ElTableColumn>
-          <ElTableColumn label="场馆" min-width="160"
+          <ElTableColumn label="场馆" min-width="170"
             ><template #default="scope"
-              ><ElInput v-if="scope?.row" v-model="scope.row.target" placeholder="双赢彩票" /></template
+              ><ElSelect v-if="scope?.row" v-model="scope.row.target" filterable>
+                <ElOption
+                  v-for="venue in venueOptions"
+                  :key="venue.id"
+                  :label="`${venue.label} / ${venue.category}`"
+                  :value="venue.value"
+                />
+              </ElSelect></template
           ></ElTableColumn>
           <ElTableColumn label="站点" width="170"
             ><template #default="scope"
@@ -150,22 +231,40 @@ const addBackend = () => {
                 <ElOption label="6001" value="6001" />
               </ElSelect></template
           ></ElTableColumn>
-          <ElTableColumn label="维护开始" width="130">
+          <ElTableColumn label="维护开始" width="120">
             <template #default="scope">
-              <ElTimePicker
+              <input
                 v-if="scope?.row && scope.row.mode !== 'enable'"
+                class="native-time"
+                type="time"
                 v-model="scope.row.maintenance_start"
-                format="HH:mm"
-                value-format="HH:mm" />
+              />
             </template>
           </ElTableColumn>
-          <ElTableColumn label="维护结束" width="130">
+          <ElTableColumn label="维护结束" width="120">
             <template #default="scope">
-              <ElTimePicker
+              <input
                 v-if="scope?.row && scope.row.mode !== 'enable'"
+                class="native-time"
+                type="time"
                 v-model="scope.row.maintenance_end"
-                format="HH:mm"
-                value-format="HH:mm" />
+              />
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="自动跳转" min-width="170">
+            <template #default="scope">
+              <ElSelect
+                v-if="scope?.row && scope.row.mode !== 'enable'"
+                v-model="scope.row.jump_venue_id"
+                filterable
+              >
+                <ElOption
+                  v-for="venue in milanVenueOptions"
+                  :key="`jump-${venue.id}`"
+                  :label="`${venue.label} / ${venue.category}`"
+                  :value="venue.id"
+                />
+              </ElSelect>
             </template>
           </ElTableColumn>
           <ElTableColumn width="80"
@@ -232,5 +331,20 @@ const addBackend = () => {
 .tab-head {
   justify-content: flex-end;
   margin-bottom: 12px;
+}
+.native-time {
+  width: 100%;
+  height: 32px;
+  box-sizing: border-box;
+  border: 1px solid var(--el-border-color);
+  border-radius: 4px;
+  padding: 0 10px;
+  color: var(--el-text-color-primary);
+  background: var(--el-fill-color-blank);
+  font-size: 13px;
+  outline: none;
+}
+.native-time:focus {
+  border-color: var(--el-color-primary);
 }
 </style>

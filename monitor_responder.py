@@ -4338,8 +4338,9 @@ def normalize_scheduled_messages(raw_items):
         if not text and not targets and not item.get("enabled", False):
             continue
         frequency = str(item.get("frequency", "daily") or "daily").strip().lower()
-        if frequency not in ("daily", "once"):
+        if frequency not in ("daily", "weekly", "once"):
             frequency = "daily"
+        weekdays = normalize_schedule_weekdays(item.get("weekdays"))
         send_time = str(item.get("time", "09:00") or "09:00").strip()
         if not re.fullmatch(r"\d{2}:\d{2}", send_time):
             send_time = "09:00"
@@ -4352,6 +4353,7 @@ def normalize_scheduled_messages(raw_items):
             "text": text,
             "time": send_time,
             "frequency": frequency,
+            "weekdays": weekdays,
             "account": account,
             "last_sent_date": str(item.get("last_sent_date", "") or "").strip(),
             "last_sent_at": str(item.get("last_sent_at", "") or "").strip(),
@@ -4384,6 +4386,45 @@ def normalize_backend_schedule_sites(raw_sites):
             sites.append(text)
     return sites or ["9001", "6001"]
 
+def normalize_schedule_weekdays(raw_weekdays):
+    if isinstance(raw_weekdays, str):
+        raw_weekdays = re.split(r"[\s,，;；]+", raw_weekdays)
+    if not isinstance(raw_weekdays, list):
+        raw_weekdays = []
+    days = []
+    aliases = {
+        "一": 1, "周一": 1, "星期一": 1, "mon": 1, "monday": 1,
+        "二": 2, "周二": 2, "星期二": 2, "tue": 2, "tuesday": 2,
+        "三": 3, "周三": 3, "星期三": 3, "wed": 3, "wednesday": 3,
+        "四": 4, "周四": 4, "星期四": 4, "thu": 4, "thursday": 4,
+        "五": 5, "周五": 5, "星期五": 5, "fri": 5, "friday": 5,
+        "六": 6, "周六": 6, "星期六": 6, "sat": 6, "saturday": 6,
+        "日": 7, "天": 7, "周日": 7, "周天": 7, "星期日": 7, "星期天": 7, "sun": 7, "sunday": 7,
+    }
+    for item in raw_weekdays:
+        text = str(item or "").strip().lower()
+        try:
+            day = int(text)
+        except Exception:
+            day = aliases.get(text)
+        if isinstance(day, int) and 1 <= day <= 7 and day not in days:
+            days.append(day)
+    return days
+
+def schedule_item_should_run_today(item, now):
+    frequency = str(item.get("frequency") or "daily").strip().lower()
+    if frequency != "weekly":
+        return True
+    weekdays = normalize_schedule_weekdays(item.get("weekdays"))
+    return bool(weekdays) and (now.weekday() + 1) in weekdays
+
+def normalize_jump_venue_id(raw, default=14):
+    try:
+        value = int(raw)
+        return value if value > 0 else default
+    except Exception:
+        return default
+
 def normalize_scheduled_backend_actions(raw_items, include_defaults=False):
     if not isinstance(raw_items, list):
         raw_items = []
@@ -4412,8 +4453,9 @@ def normalize_scheduled_backend_actions(raw_items, include_defaults=False):
         if not re.fullmatch(r"\d{2}:\d{2}", send_time):
             send_time = "09:00"
         frequency = str(item.get("frequency", "daily") or "daily").strip().lower()
-        if frequency not in ("daily", "once"):
+        if frequency not in ("daily", "weekly", "once"):
             frequency = "daily"
+        weekdays = normalize_schedule_weekdays(item.get("weekdays"))
         mode = str(item.get("mode") or "maintenance").strip().lower()
         if mode not in ("maintenance", "enable"):
             mode = "maintenance"
@@ -4424,12 +4466,14 @@ def normalize_scheduled_backend_actions(raw_items, include_defaults=False):
             "enabled": bool(item.get("enabled", False)),
             "time": send_time,
             "frequency": frequency,
+            "weekdays": weekdays,
             "action": action,
             "target": target,
             "mode": mode,
             "sites": normalize_backend_schedule_sites(item.get("sites")),
             "maintenance_start": str(item.get("maintenance_start") or "06:00").strip(),
             "maintenance_end": str(item.get("maintenance_end") or "07:05").strip(),
+            "jump_venue_id": normalize_jump_venue_id(item.get("jump_venue_id") or item.get("jumpVenueId")),
             "last_run_date": str(item.get("last_run_date") or "").strip(),
             "last_run_at": str(item.get("last_run_at") or "").strip(),
         })
@@ -5997,6 +6041,7 @@ def queue_scheduled_backend_action_command(item, now):
         "venue": target,
         "venue_mode": mode,
         "sites": normalize_backend_schedule_sites(item.get("sites")),
+        "jump_venue_id": normalize_jump_venue_id(item.get("jump_venue_id") or item.get("jumpVenueId")),
         "source": "scheduled_backend_action",
         "rule": item.get("name") or job_id,
         "schedule_id": job_id,
@@ -6147,6 +6192,8 @@ async def run_scheduled_backend_actions_job():
                         continue
                     if item.get("time") != current_time:
                         continue
+                    if not schedule_item_should_run_today(item, now):
+                        continue
                     if scheduled_backend_action_runs.get(job_id) == today or item.get("last_run_date") == today:
                         continue
 
@@ -6186,6 +6233,8 @@ async def run_scheduled_messages_job():
                     if not item.get("enabled", False):
                         continue
                     if item.get("time") != current_time:
+                        continue
+                    if not schedule_item_should_run_today(item, now):
                         continue
                     if scheduled_message_runs.get(job_id) == today or item.get("last_sent_date") == today:
                         continue
