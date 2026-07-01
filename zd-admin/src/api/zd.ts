@@ -63,3 +63,10 @@ export const runDomainPinUpdate = (payload: any) =>
     method: 'POST',
     body: JSON.stringify(payload)
   })
+
+export const loadManualWorkloadStatus = () => zdFetch<ZdResponse>('/api/manual_workload_auto_status')
+
+export const runManualWorkloadScan = (sync = true) =>
+  zdFetch<ZdResponse>(`/api/manual_workload_scan?sync=${sync ? '1' : '0'}`, {
+    method: 'POST'
+  })

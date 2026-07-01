@@ -34,10 +34,33 @@ const domainPin = reactive({
   dry_run: true,
   running: false,
   groupLoading: false,
-  result: ''
+  result: '',
+  preview: ''
 })
 
 const groupOptionsByAccount = reactive<Record<string, GroupOption[]>>({})
+const sourceChatsStorageKey = (account: string) => `zd_domain_pin_source_chats:${account || 'default'}`
+
+const loadSavedSourceChats = (account: string) => {
+  try {
+    const raw = window.localStorage.getItem(sourceChatsStorageKey(account))
+    const parsed = raw ? JSON.parse(raw) : null
+    return Array.isArray(parsed) ? parsed.map(normalizeGroupId).filter(Boolean) : []
+  } catch {
+    return []
+  }
+}
+
+const saveSourceChats = (account: string, chats: string[]) => {
+  try {
+    window.localStorage.setItem(
+      sourceChatsStorageKey(account),
+      JSON.stringify((chats || []).map(normalizeGroupId).filter(Boolean))
+    )
+  } catch {
+    // localStorage may be unavailable in private contexts.
+  }
+}
 
 const accountOptions = computed(() => {
   const names = new Set<string>()
@@ -73,6 +96,7 @@ const loadGroupsForSourceAccount = async () => {
 const updateDomainPin = async (dryRun: boolean) => {
   domainPin.running = true
   domainPin.result = dryRun ? '正在预览...' : '正在更新...'
+  if (dryRun) domainPin.preview = '正在生成处理后的消息...'
   try {
     const data = await runDomainPinUpdate({
       ...domainPin,
@@ -91,10 +115,17 @@ const updateDomainPin = async (dryRun: boolean) => {
                 ? '无变化'
                 : '成功'
         const chat = item.chat_name ? `${item.chat_name}（${item.chat_id}）` : item.chat_id
-        return `${chat} ${label}${item.error ? `：${item.error}` : ''}`
+        const pinned = item.pinned_message_id ? ` #${item.pinned_message_id}` : ''
+        return `${chat} ${label}${pinned}${item.error ? `：${item.error}` : ''}`
       })
     ].join('\n')
+    domainPin.preview =
+      data.texts?.combined_with_footer || data.texts?.combined || data.texts?.jiangnan_with_footer || ''
     ElMessage[data.success ? 'success' : 'error'](data.msg || (dryRun ? '预览完成' : '更新完成'))
+  } catch (error: any) {
+    domainPin.result = error?.message || '请求失败'
+    if (dryRun) domainPin.preview = ''
+    ElMessage.error(error?.message || '请求失败')
   } finally {
     domainPin.running = false
   }
@@ -108,15 +139,22 @@ onMounted(async () => {
   if (!accountOptions.value.includes(domainPin.target_account) && accountOptions.value.length) {
     domainPin.target_account = accountOptions.value[0]
   }
+  const savedChats = loadSavedSourceChats(domainPin.source_account)
+  if (savedChats.length) domainPin.source_chat_ids = savedChats
   await loadGroupsForSourceAccount()
 })
 
 watch(
   () => domainPin.source_account,
   async () => {
-    domainPin.source_chat_ids = []
+    domainPin.source_chat_ids = loadSavedSourceChats(domainPin.source_account)
     await loadGroupsForSourceAccount()
   }
+)
+
+watch(
+  () => [...domainPin.source_chat_ids],
+  (chats) => saveSourceChats(domainPin.source_account, chats)
 )
 </script>
 
@@ -199,16 +237,29 @@ watch(
       </ElForm>
     </ElCard>
 
-    <ElCard shadow="never" class="result-card">
-      <template #header>执行结果</template>
-      <ElInput
-        v-model="domainPin.result"
-        type="textarea"
-        :rows="14"
-        readonly
-        placeholder="预览或执行后显示每个目标群结果"
-      />
-    </ElCard>
+    <div class="preview-grid">
+      <ElCard shadow="never" class="result-card">
+        <template #header>处理后消息</template>
+        <ElInput
+          v-model="domainPin.preview"
+          type="textarea"
+          :rows="18"
+          readonly
+          placeholder="点击预览后，这里显示将写入置顶的完整消息"
+        />
+      </ElCard>
+
+      <ElCard shadow="never" class="result-card">
+        <template #header>目标群结果</template>
+        <ElInput
+          v-model="domainPin.result"
+          type="textarea"
+          :rows="18"
+          readonly
+          placeholder="预览或执行后显示每个目标群结果"
+        />
+      </ElCard>
+    </div>
   </div>
 </template>
 
@@ -217,7 +268,6 @@ watch(
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 14px;
-  max-width: 1180px;
 }
 
 .page-head {
@@ -257,6 +307,12 @@ watch(
   flex-wrap: wrap;
   gap: 8px;
   min-height: 24px;
+}
+
+.preview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(360px, 0.75fr);
+  gap: 14px;
 }
 
 .result-card :deep(textarea) {

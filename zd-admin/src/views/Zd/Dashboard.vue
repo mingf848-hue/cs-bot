@@ -56,6 +56,15 @@ const recordStatus = (row: any) => row.status || row.result || '-'
 const recordDetail = (row: any) =>
   row.detail || row.message || row.reason || row.error || row.action || row.event || '-'
 
+const ruleHeatRows = computed(() => {
+  const rows = Array.isArray(state.runtime.by_rule) ? state.runtime.by_rule : []
+  const max = Math.max(1, ...rows.map((row: any) => Number(row.total || 0)))
+  return rows.map((row: any) => ({
+    ...row,
+    heat_percent: Math.max(Number(row.total || 0) ? 6 : 0, Math.round((Number(row.total || 0) / max) * 100))
+  }))
+})
+
 const accountWorkload = computed(() => {
   const map = new Map<string, { account: string; total: number; success: number; failed: number }>()
   recentRecords.value.forEach((record: any) => {
@@ -189,8 +198,15 @@ const accountWorkload = computed(() => {
       <ElCol :span="12">
         <ElCard shadow="never">
           <template #header>规则热度</template>
-          <ElTable :data="state.runtime.by_rule || []" height="280" size="small">
-            <ElTableColumn prop="name" label="规则" min-width="180" show-overflow-tooltip />
+          <ElTable :data="ruleHeatRows" height="320" size="small" empty-text="暂无规则统计">
+            <ElTableColumn label="规则" min-width="220" show-overflow-tooltip>
+              <template #default="scope">
+                <div class="rule-heat-name">
+                  <span>{{ scope.row.name }}</span>
+                  <span class="heat-track"><i :style="{ width: `${scope.row.heat_percent}%` }"></i></span>
+                </div>
+              </template>
+            </ElTableColumn>
             <ElTableColumn prop="total" label="触发" width="86" />
             <ElTableColumn prop="action_count" label="动作" width="86" />
             <ElTableColumn prop="success_rate" label="成功率" width="96">
@@ -218,6 +234,7 @@ const accountWorkload = computed(() => {
 .zd-page {
   display: grid;
   gap: 12px;
+  min-width: 0;
 }
 .zd-toolbar {
   display: flex;
@@ -244,5 +261,36 @@ const accountWorkload = computed(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.rule-heat-name {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.rule-heat-name > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.heat-track {
+  display: block;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e5e7eb;
+}
+
+.heat-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #2563eb;
+}
+
+:deep(.el-card__body) {
+  min-width: 0;
 }
 </style>
