@@ -77,14 +77,18 @@ const addBackend = () => {
         <div class="zd-title">定时任务</div>
         <div class="zd-subtitle">定时发送、后台操作、跟单查询</div>
       </div>
-      <ElButton type="primary" :loading="state.saving" @click="save">保存配置</ElButton>
     </div>
 
     <ElTabs type="border-card">
       <ElTabPane label="定时发送">
-        <div class="tab-head"
-          ><ElButton size="small" type="primary" @click="addMessage">添加任务</ElButton></div
-        >
+        <div class="tab-head">
+          <div class="tab-actions">
+            <ElButton size="small" type="primary" @click="addMessage">添加任务</ElButton>
+            <ElButton size="small" type="primary" :loading="state.saving" @click="save">
+              保存配置
+            </ElButton>
+          </div>
+        </div>
         <ElTable :data="state.config.scheduled_messages" height="560" size="small">
           <ElTableColumn label="启用" width="80"
             ><template #default="scope"
@@ -155,9 +159,14 @@ const addBackend = () => {
         </ElTable>
       </ElTabPane>
       <ElTabPane label="后台操作">
-        <div class="tab-head"
-          ><ElButton size="small" type="primary" @click="addBackend">添加操作</ElButton></div
-        >
+        <div class="tab-head">
+          <div class="tab-actions">
+            <ElButton size="small" type="primary" @click="addBackend">添加操作</ElButton>
+            <ElButton size="small" type="primary" :loading="state.saving" @click="save">
+              保存配置
+            </ElButton>
+          </div>
+        </div>
         <ElTable :data="state.config.scheduled_backend_actions" height="560" size="small">
           <ElTableColumn label="启用" width="80"
             ><template #default="scope"
@@ -281,6 +290,13 @@ const addBackend = () => {
         </ElTable>
       </ElTabPane>
       <ElTabPane label="跟单查询">
+        <div class="tab-head">
+          <div class="tab-actions">
+            <ElButton size="small" type="primary" :loading="state.saving" @click="save">
+              保存配置
+            </ElButton>
+          </div>
+        </div>
         <ElTable :data="state.config.ticket_follow_tasks" height="590" size="small">
           <ElTableColumn label="启用" width="80"
             ><template #default="scope"
@@ -331,6 +347,12 @@ const addBackend = () => {
 .tab-head {
   justify-content: flex-end;
   margin-bottom: 12px;
+}
+.tab-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
 }
 .native-time {
   width: 100%;
