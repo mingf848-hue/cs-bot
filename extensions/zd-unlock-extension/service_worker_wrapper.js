@@ -63,6 +63,7 @@ importScripts('service_worker.js');
       .filter((entry) => {
         if (!entry || !entry.item) return false;
         if (noticeMarketStageMismatch(entry.item, detail, order)) return false;
+        if (noticeMarketFacetMismatch(entry.item, detail)) return false;
         if (stillUnsettled && noticeIsCancelOrInvalidReason(entry.item) && !noticeIsUnsettledReason(entry.item)) return false;
         return Number(entry.score) >= 80;
       })

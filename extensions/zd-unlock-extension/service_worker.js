@@ -2983,6 +2983,51 @@ function detailMarketCategory(detail = {}) {
   return null;
 }
 
+function marketFacetsFromText(value) {
+  const text = normalizeText(value);
+  const facets = new Set();
+  if (!text) return facets;
+  if (/罚牌|黄牌|红牌|booking|bookings|card|cards/.test(text)) facets.add('cards');
+  if (/角球|corner/.test(text)) facets.add('corners');
+  if (/波胆|correctscore/.test(text)) facets.add('correct_score');
+  if (/加时|加時|overtime|extratime/.test(text)) facets.add('overtime');
+  if (/全场|全場|fulltime|ft/.test(text)) facets.add('fulltime');
+  if (/上半场|上半場|下半场|下半場|半场|半場|1sthalf|2ndhalf|firsthalf|secondhalf/.test(text)) facets.add('half');
+  const minuteMatch = text.match(/(?:^|[^0-9])([0-9]{1,2})分钟/);
+  if (minuteMatch) facets.add(`minute:${minuteMatch[1]}`);
+  return facets;
+}
+
+function detailMarketFacets(detail = {}) {
+  const text = [
+    detail.playName,
+    detail.originalPlay,
+    detail.marketName,
+    detail.playTypeName,
+    detail.betItemName,
+    detail.playOptionName,
+    detail.playOptions,
+    detail.marketValue,
+    detail.optionValue
+  ].filter(Boolean).join(' ');
+  return marketFacetsFromText(text);
+}
+
+function noticeMarketFacets(item = {}) {
+  return marketFacetsFromText(noticeMarketSegmentText(item));
+}
+
+function noticeMarketFacetMismatch(item = {}, detail = {}) {
+  const noticeFacets = noticeMarketFacets(item);
+  if (!noticeFacets.size) return false;
+  const detailFacets = detailMarketFacets(detail);
+  if (!detailFacets.size) return false;
+  for (const facet of detailFacets) {
+    if (noticeFacets.has(facet)) return false;
+  }
+  return true;
+}
+
 function addMarketTerm(terms, value) {
   const raw = htmlText(value);
   if (!raw) return;
@@ -4546,6 +4591,7 @@ async function runUrgeSettlementCommand(config, cmd, orderNo) {
     const notices = merchantList(notice.data)
       .map((noticeItem) => ({ item: noticeItem, score: scoreSettlementNotice(noticeItem, order, item) }))
       .filter((entry) => !noticeMarketStageMismatch(entry.item, item, order))
+      .filter((entry) => !noticeMarketFacetMismatch(entry.item, item))
       .sort((a, b) => b.score - a.score);
     if (notices.length) {
       const selected = notices[0] || {};
