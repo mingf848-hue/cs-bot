@@ -3,7 +3,7 @@ import { onMounted } from 'vue'
 import { ElButton, ElCard, ElCol, ElInput, ElRow, ElTable, ElTableColumn } from 'element-plus'
 import { useZd } from './useZd'
 
-const { state, ensureLoaded, save } = useZd()
+const { state, ensureLoaded, refresh, save } = useZd()
 
 defineOptions({ name: 'ZdResources' })
 
@@ -11,6 +11,10 @@ onMounted(ensureLoaded)
 
 const addGroup = () => state.config.resources.groups.push({ id: '', name: '新群组' })
 const addPrefix = () => state.config.resources.sender_prefixes.push({ value: '', label: '新名单' })
+const saveAndRefresh = async () => {
+  await save()
+  await refresh()
+}
 </script>
 
 <template>
@@ -20,7 +24,7 @@ const addPrefix = () => state.config.resources.sender_prefixes.push({ value: '',
         <div class="zd-title">资源管理</div>
         <div class="zd-subtitle">维护监听群、群名、允许/排除名单资源</div>
       </div>
-      <ElButton type="primary" :loading="state.saving" @click="save">保存配置</ElButton>
+      <ElButton type="primary" :loading="state.saving" @click="saveAndRefresh">保存配置</ElButton>
     </div>
 
     <ElRow :gutter="12">

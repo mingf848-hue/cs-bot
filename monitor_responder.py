@@ -2225,16 +2225,6 @@ def normalize_monitor_resources(raw_resources=None, rules=None, default_prefixes
                 "label": normalize_resource_label(raw_label if raw_value == value else value, value)
             })
 
-    for prefix in list(default_prefixes) + [p for rule in rules if isinstance(rule, dict) for p in split_sender_prefix_items(rule.get("sender_prefixes", []))]:
-        value = str(prefix or "").strip()
-        if not value:
-            continue
-        key = value.lower()
-        if key in seen_prefixes:
-            continue
-        seen_prefixes.add(key)
-        sender_prefixes.append({"value": value, "label": value})
-
     return {
         "groups": groups,
         "sender_prefixes": sender_prefixes
