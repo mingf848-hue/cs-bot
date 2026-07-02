@@ -69,6 +69,22 @@ const currentGroupOptions = computed(() => {
   return groupOptionsByAccount.value[account] || resourceGroupOptions.value
 })
 
+const senderPrefixOptions = computed(() => {
+  const options = new Map<string, string>()
+  ;(state.config.resources?.sender_prefixes || []).forEach((item: any) => {
+    const rawValue = item?.value ?? item?.id ?? item
+    const value = String(rawValue || '').trim()
+    if (!value) return
+    const label = String(item?.label || item?.name || value).trim()
+    options.set(value, label || value)
+  })
+  ;(selected.value?.sender_prefixes || []).forEach((value: any) => {
+    const clean = String(value || '').trim()
+    if (clean && !options.has(clean)) options.set(clean, clean)
+  })
+  return Array.from(options.entries()).map(([value, label]) => ({ value, label }))
+})
+
 const replyTypes = [
   { label: '文字回复', value: 'text' },
   { label: '编辑上一条', value: 'edit_prev' },
@@ -496,11 +512,22 @@ const handleSave = async () => {
                 />
               </ElFormItem>
               <ElFormItem label="发送者前缀" class="span-2">
-                <ElInput
-                  :model-value="textList(selected.sender_prefixes)"
-                  placeholder="YY, AA"
-                  @update:model-value="setTextList(selected, 'sender_prefixes', $event)"
-                />
+                <ElSelect
+                  v-model="selected.sender_prefixes"
+                  multiple
+                  filterable
+                  collapse-tags
+                  collapse-tags-tooltip
+                  :max-collapse-tags="4"
+                  placeholder="从允许/排除名单资源选择"
+                >
+                  <ElOption
+                    v-for="item in senderPrefixOptions"
+                    :key="item.value"
+                    :label="`${item.label} (${item.value})`"
+                    :value="item.value"
+                  />
+                </ElSelect>
               </ElFormItem>
             </ElForm>
           </ElTabPane>
