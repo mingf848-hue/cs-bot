@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
-import { ElButton, ElCard, ElCol, ElInput, ElRow, ElTable, ElTableColumn } from 'element-plus'
+import { ElButton, ElCard, ElInput, ElTable, ElTableColumn } from 'element-plus'
 import { useZd } from './useZd'
 
 const { state, ensureLoaded, refresh, save } = useZd()
@@ -9,7 +9,6 @@ defineOptions({ name: 'ZdResources' })
 
 onMounted(ensureLoaded)
 
-const addGroup = () => state.config.resources.groups.push({ id: '', name: '新群组' })
 const addPrefix = () => state.config.resources.sender_prefixes.push({ value: '', label: '新名单' })
 const saveAndRefresh = async () => {
   await save()
@@ -22,81 +21,43 @@ const saveAndRefresh = async () => {
     <div class="zd-toolbar">
       <div>
         <div class="zd-title">资源管理</div>
-        <div class="zd-subtitle">维护监听群、群名、允许/排除名单资源</div>
+        <div class="zd-subtitle">维护允许/排除名单资源</div>
       </div>
       <ElButton type="primary" :loading="state.saving" @click="saveAndRefresh">保存配置</ElButton>
     </div>
 
-    <ElRow :gutter="12">
-      <ElCol :span="12">
-        <ElCard shadow="never">
-          <template #header>
-            <div class="card-header">
-              <span>监听群资源</span>
-              <ElButton size="small" type="primary" @click="addGroup">添加群</ElButton>
-            </div>
+    <ElCard shadow="never">
+      <template #header>
+        <div class="card-header">
+          <span>允许/排除名单资源</span>
+          <ElButton size="small" type="primary" @click="addPrefix">添加名单</ElButton>
+        </div>
+      </template>
+      <ElTable :data="state.config.resources.sender_prefixes" height="620" size="small">
+        <ElTableColumn label="名称" min-width="180">
+          <template #default="scope"
+            ><ElInput v-if="scope?.row" v-model="scope.row.label"
+          /></template>
+        </ElTableColumn>
+        <ElTableColumn label="匹配值" min-width="220">
+          <template #default="scope"
+            ><ElInput v-if="scope?.row" v-model="scope.row.value"
+          /></template>
+        </ElTableColumn>
+        <ElTableColumn width="80" align="center">
+          <template #default="scope">
+            <ElButton
+              v-if="scope?.$index !== undefined"
+              link
+              type="danger"
+              @click="state.config.resources.sender_prefixes.splice(scope.$index, 1)"
+            >
+              删除
+            </ElButton>
           </template>
-          <ElTable :data="state.config.resources.groups" height="620" size="small">
-            <ElTableColumn label="群名" min-width="180">
-              <template #default="scope"
-                ><ElInput v-if="scope?.row" v-model="scope.row.name"
-              /></template>
-            </ElTableColumn>
-            <ElTableColumn label="群 ID" min-width="220">
-              <template #default="scope"
-                ><ElInput v-if="scope?.row" v-model="scope.row.id"
-              /></template>
-            </ElTableColumn>
-            <ElTableColumn width="80" align="center">
-              <template #default="scope">
-                <ElButton
-                  v-if="scope?.$index !== undefined"
-                  link
-                  type="danger"
-                  @click="state.config.resources.groups.splice(scope.$index, 1)"
-                >
-                  删除
-                </ElButton>
-              </template>
-            </ElTableColumn>
-          </ElTable>
-        </ElCard>
-      </ElCol>
-      <ElCol :span="12">
-        <ElCard shadow="never">
-          <template #header>
-            <div class="card-header">
-              <span>允许/排除名单资源</span>
-              <ElButton size="small" type="primary" @click="addPrefix">添加名单</ElButton>
-            </div>
-          </template>
-          <ElTable :data="state.config.resources.sender_prefixes" height="620" size="small">
-            <ElTableColumn label="名称" min-width="180">
-              <template #default="scope"
-                ><ElInput v-if="scope?.row" v-model="scope.row.label"
-              /></template>
-            </ElTableColumn>
-            <ElTableColumn label="匹配值" min-width="220">
-              <template #default="scope"
-                ><ElInput v-if="scope?.row" v-model="scope.row.value"
-              /></template>
-            </ElTableColumn>
-            <ElTableColumn width="80" align="center">
-              <template #default="scope">
-                <ElButton
-                  v-if="scope?.$index !== undefined"
-                  link
-                  type="danger"
-                  @click="state.config.resources.sender_prefixes.splice(scope.$index, 1)"
-                >
-                  删除
-                </ElButton>
-              </template>
-            </ElTableColumn>
-          </ElTable>
-        </ElCard>
-      </ElCol>
-    </ElRow>
+        </ElTableColumn>
+      </ElTable>
+    </ElCard>
   </div>
 </template>
 
