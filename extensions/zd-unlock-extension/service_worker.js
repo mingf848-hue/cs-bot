@@ -2313,7 +2313,11 @@ function detailIsUnsettled(detail = {}, order = {}) {
 function unresolvedOrderDetails(order = {}) {
   const details = orderDetails(order);
   if (!details.length) return [];
-  return details.filter((detail) => detailIsUnsettled(detail, order));
+  return details.filter((detail) => {
+    if (!detailIsUnsettled(detail, order)) return false;
+    if (isSettlementRollback(order, detail)) return true;
+    return !detailIsCanceled(detail) && !detailIsBetFailed(detail);
+  });
 }
 
 function detailMatchId(order = {}, detail = {}) {
