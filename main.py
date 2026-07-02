@@ -1824,6 +1824,71 @@ def is_wait_check_case_anchor_message(message):
         return True
     return not is_wait_check_non_business_text(message.text or "")
 
+def extract_wait_check_business_tokens(text):
+    raw = str(text or "").lower()
+    tokens = set()
+    for token in re.findall(r"\b[a-z][a-z0-9_]{3,}\b|\b\d{5,}\b", raw, flags=re.I):
+        clean = token.strip("_").lower()
+        if clean in {"http", "https", "www", "com", "vip"}:
+            continue
+        tokens.add(clean)
+    return tokens
+
+def get_wait_check_distinct_unquoted_reason(history, target_index, target_msg):
+    target_text = getattr(target_msg, "text", "") or ""
+    target_tokens = extract_wait_check_business_tokens(target_text)
+    if not target_tokens or not getattr(target_msg, "date", None):
+        return None
+
+    nearby_distinct = None
+    scan_start = max(0, target_index - 8)
+    scan_end = min(len(history), target_index + 9)
+    for idx in range(scan_start, scan_end):
+        if idx == target_index:
+            continue
+        other_msg = history[idx]
+        if is_wait_check_cs_message(other_msg):
+            continue
+        if getattr(other_msg, "sender_id", None) != getattr(target_msg, "sender_id", None):
+            continue
+        if not getattr(other_msg, "date", None):
+            continue
+        elapsed = abs((other_msg.date - target_msg.date).total_seconds())
+        if elapsed > WAIT_CHECK_REPLY_CONTINUATION_SECONDS:
+            continue
+        other_tokens = extract_wait_check_business_tokens(other_msg.text or "")
+        if not other_tokens:
+            continue
+        target_unique = target_tokens - other_tokens
+        other_unique = other_tokens - target_tokens
+        if target_unique and other_unique:
+            nearby_distinct = (other_msg, target_unique)
+            break
+
+    if not nearby_distinct:
+        return None
+
+    _, target_unique = nearby_distinct
+    for idx in range(target_index - 1, -1, -1):
+        follow_msg = history[idx]
+        if not getattr(follow_msg, "date", None):
+            continue
+        elapsed = (follow_msg.date - target_msg.date).total_seconds()
+        if elapsed < 0:
+            continue
+        if elapsed > WAIT_CHECK_CASE_RESOLUTION_SECONDS:
+            break
+        if not is_wait_check_cs_message(follow_msg):
+            continue
+        if not is_wait_check_substantive_cs_text(follow_msg.text or ""):
+            continue
+        follow_tokens = extract_wait_check_business_tokens(follow_msg.text or "")
+        if follow_tokens & target_unique:
+            return None
+
+    sample = "、".join(sorted(target_unique)[:3])
+    return f"同一发送人短时间内有不同账号/会员标识的相邻问题，目标消息未被引用且后续回复未点名目标标识({sample})，不能按相似上下文豁免。"
+
 def wait_check_parent_id(message_by_id, msg_id):
     msg = message_by_id.get(msg_id)
     return get_direct_reply_target_id(msg) if msg else None
@@ -4547,8 +4612,13 @@ async def check_wait_keyword_logic(keyword, result_queue, date_text=""):
                         
                         found_count += 1
 
+                        distinct_unquoted_reason = get_wait_check_distinct_unquoted_reason(history, i, m)
                         case_resolution_reason = get_wait_check_case_resolution_reason(history, i, m, message_by_id)
-                        if case_resolution_reason:
+                        if distinct_unquoted_reason:
+                            is_result_closed = False
+                            display_reason = f"代码判定(需跟进): {distinct_unquoted_reason}"
+                            latest_label = "无人引用回复"
+                        elif case_resolution_reason:
                             is_exempt, ai_reason = await asyncio.get_event_loop().run_in_executor(
                                 None,
                                 lambda: _ai_check_wait_check_context_resolution(
