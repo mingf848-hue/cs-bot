@@ -6,16 +6,42 @@ import { usePermissionStoreWithOut } from '@/store/modules/permission'
 import { usePageLoading } from '@/hooks/web/usePageLoading'
 import { NO_REDIRECT_WHITE_LIST } from '@/constants'
 import { useUserStoreWithOut } from '@/store/modules/user'
+import { getAuthMeApi } from '@/api/login'
 
 const { start, done } = useNProgress()
 
 const { loadStart, loadDone } = usePageLoading()
+
+let authChecked = false
 
 router.beforeEach(async (to, from, next) => {
   start()
   loadStart()
   const permissionStore = usePermissionStoreWithOut()
   const userStore = useUserStoreWithOut()
+
+  if (NO_REDIRECT_WHITE_LIST.indexOf(to.path) !== -1 && !userStore.getUserInfo) {
+    next()
+    return
+  }
+
+  if (userStore.getUserInfo && !authChecked) {
+    try {
+      const res = await getAuthMeApi()
+      userStore.setUserInfo(res.data)
+      authChecked = true
+    } catch {
+      authChecked = false
+      userStore.clearLocal()
+      if (NO_REDIRECT_WHITE_LIST.indexOf(to.path) !== -1) {
+        next()
+      } else {
+        next(`/login?redirect=${to.path}`)
+      }
+      return
+    }
+  }
+
   if (userStore.getUserInfo) {
     if (to.path === '/login') {
       next({ path: '/' })

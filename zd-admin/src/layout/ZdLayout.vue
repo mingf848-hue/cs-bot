@@ -64,6 +64,10 @@ const unlockScreen = async () => {
     ElMessage.error('锁屏密码错误')
   }
 }
+
+const logout = () => {
+  userStore.logoutConfirm()
+}
 </script>
 
 <template>
@@ -98,6 +102,7 @@ const unlockScreen = async () => {
               <ElDropdownMenu>
                 <ElDropdownItem disabled>当前账号：{{ username }}</ElDropdownItem>
                 <ElDropdownItem divided @click="openLockDialog">锁定屏幕</ElDropdownItem>
+                <ElDropdownItem @click="logout">退出登录</ElDropdownItem>
               </ElDropdownMenu>
             </template>
           </ElDropdown>

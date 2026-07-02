@@ -13,6 +13,10 @@ export const loginOutApi = (): Promise<IResponse> => {
   return request.post({ url: '/api/zd_auth/logout' })
 }
 
+export const getAuthMeApi = (): Promise<IResponse<UserType>> => {
+  return request.get({ url: '/api/zd_auth/me' })
+}
+
 export const getUserListApi = ({ params }: AxiosConfig) => {
   return request.get<{
     code: string

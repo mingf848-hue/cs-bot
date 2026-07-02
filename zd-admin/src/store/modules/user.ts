@@ -76,12 +76,15 @@ export const useUserStore = defineStore('user', {
         })
         .catch(() => {})
     },
-    reset() {
+    clearLocal() {
       const tagsViewStore = useTagsViewStore()
       tagsViewStore.delAllViews()
       this.setToken('')
       this.setUserInfo(undefined)
       this.setRoleRouters([])
+    },
+    reset() {
+      this.clearLocal()
       router.replace('/login')
     },
     logout() {

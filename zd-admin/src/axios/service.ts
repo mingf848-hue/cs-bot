@@ -4,6 +4,7 @@ import { defaultRequestInterceptors, defaultResponseInterceptors } from './confi
 import { AxiosInstance, InternalAxiosRequestConfig, RequestConfig, AxiosResponse } from './types'
 import { ElMessage } from 'element-plus'
 import { REQUEST_TIMEOUT } from '@/constants'
+import { useUserStoreWithOut } from '@/store/modules/user'
 
 export const PATH_URL = import.meta.env.VITE_API_BASE_PATH
 
@@ -34,7 +35,14 @@ axiosInstance.interceptors.response.use(
   },
   (error: AxiosError) => {
     console.log('err： ' + error) // for debug
-    ElMessage.error(error.message)
+    const status = error.response?.status
+    const data = error.response?.data as { code?: number; message?: string; msg?: string } | undefined
+    const message = data?.message || data?.msg || error.message
+    ElMessage.error(message)
+    if (status === 401 || data?.code === 401) {
+      const userStore = useUserStoreWithOut()
+      userStore.logout()
+    }
     return Promise.reject(error)
   }
 )
