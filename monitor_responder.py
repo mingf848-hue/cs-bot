@@ -2213,6 +2213,7 @@ def normalize_monitor_resources(raw_resources=None, rules=None, default_prefixes
         else:
             raw_value = str(item or "").strip()
             raw_label = raw_value
+        values = []
         for value in split_sender_prefix_items(raw_value):
             if not value:
                 continue
@@ -2220,9 +2221,11 @@ def normalize_monitor_resources(raw_resources=None, rules=None, default_prefixes
             if key in seen_prefixes:
                 continue
             seen_prefixes.add(key)
+            values.append(value)
+        if values:
             sender_prefixes.append({
-                "value": value,
-                "label": normalize_resource_label(raw_label if raw_value == value else value, value)
+                "value": ",".join(values) if len(values) > 1 else values[0],
+                "label": normalize_resource_label(raw_label, values[0])
             })
 
     return {
@@ -4818,9 +4821,11 @@ def save_config(new_config):
 
         new_config["resources"] = normalize_monitor_resources(new_config.get("resources", {}), clean_rules, system_cs_prefixes)
         valid_sender_prefixes = {
-            str(item.get("value") or "").strip().lower()
+            str(prefix or "").strip().lower()
             for item in new_config["resources"].get("sender_prefixes", [])
-            if isinstance(item, dict) and str(item.get("value") or "").strip()
+            if isinstance(item, dict)
+            for prefix in split_sender_prefix_items(item.get("value", []))
+            if str(prefix or "").strip()
         }
         for rule in clean_rules:
             if not valid_sender_prefixes:
