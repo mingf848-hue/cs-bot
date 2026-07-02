@@ -2083,7 +2083,8 @@ def build_monitor_runtime_stats(limit=160):
         else:
             running_rules += 1
 
-    last_record = records[0] if records else None
+    today_records = [record for record in records if str(record.get("day") or "") == today]
+    last_record = today_records[0] if today_records else None
     return {
         "server_time": now.isoformat(),
         "timezone": TZ_NAME,
@@ -2101,7 +2102,7 @@ def build_monitor_runtime_stats(limit=160):
         "yesterday": yesterday_summary,
         "hourly": hourly,
         "by_rule": sorted(by_rule.values(), key=lambda item: (item["total"], item["success"]), reverse=True),
-        "records": records[:limit],
+        "records": today_records[:limit],
         "last_record": last_record
     }
 

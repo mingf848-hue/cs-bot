@@ -30,7 +30,21 @@ onBeforeUnmount(() => {
 })
 
 const monitorText = computed(() => (state.config.enabled ? '监听运行中' : '监听已暂停'))
-const recentRecords = computed(() => state.runtime.records || state.runtime.recent || [])
+const beijingToday = computed(() => {
+  const value = String(state.runtime.server_time || '')
+  return value ? value.slice(0, 10) : ''
+})
+const isTodayRecord = (record: any) => {
+  const today = beijingToday.value
+  if (!today) return true
+  if (record?.day) return String(record.day) === today
+  if (record?.ts) return String(record.ts).slice(0, 10) === today
+  if (record?.created_at) return String(record.created_at).slice(0, 10) === today
+  return true
+}
+const recentRecords = computed(() =>
+  (state.runtime.records || state.runtime.recent || []).filter((record: any) => isTodayRecord(record))
+)
 
 const toggleGlobalMonitor = async () => {
   const next = !state.config.enabled
@@ -68,7 +82,8 @@ const ruleHeatRows = computed(() => {
 const accountWorkload = computed(() => {
   const map = new Map<string, { account: string; total: number; success: number; failed: number }>()
   recentRecords.value.forEach((record: any) => {
-    const account = record.target_account || record.sender_name || '未标记'
+    const account = String(record.target_account || record.sender_name || '').trim()
+    if (!account) return
     const item = map.get(account) || { account, total: 0, success: 0, failed: 0 }
     item.total += 1
     if (recordStatus(record) === 'success') item.success += 1
