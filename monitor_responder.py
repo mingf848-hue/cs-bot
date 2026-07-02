@@ -4816,8 +4816,21 @@ def save_config(new_config):
             rule["replies"] = normalize_reply_steps(rule.get("replies", []))
             clean_rules.append(rule)
 
-        new_config["rules"] = clean_rules
         new_config["resources"] = normalize_monitor_resources(new_config.get("resources", {}), clean_rules, system_cs_prefixes)
+        valid_sender_prefixes = {
+            str(item.get("value") or "").strip().lower()
+            for item in new_config["resources"].get("sender_prefixes", [])
+            if isinstance(item, dict) and str(item.get("value") or "").strip()
+        }
+        for rule in clean_rules:
+            if not valid_sender_prefixes:
+                rule["sender_prefixes"] = []
+                continue
+            rule["sender_prefixes"] = [
+                prefix for prefix in rule.get("sender_prefixes", [])
+                if str(prefix or "").strip().lower() in valid_sender_prefixes
+            ]
+        new_config["rules"] = clean_rules
         
         with current_config_lock:
             success, msg = persist_config_data(new_config)
